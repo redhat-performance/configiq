@@ -26,6 +26,7 @@
   background: var(--bg, #fff);
   box-sizing: border-box;
   cursor: pointer;
+  font-variant-numeric: tabular-nums;
 }
 
 .select:focus {
@@ -37,4 +38,5 @@
   font-size: 12px;
   color: var(--gc-text-3, #6a6e73);
   margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
