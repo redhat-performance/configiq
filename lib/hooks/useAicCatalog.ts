@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { DEFAULT_AIC_TIMEOUT_SECONDS } from '@/lib/api/timeout'
 
 export interface GpuOption {
   systemId: string
@@ -43,6 +44,9 @@ export interface AicCatalog {
   gpuOptions: GpuOption[]
   modelOptions: string[]
   modelSpecs: Map<string, ModelSpec>
+  /** Effective AIC request timeout (seconds) reported by the server; falls back
+   *  to DEFAULT_AIC_TIMEOUT_SECONDS until the catalog resolves. */
+  timeoutSeconds: number
   isLoading: boolean
   error: string | null
 }
@@ -72,6 +76,7 @@ const CACHE_TTL_MS = 10 * 60 * 1000
 let cachedGpus: GpuOption[] | null = null
 let cachedModels: string[] | null = null
 let cachedModelSpecs: Map<string, ModelSpec> | null = null
+let cachedTimeoutSeconds: number = DEFAULT_AIC_TIMEOUT_SECONDS
 let cacheTimestamp: number | null = null
 let fetchPromise: Promise<void> | null = null
 
@@ -84,6 +89,7 @@ export function useAicCatalog(): AicCatalog {
   const [gpuOptions, setGpuOptions] = useState<GpuOption[]>(isCacheValid() ? cachedGpus! : [])
   const [modelOptions, setModelOptions] = useState<string[]>(isCacheValid() ? cachedModels! : [])
   const [modelSpecs, setModelSpecs] = useState<Map<string, ModelSpec>>(isCacheValid() ? cachedModelSpecs! : new Map())
+  const [timeoutSeconds, setTimeoutSeconds] = useState<number>(cachedTimeoutSeconds)
   const [isLoading, setIsLoading] = useState(!isCacheValid())
   const [error, setError] = useState<string | null>(null)
 
@@ -92,6 +98,7 @@ export function useAicCatalog(): AicCatalog {
       setGpuOptions(cachedGpus!)
       setModelOptions(cachedModels!)
       setModelSpecs(cachedModelSpecs!)
+      setTimeoutSeconds(cachedTimeoutSeconds)
       setIsLoading(false)
       return
     }
@@ -133,6 +140,9 @@ export function useAicCatalog(): AicCatalog {
           cachedGpus = gpus
           cachedModels = modelList
           cachedModelSpecs = specsMap
+          if (typeof data.timeoutSeconds === 'number' && data.timeoutSeconds > 0) {
+            cachedTimeoutSeconds = data.timeoutSeconds
+          }
           cacheTimestamp = Date.now()
         })()
       }
@@ -143,6 +153,7 @@ export function useAicCatalog(): AicCatalog {
           setGpuOptions(cachedGpus!)
           setModelOptions(cachedModels!)
           setModelSpecs(cachedModelSpecs!)
+          setTimeoutSeconds(cachedTimeoutSeconds)
         }
       } catch (err) {
         fetchPromise = null
@@ -158,5 +169,5 @@ export function useAicCatalog(): AicCatalog {
     return () => { cancelled = true }
   }, [])
 
-  return { gpuOptions, modelOptions, modelSpecs, isLoading, error }
+  return { gpuOptions, modelOptions, modelSpecs, timeoutSeconds, isLoading, error }
 }

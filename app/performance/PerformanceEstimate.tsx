@@ -123,7 +123,7 @@ export default function QuickEstimate() {
   console.log('🔵 QuickEstimate component mounting');
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { gpuOptions: aicGpus, modelOptions: aicModels, modelSpecs, isLoading: catalogLoading } = useAicCatalog();
+  const { gpuOptions: aicGpus, modelOptions: aicModels, modelSpecs, timeoutSeconds: aicTimeout, isLoading: catalogLoading } = useAicCatalog();
 
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
@@ -1337,7 +1337,7 @@ export default function QuickEstimate() {
       {!testResult && !isCalculating && !testError}
       {isCalculating && (
         <div className={styles.card}>
-          <GpuChipLoader elapsed={elapsed} />
+          <GpuChipLoader elapsed={elapsed} timeoutSeconds={aicTimeout} />
         </div>
       )}
       {(testResult || isCalculating) && (

@@ -1,4 +1,5 @@
 import type { KvCacheCalcRequest } from './schemas'
+import { aicTimeoutSeconds } from './timeout'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -56,8 +57,6 @@ export function generateKvRequestId(): string {
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
-const DEFAULT_TIMEOUT_SECONDS = 90
-
 export async function callKvCacheCalc(
   request: KvCacheCalcRequest
 ): Promise<KvCacheCalcResponse> {
@@ -65,7 +64,7 @@ export async function callKvCacheCalc(
   const startTime = performance.now()
 
   const baseUrl = process.env.AICONFIGURATOR_GATEWAY_URL
-  const timeoutSeconds = parseInt(process.env.AICONFIGURATOR_TIMEOUT_SECONDS || '', 10) || DEFAULT_TIMEOUT_SECONDS
+  const timeoutSeconds = aicTimeoutSeconds()
 
   if (!baseUrl) {
     return makeError(requestId, 'AIC_NOT_CONFIGURED', 'AIConfigurator API URL is not configured')

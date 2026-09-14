@@ -17,9 +17,12 @@ const PHASE_DURATION = 3;
 
 interface GpuChipLoaderProps {
   elapsed: number;
+  /** Upper-bound wait shown in the hint, in seconds. Pass
+   * DEFAULT_AIC_TIMEOUT_SECONDS from lib/api/timeout. */
+  timeoutSeconds: number;
 }
 
-export function GpuChipLoader({ elapsed }: GpuChipLoaderProps) {
+export function GpuChipLoader({ elapsed, timeoutSeconds }: GpuChipLoaderProps) {
   const activeIndex = Math.min(Math.floor(elapsed / PHASE_DURATION), PHASES.length - 1);
 
   return (
@@ -50,7 +53,7 @@ export function GpuChipLoader({ elapsed }: GpuChipLoaderProps) {
       </div>
       <div style={{ textAlign: 'center' }}>
         <div className={styles.timer}>{elapsed}s elapsed</div>
-        <div className={styles.timerNote}>This typically takes 10–20 seconds</div>
+        <div className={styles.timerNote}>This typically takes 10–20 seconds, but can take up to {timeoutSeconds} seconds</div>
       </div>
     </div>
   );

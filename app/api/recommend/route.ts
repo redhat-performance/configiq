@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { RecommendRequestSchema } from '@/lib/api/schemas'
 import { callRecommend, generateRequestId } from '@/lib/api/recommend'
+import { aicTimeoutSeconds } from '@/lib/api/timeout'
 
 const ERROR_STATUS_MAP: Record<string, number> = {
   INVALID_REQUEST: 400,
@@ -12,11 +13,9 @@ const ERROR_STATUS_MAP: Record<string, number> = {
   INTERNAL_ERROR: 500,
 }
 
-const DEFAULT_TIMEOUT_SECONDS = 90
-
 async function proxyToAic(body: Record<string, unknown>, include: string): Promise<NextResponse> {
   const baseUrl = process.env.AICONFIGURATOR_GATEWAY_URL
-  const timeoutSeconds = parseInt(process.env.AICONFIGURATOR_TIMEOUT_SECONDS || '', 10) || DEFAULT_TIMEOUT_SECONDS
+  const timeoutSeconds = aicTimeoutSeconds()
 
   if (!baseUrl) {
     return NextResponse.json(

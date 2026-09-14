@@ -210,7 +210,7 @@ function friendlyErrorHint(code: string | null): string {
 export default function AdvancedEstimate() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { modelOptions: aicModels, gpuOptions: aicGpus, isLoading: catalogLoading } = useAicCatalog();
+  const { modelOptions: aicModels, gpuOptions: aicGpus, timeoutSeconds: aicTimeout, isLoading: catalogLoading } = useAicCatalog();
   const MODEL_OPTIONS = aicModels;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -562,7 +562,7 @@ export default function AdvancedEstimate() {
       {/* ─── Loading ─── */}
       {isLoading && (
         <div className={styles.card}>
-          <GpuChipLoader elapsed={elapsed} />
+          <GpuChipLoader elapsed={elapsed} timeoutSeconds={aicTimeout} />
         </div>
       )}
 

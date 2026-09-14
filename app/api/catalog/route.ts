@@ -9,7 +9,10 @@
 // removes the need for a build-time NEXT_PUBLIC_AICONFIGURATOR_API_URL.
 
 import { NextResponse } from 'next/server'
+import { aicTimeoutSeconds } from '@/lib/api/timeout'
 
+// This is the catalog fetch's own timeout (30s). The value surfaced to the
+// client below is aicTimeoutSeconds() — the longer recommend/estimate timeout.
 const DEFAULT_TIMEOUT_SECONDS = 30
 
 export async function GET() {
@@ -60,7 +63,12 @@ export async function GET() {
     }
 
     return NextResponse.json(
-      { systems: systemsData.systems ?? [], models: modelsData.models ?? [] },
+      {
+        systems: systemsData.systems ?? [],
+        models: modelsData.models ?? [],
+        // Effective AIC request timeout (recommend/estimate), for the loader hint.
+        timeoutSeconds: aicTimeoutSeconds(),
+      },
       {
         status: 200,
         headers: {

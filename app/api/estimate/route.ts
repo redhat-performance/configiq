@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-const DEFAULT_TIMEOUT_SECONDS = 90
+import { aicTimeoutSeconds } from '@/lib/api/timeout'
 
 export async function POST(req: NextRequest) {
   const baseUrl = process.env.AICONFIGURATOR_GATEWAY_URL
-  const timeoutSeconds =
-    parseInt(process.env.AICONFIGURATOR_TIMEOUT_SECONDS || '', 10) ||
-    DEFAULT_TIMEOUT_SECONDS
+  const timeoutSeconds = aicTimeoutSeconds()
 
   if (!baseUrl) {
     return NextResponse.json(
