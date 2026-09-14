@@ -19,9 +19,9 @@ export async function GET() {
   // Dev default mirrors app/api/gpus/route.ts so local dev works without the
   // gateway env set; production sets AICONFIGURATOR_GATEWAY_URL per host.
   const baseUrl = process.env.AICONFIGURATOR_GATEWAY_URL || 'https://aiconfigurator.dev'
-  const timeoutSeconds =
-    parseInt(process.env.AICONFIGURATOR_TIMEOUT_SECONDS || '', 10) ||
-    DEFAULT_TIMEOUT_SECONDS
+  // Shares the shared resolver's positive-integer validation, with the catalog
+  // fetch's own 30s baseline (a negative env value would break AbortSignal).
+  const timeoutSeconds = aicTimeoutSeconds(DEFAULT_TIMEOUT_SECONDS)
 
   try {
     const [systemsRes, modelsRes] = await Promise.all([
