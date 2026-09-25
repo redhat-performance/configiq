@@ -25,6 +25,7 @@ const STORAGE_KEYS = {
 interface SettingsState {
   hydrated: boolean;
   defaultModel: string;
+  testedModels: string[];
   hfToken: string;
   inferenceBackend: InferenceBackend;
   backendVersion: string;
@@ -43,6 +44,7 @@ interface SettingsState {
 const SettingsContext = React.createContext<SettingsState>({
   hydrated: false,
   defaultModel: '',
+  testedModels: [],
   hfToken: '',
   inferenceBackend: 'vllm',
   backendVersion: '',
@@ -61,6 +63,7 @@ const SettingsContext = React.createContext<SettingsState>({
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = React.useState(false);
   const [defaultModel, setDefaultModelState] = React.useState('');
+  const [testedModels, setTestedModels] = React.useState<string[]>([]);
   const [hfToken, setHfTokenState] = React.useState('');
   const [inferenceBackend, setInferenceBackendState] = React.useState<InferenceBackend>('vllm');
   const [backendVersion, setBackendVersionState] = React.useState('');
@@ -76,6 +79,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // localStorage overrides config; null means "never saved by user" so use config default
       const savedModel = localStorage.getItem(STORAGE_KEYS.defaultModel);
       setDefaultModelState(savedModel !== null ? savedModel : config.defaultModel);
+      setTestedModels(config.testedModels);
 
       setHfTokenState(localStorage.getItem(STORAGE_KEYS.hfToken) ?? '');
 
@@ -152,12 +156,12 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<SettingsState>(
     () => ({
-      hydrated, defaultModel, hfToken, inferenceBackend, backendVersion,
+      hydrated, defaultModel, testedModels, hfToken, inferenceBackend, backendVersion,
       costingsEnabled, preferredCloudProvider, pricingSource,
       setDefaultModel, setHfToken, setInferenceBackend, setBackendVersion,
       setCostingsEnabled, setPreferredCloudProvider, setPricingSource,
     }),
-    [hydrated, defaultModel, hfToken, inferenceBackend, backendVersion,
+    [hydrated, defaultModel, testedModels, hfToken, inferenceBackend, backendVersion,
      costingsEnabled, preferredCloudProvider, pricingSource,
      setDefaultModel, setHfToken, setInferenceBackend, setBackendVersion,
      setCostingsEnabled, setPreferredCloudProvider, setPricingSource],

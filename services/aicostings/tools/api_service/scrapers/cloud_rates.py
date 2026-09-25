@@ -46,6 +46,11 @@ def _map_gpu_name(name: str, mapping: dict[str, str]) -> str | None:
 # ── Azure ─────────────────────────────────────────────────────────────────────
 
 AZURE_GPU_SKUS = ["Standard_ND96asr_v4", "Standard_ND96amsr_A100_v4", "Standard_NC80adis_H100_v5"]
+AZURE_GPUS_PER_INSTANCE = {
+    "Standard_ND96asr_v4": 8,
+    "Standard_ND96amsr_A100_v4": 8,
+    "Standard_NC80adis_H100_v5": 2,
+}
 AZURE_API = "https://prices.azure.com/api/retail/prices"
 
 
@@ -83,12 +88,20 @@ async def scrape_azure(session: aiohttp.ClientSession, mapping: dict[str, str]) 
                 if not system_id:
                     continue
 
-                is_spot = "spot" in meter.lower()
+                gpus_per_instance = AZURE_GPUS_PER_INSTANCE.get(sku)
+                if not gpus_per_instance:
+                    logger.warning("Azure: GPU count is unknown for %s; skipping rate", sku)
+                    continue
+                meter_lower = meter.lower()
+                is_spot = "spot" in meter_lower or "low priority" in meter_lower
+                per_gpu_price = float(price) / gpus_per_instance
                 records.append({
                     "system_id": system_id,
                     "provider_region": f"azure.{region}",
-                    "on_demand": None if is_spot else round(price, 4),
-                    "spot_median": round(price, 4) if is_spot else None,
+                    "on_demand": None if is_spot else round(per_gpu_price, 6),
+                    "spot_median": round(per_gpu_price, 6) if is_spot else None,
+                    "rate_basis": "gpu_hour",
+                    "gpus_per_instance": gpus_per_instance,
                 })
         except Exception as e:
             logger.error("Azure scrape failed for %s: %s", sku, e)
@@ -120,6 +133,10 @@ AWS_REGION_INDEX = f"{AWS_PRICING_HOST}/offers/v1.0/aws/AmazonEC2/current/region
 AWS_PRICING_REGIONS = [
     r.strip() for r in os.environ.get("AWS_PRICING_REGIONS", "us-east-1,us-west-2").split(",") if r.strip()
 ]
+AWS_GPUS_PER_INSTANCE = {
+    "p4d.24xlarge": 8,
+    "p5.48xlarge": 8,
+}
 
 
 def _aws_gpu_instance_types(mapping: dict[str, str]) -> set[str]:
@@ -203,15 +220,22 @@ async def _aws_scrape_region(
                         continue
                     if usd <= 0:
                         continue
-                    system_id = _map_gpu_name(matched_skus[sku], mapping)
+                    instance_type = matched_skus[sku]
+                    system_id = _map_gpu_name(instance_type, mapping)
                     if not system_id or (system_id, region) in seen:
+                        continue
+                    gpus_per_instance = AWS_GPUS_PER_INSTANCE.get(instance_type)
+                    if not gpus_per_instance:
+                        logger.warning("AWS: GPU count is unknown for %s; skipping rate", instance_type)
                         continue
                     seen.add((system_id, region))
                     records.append({
                         "system_id": system_id,
                         "provider_region": f"aws.{region}",
-                        "on_demand": round(usd, 4),
+                        "on_demand": round(usd / gpus_per_instance, 6),
                         "spot_median": None,
+                        "rate_basis": "gpu_hour",
+                        "gpus_per_instance": gpus_per_instance,
                     })
     return records
 
@@ -291,6 +315,8 @@ async def scrape_vastai(session: aiohttp.ClientSession, mapping: dict[str, str])
             "provider_region": "vastai.marketplace",
             "on_demand": None,
             "spot_median": round(statistics.median(prices), 4),
+            "rate_basis": "gpu_hour",
+            "gpus_per_instance": 1,
         })
     logger.info("Vast.ai: %d systems priced from %d offers", len(records), len(data.get("offers", [])))
     return records
@@ -388,9 +414,9 @@ def active_scrapers() -> list[tuple[str, Any]]:
 ALL_SCRAPERS = [(name, fn) for name, fn, _ in _SCRAPERS]
 
 
-def _merge_records(records: list[RateRecord]) -> dict[str, dict[str, dict[str, float | None]]]:
+def _merge_records(records: list[RateRecord]) -> dict[str, dict[str, dict[str, Any]]]:
     """Merge rate records into per-system, per-provider.region structure."""
-    systems: dict[str, dict[str, dict[str, float | None]]] = {}
+    systems: dict[str, dict[str, dict[str, Any]]] = {}
 
     for rec in records:
         sid = rec["system_id"]
@@ -398,12 +424,23 @@ def _merge_records(records: list[RateRecord]) -> dict[str, dict[str, dict[str, f
         if sid not in systems:
             systems[sid] = {}
         if pr not in systems[sid]:
-            systems[sid][pr] = {"on_demand": None, "spot_median": None}
+            systems[sid][pr] = {
+                "on_demand": None,
+                "spot_median": None,
+                "rate_basis": rec.get("rate_basis"),
+                "gpus_per_instance": rec.get("gpus_per_instance"),
+            }
 
         if rec.get("on_demand") is not None:
-            systems[sid][pr]["on_demand"] = rec["on_demand"]
+            current = systems[sid][pr]["on_demand"]
+            systems[sid][pr]["on_demand"] = min(rec["on_demand"], current) if current is not None else rec["on_demand"]
         if rec.get("spot_median") is not None:
-            systems[sid][pr]["spot_median"] = rec["spot_median"]
+            current = systems[sid][pr]["spot_median"]
+            systems[sid][pr]["spot_median"] = min(rec["spot_median"], current) if current is not None else rec["spot_median"]
+        if systems[sid][pr].get("rate_basis") is None:
+            systems[sid][pr]["rate_basis"] = rec.get("rate_basis")
+        if systems[sid][pr].get("gpus_per_instance") is None:
+            systems[sid][pr]["gpus_per_instance"] = rec.get("gpus_per_instance")
 
     return systems
 
@@ -413,7 +450,7 @@ ProviderResult = tuple[str, list[RateRecord] | Exception]
 
 async def scrape_all_cloud_rates(
     session: aiohttp.ClientSession,
-) -> tuple[dict[str, dict[str, dict[str, float | None]]], dict[str, Exception | None]]:
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, Exception | None]]:
     """Scrape all cloud providers concurrently.
 
     Returns:

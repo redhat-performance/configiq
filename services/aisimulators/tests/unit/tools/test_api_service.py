@@ -134,7 +134,8 @@ class MockPredictionResult:
 
 class TestRecommend:
 
-    def test_recommendation_search_is_bounded(self):
+    def test_recommendation_search_is_bounded(self, monkeypatch):
+        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
         request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
         config = app_module._aisimulate_recommendation_config(request)
 
@@ -213,6 +214,39 @@ class TestRecommend:
         assert cfg["system"] == "h200_sxm"
         assert cfg["backend"] == "vllm"
         assert cfg["backend_version"] == "0.24.0"
+
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_cluster_gpu_count_is_distinct_from_per_replica_count(self, mock_recommend):
+        candidate = MockCandidate(
+            used_gpus=8,
+            metrics={
+                "ttft_ms": 900.0,
+                "tpot_ms": 25.0,
+                "output_throughput_tok_s": 4000.0,
+                "output_throughput_tok_s_per_gpu": 500.0,
+            },
+            prediction_config={"engine": {
+                "model": "Qwen/Qwen3-8B", "hardware": "a100_sxm",
+                "backend": "vllm", "backend_version": "0.24.0", "mode": "aggregated",
+                "workers": {"aggregated": {
+                    "parallelism": {
+                        "tensor": 2, "pipeline": 1, "attention_data": 1,
+                        "context": 1, "replicas": 4,
+                    },
+                    "scheduler": {"max_sequences": 256},
+                }},
+            }},
+        )
+        mock_recommend.return_value = make_mock_recommendation_result([candidate])
+
+        resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
+
+        assert resp.status_code == 200
+        cfg = resp.json()["configs"][0]
+        assert cfg["total_gpus_needed"] == 8
+        assert cfg["replicas_needed"] == 4
+        assert cfg["num_total_gpus"] == 2
+        assert cfg["tokens_per_second"] == 4000.0
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_inclusive_tpot(self, mock_recommend):
@@ -363,12 +397,24 @@ class TestRecommend:
         assert "bad input" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
-    def test_no_viable_parallel_config_returns_422(self, mock_recommend):
+    def test_wrapped_no_viable_parallel_config_returns_422(self, mock_recommend):
         mock_recommend.side_effect = RuntimeError(
             "NoViableParallelConfig: no deployment_mode has a viable parallel config"
         )
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
+
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_no_viable_parallel_config_exception_returns_422(self, mock_recommend):
+        class NoViableParallelConfig(Exception):
+            pass
+
+        mock_recommend.side_effect = NoViableParallelConfig(
+            "no deployment_mode has a viable parallel config"
+        )
+        resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
+        assert resp.status_code == 422
+        assert "no deployment_mode" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_unexpected_error_returns_500(self, mock_recommend):

@@ -11,6 +11,7 @@ See docs/api/openapi.yaml for the full spec.
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -679,10 +680,19 @@ def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> Recom
     mode = "disagg" if engine.get("mode") == "disaggregated" else "agg"
     agg = workers.get("aggregated") or {}
     parallel = agg.get("parallelism") or {}
+    replicas = int(parallel.get("replicas") or 1)
+    # candidate.used_gpus is cluster-wide. num_total_gpus is the size of one
+    # aggregated replica/worker, which consumers use as their scalable unit.
+    # Keeping these distinct avoids multiplying a multi-replica deployment a
+    # second time downstream.
+    gpus_per_agg_replica = math.prod(
+        int(parallel.get(dimension) or 1)
+        for dimension in ("tensor", "pipeline", "attention_data", "context")
+    )
     config = RecommendConfig(
         total_gpus_needed=candidate.used_gpus,
-        replicas_needed=parallel.get("replicas"),
-        num_total_gpus=candidate.used_gpus,
+        replicas_needed=replicas,
+        num_total_gpus=(gpus_per_agg_replica if mode == "agg" else candidate.used_gpus),
         tp=parallel.get("tensor"), pp=parallel.get("pipeline"), dp=parallel.get("attention_data"),
         cp=parallel.get("context"),
         moe_tp=parallel.get("moe_tensor"), moe_ep=parallel.get("moe_expert"),
@@ -891,7 +901,12 @@ def _build_memory_breakdown(
 
 def _common_error_handler(e: Exception, op: str, model_path: str, backend: str, system: str) -> None:
     msg = str(e)
-    if isinstance(e, NoFeasibleConfigError):
+    # aisimulate's recommendation stack uses NoViableParallelConfig when a
+    # bounded GPU window is too small to hold the model. That is an expected
+    # no-result response (the caller may try a larger window), not a server
+    # failure. Avoid a hard import of this optimizer-internal exception so the
+    # wrapper remains compatible across SDK releases.
+    if isinstance(e, NoFeasibleConfigError) or e.__class__.__name__ == "NoViableParallelConfig":
         raise HTTPException(status_code=422, detail=msg)
     # Some SDK versions wrap NoViableParallelConfig while crossing the
     # supervised-process boundary. It still means this GPU window is
@@ -1036,7 +1051,7 @@ def post_recommend(
     """Find optimal GPU configuration for a workload."""
     try:
         result = _run_aisimulate_recommendation(req)
-    except (ValueError, AttributeError, Exception) as e:
+    except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
 
     candidates = result.selected_candidates[: req.top_n]
@@ -1105,7 +1120,7 @@ def post_predict(
 
     try:
         prediction = _run_aisimulate_prediction(req, _parse_include(include))
-    except (ValueError, AttributeError, Exception) as e:
+    except Exception as e:
         _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
 
     includes = _parse_include(include)
@@ -1232,7 +1247,7 @@ def post_memory(req: MemoryRequest):
                 comm_quant_mode=req.comm_quant_mode,
                 tolerance_fraction=req.tolerance_fraction,
             )
-    except (ValueError, AttributeError, Exception) as e:
+    except Exception as e:
         _common_error_handler(e, "memory", req.model_path, req.backend, req.system)
 
     breakdown = raw.get("memory_breakdown") or {}

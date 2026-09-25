@@ -26,7 +26,7 @@ const EXTERNAL_RESPONSE = {
     num_total_gpus: 4,
     ttft: 599.81,
     concurrency: 128,
-    tpot: 149.95,
+    tpot: 25.95,
     request_latency: 19643.78,
     tokens_per_second: 846.93,
     tokens_per_second_per_gpu: 211.73,
@@ -159,7 +159,7 @@ describe('callRecommend', () => {
     expect(r.recommendation.pipelineParallelSize).toBe(1)
     expect(r.recommendation.dataParallelSize).toBe(1)
     expect(r.performance.ttftLatencyMs).toBe(599.81)
-    expect(r.performance.tpotMs).toBe(149.95)
+    expect(r.performance.tpotMs).toBe(25.95)
     expect(r.performance.concurrency).toBe(128)
     expect(r.throughput.tokensPerSecond).toBe(846.93)
     expect(r.throughput.tokensPerSecondPerGpu).toBe(211.73)
@@ -169,6 +169,130 @@ describe('callRecommend', () => {
     expect(r.metadata.system).toBe('h200_sxm')
     expect(r.metadata.durationMs).toBeGreaterThanOrEqual(0)
     expect(r.warnings).toEqual([])
+  })
+
+  it('normalizes cluster-wide GPU and throughput metrics to one scalable replica', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        total_gpus_needed: 8,
+        // Legacy gateways exposed the cluster total in this field too.
+        num_total_gpus: 8,
+        replicas_needed: 4,
+        tp: 2,
+        concurrency: 128,
+        tokens_per_second: 4_000,
+        tokens_per_second_per_gpu: 500,
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    const recommendation = result as RecommendResult
+    expect(recommendation.recommendation.gpusNeeded).toBe(8)
+    expect(recommendation.recommendation.gpusPerReplica).toBe(2)
+    expect(recommendation.recommendation.replicasNeeded).toBe(4)
+    expect(recommendation.throughput.tokensPerSecond).toBe(4_000)
+    expect(recommendation.performance.concurrency).toBe(128)
+    expect(recommendation.warnings).toEqual([])
+  })
+
+  it('normalizes a disaggregated prefill/decode topology without multiplying it twice', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        total_gpus_needed: 6,
+        replicas_needed: 1,
+        tp: null,
+        pp: null,
+        dp: null,
+        prefill_config: {
+          tp: 2,
+          pp: 1,
+          dp: 1,
+          cp: 1,
+          num_workers: 1,
+          batch_size: 32,
+        },
+        decode_config: {
+          tp: 1,
+          pp: 1,
+          dp: 1,
+          cp: 1,
+          num_workers: 4,
+          batch_size: 32,
+        },
+      }],
+      chosen_mode: 'disagg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    const recommendation = result as RecommendResult
+    expect(recommendation.mode).toBe('disagg')
+    expect(recommendation.recommendation.gpusNeeded).toBe(6)
+    expect(recommendation.recommendation.gpusPerReplica).toBe(6)
+    expect(recommendation.recommendation.replicasNeeded).toBe(1)
+    expect(recommendation.phases.prefill?.gpusPerWorker).toBe(2)
+    expect(recommendation.phases.decode?.workers).toBe(4)
+  })
+
+  it('derives a missing replica count from the cluster GPU total and topology', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        total_gpus_needed: 8,
+        replicas_needed: null,
+        tp: 2,
+        tokens_per_second: 4_000,
+        tokens_per_second_per_gpu: 500,
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    const recommendation = result as RecommendResult
+    expect(recommendation.recommendation.gpusPerReplica).toBe(2)
+    expect(recommendation.recommendation.replicasNeeded).toBe(4)
+  })
+
+  it('rejects an incomplete recommendation instead of inventing one-token capacity', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        tokens_per_second: null,
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'AISIM_INVALID_RESPONSE' },
+    })
+  })
+
+  it('rejects a recommendation that misses the requested latency target', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        tpot: 31,
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'AISIM_NO_CONFIGURATION' },
+    })
   })
 
   it('calls /recommend at the configured API URL', async () => {
@@ -244,6 +368,23 @@ describe('callRecommend', () => {
     const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(sentBody.min_candidate_gpus).toBe(2)
     expect(sentBody.max_candidate_gpus).toBe(4)
+  })
+
+  it('treats a legacy NoViableParallelConfig 500 as an empty search window', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({
+        detail: "NoViableParallelConfig: no deployment_mode has a viable parallel config (skipped ['agg'])",
+      }),
+    }))
+
+    const result = await callRecommend(VALID_REQUEST, { window: { minGpus: 1, maxGpus: 1 } })
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'AISIM_NO_CONFIGURATION' },
+    })
   })
 
   it('refines a feasible GPU window before completing', async () => {
@@ -359,7 +500,7 @@ describe('callRecommend', () => {
     expect((result as RecommendErrorResponse).error.code).toBe('AISIM_NO_CONFIGURATION')
   })
 
-  it('adds GPU_TOPOLOGY_MISMATCH warning when parallelism does not match GPU count', async () => {
+  it('rejects an aggregate topology that does not match the cluster GPU total', async () => {
     const mismatchResponse = {
       configs: [{
         ...EXTERNAL_RESPONSE.configs[0],
@@ -372,10 +513,32 @@ describe('callRecommend', () => {
     }
     vi.stubGlobal('fetch', mockFetchOk(mismatchResponse))
 
-    const result = await callRecommend(VALID_REQUEST) as RecommendResult
+    const result = await callRecommend(VALID_REQUEST)
 
-    expect(result.status).toBe('completed')
-    expect(result.warnings.some(w => w.code === 'GPU_TOPOLOGY_MISMATCH')).toBe(true)
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'AISIM_INVALID_RESPONSE' },
+    })
+  })
+
+  it('rejects a disaggregated topology that does not match the cluster GPU total', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        total_gpus_needed: 7,
+        replicas_needed: 1,
+        prefill_config: { tp: 2, pp: 1, dp: 1, cp: 1, num_workers: 1 },
+        decode_config: { tp: 1, pp: 1, dp: 1, cp: 1, num_workers: 4 },
+      }],
+      chosen_mode: 'disagg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { code: 'AISIM_INVALID_RESPONSE' },
+    })
   })
 
   it('includes durationMs in metadata', async () => {

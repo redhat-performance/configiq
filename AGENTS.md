@@ -12,8 +12,8 @@ REST API (server URL set via `AISIMULATORS_GATEWAY_URL`, e.g.
 
 ## Tech stack
 
-- **Framework**: Next.js 14 App Router + TypeScript
-- **UI**: PatternFly v5 (Red Hat's design system) — no Tailwind, no shadcn
+- **Framework**: Next.js 15 App Router + TypeScript
+- **UI**: PatternFly v6 (Red Hat's design system) — no Tailwind, no shadcn
 - **Charts**: PatternFly Victory Charts
 - **Fonts**: Red Hat Display (headings, metrics), Red Hat Text (body), Red Hat Mono (numbers, code, labels)
 - **Deployment**: Podman containers managed by systemd, behind nginx on IBM Cloud
@@ -131,14 +131,14 @@ or too small.
 Define these as CSS custom properties in a global stylesheet and use them for
 ALL text. Also override the matching PatternFly global tokens.
 
-- Primary text   #151515  → --pf-v5-global--Color--100
-- Secondary text #3c3f42  → --pf-v5-global--Color--200  (PF default #6a6e73 is too light — override it)
+- Primary text   #151515  → --gc-text and --pf-t--global--text--color--regular
+- Secondary text #3c3f42  → --gc-text-2 and --pf-t--global--text--color--subtle
 - Caption (min)  #54585c  — lightest gray allowed; captions only
-- Interactive    #0066cc  (links, buttons) — --pf-v5-global--primary-color--100
+- Interactive    #0066cc  (links, buttons) → --gc-link and --pf-t--global--color--link--default
 - Brand red      #ee0000  — LOGO ONLY. Never text, never buttons.
 
 Contrast rule: body copy, descriptions, table/detail values, and constraint
-rows must be #3c3f42 (Color--200) or darker. #54585c is only for short uppercase
+rows must be #3c3f42 or darker. #54585c is only for short uppercase
 captions. Never put a number, value, or explanation in a gray lighter than #54585c.
 
 ### Type scale (base 15px / line-height 1.5)

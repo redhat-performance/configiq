@@ -41,7 +41,9 @@ export async function loadAppConfig(): Promise<AppConfig> {
       defaultOpenModel: data.defaultOpenModel ?? FALLBACK.defaultOpenModel,
       defaultFrontierModel: data.defaultFrontierModel ?? FALLBACK.defaultFrontierModel,
       defaultBackend: data.defaultBackend ?? FALLBACK.defaultBackend,
-      testedModels: data.testedModels ?? FALLBACK.testedModels,
+      testedModels: Array.isArray(data.testedModels)
+        ? data.testedModels.filter((model): model is string => typeof model === 'string')
+        : FALLBACK.testedModels,
       huggingFaceModels: data.huggingFaceModels ?? FALLBACK.huggingFaceModels,
       suggestedModelNames: data.suggestedModelNames ?? FALLBACK.suggestedModelNames,
       modelRequestUrl: data.modelRequestUrl ?? FALLBACK.modelRequestUrl,

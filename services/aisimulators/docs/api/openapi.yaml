@@ -359,13 +359,13 @@ components:
         # GPU sizing
         total_gpus_needed:
           type: integer
-          description: Total GPUs required (replicas x GPUs per worker).
+          description: Cluster-wide GPUs used by the complete returned candidate.
         replicas_needed:
           type: integer
-          description: Number of worker replicas.
+          description: Number of scalable aggregate replicas represented by the candidate. Disaggregated candidates are returned as one complete multi-pool replica.
         num_total_gpus:
           type: integer
-          description: GPUs per worker (TP x PP x DP).
+          description: GPUs in one aggregate replica (TP x PP x DP x CP). For disaggregated results, inspect the phase configurations.
 
         # Parallelism
         tp:
@@ -396,13 +396,13 @@ components:
           description: Predicted TTFT (ms).
         tpot:
           type: number
-          description: Predicted TPOT (ms).
+          description: Predicted time per output token (ms/token).
         request_latency:
           type: number
           description: Predicted end-to-end request latency (ms).
         concurrency:
           type: integer
-          description: Concurrency level at which these metrics hold.
+          description: Cluster-wide concurrency level at which these metrics hold.
         request_rate:
           type: number
           description: Achievable request rate (req/s).
@@ -410,7 +410,7 @@ components:
         # Throughput
         tokens_per_second:
           type: number
-          description: Total tokens/s.
+          description: Cluster-wide output-token throughput (tokens/s) for the complete candidate.
         tokens_per_second_per_gpu:
           type: number
           description: Tokens/s per GPU.
@@ -421,7 +421,7 @@ components:
         # Memory and metadata
         memory:
           type: number
-          description: Memory usage (GB).
+          description: Worst-case peak memory usage per GPU (GB).
         model:
           type: string
           description: Resolved model identifier.

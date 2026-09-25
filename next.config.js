@@ -2,6 +2,10 @@
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Keep the live development compiler isolated from production builds.
+  // Running `next build` while `next dev` is active must not replace the CSS
+  // and chunk files that the browser is currently using.
+  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
   async redirects() {
     return [
       {

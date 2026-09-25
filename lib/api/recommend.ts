@@ -39,7 +39,7 @@ export interface RecommendResult {
     gpusNeeded: number
     /** GPUs in one replica (the smallest scalable unit). */
     gpusPerReplica: number
-    /** GPUs per worker (agg). Equals gpusPerReplica for disagg. */
+    /** Compatibility field for the smallest scalable unit; equals gpusPerReplica. */
     totalGpus: number
     replicasNeeded: number
     tensorParallelSize: number
@@ -244,7 +244,16 @@ export async function callRecommend(
       if (typeof body.detail === 'string') detail = body.detail
     } catch { /* ignore parse errors */ }
 
-    const code = response.status === 422 ? 'AISIM_NO_CONFIGURATION' : 'AISIM_UNAVAILABLE'
+    // Current AISimulators deployments can surface an undersized bounded
+    // search as a 500 NoViableParallelConfig. It is a normal signal for the
+    // incremental search to try the next GPU window, not a service outage.
+    // Keep the message check while older gateways are still in circulation;
+    // the service now maps this condition to 422 as well.
+    const noViableWindow = detail.includes('NoViableParallelConfig') ||
+      detail.includes('no deployment_mode has a viable parallel config')
+    const code = response.status === 422 || noViableWindow
+      ? 'AISIM_NO_CONFIGURATION'
+      : 'AISIM_UNAVAILABLE'
     return makeError(requestId, code, detail)
   }
 
@@ -264,8 +273,8 @@ export async function callRecommend(
   const chosenMode = typeof rawData.chosen_mode === 'string' ? rawData.chosen_mode : 'agg'
   const mode: ServingMode = chosenMode.startsWith('disagg') ? 'disagg' : 'agg'
 
-  const totalGpusNeeded = (best.total_gpus_needed as number) ?? 0
-  const replicasNeeded = (best.replicas_needed as number) ?? 1
+  const rawTotalGpusNeeded = (best.total_gpus_needed as number) ?? 0
+  const rawReplicasNeeded = (best.replicas_needed as number) ?? 0
 
   const prefill = parsePhase(best.prefill_config as RawWorkerConfig | undefined)
   const decode = parsePhase(best.decode_config as RawWorkerConfig | undefined)
@@ -279,34 +288,85 @@ export async function callRecommend(
   const moeEp = (best.moe_ep as number | null) ?? null
   const batchSize = (best.bs as number | null) ?? null
 
-  const warnings: RecommendWarning[] = []
   let gpusPerReplica: number
+  let replicasNeeded: number
   if (mode === 'disagg') {
     // A replica is one prefill/decode(/encode) set: sum of workers × gpus/worker.
     gpusPerReplica = [prefill, decode, encode].reduce(
       (sum, phase) => sum + (phase ? phase.workers * phase.gpusPerWorker : 0),
       0,
     )
+    replicasNeeded = Number.isFinite(rawReplicasNeeded) && rawReplicasNeeded > 0
+      ? Math.ceil(rawReplicasNeeded)
+      : 1
   } else {
-    // Agg: gpus/replica == gpus/worker == num_total_gpus (tp·pp·dp·cp).
-    const numTotalGpus = (best.num_total_gpus as number) ?? gpusPerWorker(tp, pp, dp, cp)
-    gpusPerReplica = numTotalGpus
+    // Agg: GPUs per replica are the parallelism product. Older gateway builds
+    // reported cluster-wide `used_gpus` as num_total_gpus, so deriving this
+    // from the topology prevents a multi-replica recommendation from being
+    // multiplied a second time by the cost calculator.
     const parallelismProduct = gpusPerWorker(tp, pp, dp, cp)
-    if (parallelismProduct !== numTotalGpus) {
-      warnings.push({
-        code: 'GPU_TOPOLOGY_MISMATCH',
-        message: `Parallelism dimensions (TP=${tp} x PP=${pp} x DP=${dp} x CP=${cp} = ${parallelismProduct}) do not equal GPUs per worker (${numTotalGpus})`,
-      })
-    }
+    replicasNeeded = Number.isFinite(rawReplicasNeeded) && rawReplicasNeeded > 0
+      ? Math.ceil(rawReplicasNeeded)
+      : rawTotalGpusNeeded > 0
+        ? Math.max(Math.ceil(rawTotalGpusNeeded / parallelismProduct), 1)
+        : 1
+    const derivedPerReplica = rawTotalGpusNeeded > 0
+      ? Math.max(Math.ceil(rawTotalGpusNeeded / replicasNeeded), 1)
+      : parallelismProduct
+    const hasTopology = best.tp != null || best.pp != null || best.dp != null || best.cp != null
+    gpusPerReplica = hasTopology ? parallelismProduct : derivedPerReplica
+  }
+
+  const totalGpusNeeded = Number.isFinite(rawTotalGpusNeeded) && rawTotalGpusNeeded > 0
+    ? Math.ceil(rawTotalGpusNeeded)
+    : gpusPerReplica * replicasNeeded
+  const topologyClusterGpus = gpusPerReplica * replicasNeeded
+  if (totalGpusNeeded !== topologyClusterGpus) {
+    return makeError(
+      requestId,
+      'AISIM_INVALID_RESPONSE',
+      `AISimulators returned inconsistent GPU topology: cluster total ${totalGpusNeeded} does not equal ${gpusPerReplica} GPUs per replica x ${replicasNeeded} replicas.`,
+    )
   }
 
   const durationMs = Math.round(performance.now() - startTime)
 
-  // The gateway reports concurrency, request rate, and tokens/s per replica;
-  // scale to cluster totals so the headline matches the whole deployment.
-  // Per-GPU and per-user rates are already per-unit and stay as-is.
-  const clusterConcurrency = Math.round(((best.concurrency as number) ?? 0) * replicasNeeded)
-  const clusterTokensPerSecond = ((best.tokens_per_second as number) ?? 0) * replicasNeeded
+  // AISimulators candidate metrics describe the complete candidate cluster:
+  // output_throughput_tok_s_per_gpu * used_gpus equals output_throughput_tok_s.
+  // Do not multiply them by replicas again. The capacity calculator divides
+  // this cluster value by replicas to obtain one scalable replica's capacity.
+  const clusterConcurrency = Math.round((best.concurrency as number) ?? 0)
+  const clusterTokensPerSecond = (best.tokens_per_second as number) ?? 0
+  const ttftLatencyMs = (best.ttft as number) ?? 0
+  const tpotMs = (best.tpot as number) ?? 0
+  const requestLatencyMs = (best.request_latency as number) ?? 0
+
+  const requiredValues = [
+    totalGpusNeeded,
+    gpusPerReplica,
+    replicasNeeded,
+    clusterTokensPerSecond,
+    ttftLatencyMs,
+    tpotMs,
+  ]
+  if (requiredValues.some(value => !Number.isFinite(value) || value <= 0)) {
+    return makeError(
+      requestId,
+      'AISIM_INVALID_RESPONSE',
+      'AISimulators returned an incomplete recommendation without positive GPU, throughput, TTFT, and TPOT values.',
+    )
+  }
+
+  const missesLatencyTarget = request.request_latency != null
+    ? !Number.isFinite(requestLatencyMs) || requestLatencyMs <= 0 || requestLatencyMs > request.request_latency
+    : ttftLatencyMs > request.ttft || tpotMs > (request.tpot ?? 30)
+  if (missesLatencyTarget) {
+    return makeError(
+      requestId,
+      'AISIM_NO_CONFIGURATION',
+      'AISimulators did not return a configuration that satisfies the requested latency targets.',
+    )
+  }
 
   return {
     requestId,
@@ -327,9 +387,9 @@ export async function callRecommend(
     },
     phases: { prefill, decode, encode },
     performance: {
-      ttftLatencyMs: (best.ttft as number) ?? 0,
-      tpotMs: (best.tpot as number) ?? 0,
-      requestLatencyMs: (best.request_latency as number) ?? 0,
+      ttftLatencyMs,
+      tpotMs,
+      requestLatencyMs,
       concurrency: clusterConcurrency,
     },
     throughput: {
@@ -349,7 +409,7 @@ export async function callRecommend(
       targetTtftMs: request.ttft,
       durationMs,
     },
-    warnings,
+    warnings: [],
   }
 }
 

@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "node scripts/inject-build-metadata.js && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint app components contexts lib",
     "test": "vitest run",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit",
@@ -20,6 +20,7 @@
     "next": "^15.5.26",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "victory": "^37.3.6",
     "zod": "^4.4.3"
   },
   "devDependencies": {

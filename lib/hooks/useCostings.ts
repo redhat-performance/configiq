@@ -23,6 +23,10 @@ export interface CloudRates {
   reserved_1yr: number | null
   reserved_3yr: number | null
   spot_median: number | null
+  /** Unit of the published hourly values. Older aicostings responses omit it. */
+  rate_basis?: 'gpu_hour' | 'instance_hour'
+  /** Minimum whole-instance GPU count when the rate comes from a VM SKU. */
+  gpus_per_instance?: number | null
 }
 
 export interface HardwareCost {
@@ -65,6 +69,67 @@ export interface ResolvedCloudRate {
   rate: number
   provider: string // provider.region key, e.g. "aws.us-east-1"
   kind: 'on_demand' | 'spot'
+}
+
+// Compatibility for the current prototype API, whose AWS and Azure values are
+// instance-hour prices but do not yet identify their unit or topology. The
+// local aicostings implementation now emits these fields explicitly; this map
+// prevents older shared responses from being multiplied as if they were
+// already per-GPU rates.
+const LEGACY_INSTANCE_GPU_COUNTS: Record<string, Partial<Record<'aws' | 'azure', number>>> = {
+  h100_sxm: { aws: 8, azure: 2 },
+  a100_sxm: { aws: 8, azure: 8 },
+}
+
+function positiveRate(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+export function normalizeCloudRates(
+  systemId: string,
+  providerRegion: string,
+  rates: CloudRates,
+): CloudRates | null {
+  const provider = providerRegion.split('.')[0] as 'aws' | 'azure' | string
+  const explicitGpuCount = typeof rates.gpus_per_instance === 'number' && rates.gpus_per_instance > 0
+    ? Math.ceil(rates.gpus_per_instance)
+    : null
+  const legacyGpuCount = provider === 'aws' || provider === 'azure'
+    ? LEGACY_INSTANCE_GPU_COUNTS[systemId]?.[provider]
+    : undefined
+  // An instance-hour rate cannot be converted safely without its topology.
+  // Reject incomplete explicit records rather than silently treating a whole
+  // multi-GPU VM as a one-GPU offer. Legacy records retain the narrow mappings
+  // above until the shared prototype consistently publishes both fields.
+  if (rates.rate_basis === 'instance_hour' && explicitGpuCount === null) return null
+  const gpusPerInstance = explicitGpuCount ?? legacyGpuCount ?? 1
+  const divisor = rates.rate_basis === 'gpu_hour' ? 1 : gpusPerInstance
+
+  let onDemand = positiveRate(rates.on_demand)
+  let reservedOneYear = positiveRate(rates.reserved_1yr)
+  let reservedThreeYear = positiveRate(rates.reserved_3yr)
+  let spotMedian = positiveRate(rates.spot_median)
+
+  // The prototype Azure scraper historically classified "Low Priority" as
+  // on-demand. Legacy responses cannot distinguish it from the true Linux
+  // consumption meter, so exclude that field until a response declares its
+  // rate basis. The spot/low-priority value remains available and is labelled.
+  if (provider === 'azure' && rates.rate_basis === undefined) onDemand = null
+
+  onDemand = onDemand === null ? null : onDemand / divisor
+  reservedOneYear = reservedOneYear === null ? null : reservedOneYear / divisor
+  reservedThreeYear = reservedThreeYear === null ? null : reservedThreeYear / divisor
+  spotMedian = spotMedian === null ? null : spotMedian / divisor
+  if (onDemand === null && spotMedian === null) return null
+
+  return {
+    on_demand: onDemand,
+    reserved_1yr: reservedOneYear,
+    reserved_3yr: reservedThreeYear,
+    spot_median: spotMedian,
+    rate_basis: 'gpu_hour',
+    gpus_per_instance: gpusPerInstance,
+  }
 }
 
 // Pick a single representative cloud $/hr for a GPU from its per-provider rates.
@@ -195,7 +260,13 @@ function parseCloudRates(
   for (const sys of systems) {
     const id = sys.id as string
     const rates = sys.cloud_rates as Record<string, CloudRates> | undefined
-    if (id && rates) result.set(id, rates)
+    if (!id || !rates) continue
+    const normalized: Record<string, CloudRates> = {}
+    for (const [providerRegion, providerRates] of Object.entries(rates)) {
+      const value = normalizeCloudRates(id, providerRegion, providerRates)
+      if (value) normalized[providerRegion] = value
+    }
+    if (Object.keys(normalized).length > 0) result.set(id, normalized)
   }
   return result
 }
