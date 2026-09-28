@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Self-Hosted GLM 5.2 Model Pilot Proposal</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.5; font-size: 11pt; }
+  h1 { font-size: 16pt; border-bottom: 2px solid #c00; padding-bottom: 8px; }
+  h2 { font-size: 13pt; margin-top: 24px; color: #222; }
+  h3 { font-size: 11pt; margin-top: 18px; color: #444; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 10pt; }
+  th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: left; }
+  th { background-color: #f2f2f2; font-weight: bold; }
+  .meta { color: #555; font-size: 10pt; margin-bottom: 4px; }
+  .note { font-style: italic; color: #555; font-size: 10pt; margin-top: 8px; }
+  ol, ul { margin: 8px 0; padding-left: 24px; }
+  li { margin-bottom: 4px; }
+  hr { border: none; border-top: 1px solid #ccc; margin: 20px 0; }
+</style>
+</head>
+<body>
+
+<h1>Proposal: Self-Hosted GLM 5.2 Model Pilot Proposal on IBM Cloud H200 Infrastructure</h1>
+
+<p class="meta"><strong>Author:</strong> Ashish Kamra, Yuchen Fama</p>
+<p class="meta"><strong>Date:</strong> July 25, 2026</p>
+<p class="meta"><strong>Requested Budget:</strong> ~$560K over 6 months</p>
+
+<hr>
+
+
+<h2>Proposed Solution</h2>
+
+<p>Deploy a <strong>gated pilot of self-hosted "frontier category" open-weight model inference</strong> on IBM Cloud, starting with GLM 5.2 FP8, serving Red Hat engineering workloads through a production-grade llm-d + OpenShift stack. This is not a broad rollout &mdash; it is a controlled pilot to generate the performance data, cost model, and operational playbook needed for an informed scale decision.</p>
+
+<h3>Infrastructure</h3>
+
+<table>
+  <tr><th>Component</th><th>Specification</th><th>Monthly Cost</th></tr>
+  <tr><td>GPU nodes</td><td>8 x IBM Cloud 8xH200 nodes (64 H200 GPUs)</td><td>$92,783</td></tr>
+  <tr><td>Control plane</td><td>3 x OpenShift control plane nodes</td><td>$900</td></tr>
+  <tr><td>Storage</td><td>Hyperconverged Ceph on H200 NVMe disks (8x7.68 TB per node)</td><td>Negligible</td></tr>
+  <tr><td>Network</td><td>Intra-VPC; egress at $0.05-0.10/GB (~250M tokens/GB)</td><td>Negligible</td></tr>
+  <tr><td><strong>Total (6 months)</strong></td><td></td><td><strong>~$562K</strong></td></tr>
+</table>
+
+<h3>Serving Stack</h3>
+
+<p>The deployment leverages <strong>llm-d</strong> with its full feature set: cache-aware request routing, prefill/decode disaggregation, wideEP deployment, and KV-cache offload to CPU memory (1.7 TB per node) and CephFS on NVMe. This is the same stack Red Hat markets to customers.</p>
+
+<h3>Capacity</h3>
+
+<p>Benchmarking on the InferenceX agentic workload dataset (SemiAnalysis CC-Traces Weka) shows 64 H200 GPUs comfortably handle <strong>128 concurrent agent session trees at 32 tokens/sec/user E2E throughput</strong> &mdash; well above the 30 tok/s threshold generally accepted as good interactive experience. The aggregate cluster output throughput at this concurrency is <strong>6,000 tokens/sec</strong>.</p>
+
+<p>A "concurrent session tree" in this benchmark is a full multi-turn coding agent conversation (root agent plus any spawned subagents), replayed with realistic inter-turn think times from recorded traces. This maps to active developer usage as follows:</p>
+
+<table>
+  <tr><th>Scenario</th><th>Active Users Supported</th><th>Rationale</th></tr>
+  <tr><td><strong>Heavy usage (continuous sessions)</strong></td><td>~128</td><td>Each concurrency slot models one developer with natural inter-turn pauses (capped at 10s in the benchmark)</td></tr>
+  <tr><td><strong>Typical usage (longer think times)</strong></td><td>~500-1,000</td><td>Real developers pause 1-2+ minutes between agent invocations; multiple developers share each slot over time</td></tr>
+</table>
+
+<h2>Interactive Cost Comparison vs. Frontier APIs</h2>
+
+<p>Adjust the parameters below to explore how infrastructure sizing, serving performance, and frontier API pricing affect the cost comparison. The chart and breakeven table update instantly.</p>
+
+<div id="calculator" style="background: #f8f8f8; border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin: 16px 0;">
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+
+    <!-- Left column: Self-hosted params -->
+    <div>
+      <h3 style="margin-top: 0; color: #c00; border-bottom: 1px solid #ddd; padding-bottom: 6px;">Self-Hosted Infrastructure</h3>
+      <div class="param-group">
+        <label>Number of 8xH200 nodes</label>
+        <input type="number" id="numNodes" value="8" min="1" max="64" step="1">
+      </div>
+      <div class="param-group">
+        <label>Cost per node / month ($)</label>
+        <input type="number" id="costPerNode" value="11597.84" min="0" step="100">
+      </div>
+      <div class="param-group">
+        <label>Control plane cost / month ($)</label>
+        <input type="number" id="cpCost" value="900" min="0" step="100">
+      </div>
+      <div class="param-group">
+        <label>Output throughput (tok/sec)</label>
+        <input type="number" id="outputTps" value="6000" min="100" step="100">
+      </div>
+      <div class="param-group">
+        <label>Input throughput (tok/sec)</label>
+        <input type="number" id="inputTps" value="13000" min="100" step="100">
+      </div>
+      <div class="param-group">
+        <label>Pilot duration (months)</label>
+        <input type="number" id="pilotMonths" value="6" min="1" max="24" step="1">
+      </div>
+      <div class="param-group">
+        <label>Input cache hit rate (%)</label>
+        <input type="number" id="cacheHitRate" value="87" min="0" max="100" step="1">
+      </div>
+      <div style="margin-top: 12px; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 4px; font-size: 10pt;">
+        <strong>Computed:</strong>
+        <div>Monthly infra cost: <strong id="monthlyTotal">$93,683</strong></div>
+        <div>Total pilot cost: <strong id="pilotTotal">$562,098</strong></div>
+        <div>Total throughput: <strong id="totalTps">19,000</strong> tok/sec</div>
+        <div>Input:Output ratio: <strong id="ioRatio">2.17</strong>:1</div>
+      </div>
+    </div>
+
+    <!-- Right column: Frontier models -->
+    <div>
+      <h3 style="margin-top: 0; color: #2171B5; border-bottom: 1px solid #ddd; padding-bottom: 6px;">Frontier Model Pricing ($ per 1M tokens)</h3>
+
+      <div class="model-row">
+        <label style="font-weight: bold; color: #7B2D8E;">Claude Opus 4.8</label>
+        <div class="model-inputs">
+          <span>Input:</span><input type="number" id="opus_in" value="5.00" min="0" step="0.1">
+          <span>Cached:</span><input type="number" id="opus_cache" value="0.50" min="0" step="0.05">
+          <span>Output:</span><input type="number" id="opus_out" value="25.00" min="0" step="0.5">
+          <span class="blended-label">Blended: <strong id="opus_blended">$8.64</strong></span>
+        </div>
+      </div>
+
+      <div class="model-row">
+        <label style="font-weight: bold; color: #2171B5;">Claude Sonnet 5 (std)</label>
+        <div class="model-inputs">
+          <span>Input:</span><input type="number" id="sonnet_in" value="3.00" min="0" step="0.1">
+          <span>Cached:</span><input type="number" id="sonnet_cache" value="0.30" min="0" step="0.05">
+          <span>Output:</span><input type="number" id="sonnet_out" value="15.00" min="0" step="0.5">
+          <span class="blended-label">Blended: <strong id="sonnet_blended">$5.18</strong></span>
+        </div>
+      </div>
+
+      <div class="model-row">
+        <label style="font-weight: bold; color: #238B45;">GPT-5.6 Terra</label>
+        <div class="model-inputs">
+          <span>Input:</span><input type="number" id="gpt_in" value="2.50" min="0" step="0.1">
+          <span>Cached:</span><input type="number" id="gpt_cache" value="0.25" min="0" step="0.05">
+          <span>Output:</span><input type="number" id="gpt_out" value="15.00" min="0" step="0.5">
+          <span class="blended-label">Blended: <strong id="gpt_blended">$5.11</strong></span>
+        </div>
+      </div>
+
+      <div class="model-row">
+        <label style="font-weight: bold; color: #D4760A;">Custom Model</label>
+        <div class="model-inputs">
+          <span>Input:</span><input type="number" id="custom_in" value="2.00" min="0" step="0.1">
+          <span>Cached:</span><input type="number" id="custom_cache" value="0.20" min="0" step="0.05">
+          <span>Output:</span><input type="number" id="custom_out" value="10.00" min="0" step="0.5">
+          <span class="blended-label">Blended: <strong id="custom_blended">$3.45</strong></span>
+        </div>
+      </div>
+
+      <!-- Breakeven summary -->
+      <div style="margin-top: 12px; padding: 10px; background: #fff; border: 1px solid #ddd; border-radius: 4px; font-size: 10pt;">
+        <strong>Breakeven Utilization:</strong>
+        <div><span style="color: #7B2D8E;">Opus 4.8:</span> <strong id="opus_be">22%</strong></div>
+        <div><span style="color: #2171B5;">Sonnet 5:</span> <strong id="sonnet_be">37%</strong></div>
+        <div><span style="color: #238B45;">GPT-5.6 Terra:</span> <strong id="gpt_be">37%</strong></div>
+        <div><span style="color: #D4760A;">Custom:</span> <strong id="custom_be">55%</strong></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <div style="margin-top: 20px; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 16px;">
+    <canvas id="costChart" height="110"></canvas>
+  </div>
+
+  <p style="font-size: 9pt; color: #888; margin-top: 8px; text-align: center;">
+    Infrastructure: IBM Cloud 8xH200 nodes | Serving: llm-d on OpenShift | Workload: InferenceX CC-Traces Weka (agentic SDLC)
+  </p>
+</div>
+
+<p>At the default parameters, self-hosted GLM 5.2 matches the blended cost of Sonnet 5 and GPT-5.6 Terra at <strong>~37% average utilization</strong>. Above that threshold, every additional token is pure savings. As engineering optimizes GLM 5.2 serving throughput, increase the tok/sec values above to see how improved performance shifts the breakeven point left.</p>
+
+<p class="note">Note: GLM 5.2 and frontier models differ in capability. The value proposition is not 1:1 replacement but providing a capable, cost-effective option for the many workloads where an open-weight model is sufficient. Additionally, self-hosted inference eliminates per-token variable cost entirely &mdash; once the infrastructure is provisioned, there are no incremental charges for heavier usage, which de-risks adoption and removes quota friction for developers.</p>
+
+<style>
+  #calculator .param-group { margin-bottom: 8px; }
+  #calculator .param-group label { display: block; font-size: 9pt; color: #555; margin-bottom: 2px; }
+  #calculator .param-group input { width: 100%; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 10pt; box-sizing: border-box; }
+  #calculator .model-row { margin-bottom: 12px; }
+  #calculator .model-row > label { display: block; font-size: 10pt; margin-bottom: 4px; }
+  #calculator .model-inputs { display: grid; grid-template-columns: auto 1fr auto 1fr auto 1fr; gap: 4px; align-items: center; font-size: 9pt; }
+  #calculator .model-inputs input { width: 100%; padding: 4px 6px; border: 1px solid #ccc; border-radius: 3px; font-size: 9pt; box-sizing: border-box; }
+  #calculator .model-inputs span { white-space: nowrap; }
+  #calculator .blended-label { grid-column: 1 / -1; margin-top: 2px; font-size: 9pt; color: #555; }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+(function() {
+  const SECS_PER_MONTH = 30 * 24 * 3600;
+
+  const $ = id => document.getElementById(id);
+  const val = id => parseFloat($(id).value) || 0;
+
+  function compute() {
+    const numNodes = val('numNodes');
+    const costPerNode = val('costPerNode');
+    const cpCost = val('cpCost');
+    const outputTps = val('outputTps');
+    const inputTps = val('inputTps');
+    const pilotMonths = val('pilotMonths');
+    const cacheHitPct = val('cacheHitRate') / 100;
+
+    const monthlyCost = numNodes * costPerNode + cpCost;
+    const totalTps = outputTps + inputTps;
+    const inputFrac = totalTps > 0 ? inputTps / totalTps : 0;
+    const outputFrac = totalTps > 0 ? outputTps / totalTps : 0;
+    const cachedInputFrac = inputFrac * cacheHitPct;
+    const uncachedInputFrac = inputFrac * (1 - cacheHitPct);
+    const maxMonthlyTokens = totalTps * SECS_PER_MONTH;
+
+    $('monthlyTotal').textContent = '$' + monthlyCost.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    $('pilotTotal').textContent = '$' + (monthlyCost * pilotMonths).toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    $('totalTps').textContent = totalTps.toLocaleString();
+    $('ioRatio').textContent = outputTps > 0 ? (inputTps / outputTps).toFixed(2) : 'N/A';
+
+    function blended(inPrice, cachePrice, outPrice) {
+      return uncachedInputFrac * inPrice + cachedInputFrac * cachePrice + outputFrac * outPrice;
+    }
+
+    const models = [
+      { key: 'opus',   color: '#7B2D8E', label: 'Claude Opus 4.8' },
+      { key: 'sonnet', color: '#2171B5', label: 'Claude Sonnet 5' },
+      { key: 'gpt',    color: '#238B45', label: 'GPT-5.6 Terra' },
+      { key: 'custom', color: '#D4760A', label: 'Custom Model' },
+    ];
+
+    const frontierData = models.map(m => {
+      const b = blended(val(m.key + '_in'), val(m.key + '_cache'), val(m.key + '_out'));
+      $(m.key + '_blended').textContent = '$' + b.toFixed(2);
+
+      const breakeven = maxMonthlyTokens > 0 ? (monthlyCost / (b * maxMonthlyTokens / 1e6)) * 100 : Infinity;
+      const bePct = breakeven <= 100 ? Math.round(breakeven) + '%' : '>100%';
+      $(m.key + '_be').textContent = bePct;
+
+      return { ...m, blended: b, breakeven };
+    });
+
+    const utilizations = [];
+    const selfHostedCosts = [];
+    for (let u = 1; u <= 100; u++) {
+      utilizations.push(u);
+      const tokens = maxMonthlyTokens * u / 100;
+      selfHostedCosts.push(tokens > 0 ? monthlyCost / (tokens / 1e6) : 0);
+    }
+
+    return { utilizations, selfHostedCosts, frontierData };
+  }
+
+  let chart = null;
+
+  function render() {
+    const { utilizations, selfHostedCosts, frontierData } = compute();
+
+    const maxY = Math.min(Math.max(...selfHostedCosts.slice(0, 30), ...frontierData.map(m => m.blended)) * 1.15, 50);
+
+    const datasets = [
+      {
+        label: 'Self-Hosted GLM 5.2',
+        data: selfHostedCosts,
+        borderColor: '#CC0000',
+        backgroundColor: 'rgba(204,0,0,0.05)',
+        borderWidth: 2.5,
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
+      },
+      ...frontierData.map(m => ({
+        label: m.label + ' ($' + m.blended.toFixed(2) + '/M)',
+        data: Array(100).fill(m.blended),
+        borderColor: m.color,
+        borderWidth: 1.5,
+        borderDash: [8, 4],
+        pointRadius: 0,
+        fill: false,
+      })),
+    ];
+
+    const annotations = {};
+    frontierData.forEach(m => {
+      if (m.breakeven >= 1 && m.breakeven <= 100) {
+        const idx = Math.round(m.breakeven) - 1;
+        annotations['be_' + m.key] = {
+          type: 'point',
+          xValue: m.breakeven,
+          yValue: m.blended,
+          backgroundColor: m.color,
+          borderColor: '#fff',
+          borderWidth: 2,
+          radius: 6,
+        };
+        annotations['label_' + m.key] = {
+          type: 'label',
+          xValue: Math.min(m.breakeven + 4, 96),
+          yValue: m.blended + maxY * 0.03,
+          content: Math.round(m.breakeven) + '%',
+          color: m.color,
+          font: { size: 11, weight: 'bold' },
+        };
+      }
+    });
+
+    if (chart) chart.destroy();
+
+    chart = new Chart($('costChart'), {
+      type: 'line',
+      data: {
+        labels: utilizations,
+        datasets: datasets,
+      },
+      options: {
+        responsive: true,
+        animation: { duration: 200 },
+        scales: {
+          x: {
+            title: { display: true, text: 'Average GPU Utilization (%)', font: { size: 12 } },
+            ticks: { stepSize: 10 },
+          },
+          y: {
+            title: { display: true, text: 'Blended Cost per 1M Total Tokens ($)', font: { size: 12 } },
+            min: 0,
+            max: maxY,
+          },
+        },
+        plugins: {
+          title: {
+            display: true,
+            text: 'Self-Hosted GLM 5.2 vs. Frontier API Costs',
+            font: { size: 14, weight: 'bold' },
+          },
+          subtitle: {
+            display: true,
+            text: 'Blended input+output cost accounting for prompt caching',
+            font: { size: 11 },
+            color: '#666',
+            padding: { bottom: 10 },
+          },
+          legend: {
+            position: 'top',
+            labels: { font: { size: 10 }, usePointStyle: true },
+          },
+          tooltip: {
+            callbacks: {
+              title: items => 'Utilization: ' + items[0].label + '%',
+              label: item => item.dataset.label.split(' ($')[0] + ': $' + item.parsed.y.toFixed(2) + '/M',
+            },
+          },
+          annotation: { annotations },
+        },
+      },
+      plugins: [{
+        id: 'annotationPlugin',
+        afterDraw(chart) {
+          const ctx = chart.ctx;
+          const xScale = chart.scales.x;
+          const yScale = chart.scales.y;
+          frontierData.forEach(m => {
+            if (m.breakeven >= 1 && m.breakeven <= 100) {
+              const x = xScale.getPixelForValue(m.breakeven - 1);
+              const y = yScale.getPixelForValue(m.blended);
+              ctx.save();
+              ctx.beginPath();
+              ctx.arc(x, y, 6, 0, Math.PI * 2);
+              ctx.fillStyle = m.color;
+              ctx.fill();
+              ctx.strokeStyle = '#fff';
+              ctx.lineWidth = 2;
+              ctx.stroke();
+              ctx.fillStyle = m.color;
+              ctx.font = 'bold 11px Arial';
+              ctx.fillText(Math.round(m.breakeven) + '%', x + 8, y - 8);
+              ctx.restore();
+            }
+          });
+        },
+      }],
+    });
+  }
+
+  document.querySelectorAll('#calculator input').forEach(input => {
+    input.addEventListener('input', render);
+  });
+
+  if (typeof Chart !== 'undefined') {
+    render();
+  } else {
+    const script = document.querySelector('script[src*="chart.js"]');
+    script.addEventListener('load', render);
+  }
+})();
+</script>
+
+<h2>Strategic Value Beyond Cost</h2>
+
+<p><strong>Agentic SDLC acceleration.</strong> Developers using Claude Code and OpenCode get an uncapped, high-throughput model endpoint without monthly quota constraints. This removes friction from the fastest-growing category of internal AI usage.</p>
+
+<p><strong>Autonomous pipeline enablement.</strong> Agentic CI/CD pipelines consume tokens continuously and don't require human model selection. Once a harness is tuned against a model, it drives traffic predictably &mdash; ideal for self-hosted economics where higher utilization improves unit cost.</p>
+
+<p><strong>Customer-facing credibility.</strong> Running our own inference stack (llm-d on OpenShift on IBM Cloud H200) at production scale gives product, sales, and engineering teams first-party operational data. This is the deployment pattern we ask customers to adopt.</p>
+
+<p><strong>Product validation.</strong> The pilot will stress-test llm-d features (disaggregated serving, KV-cache offload, wideEP) under real heterogeneous workloads, feeding optimization insights back into engineering. The PSAP team is already investing heavily in GLM 5.2 serving optimization for customers via Dynamo and SGLang &mdash; this pilot creates an internal feedback loop.</p>
+
+<p><strong>Model optionality.</strong> The infrastructure is not model-specific. The same H200 cluster can serve other open-weight models (e.g., Nemotron 3 Ultra for US-only use cases) as they become available and are cleared by legal review, building a platform rather than a point solution.</p>
+
+<h2>Known Considerations</h2>
+
+<p><strong>Model provenance.</strong> GLM 5.2's origin requires a legal and geopolitical review before production use. We understand this review is already underway separately. The self-hosted deployment model mitigates data-residency concerns: all data remains within Red Hat's IBM Cloud VPC, with no external API calls or data transmission to model providers.</p>
+
+<p><strong>Legal review.</strong> A business and legal review of open-weight model implications for production work is required. We recommend this proceed in parallel with infrastructure provisioning to avoid sequential delays.</p>
+
+<p><strong>Performance optimization.</strong> Current benchmarking numbers represent a baseline. The PSAP team's active optimization work on GLM 5.2 serving will continue to improve throughput and reduce per-token costs over the pilot period.</p>
+
+<h2>Ask</h2>
+
+<ol>
+  <li><strong>Approve ~$560K in IBM Cloud infrastructure spend</strong> for a 6-month pilot (8 x 8xH200 nodes + 3 control plane nodes).</li>
+  <li><strong>Designate pilot user cohorts</strong> from Agentic SDLC teams and autonomous pipeline teams to drive utilization and provide feedback.</li>
+  <li><strong>Initiate parallel legal review</strong> of GLM 5.2 (and Nemotron 3 Ultra) for internal production use.</li>
+  <li><strong>Commit to a go/no-go review at month 3</strong> using utilization, performance, and cost-per-token data to decide whether to scale, pivot models, or wind down.</li>
+</ol>
+
