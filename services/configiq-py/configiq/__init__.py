@@ -3,10 +3,10 @@
 """Shared Python utilities for ConfigIQ backend services.
 
 This package holds cross-service machinery so the FastAPI microservices under
-`services/` (aiconfigurator, aicostings, ...) don't each carry their own copy:
+`services/` (aisimulators, aicostings, ...) don't each carry their own copy:
 
 - `configiq.systems`       — GPU system ids and display names from the
-                             aiconfigurator SDK (lazy-imported; no hard SDK dep)
+                             aisimulate SDK (lazy-imported; no hard SDK dep)
 - `configiq.otel`          — OpenTelemetry tracing + dual Prometheus/OTLP metrics
 - `configiq.metrics`       — generic HTTP + process instruments and middleware
 - `configiq.observability` — one-call wiring of the above onto a FastAPI app

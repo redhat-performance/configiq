@@ -6,7 +6,7 @@
 #   podman build -f services/aicostings/Containerfile -t aicostings services/
 #
 # Pure-Python service, but it sources the GPU system catalog + display names from
-# the aiconfigurator SDK (via configiq.systems), so it installs those wheels too.
+# the aisimulate SDK (via configiq.systems), so it installs those wheels too.
 
 FROM registry.access.redhat.com/ubi9/python-311:latest
 
@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 # Service runtime deps, read from pyproject.toml (single source of truth) by the
 # shared installer. Copy pyproject.toml alone first so this layer only rebuilds
 # when the deps change, not on every source edit. pyproject.toml references the
-# aiconfigurator SDK wheels by exact fork-release URL — source of the GPU system
+# aisimulate SDK wheels by exact fork-release URL — source of the GPU system
 # catalog and vendor display names via configiq.systems, with pyarrow reading the
 # SDK's bundled perf-data parquet.
 COPY scripts/install-deps.py aicostings/pyproject.toml /tmp/

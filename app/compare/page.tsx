@@ -4,7 +4,7 @@ import * as React from 'react';
 import {
   PageSection,
   Title,
-  Text,
+  Content,
   Button,
   Card,
   CardBody,
@@ -231,18 +231,18 @@ export default function ComparePage() {
 
   if (estimates.length === 0) {
     return (
-      <PageSection variant="light">
+      <PageSection>
         <div style={{ maxWidth: '600px', margin: '80px auto', textAlign: 'center' }}>
           <div style={{ fontSize: '48px', marginBottom: '24px' }}>📊</div>
           <Title headingLevel="h1" size="2xl" style={{ marginBottom: '12px' }}>
             No saved estimates yet
           </Title>
-          <Text style={{ marginBottom: '32px', color: '#6a6e73', fontSize: '15px' }}>
-            Run a Performance estimate and click &ldquo;Save estimate&rdquo; to compare configurations here.
-          </Text>
-          <Link href="/performance">
+          <Content component="p" style={{ marginBottom: '32px', color: '#6a6e73', fontSize: '15px' }}>
+            Run Predict performance and click &ldquo;Save estimate&rdquo; to compare configurations here.
+          </Content>
+          <Link href="/predict">
             <Button variant="primary" size="lg">
-              → Go to Performance estimate
+              → Go to Predict performance
             </Button>
           </Link>
         </div>
@@ -254,7 +254,7 @@ export default function ComparePage() {
     <>
       <div style={{ padding: '20px 24px 0' }}>
         <h1 className={styles.pageTitle}>Compare saved results</h1>
-        <p className={styles.subtitle}>Compare workloads side by side. Save from Performance estimate.</p>
+        <p className={styles.subtitle}>Compare workloads side by side. Save from Predict performance.</p>
       </div>
 
       <PageSection>
@@ -267,7 +267,7 @@ export default function ComparePage() {
             <Button variant="secondary" size="sm">Export to Sheets</Button>
             <Button variant="danger" size="sm" onClick={handleClearAll}>Clear all</Button>
           </div>
-          <Link href="/performance">
+          <Link href="/predict">
             <Button variant="primary">+ Add estimate</Button>
           </Link>
         </div>
@@ -284,9 +284,9 @@ export default function ComparePage() {
             </div>
             {showCioSummary && (
               <div style={{ marginTop: '16px' }}>
-                <Text style={{ marginBottom: '16px', lineHeight: 1.6 }}>
+                <Content component="p" style={{ marginBottom: '16px', lineHeight: 1.6 }}>
                   {generateCioSummary()}
-                </Text>
+                </Content>
                 <Button variant="secondary" size="sm" onClick={copyCioSummary}>
                   Copy for CIO deck
                 </Button>

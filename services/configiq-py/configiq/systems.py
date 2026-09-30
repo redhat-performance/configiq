@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
-"""GPU system ids and display names, sourced from the aiconfigurator SDK.
+"""GPU system ids and display names, sourced from the aisimulate SDK.
 
 This is the single source of truth for "what GPU systems exist" and "what do we
-call them" across services, so aiconfigurator and aicostings never drift.
+call them" across services, so aisimulators and aicostings never drift.
 
-The aiconfigurator SDK (`aiconfigurator_core`) is imported lazily inside the
+The aisimulate SDK (`aisimulate_core`) is imported lazily inside the
 functions rather than at module load: it ships a compiled, platform-specific
 wheel, and not every consumer needs it at import time. Callers that use these
 functions must declare the SDK as their own dependency. Everything here degrades
@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 
 
 def supported_systems() -> set[str]:
-    """Return the set of GPU system ids known to the aiconfigurator SDK.
+    """Return the set of GPU system ids known to the aisimulate SDK.
 
     Returns an empty set if the SDK is not importable.
     """
     try:
-        from aiconfigurator_core.sdk.common import SupportedSystems
+        from aisimulate_core.sdk.common import SupportedSystems
     except ImportError:
-        logger.warning("aiconfigurator SDK not available; no supported systems")
+        logger.warning("aisimulate SDK not available; no supported systems")
         return set()
     return {str(s) for s in SupportedSystems}
 
@@ -45,9 +45,9 @@ def load_device_names_from_perf_data() -> dict[str, str]:
     the returned map is empty and callers should fall back to the system id.
     """
     try:
-        from aiconfigurator_core.sdk.perf_database import get_systems_paths
+        from aisimulate_core.sdk.perf_database import get_systems_paths
     except ImportError:
-        logger.warning("aiconfigurator SDK not available; device display names unavailable")
+        logger.warning("aisimulate SDK not available; device display names unavailable")
         return {}
 
     try:

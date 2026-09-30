@@ -99,7 +99,7 @@ describe('KvCacheCalcRequestSchema', () => {
 
 describe('callKvCacheCalc', () => {
   beforeEach(() => {
-    vi.stubEnv('AICONFIGURATOR_GATEWAY_URL', 'https://aiconfigurator.dev')
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
   })
 
   afterEach(() => {
@@ -135,7 +135,7 @@ describe('callKvCacheCalc', () => {
 
     await callKvCacheCalc(VALID_REQUEST)
 
-    expect(mockFetch.mock.calls[0][0]).toBe('https://aiconfigurator.dev/memory')
+    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/memory')
   })
 
   it('sends correct fields without credentials', async () => {
@@ -187,16 +187,16 @@ describe('callKvCacheCalc', () => {
     expect(sentBody.model_config).toEqual(model_config)
   })
 
-  it('returns AIC_NOT_CONFIGURED when API URL is missing', async () => {
-    vi.stubEnv('AICONFIGURATOR_GATEWAY_URL', '')
+  it('returns AISIM_NOT_CONFIGURED when API URL is missing', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', '')
 
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_NOT_CONFIGURED')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_NOT_CONFIGURED')
   })
 
-  it('returns AIC_TIMEOUT on fetch timeout', async () => {
+  it('returns AISIM_TIMEOUT on fetch timeout', async () => {
     const timeoutError = new Error('signal timed out')
     timeoutError.name = 'TimeoutError'
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutError))
@@ -204,19 +204,19 @@ describe('callKvCacheCalc', () => {
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_TIMEOUT')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_TIMEOUT')
   })
 
-  it('returns AIC_UNAVAILABLE on network error', async () => {
+  it('returns AISIM_UNAVAILABLE on network error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')))
 
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_UNAVAILABLE')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_UNAVAILABLE')
   })
 
-  it('returns AIC_UNSUPPORTED on 422', async () => {
+  it('returns AISIM_UNSUPPORTED on 422', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 422,
@@ -226,11 +226,11 @@ describe('callKvCacheCalc', () => {
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_UNSUPPORTED')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_UNSUPPORTED')
     expect((result as KvCacheCalcErrorResponse).error.message).toBe('unsupported model')
   })
 
-  it('returns AIC_UNAVAILABLE on 500', async () => {
+  it('returns AISIM_UNAVAILABLE on 500', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 500,
@@ -240,10 +240,10 @@ describe('callKvCacheCalc', () => {
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_UNAVAILABLE')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_UNAVAILABLE')
   })
 
-  it('returns AIC_INVALID_RESPONSE on non-JSON response', async () => {
+  it('returns AISIM_INVALID_RESPONSE on non-JSON response', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -253,7 +253,7 @@ describe('callKvCacheCalc', () => {
     const result = await callKvCacheCalc(VALID_REQUEST)
 
     expect(result.status).toBe('failed')
-    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AIC_INVALID_RESPONSE')
+    expect((result as KvCacheCalcErrorResponse).error.code).toBe('AISIM_INVALID_RESPONSE')
   })
 
   it('handles missing optional response fields gracefully', async () => {

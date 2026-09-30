@@ -2,7 +2,7 @@
    ConfigIQ · theme.css
    Typography + color system for legibility on white console.
    Import once in app/layout.tsx:  import "./theme.css";
-   These intentionally override PatternFly v5 globals that are
+   These intentionally override PatternFly 6 tokens that are
    too light or too small for comfortable reading.
    ============================================================ */
 
@@ -47,19 +47,19 @@
   --gc-font-mono:    "Red Hat Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* ============================================================
-     PatternFly v5 global token overrides
+     PatternFly 6 global token overrides
      PF defaults are lighter/smaller than we want. Re-point them.
      ============================================================ */
-  --pf-v5-global--Color--100: var(--gc-text);    /* primary text  */
-  --pf-v5-global--Color--200: var(--gc-text-2);  /* PF default #6a6e73 is too light */
-  --pf-v5-global--link--Color: var(--gc-link);
-  --pf-v5-global--link--Color--hover: var(--gc-link-hover);
-  --pf-v5-global--primary-color--100: var(--gc-link);
+  --pf-t--global--text--color--regular: var(--gc-text);    /* primary text  */
+  --pf-t--global--text--color--subtle: var(--gc-text-2);  /* PF default #6a6e73 is too light */
+  --pf-t--global--text--color--link--default: var(--gc-link);
+  --pf-t--global--text--color--link--hover: var(--gc-link-hover);
+  --pf-t--global--color--brand--default: var(--gc-link);
 
-  --pf-v5-global--FontSize--md: 15px;  /* base */
-  --pf-v5-global--FontFamily--text: var(--gc-font-sans);
-  --pf-v5-global--FontFamily--heading: var(--gc-font-display);
-  --pf-v5-global--FontFamily--monospace: var(--gc-font-mono);
+  --pf-t--global--font--size--md: 15px;  /* base */
+  --pf-t--global--font--family--body: var(--gc-font-sans);
+  --pf-t--global--font--family--heading: var(--gc-font-display);
+  --pf-t--global--font--family--code: var(--gc-font-mono);
 }
 
 html, body {
@@ -110,15 +110,15 @@ html, body {
    ============================================================ */
 
 /* Description list terms / helper text default to PF light gray — darken. */
-.pf-v5-c-description-list__term,
-.pf-v5-c-form__helper-text,
-.pf-v5-c-helper-text__item-text,
-.pf-v5-c-table caption {
+.pf-v6-c-description-list__term,
+.pf-v6-c-form__helper-text,
+.pf-v6-c-helper-text__item-text,
+.pf-v6-c-table caption {
   color: var(--gc-text-2);
 }
 
 /* Never render content text below the caption floor. */
-.pf-v5-c-content small,
+.pf-v6-c-content small,
 small { font-size: var(--gc-fs-caption-min); }
 
 /*

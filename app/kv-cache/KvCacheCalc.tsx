@@ -4,8 +4,8 @@ import * as React from 'react'
 import { Label, Spinner } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import { formatBytes } from '@/lib/utils/format'
-import { useCountUp } from '@/app/performance/quickEstimateHelpers'
-import { useAicCatalog } from '@/lib/hooks/useAicCatalog'
+import { useCountUp } from '@/app/predict/performanceHelpers'
+import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { useKvCache, type PhaseResult } from '@/contexts/KvCacheContext'
 import { getAppConfig } from '@/lib/app-config'
@@ -58,14 +58,13 @@ function invalidPhaseParallel(p: PhaseParallelInput): boolean {
 
 export default function KvCacheCalc() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion: settingsBackendVersion } = useSettings()
-  const { modelOptions: aicModels, gpuOptions: aicGpus, isLoading: catalogLoading } = useAicCatalog()
+  const { modelOptions: catalogModels, gpuOptions: catalogGpus, backendOptions, isLoading: catalogLoading } = useCatalog()
+  const MODEL_OPTIONS = catalogModels
+
   const [model, setModel] = React.useState('')
   const [system, setSystem] = React.useState(() => getAppConfig().defaultSystem)
   const [backend, setBackend] = React.useState(() => getAppConfig().defaultBackend)
-  const [backendVersion, setBackendVersion] = React.useState(() => {
-    const cfg = getAppConfig()
-    return cfg.backendVersions[cfg.defaultBackend] ?? ''
-  })
+  const [backendVersion, setBackendVersion] = React.useState('')
 
   // Initialise model, backend, and version from settings once context has loaded from localStorage
   const fromSettings = React.useRef(false)
@@ -122,15 +121,15 @@ export default function KvCacheCalc() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(aicModels), [aicModels, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels), [catalogModels, hydrated]);
 
-  // HF config for models AIC can't resolve from its catalog (incl. tested models
+  // HF config for models AISimulators can't resolve from its catalog (incl. tested models
   // outside the catalog). Fetched on model change, sent to /api/memory on calc.
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
 
   React.useEffect(() => {
     setHfConfig(null);
-    if (catalogLoading || !needsHfConfig(model, aicModels) || !model.includes('/')) return;
+    if (catalogLoading || !needsHfConfig(model, catalogModels) || !model.includes('/')) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       fetchModelConfig(model, hfToken).then(r => {
@@ -139,7 +138,7 @@ export default function KvCacheCalc() {
       });
     }, 500);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [model, hfToken, aicModels, catalogLoading]);
+  }, [model, hfToken, catalogModels, catalogLoading]);
 
   const handleTpSizeChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
@@ -175,7 +174,7 @@ export default function KvCacheCalc() {
       memory_fraction_value: memFractionValue,
     }
     if (backendVersion.trim()) body.backend_version = backendVersion.trim()
-    if (needsHfConfig(model, aicModels) && hfConfig) body.model_config = hfConfig
+    if (needsHfConfig(model, catalogModels) && hfConfig) body.model_config = hfConfig
     if (par.moeTp > 0) body.moe_tp_size = par.moeTp
     if (par.moeEp > 0) body.moe_ep_size = par.moeEp
     return body
@@ -218,7 +217,7 @@ export default function KvCacheCalc() {
             />
           </div>
 
-          <GpuSystemInput id="kv-gpu" value={system} onChange={setSystem} gpuOptions={aicGpus} />
+          <GpuSystemInput id="kv-gpu" value={system} onChange={setSystem} gpuOptions={catalogGpus} />
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
@@ -263,8 +262,9 @@ export default function KvCacheCalc() {
                   onChange={e => setBackend(e.target.value)}
                   className={styles.gpuSelect}
                 >
-                  <option value="vllm">vLLM</option>
-                  <option value="sglang">SGLang</option>
+                  {backendOptions.map(option => (
+                    <option key={option.id} value={option.id}>{option.id}</option>
+                  ))}
                 </select>
               </div>
               <div className={styles.field}>
@@ -274,7 +274,7 @@ export default function KvCacheCalc() {
                   id="kv-backend-ver"
                   value={backendVersion}
                   onChange={e => setBackendVersion(e.target.value)}
-                  placeholder={getAppConfig().backendVersions[backend] ?? 'latest'}
+                  placeholder={backendOptions.find(option => option.id === backend)?.defaultVersion ?? 'latest'}
                   className={styles.numberInput}
                 />
               </div>
@@ -430,7 +430,7 @@ export default function KvCacheCalc() {
       {results.length > 0 && !loading && (
         <>
           {results.map(({ label, result }) => {
-            const currentGpu = aicGpus.find(g => g.systemId === result.metadata.system)
+            const currentGpu = catalogGpus.find(g => g.systemId === result.metadata.system)
             return (
               <PhaseResults key={label || 'agg'} label={label} result={result} gpuLabel={currentGpu?.label} />
             )

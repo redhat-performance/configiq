@@ -1,13 +1,13 @@
 // GPU Specification Types
 // Used by /app/api/gpus and related API response formatters
-// GPU data is now fetched from AIConfigurator /systems endpoint, not stored locally
+// GPU data is now fetched from AISimulators /systems endpoint, not stored locally
 
 /**
- * GPU specification type combining AIConfigurator system data with optional live pricing.
+ * GPU specification type combining AISimulators system data with optional live pricing.
  * Used for type-safe GPU catalog responses.
  */
 export interface GpuSpec {
-  // Core fields from AIConfigurator /systems?include=specs
+  // Core fields from AISimulators /systems?include=specs
   id: string
   name: string
   display_name: string

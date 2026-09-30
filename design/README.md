@@ -1,6 +1,6 @@
-# Quick Estimate — drop-in UI
+# Predict performance — drop-in UI
 
-A finished, **UI-only** Quick Estimate page for gpu.calc. Numbers are mock data
+A finished, **UI-only** Predict performance page for gpu.calc. Numbers are mock data
 (`mockEstimate.ts`) so this is purely about layout, components, and interaction.
 Wire the real GPU math / HuggingFace fetch behind it later.
 
@@ -8,20 +8,20 @@ Wire the real GPU math / HuggingFace fetch behind it later.
 
 | File | What it is |
 |---|---|
-| `QuickEstimate.tsx` | Main page composition (PatternFly v5 + the module CSS). |
-| `QuickEstimate.module.css` | All styling — type scale, flip tiles, scenarios, constraints, drivers, memory bar. Uses `--gc-*` theme tokens with safe fallbacks. |
-| `quickEstimateHelpers.tsx` | `FlipTile`, `Sparkline`, `useCountUp`, and `Term` (the "?" glossary popovers). |
+| `Performance.tsx` | Main page composition (PatternFly v5 + the module CSS). |
+| `Performance.module.css` | All styling — type scale, flip tiles, scenarios, constraints, drivers, memory bar. Uses `--gc-*` theme tokens with safe fallbacks. |
+| `performanceHelpers.tsx` | `FlipTile`, `Sparkline`, `useCountUp`, and `Term` (the "?" glossary popovers). |
 | `mockEstimate.ts` | Hardcoded sample estimate + the glossary copy lives in helpers. |
 | `preview.html` | **Standalone visual reference** — open in any browser to see the exact target. No build needed. Use this as the source of truth for "does it look right". |
 
 ## Install
 
-1. Copy `QuickEstimate.tsx`, `QuickEstimate.module.css`, `quickEstimateHelpers.tsx`,
-   and `mockEstimate.ts` into `app/quick-estimate/` (or your components dir).
+1. Copy `Performance.tsx`, `Performance.module.css`, `performanceHelpers.tsx`,
+   and `mockEstimate.ts` into `app/predict/` (or your components dir).
 2. Make sure these are available (they're standard in a PatternFly v5 app):
    - `@patternfly/react-core`
    - `@patternfly/react-icons`
-3. Render `<QuickEstimate />` from your route. The component is `'use client'`.
+3. Render `<Performance />` from your route. The component is `'use client'`.
 4. Load the fonts (Geist + Geist Mono) in your `layout`/`<head>`:
    ```html
    <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,9 +30,9 @@ Wire the real GPU math / HuggingFace fetch behind it later.
    ```
 
 ```tsx
-// app/quick-estimate/page.tsx
-import QuickEstimate from './QuickEstimate';
-export default function Page() { return <QuickEstimate />; }
+// app/predict/page.tsx
+import Performance from './Performance';
+export default function Page() { return <Performance />; }
 ```
 
 ## Theme tokens it expects (with fallbacks)
@@ -70,7 +70,7 @@ fallbacks in the module render an equivalent clean look:
 - **Sparkline** — GPUs-vs-concurrency line on the dark hero tile.
 - **Glossary popovers** — every jargon term (`KV cache`, `max_num_seqs`,
   `tensor parallel`, `GQA`, `worst-case context`, `range drivers`, …) has a `?`
-  with a plain-language explanation. See `GLOSSARY` in `quickEstimateHelpers.tsx`.
+  with a plain-language explanation. See `GLOSSARY` in `performanceHelpers.tsx`.
 - **Accordions** — six assumption sections, collapsed by default; **each closed
   row shows its current values** so you can read state without expanding. The
   warning strip's "Customize →" opens the Workload section.

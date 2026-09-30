@@ -18,7 +18,7 @@ import {
   Divider,
   Stack,
   StackItem,
-  Text,
+  Content,
   ExpandableSection,
 } from "@patternfly/react-core";
 import { CogIcon } from "@patternfly/react-icons";
@@ -91,9 +91,9 @@ export function EffectTweaksPanel({ config, onChange }: EffectTweaksPanelProps) 
                         onChange={(_event, value) => updateConfig("tiltSmooth", value / 100)}
                         isDisabled={!config.tiltEnabled}
                       />
-                      <Text component="small" style={{ color: "#6a6e73" }}>
+                      <Content component="small" style={{ color: "#6a6e73" }}>
                         Lower = smoother but slower
-                      </Text>
+                      </Content>
                     </FormGroup>
                   </StackItem>
                 </Stack>
@@ -204,9 +204,9 @@ export function EffectTweaksPanel({ config, onChange }: EffectTweaksPanelProps) 
                         onChange={(_event, value) => updateConfig("iridescenceHueShift", value)}
                         isDisabled={!config.iridescenceEnabled}
                       />
-                      <Text component="small" style={{ color: "#6a6e73" }}>
+                      <Content component="small" style={{ color: "#6a6e73" }}>
                         Controls color range of rainbow effect
-                      </Text>
+                      </Content>
                     </FormGroup>
                   </StackItem>
                 </Stack>
@@ -317,9 +317,9 @@ export function EffectTweaksPanel({ config, onChange }: EffectTweaksPanelProps) 
                         onChange={(_event, value) => updateConfig("noiseScale", value / 10)}
                         isDisabled={!config.noiseEnabled}
                       />
-                      <Text component="small" style={{ color: "#6a6e73" }}>
+                      <Content component="small" style={{ color: "#6a6e73" }}>
                         Higher = finer grain
-                      </Text>
+                      </Content>
                     </FormGroup>
                   </StackItem>
                 </Stack>

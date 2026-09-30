@@ -1,5 +1,5 @@
 // GET /api/gpus
-// GPU catalog endpoint - fetches from AIConfigurator /systems and optionally enriches with live pricing
+// GPU catalog endpoint - fetches from AISimulators /systems and optionally enriches with live pricing
 
 import { NextRequest, NextResponse } from 'next/server'
 import { ZodError } from 'zod'
@@ -7,9 +7,10 @@ import { GpuCatalogQuerySchema } from '@/lib/api/schemas'
 import { ApiErrors } from '@/lib/api/errors'
 import { formatGpuCatalogResponse } from '@/lib/api/responses'
 import type { GpuSpec } from '@/lib/gpu-math/gpus'
+import { recordErrorCode } from '@/lib/otel-metrics'
 
-// AIConfigurator /systems response schema
-interface AicSystem {
+// AISimulators /systems response schema
+interface CatalogSystem {
   id: string
   name: string
   vendor: string
@@ -21,8 +22,8 @@ interface AicSystem {
   gpus_per_node: number
 }
 
-interface AicSystemsResponse {
-  systems: AicSystem[]
+interface CatalogSystemsResponse {
+  systems: CatalogSystem[]
 }
 
 export async function GET(req: NextRequest) {
@@ -43,22 +44,31 @@ export async function GET(req: NextRequest) {
 
     const validatedQuery = GpuCatalogQuerySchema.parse(query)
 
-    // Fetch GPU catalog from AIConfigurator
-    const gatewayUrl = process.env.AICONFIGURATOR_GATEWAY_URL || 'https://aiconfigurator.dev'
-    const aicResponse = await fetch(`${gatewayUrl}/systems?include=specs`, {
+    // Fetch GPU catalog from AISimulators. Require the gateway to be configured;
+    // fail loud rather than falling back to the public domain (masks a misconfig
+    // and bypasses the per-host internal gateway).
+    const gatewayUrl = process.env.AISIMULATORS_GATEWAY_URL
+    if (!gatewayUrl) {
+      recordErrorCode('/api/gpus', 'AISIM_NOT_CONFIGURED', 503)
+      return NextResponse.json(
+        { status: 'failed', error: { code: 'AISIM_NOT_CONFIGURED', message: 'AISimulators API URL is not configured' } },
+        { status: 503 },
+      )
+    }
+    const gatewayResponse = await fetch(`${gatewayUrl}/systems?include=specs`, {
       method: 'GET',
       headers: { 'Accept': 'application/json' },
       cache: 'no-store',
     })
 
-    if (!aicResponse.ok) {
-      throw new Error(`AIConfigurator API error: ${aicResponse.status}`)
+    if (!gatewayResponse.ok) {
+      throw new Error(`AISimulators API error: ${gatewayResponse.status}`)
     }
 
-    const aicData: AicSystemsResponse = await aicResponse.json()
+    const catalogData: CatalogSystemsResponse = await gatewayResponse.json()
 
-    // Transform AIConfigurator systems to GpuSpec format
-    let filteredGpus: GpuSpec[] = aicData.systems.map((sys, idx) => {
+    // Transform AISimulators systems to GpuSpec format
+    let filteredGpus: GpuSpec[] = catalogData.systems.map((sys, idx) => {
       const vramGb = Math.round(sys.memory_bytes / (1024 ** 3))
       const memoryBandwidthTbps = sys.memory_bandwidth_bytes / (1024 ** 4)
 
@@ -70,7 +80,7 @@ export async function GET(req: NextRequest) {
         sizer_system_id: sys.id,
         vendor: sys.vendor as 'nvidia' | 'amd',
         vram_gb: vramGb,
-        hardware_cost_usd: 0, // TODO: Pricing not yet available from AIConfigurator
+        hardware_cost_usd: 0, // TODO: Pricing not yet available from AISimulators
         memory_bandwidth_tbps: memoryBandwidthTbps,
         tokens_per_dollar: 0, // TODO: Pricing not yet available
         tflops_bf16: sys.bf16_tflops,
@@ -86,7 +96,7 @@ export async function GET(req: NextRequest) {
         memoryBandwidthGbps: sys.memory_bandwidth_bytes / (1024 ** 3),
         bandwidthTbps: memoryBandwidthTbps,
         tflops: sys.bf16_tflops,
-        pricePerHour: 0, // TODO: Pricing not yet available from AIConfigurator
+        pricePerHour: 0, // TODO: Pricing not yet available from AISimulators
         hardwareCostPerGpu: 0, // TODO: Pricing not yet available
         powerWatts: sys.tdp_watts,
         cloudAvailabilityPct: 0, // TODO: Not yet available
@@ -137,12 +147,14 @@ export async function GET(req: NextRequest) {
 
   } catch (error) {
     if (error instanceof ZodError) {
+      recordErrorCode('/api/gpus', 'validation_error', 400)
       return NextResponse.json(
         ApiErrors.VALIDATION_ERROR(error.issues),
         { status: 400 }
       )
     }
 
+    recordErrorCode('/api/gpus', 'internal_error', 500)
     return NextResponse.json(
       ApiErrors.INTERNAL_ERROR('Failed to fetch GPU catalog'),
       { status: 500 }

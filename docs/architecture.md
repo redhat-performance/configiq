@@ -5,26 +5,30 @@
 ConfigIQ is a single Next.js application using the App Router.
 
 ```
-Browser → Next.js (Vercel) → lib/gpu-math (calculations)
+Browser → nginx → Next.js container → AISimulators / AICostings gateways
 ```
 
-All GPU sizing math runs client-side or server-side within Next.js.
-There is no separate backend service in Phase 1 or 2.
+The Next.js application runs in a Podman container managed by systemd. nginx
+terminates TLS and forwards browser traffic to the Next.js container. The
+Next.js API routes make server-side requests to AISimulators and AICostings.
+GPU recommendations and memory estimation run in the separate AISimulators
+service; pricing data comes from AICostings.
 
 ## Key principle: math is isolated
 
-All GPU sizing formulas live in `lib/gpu-math/`. React components never
-contain math logic — they call lib functions and render the results.
+GPU sizing formulas live in the AISimulators service. React components call the
+same-origin Next.js API routes, which proxy requests to AISimulators. The
+legacy `lib/gpu-math/` code remains for historical and fallback use only.
 
 This means:
 - Formulas are testable without rendering components
 - The same logic can be reused across multiple pages
-- When a backend API is added later, it imports from the same lib
+- API response adapters keep the service contract separate from UI components
 
 ## Adding persistence later
 
-When Phase 3 is reached, the plan is:
+If persistence is added later, the plan is:
 - Add PostgreSQL via Prisma
-- Add Next.js Route Handlers in `app/api/`
-- Route handlers import from `lib/gpu-math/` for server-side calculations
+- Extend the existing Next.js Route Handlers in `app/api/`
+- Keep GPU calculations in AISimulators rather than reimplementing them in Next.js
 - No rewriting of existing components needed

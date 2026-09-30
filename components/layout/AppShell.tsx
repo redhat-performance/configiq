@@ -40,13 +40,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { costingsEnabled } = useSettings();
 
   const masthead = (
-    <Masthead style={{ backgroundColor: "#1a1a1a", borderBottom: "1px solid #2d2d2d" }}>
-      <MastheadToggle>
-        <PageToggleButton variant="plain" aria-label="Navigation" id="nav-toggle">
-          <BarsIcon color="white" />
-        </PageToggleButton>
-      </MastheadToggle>
+    <Masthead display={{ default: 'inline' }} style={{ backgroundColor: "#1a1a1a", borderBottom: "1px solid #2d2d2d" }}>
       <MastheadMain>
+        <MastheadToggle>
+          <PageToggleButton
+            variant="plain"
+            aria-label="Navigation"
+            id="nav-toggle"
+            style={{ width: 44, height: 44, padding: 8 }}
+          >
+            <BarsIcon color="white" style={{ width: 24, height: 24 }} />
+          </PageToggleButton>
+        </MastheadToggle>
         <MastheadBrand>
           <Link
             href="/"
@@ -97,6 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     fontWeight: 500,
     fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
     color: isActive ? '#ffffff' : 'rgba(255,255,255,0.85)',
+    backgroundColor: isActive ? '#0066cc' : 'transparent',
     padding: '9px 16px',
     textDecoration: 'none',
     borderBottom: 'none',
@@ -145,13 +151,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }}
     >
       <PageSidebarBody>
-        <Nav theme="dark" aria-label="Main navigation" style={{
-          '--pf-v5-c-nav__link--after--BorderColor': 'transparent',
-          '--pf-v5-c-nav__link--after--BorderWidth': '0'
+        <Nav aria-label="Main navigation" style={{
+          '--pf-v6-c-nav__link--after--BorderColor': 'transparent',
+          '--pf-v6-c-nav__link--after--BorderWidth': '0'
         } as React.CSSProperties}>
           <NavList style={{
-            '--pf-v5-c-nav__item--after--BorderColor': 'transparent',
-            '--pf-v5-c-nav__item--after--BorderWidth': '0'
+            '--pf-v6-c-nav__item--after--BorderColor': 'transparent',
+            '--pf-v6-c-nav__item--after--BorderWidth': '0'
           } as React.CSSProperties}>
             <NavItemWithIcon
               icon={HomeIcon}
@@ -176,9 +182,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             />
             <NavItemWithIcon
               icon={BoltIcon}
-              label="Performance"
-              href="/performance"
-              isActive={pathname === "/performance"}
+              label="Predict performance"
+              href="/predict"
+              isActive={pathname === "/predict"}
             />
             <NavItemWithIcon
               icon={CubesIcon}
@@ -265,7 +271,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <Page
-      header={masthead}
+      masthead={masthead}
       sidebar={sidebar}
       isManagedSidebar
       defaultManagedSidebarIsOpen={true}

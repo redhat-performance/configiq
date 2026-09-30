@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 20.19.0
           cache: npm
 
       - name: Install dependencies
@@ -37,8 +37,8 @@ jobs:
       - name: Build
         run: npm run build
 
-  aiconfigurator:
-    name: aiconfigurator API — lint and test
+  aisimulators:
+    name: aisimulators API — lint and test
     runs-on: ubuntu-latest
 
     steps:
@@ -50,15 +50,15 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        working-directory: services/aiconfigurator
+        working-directory: services/aisimulators
         run: uv sync --extra otel --extra mcp
 
       - name: Lint
-        working-directory: services/aiconfigurator
+        working-directory: services/aisimulators
         run: uv run ruff check .
 
       - name: Test
-        working-directory: services/aiconfigurator
+        working-directory: services/aisimulators
         run: uv run pytest
 
   aicostings:

@@ -3,24 +3,24 @@ import { getAppConfig } from '@/lib/app-config'
 
 /**
  * Build the model dropdown items from the three model sources, deduped:
- *   1. AIC catalog  (from the /models REST endpoint)   → "in catalog" (green)
- *   2. Tested models (config.testedModels)             → "tested" (blue)
- *   3. Hugging Face models (config.huggingFaceModels)  → "hugging face" (gold)
+ *   1. AISimulate catalog (from the /models REST endpoint)   → "in catalog" (green)
+ *   2. Tested models (config.testedModels)                   → "tested" (blue)
+ *   3. Hugging Face models (config.huggingFaceModels)        → "hugging face" (gold)
  *
  * A model can belong to more than one source; the flags are set independently
  * and the badge is chosen by priority (tested > catalog > hugging face) at
  * render time. Order: catalog first, then tested-not-in-catalog, then any
  * remaining HF-listed models.
  */
-export function buildModelItems(aicModels: string[]): ComboBoxItem[] {
+export function buildModelItems(catalogModels: string[]): ComboBoxItem[] {
   const config = getAppConfig()
-  const catalog = new Set(aicModels)
+  const catalog = new Set(catalogModels)
   const tested = new Set(config.testedModels)
   const hf = new Set(config.huggingFaceModels)
 
   const seen = new Set<string>()
   const items: ComboBoxItem[] = []
-  for (const m of [...aicModels, ...config.testedModels, ...config.huggingFaceModels]) {
+  for (const m of [...catalogModels, ...config.testedModels, ...config.huggingFaceModels]) {
     if (seen.has(m)) continue
     seen.add(m)
     const slash = m.indexOf('/')
@@ -38,9 +38,9 @@ export function buildModelItems(aicModels: string[]): ComboBoxItem[] {
 
 /**
  * Whether a model needs its config.json fetched from Hugging Face and sent to
- * AIC as `model_config`. True for any model the AIC catalog can't resolve on
- * its own — including tested models that live outside the catalog.
+ * aisimulators as `model_config`. True for any model the catalog can't resolve
+ * on its own — including tested models that live outside the catalog.
  */
-export function needsHfConfig(model: string, aicModels: string[]): boolean {
-  return !!model && !aicModels.includes(model)
+export function needsHfConfig(model: string, catalogModels: string[]): boolean {
+  return !!model && !catalogModels.includes(model)
 }

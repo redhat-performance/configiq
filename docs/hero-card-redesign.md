@@ -329,7 +329,7 @@ Fallbacks:
 
 ## **Files Modified**
 
-1. **app/performance/page.tsx**
+1. **app/predict/page.tsx**
    - Hero card layout (span={6} + span={2} × 3)
    - Updated typography scales
    - Simplified content text
@@ -347,7 +347,7 @@ Fallbacks:
 
 ## **Live Demo**
 
-Visit: **http://localhost:3003/performance**
+Visit: **http://localhost:3003/predict**
 
 What you should see:
 1. Large hero card on left (50% width) with "1 GPU" in huge text

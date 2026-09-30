@@ -2,8 +2,7 @@
 import {
   PageSection,
   Title,
-  Text,
-  TextContent,
+  Content,
   Grid,
   GridItem,
   Card,
@@ -18,14 +17,16 @@ import {
   CalculatorIcon,
   RouteIcon,
   BoltIcon,
+  CubesIcon,
 } from "@patternfly/react-icons";
 import Link from "next/link";
+import { useSettings } from "@/contexts/SettingsContext";
 
 const tools = [
   {
     title: "Recommend sizing",
     description:
-      "Find the optimal GPU configuration for a workload target using the AIConfigurator engine.",
+      "Find the optimal GPU configuration for a workload target using the AISimulators engine.",
     href: "/recommend",
     icon: <SlidersHIcon />,
   },
@@ -44,49 +45,66 @@ const tools = [
     icon: <ChartBarIcon />,
   },
   {
-    title: "Performance",
+    title: "Predict performance",
     description:
       "Estimate TTFT, TPOT, and throughput for your model and parallelism configuration.",
-    href: "/performance",
+    href: "/predict",
     icon: <BoltIcon />,
   },
-  // Hidden pending aicostings API
-  // {
-  //   title: "Hybrid Savings",
-  //   description:
-  //     "Model cost savings between cloud, on-premise, and hybrid GPU deployment strategies.",
-  //   href: "/hybrid-savings",
-  //   icon: <MigrationIcon />,
-  // },
-  // {
-  //   title: "Routing economics",
-  //   description:
-  //     "Analyze request routing between model tiers to optimize cost vs quality tradeoffs.",
-  //   href: "/routing",
-  //   icon: <RouteIcon />,
-  // },
+];
+
+const costingsTools = [
+  {
+    title: "Hybrid savings",
+    description:
+      "Model cost savings between cloud, on-premise, and hybrid GPU deployment strategies.",
+    href: "/hybrid-savings",
+    icon: <MigrationIcon />,
+  },
+  {
+    title: "Routing economics",
+    description:
+      "Analyze request routing between model tiers to optimize cost vs quality tradeoffs.",
+    href: "/routing",
+    icon: <RouteIcon />,
+  },
+  {
+    title: "Cluster cost",
+    description:
+      "Compare cloud, on-premise, and hybrid infrastructure costs for GPU clusters.",
+    href: "/cluster-cost",
+    icon: <CubesIcon />,
+  },
 ];
 
 export default function HomePage() {
+  const { costingsEnabled } = useSettings();
+  const visibleTools = costingsEnabled ? [...tools, ...costingsTools] : tools;
+
   return (
     <>
-      <PageSection variant="light">
+      <PageSection>
         <div>
-          <TextContent>
-            <Title headingLevel="h1" size="2xl">
-              ConfigIQ
-            </Title>
-            <Text component="p">
+          <Title headingLevel="h1" size="2xl">
+            ConfigIQ
+          </Title>
+          <Content>
+            <Content component="p">
               LLM inference sizing, GPU comparison, and cost modeling for
               engineers and infrastructure teams.
-            </Text>
-          </TextContent>
+            </Content>
+            <Content component="small" style={{ fontStyle: "italic" }}>
+              A free community service, provided as-is without warranty. All
+              results are best-effort estimates for planning, not guarantees of
+              real-world performance.
+            </Content>
+          </Content>
         </div>
       </PageSection>
 
       <PageSection>
         <Grid hasGutter md={6} xl={4}>
-          {tools.map((tool) => (
+          {visibleTools.map((tool) => (
             <GridItem key={tool.href}>
               <Card isFullHeight isClickable>
                 <CardTitle>
@@ -94,9 +112,9 @@ export default function HomePage() {
                   {tool.title}
                 </CardTitle>
                 <CardBody>
-                  <TextContent>
-                    <Text component="p">{tool.description}</Text>
-                  </TextContent>
+                  <Content>
+                    <Content component="p">{tool.description}</Content>
+                  </Content>
                   <br />
                   <Button
                     variant="link"

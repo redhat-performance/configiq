@@ -1,5 +1,5 @@
 # Multi-stage Next.js 14 build
-ARG NEXT_PUBLIC_AICONFIGURATOR_API_URL=https://aiconfigurator.dev
+ARG NEXT_PUBLIC_AISIMULATORS_API_URL=https://aisimulators.dev
 
 FROM node:20-alpine AS builder
 
@@ -11,7 +11,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
-RUN NEXT_PUBLIC_AICONFIGURATOR_API_URL=${NEXT_PUBLIC_AICONFIGURATOR_API_URL} npm run build
+RUN NEXT_PUBLIC_AISIMULATORS_API_URL=${NEXT_PUBLIC_AISIMULATORS_API_URL} npm run build
 
 # Runtime stage
 FROM node:20-alpine

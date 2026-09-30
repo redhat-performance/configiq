@@ -1,0 +1,69 @@
+[project]
+name = "aisimulators-api"
+version = "0.1.0"
+description = "Thin FastAPI REST wrapper over the aisimulate SDK (GPU sizing, performance and memory estimation)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "orjson",
+    "pandas",
+    "pyarrow",
+    # Shared ConfigIQ utilities (GPU systems catalog, observability, MCP wiring).
+    "configiq",
+    # aisimulate SDK: a single unified wheel that bundles the Rust-compiled core
+    # and exposes the aisimulate / aisimulate_core APIs this service imports. Consumed
+    # as a wheel published by the
+    # Red Hat fork's GitHub Release — NOT vendored, and not on PyPI. Referenced by
+    # exact download URL (not name==version) on purpose: a direct URL forces pip
+    # to install this exact artifact. Bump the URL (version + build hash live in
+    # the tag) for a new SDK; see docs/RELEASE_PROCESS.md.
+    "aisimulate @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.13.0%2B7f1efbc1/aisimulate-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "plotext>=5.3.2,<6",
+]
+
+# Opt-in observability + MCP, both provided by the shared configiq package. Kept
+# out of the base install (and enabled explicitly in the container) because otel
+# tracing initializes an OTLP exporter eagerly at import; the app's guarded
+# imports light up /metrics, tracing, and the MCP server only when present.
+[project.optional-dependencies]
+otel = ["configiq[otel]"]
+mcp = ["configiq[mcp]"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "numpy",
+    "httpx",  # required by fastapi.testclient.TestClient
+    "ruff",
+]
+
+# configiq is developed in-tree as a path dependency so local edits are picked up
+# without reinstalling. The container build (context = services/) installs it
+# from ./configiq-py before this service.
+[tool.uv.sources]
+configiq = { path = "../configiq-py", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+# -ra: report reasons for all non-passing outcomes (incl. skips) in the summary,
+# so the integration skip reason — which carries the exact no-perf-data 422 body
+# (see _skip_if_missing_perf_data) — always shows up in CI logs.
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Blind `except Exception` is a deliberate pattern in this thin API wrapper:
+# endpoint boundaries translate any error into a proper HTTP status, and
+# best-effort lookups degrade gracefully rather than failing the request.
+ignore = ["BLE001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["aisimulate", "aisimulate_core", "tools"]

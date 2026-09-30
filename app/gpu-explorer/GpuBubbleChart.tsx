@@ -285,7 +285,7 @@ export function GpuBubbleChart({ data, width, height, xLabel, yLabel }: Props) {
                 fontSize: '13px',
                 lineHeight: '1.7',
                 boxShadow: '0 6px 16px rgba(0,0,0,0.2)',
-                fontFamily: 'var(--pf-v5-global--FontFamily--text, "Red Hat Text", sans-serif)',
+                fontFamily: 'var(--pf-t--global--font--family--body, "Red Hat Text", sans-serif)',
                 width: '100%',
                 height: '100%',
                 boxSizing: 'border-box'

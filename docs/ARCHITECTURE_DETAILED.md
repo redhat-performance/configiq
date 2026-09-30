@@ -25,7 +25,7 @@ This document provides comprehensive component diagrams, data flow visualization
 │                                                                 │
 │  ┌──────────────────────┐        ┌──────────────────────┐     │
 │  │  Performance Page    │        │ Shared Components    │     │
-│  │  app/performance/    │◄───────┤ components/          │     │
+│  │  app/predict/        │◄───────┤ components/          │     │
 │  │                      │        │ - ProductTour        │     │
 │  │  - Model input       │        │ - FlipTile           │     │
 │  │  - GPU selector      │        │ - Term (glossary)    │     │
@@ -75,11 +75,11 @@ This document provides comprehensive component diagrams, data flow visualization
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │  ┌────────────────┐  ┌────────────────┐  ┌──────────────────┐ │
-│  │ gpu-catalog    │  │ model-specs    │  │ Cloudflare Worker│ │
+│  │ gpu-catalog    │  │ model-specs    │  │ aicostings       │ │
 │  │ .json          │  │ .json          │  │ (Live Pricing)   │ │
 │  │                │  │                │  │                  │ │
-│  │ 15 GPUs        │  │ Model params   │  │ 133 prices       │ │
-│  │ VRAM, bandwidth│  │ layers, heads  │  │ 15 GPUs          │ │
+│  │ 15 GPUs        │  │ Model params   │  │ cloud GPU rates  │ │
+│  │ VRAM, bandwidth│  │ layers, heads  │  │                  │ │
 │  └────────────────┘  └────────────────┘  └──────────────────┘ │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -210,7 +210,7 @@ Shows how data flows from user input through calculations to display.
      ▼
 ┌─────────────────────────────────────────┐
 │  Performance UI                         │
-│  (PerformanceEstimate.tsx)              │
+│  (Performance.tsx)                      │
 │                                         │
 │  React State:                           │
 │  - model = "meta-llama/..."             │
@@ -301,12 +301,12 @@ Shows how data flows from user input through calculations to display.
 > pipeline. None of the referenced modules below (`core.ts`, `validation.ts`,
 > `quantization.ts`, `tensor-parallel.ts`, `vllm-defaults.ts`, `bottleneck.ts`,
 > `parallelism.ts`, `llmd.ts`, `gpu-catalog.json`, `models.ts`) exist anymore —
-> GPU math now runs through the AIConfigurator REST API via `lib/api/`
+> GPU math now runs through the AISimulators REST API via `lib/api/`
 > ([see AGENTS.md](../AGENTS.md#critical-rules)). This section needs a full
 > rewrite, not a rename.
 
 ```
-PerformanceEstimate.tsx
+Performance.tsx
     │
     ├─→ computeInferenceConfig (from core.ts)
     │       │
@@ -321,9 +321,9 @@ PerformanceEstimate.tsx
     │       ├─→ determineParallelismStrategy (from parallelism.ts)
     │       └─→ computeLLMDConfig (from llmd.ts)
     │
-    ├─→ FlipTile (from quickEstimateHelpers.tsx)
-    ├─→ Term (from quickEstimateHelpers.tsx)
-    ├─→ useCountUp (from quickEstimateHelpers.tsx)
+    ├─→ FlipTile (from performanceHelpers.tsx)
+    ├─→ Term (from performanceHelpers.tsx)
+    ├─→ useCountUp (from performanceHelpers.tsx)
     └─→ ProductTour (from components/ProductTour/)
 ```
 
@@ -335,11 +335,11 @@ PerformanceEstimate.tsx
 
 | Component | File | Responsibility | Status |
 |-----------|------|----------------|--------|
-| **PerformanceEstimate** | `app/performance/PerformanceEstimate.tsx` | Main page, state management, orchestrates all other components | ✅ Active |
-| **FlipTile** | `quickEstimateHelpers.tsx` | Interactive card that flips to show formulas on click/Enter | ✅ Complete |
+| **Performance** | `app/predict/Performance.tsx` | Main page, state management, orchestrates all other components | ✅ Active |
+| **FlipTile** | `performanceHelpers.tsx` | Interactive card that flips to show formulas on click/Enter | ✅ Complete |
 | **ProductTour** | `components/ProductTour/ProductTour.tsx` | Guided tour with spotlight and tooltips | ✅ Complete |
-| **Term** | `quickEstimateHelpers.tsx` | Glossary popover (? icon with explanation) | ✅ Complete |
-| **useCountUp** | `quickEstimateHelpers.tsx` | Animates numbers from 0 → target | ✅ Complete |
+| **Term** | `performanceHelpers.tsx` | Glossary popover (? icon with explanation) | ✅ Complete |
+| **useCountUp** | `performanceHelpers.tsx` | Animates numbers from 0 → target | ✅ Complete |
 
 ### Inference Engine Modules
 
@@ -439,11 +439,10 @@ PerformanceEstimate.tsx
 │ Browser  │
 └────┬─────┘
      │
-     ├─→ GET /api/v1/gpus?live_pricing=true
+     ├─→ GET /api/costings/systems?include=cloud
      │   │
-     │   ├─→ Load gpu-catalog.json
-     │   └─→ Fetch from Cloudflare Worker
-     │       └─→ Returns 133 prices for 15 GPUs
+     │   └─→ Proxy to aicostings /systems
+     │       └─→ Returns live cloud GPU rates
      │
      ├─→ GET /api/v1/models
      │   │

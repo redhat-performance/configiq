@@ -1,4 +1,4 @@
-# TODO: Add sm_version to AIConfigurator systems API
+# TODO: Add sm_version to AISimulators systems API
 
 ## Context
 
@@ -6,7 +6,7 @@ CodeRabbit review flagged that NVFP4 KV cache architecture warnings should use n
 
 ## Current State
 
-The AIC `/systems` API returns:
+The AISimulators `/systems` API returns:
 ```json
 {
   "id": "b200_sxm",
@@ -51,7 +51,7 @@ Instead of string matching against an ever-growing list of architecture names.
 
 ## Priority
 
-Low — AIC handles software fallback gracefully, so warnings are informational only.
+Low — AISimulators handles software fallback gracefully, so warnings are informational only.
 
 ## Related
 

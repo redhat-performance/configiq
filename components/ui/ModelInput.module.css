@@ -21,30 +21,30 @@
   right: 10px;
 }
 
-.toggle :global(.pf-v5-c-switch__input:focus-visible ~ .pf-v5-c-switch__toggle) {
+.toggle :global(.pf-v6-c-switch__input:focus-visible ~ .pf-v6-c-switch__toggle) {
   outline: none !important;
   box-shadow: none !important;
 }
 
-.wrapper :global(.pf-v5-c-switch) {
-  --pf-v5-c-switch--Height: 18px !important;
-  --pf-v5-c-switch__toggle--Width: 32px !important;
-  --pf-v5-c-switch__toggle--Height: 16px !important;
-  --pf-v5-c-switch__toggle--BorderRadius: 9px !important;
+.wrapper :global(.pf-v6-c-switch) {
+  --pf-v6-c-switch--Height: 18px !important;
+  --pf-v6-c-switch__toggle--Width: 32px !important;
+  --pf-v6-c-switch__toggle--Height: 16px !important;
+  --pf-v6-c-switch__toggle--BorderRadius: 9px !important;
   font-size: 11px !important;
 }
 
-.wrapper :global(.pf-v5-c-switch__label) {
+.wrapper :global(.pf-v6-c-switch__label) {
   font-size: 11px !important;
   font-weight: 500;
 }
 
-.wrapper :global(.pf-v5-c-switch__toggle) {
+.wrapper :global(.pf-v6-c-switch__toggle) {
   width: 32px !important;
   height: 16px !important;
 }
 
-.wrapper :global(.pf-v5-c-switch__toggle::before) {
+.wrapper :global(.pf-v6-c-switch__toggle::before) {
   width: 12px !important;
   height: 12px !important;
 }
@@ -80,7 +80,7 @@
   pointer-events: none;
 }
 
-.badge :global(.pf-v5-c-label) {
+.badge :global(.pf-v6-c-label) {
   font-size: 12px;
   font-weight: 500;
 }

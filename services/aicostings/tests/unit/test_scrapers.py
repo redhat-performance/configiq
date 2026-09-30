@@ -263,6 +263,18 @@ class TestMergeRecords:
         assert result["h100_sxm"]["aws.us-east-1"]["on_demand"] == 3.89
         assert result["h100_sxm"]["aws.us-east-1"]["spot_median"] == 1.50
 
+    def test_uses_lowest_duplicate_rate_and_preserves_billing_metadata(self):
+        records = [
+            {"system_id": "h100_sxm", "provider_region": "azure.eastus", "on_demand": 6.98,
+             "spot_median": None, "rate_basis": "gpu_hour", "gpus_per_instance": 2},
+            {"system_id": "h100_sxm", "provider_region": "azure.eastus", "on_demand": 7.50,
+             "spot_median": None, "rate_basis": "gpu_hour", "gpus_per_instance": 2},
+        ]
+        result = _merge_records(records)["h100_sxm"]["azure.eastus"]
+        assert result["on_demand"] == 6.98
+        assert result["rate_basis"] == "gpu_hour"
+        assert result["gpus_per_instance"] == 2
+
     def test_multiple_systems_and_regions(self):
         records = [
             {"system_id": "h100_sxm", "provider_region": "aws.us-east-1", "on_demand": 3.89, "spot_median": None},
@@ -306,9 +318,36 @@ class TestScrapeAzure:
         mock_session.get = mock_get
 
         records = await scrape_azure(mock_session, {"Standard_ND96asr_v4": "a100_sxm"})
-        # Only the Linux variant survives, so exactly one on-demand record at 3.0.
-        assert [r["on_demand"] for r in records] == [3.0]
+        # Only the Linux variant survives and the whole-instance price is
+        # normalized to a per-GPU-hour price for this 8-GPU shape.
+        assert [r["on_demand"] for r in records] == [0.375]
+        assert records[0]["rate_basis"] == "gpu_hour"
+        assert records[0]["gpus_per_instance"] == 8
         assert all("windows" not in r["provider_region"].lower() for r in records)
+
+    @pytest.mark.asyncio
+    async def test_treats_low_priority_as_interruptible_not_on_demand(self):
+        items = {"Items": [
+            {"armSkuName": "Standard_NC80adis_H100_v5", "armRegionName": "eastus",
+             "retailPrice": 13.96, "meterName": "NC80adis H100 v5",
+             "productName": "Virtual Machines NCads H100 v5 Series"},
+            {"armSkuName": "Standard_NC80adis_H100_v5", "armRegionName": "eastus",
+             "retailPrice": 2.792, "meterName": "NC80adis H100 v5 Low Priority",
+             "productName": "Virtual Machines NCads H100 v5 Series"},
+        ]}
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value=items)
+
+        @asynccontextmanager
+        async def mock_get(*args, **kwargs):
+            yield response
+
+        session = MagicMock()
+        session.get = mock_get
+        records = await scrape_azure(session, {"Standard_NC80adis_H100_v5": "h100_sxm"})
+        merged = _merge_records(records)["h100_sxm"]["azure.eastus"]
+        assert merged["on_demand"] == 6.98
+        assert merged["spot_median"] == 1.396
 
 
 class TestAwsInstanceTypes:
@@ -376,8 +415,10 @@ class TestAwsScrapeRegion:
         assert records == [{
             "system_id": "a100_sxm",
             "provider_region": "aws.us-east-1",
-            "on_demand": 32.7726,
+            "on_demand": 4.096575,
             "spot_median": None,
+            "rate_basis": "gpu_hour",
+            "gpus_per_instance": 8,
         }]
 
     @pytest.mark.asyncio
@@ -445,6 +486,8 @@ class TestScrapeVastai:
         assert rec["system_id"] == "h100_sxm"
         assert rec["on_demand"] is None
         assert rec["spot_median"] == 2.5  # median(2.0, 3.0)
+        assert rec["rate_basis"] == "gpu_hour"
+        assert rec["gpus_per_instance"] == 1
 
     @pytest.mark.asyncio
     async def test_raises_on_api_error(self):

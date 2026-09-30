@@ -1,7 +1,7 @@
 # configiq (shared Python library)
 
 Cross-service utilities for the ConfigIQ backend services under `services/`
-(aiconfigurator, aicostings, ...). Consolidates machinery that would otherwise
+(aisimulators, aicostings, ...). Consolidates machinery that would otherwise
 be copy-pasted into every service.
 
 Import name: `configiq`. Distribution name: `configiq`.
@@ -10,7 +10,7 @@ Import name: `configiq`. Distribution name: `configiq`.
 
 | Module | Needs extra | Purpose |
 |---|---|---|
-| `configiq.systems` | — | GPU system ids (`supported_systems`) and vendor display names (`load_device_names_from_perf_data`) from the aiconfigurator SDK. Lazy-imports the SDK; degrades to empty results if absent. |
+| `configiq.systems` | — | GPU system ids (`supported_systems`) and vendor display names (`load_device_names_from_perf_data`) from the aisimulate SDK. Lazy-imports the SDK; degrades to empty results if absent. |
 | `configiq.otel` | `otel` | OpenTelemetry tracing + dual Prometheus/OTLP-JSON metric providers. |
 | `configiq.metrics` | `otel` | Generic HTTP + process instruments, `record_http_request`, `MetricsMiddleware`, and `get_meter` for domain instruments. |
 | `configiq.observability` | `otel` | One call — `enable(app, ...)` — to wire tracing + metrics + middleware, plus `metrics_response(accept)` for a `/metrics` endpoint. |

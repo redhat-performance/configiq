@@ -7,7 +7,7 @@ LLM inference sizing, GPU comparison, and cost modeling for engineers and infras
 - [configiq.xyz](https://configiq.xyz) (latest release)
 - [configiq.dev](https://configiq.dev) (latest commit)
 
-Built with Next.js + PatternFly, powered by our [AIConfigurator](https://github.com/ai-dynamo/aiconfigurator) [REST API](https://aiconfigurator.dev/docs).
+Built with Next.js + PatternFly, powered by our [AISimulators](https://github.com/ai-dynamo/aisimulate) [REST API](https://aisimulators.dev/docs).
 
 ## What it does
 
@@ -24,7 +24,7 @@ Built with Next.js + PatternFly, powered by our [AIConfigurator](https://github.
 
 ### Prerequisites
 
-- Node.js >= 20
+- Node.js >= 20.19.0
 - npm >= 10
 
 ### Setup
@@ -54,7 +54,7 @@ npm run lint         # ESLint
 |-------|-----------|
 | Framework | Next.js 14 App Router + TypeScript |
 | UI | PatternFly v5 |
-| Backend API | [AIConfigurator](https://aiconfigurator.dev/docs) (GPU sizing + memory estimation) |
+| Backend API | [AISimulators](https://aisimulators.dev/docs) (GPU sizing + memory estimation) |
 
 ## Project structure
 
@@ -64,23 +64,23 @@ app/                  Next.js App Router pages
   page.tsx            Homepage
   recommend/          Recommend sizing tool
   kv-cache/           KV Cache Calculator
-  performance/        Performance estimates
+  predict/             Predict performance
   gpu-explorer/       GPU Explorer
   hybrid-savings/     Hybrid Savings
   routing/            Routing Economics
   settings/           App settings
   api/                Next.js API routes (proxy to REST APIs)
-    recommend/        POST — GPU sizing via AIC /recommend
-    estimate/         POST — GPU performance via AIC /estimate
-    memory/           POST — memory breakdown via AIC /memory
-    gpus/             GET — GPU catalog via AIC /systems
+    recommend/        POST — GPU sizing via AISimulators /recommend
+    predict/          POST — GPU performance via AISimulators /predict
+    memory/           POST — memory breakdown via AISimulators /memory
+    gpus/             GET — GPU catalog via AISimulators /systems
     hf-config/        GET — Hugging Face model config lookup
     health/           GET — health check
 components/
   layout/
     AppShell.tsx      Top-nav masthead + sidebar navigation
 lib/
-  api/                AIConfigurator API clients
+  api/                AISimulators API clients
 docs/                 Architecture docs and ADRs
 ```
 
@@ -98,7 +98,7 @@ npm run build        # Must succeed
 
 ### Code conventions
 
-1. **GPU math belongs in `aiconfigurator`** — never write sizing formulas inside React components.
+1. **GPU math belongs in `aisimulators`** — never write sizing formulas inside React components.
 1. **Pricing belongs in the `aicostings` service** — never add costing inside React components.
 2. **PatternFly only** — do not add Tailwind, shadcn/ui, or any other component library.
 3. **Sentence case everywhere** — no title case in headings or labels.

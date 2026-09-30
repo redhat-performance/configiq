@@ -1,14 +1,9 @@
 {
-  "defaultModel": "Qwen/Qwen3-32B",
+  "defaultBackend": "vllm",
   "defaultSystem": "h200_sxm",
+  "defaultModel": "Qwen/Qwen3-32B",
   "defaultOpenModel": "Qwen/Qwen3-32B",
   "defaultFrontierModel": "claude-fable-5",
-  "defaultBackend": "vllm",
-  "backendVersions": {
-    "vllm": "0.24.0",
-    "tensorrt-llm": "11.2",
-    "sglang": "0.5.17"
-  },
   "suggestedModelNames": ["Gemma 4", "Nemotron Super", "DeepSeek V4", "gpt-oss"],
   "testedModels": [
     "google/gemma-4-31B-it",

@@ -2,6 +2,19 @@
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  // Keep the live development compiler isolated from production builds.
+  // Running `next build` while `next dev` is active must not replace the CSS
+  // and chunk files that the browser is currently using.
+  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
+  async redirects() {
+    return [
+      {
+        source: '/performance',
+        destination: '/predict',
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {
@@ -20,6 +33,35 @@ const nextConfig = {
     "@patternfly/react-icons",
     "@patternfly/react-table",
   ],
+  serverExternalPackages: [
+    '@opentelemetry/api',
+    '@opentelemetry/auto-instrumentations-node',
+    '@opentelemetry/exporter-metrics-otlp-http',
+    '@opentelemetry/exporter-prometheus',
+    '@opentelemetry/exporter-trace-otlp-http',
+    '@opentelemetry/sdk-metrics',
+    '@opentelemetry/sdk-node',
+  ],
+  webpack(config, { dev, isServer }) {
+    if (dev) {
+      config.cache = { type: 'memory' };
+    }
+    if (isServer) {
+      config.externals = [
+        ...(config.externals || []),
+        /^@opentelemetry\//,
+        '@grpc/grpc-js',
+      ];
+    }
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings || []),
+      {
+        module: /@patternfly[\\/]react-styles[\\/]css[\\/]components[\\/](ActionList|OverflowMenu)/,
+        message: /autoprefixer: start value has mixed support/,
+      },
+    ];
+    return config;
+  },
 };
 
 module.exports = nextConfig;

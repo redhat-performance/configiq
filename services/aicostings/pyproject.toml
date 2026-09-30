@@ -18,18 +18,16 @@ dependencies = [
     "orjson>=3.10",
     # Shared ConfigIQ utilities (systems catalog, observability, MCP wiring).
     "configiq",
-    # GPU system catalog + vendor display names come from the aiconfigurator SDK
-    # (via configiq.systems) so aicostings and aiconfigurator never drift; pyarrow
-    # reads the SDK's bundled perf-data parquet for the display names. The SDK + its
-    # Rust-compiled core are consumed as wheels from the Red Hat fork's GitHub
-    # Release, NOT vendored. Referenced by exact download URL (not name==version)
-    # because NVIDIA publishes the same 0.11.0 on PyPI with an incompatible
-    # numpy~=1.26.4 pin that would otherwise shadow the fork's numpy>=2.1,<3 build;
-    # a direct URL forces pip to install these exact artifacts. Keep these URLs
-    # identical to the aiconfigurator service and bump both together; see
-    # docs/RELEASE_PROCESS.md.
-    "aiconfigurator @ https://github.com/redhat-performance/aiconfigurator/releases/download/deploy-api-v0.11.0%2B5b0ee59e/aiconfigurator-0.11.0-py3-none-any.whl",
-    "aiconfigurator-core @ https://github.com/redhat-performance/aiconfigurator/releases/download/deploy-api-v0.11.0%2B5b0ee59e/aiconfigurator_core-0.11.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+    # GPU system catalog + vendor display names come from the aisimulate SDK (via
+    # configiq.systems) so aicostings and the aisimulators service never drift;
+    # pyarrow reads the SDK's bundled perf-data parquet for the display names. The
+    # single aisimulate wheel bundles the Rust-compiled core and the
+    # aisimulate_core namespace configiq.systems imports. It is consumed as a
+    # wheel from the Red Hat fork's GitHub Release (not PyPI, not
+    # vendored), referenced by exact download URL so pip installs that exact
+    # artifact. Keep this URL identical to the aisimulators service and bump both
+    # together; see docs/RELEASE_PROCESS.md.
+    "aisimulate @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.13.0%2B7f1efbc1/aisimulate-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl",
     "pyarrow",
 ]
 

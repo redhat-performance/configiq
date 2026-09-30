@@ -95,7 +95,7 @@ export interface LLMDConfig {
 }
 
 /**
- * One disaggregated pool (prefill or decode) as returned by the /estimate API.
+ * One disaggregated pool (prefill or decode) as returned by the /predict API.
  * gpusPerWorker = tp·pp; a pool consumes workers × gpusPerWorker GPUs.
  */
 export interface EstimatePhase {

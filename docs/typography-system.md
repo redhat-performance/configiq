@@ -278,7 +278,7 @@ white-space: nowrap;
 - ✅ Set base font-size to 15px, line-height 1.5
 - ✅ Added `font-variant-numeric: tabular-nums` to numeric displays
 
-### **`app/performance/page.tsx`**
+### **`app/predict/page.tsx`**
 - ✅ Page title: Uses `.type-page-title` (26px Display 500)
 - ✅ Section titles: Use `.type-section-title` (16px Display 600)
 - ✅ Body text: Uses `.type-body` (14px Sans 400)
@@ -299,7 +299,7 @@ white-space: nowrap;
    - Set 15px base with 1.5 line-height
    - Added tabular-nums support
 
-2. **`app/performance/page.tsx`**
+2. **`app/predict/page.tsx`**
    - Replaced all inline font styles with utility classes
    - Applied color tokens (`var(--text)`, `var(--text-2)`, etc.)
    - Used semantic class names instead of magic numbers
@@ -343,7 +343,7 @@ white-space: nowrap;
 
 ## **Testing**
 
-Visit: **http://localhost:3003/performance**
+Visit: **http://localhost:3003/predict**
 
 ### **Check:**
 

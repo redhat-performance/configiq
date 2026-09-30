@@ -67,7 +67,7 @@ lib/
     memory.ts           Memory estimation formulas
     throughput.ts       Throughput estimation formulas
     cost.ts             Cost modeling formulas
-    quick-estimate.ts   Calculation engine for the Performance page
+    predict-performance.ts Calculation engine for the Predict performance page
   utils/
     format.ts           Number and unit formatting helpers
 
@@ -112,7 +112,7 @@ Prefixes: `feature/` for new functionality, `fix/` for bug fixes, `chore/` for m
 Pre-commit hooks run automatically when you `git commit`. They check lint and types on staged files and block the commit if anything fails — fix the error and try again.
 
 ```bash
-git add app/performance/page.tsx
+ git add app/predict/page.tsx
 git commit -m "Add GPU memory breakdown chart to estimate panel"
 ```
 
@@ -163,7 +163,7 @@ Two engineers working at the same time will sometimes touch the same files. The 
 | File | Why it conflicts |
 |---|---|
 | `app/globals.css` | All shared CSS lives here |
-| `app/performance/page.tsx` | Large file, most active page |
+| `app/predict/page.tsx` | Large file, most active page |
 | `lib/gpu-math/models.ts` | Both engineers may add models |
 | `package.json` | Dependency changes |
 

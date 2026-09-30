@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install a service's runtime dependencies from its own pyproject.toml.
 
-Shared by the service Containerfiles (aiconfigurator, aicostings) so each
+Shared by the service Containerfiles (aisimulators, aicostings) so each
 service's [project.dependencies] list is the single source of truth. A
 hand-copied duplicate in the Containerfile previously drifted from pyproject
 and dropped a dependency (ijson), crash-looping the container at runtime.
@@ -9,13 +9,13 @@ and dropped a dependency (ijson), crash-looping the container at runtime.
 configiq is the one dep filtered out here: it's the shared library, a path
 dependency installed separately from the source copy at /src/configiq-py (there
 is no `configiq` on PyPI to resolve). Everything else passes straight to pip,
-including the aiconfigurator SDK + its Rust-compiled core — pyproject.toml pins
+including the aisimulate SDK + its Rust-compiled core — pyproject.toml pins
 those by exact GitHub-Release download URL (`name @ https://…whl`) so pip installs
 the fork's exact artifacts rather than the same-versioned, numpy-incompatible
 packages NVIDIA ships to PyPI.
 
 Runs under whichever interpreter invokes it (`sys.executable -m pip`), so it
-targets the venv in aiconfigurator's image and the system Python in aicostings'.
+targets the venv in aisimulators' image and the system Python in aicostings'.
 
 Usage:
   python install-deps.py <path-to-pyproject.toml> [extra pip args ...]

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Red_Hat_Display, Red_Hat_Text, Red_Hat_Mono } from "next/font/google";
+import { Red_Hat_Display, Red_Hat_Mono, Red_Hat_Text } from "next/font/google";
 import "@patternfly/react-core/dist/styles/base.css";
 // Layouts
 import "@patternfly/react-styles/css/layouts/Grid/grid.css";
@@ -47,19 +47,16 @@ import { SettingsProvider } from "@/contexts/SettingsContext";
 const redHatDisplay = Red_Hat_Display({
   subsets: ["latin"],
   variable: "--font-display",
-  weight: ["400", "500", "600", "700"],
 });
 
 const redHatText = Red_Hat_Text({
   subsets: ["latin"],
   variable: "--font-body",
-  weight: ["400", "500", "600"],
 });
 
 const redHatMono = Red_Hat_Mono({
   subsets: ["latin"],
   variable: "--font-mono",
-  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
@@ -77,19 +74,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html
-      lang="en"
-      className={`${redHatDisplay.variable} ${redHatText.variable} ${redHatMono.variable}`}
-    >
-      <head>
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
-          rel="stylesheet"
-        />
-      </head>
-      <body>
+    <html lang="en">
+      <body className={`${redHatDisplay.variable} ${redHatText.variable} ${redHatMono.variable}`}>
         <RecommendProvider>
           <KvCacheProvider>
             <SettingsProvider>

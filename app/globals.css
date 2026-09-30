@@ -44,37 +44,37 @@
   --rh-gray-10:      #f0f0f0;
 
   /* Typography fonts */
+  --font-display: "Red Hat Display", Arial, sans-serif;
+  --font-body:    "Red Hat Text", Arial, sans-serif;
+  --font-mono:    "Red Hat Mono", ui-monospace, monospace;
   --display: var(--font-display);
   --sans:    var(--font-body);
   --mono:    var(--font-mono);
 
   /* Point PatternFly at our fonts */
-  --pf-v5-global--FontFamily--heading--vf: var(--display);
-  --pf-v5-global--FontFamily--text--vf:    var(--sans);
-  --pf-v5-global--FontFamily--monospace--vf: var(--mono);
-  --pf-v5-global--FontFamily--heading:     var(--display);
-  --pf-v5-global--FontFamily--text:        var(--sans);
-  --pf-v5-global--FontFamily--monospace:   var(--mono);
+  --pf-t--global--font--family--heading: var(--display);
+  --pf-t--global--font--family--body:    var(--sans);
+  --pf-t--global--font--family--code:    var(--mono);
 
   /* Typography — these are set as CSS variables by next/font in layout.tsx */
   /* Fallbacks here are for non-Next.js contexts only */
 
   /* Override PatternFly primary color tokens */
-  --pf-v5-global--primary-color--100:       #0066cc;
-  --pf-v5-global--primary-color--200:       #004d99;
-  --pf-v5-global--primary-color--300:       #003d7a;
-  --pf-v5-global--link--Color:              #0066cc;
-  --pf-v5-global--link--Color--hover:       #004d99;
-  --pf-v5-global--active-color--100:        #0066cc;
-  --pf-v5-global--Color--light-100:         #ffffff;
+  --pf-t--global--color--brand--default:    #0066cc;
+  --pf-t--global--color--brand--hover:      #004d99;
+  --pf-t--global--color--brand--clicked:    #003d7a;
+  --pf-t--global--color--link--default:    #0066cc;
+  --pf-t--global--color--link--hover:      #004d99;
+  --pf-t--global--text--color--regular:    var(--gc-text);
+  --pf-t--global--text--color--subtle:     var(--gc-text-2);
 
   /* Masthead: dark header bar */
-  --pf-v5-c-masthead--BackgroundColor:      #000000;
+  --pf-v6-c-masthead--BackgroundColor:      #000000;
 
   /* Nav active indicator */
-  --pf-v5-c-nav__link--m-current--Color:                       #ffffff;
-  --pf-v5-c-nav__link--m-current--after--BackgroundColor:      #0066cc;
-  --pf-v5-c-nav__item--m-current__link--after--BackgroundColor: #0066cc;
+  --pf-v6-c-nav__link--m-current--Color:                       #ffffff;
+  --pf-v6-c-nav__link--m-current--after--BackgroundColor:      #0066cc;
+  --pf-v6-c-nav__item--m-current__link--after--BackgroundColor: #0066cc;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text);
 }
 
-code, pre, .pf-v5-u-font-family-mono {
+code, pre, .pf-v6-u-font-family-mono {
   font-family: var(--mono) !important;
 }
 
@@ -131,32 +131,32 @@ code, pre, .pf-v5-u-font-family-mono {
   inset: 0;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
-  border: 1px solid var(--pf-v5-global--BorderColor--100);
+  border: 1px solid #d2d2d2;
   border-radius: 6px;
-  padding: var(--pf-v5-global--spacer--md);
-  background: var(--pf-v5-global--BackgroundColor--100);
+  padding: 1rem;
+  background: #ffffff;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: var(--pf-v5-global--spacer--sm);
+  gap: 0.5rem;
 }
 
 .rh-flip-card__face--back {
   transform: rotateY(180deg);
-  background: var(--pf-v5-global--BackgroundColor--100);
+  background: #ffffff;
 }
 
 .rh-flip-card__hint {
   margin-top: auto;
-  padding-top: var(--pf-v5-global--spacer--sm);
-  font-size: var(--pf-v5-global--FontSize--sm);
-  color: var(--pf-v5-global--Color--200);
+  padding-top: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--gc-text-2);
   text-align: right;
 }
 
 /* Selectable card: RH red-50 tint for selected state */
-.pf-v5-c-card.pf-m-selectable.pf-m-selected {
-  --pf-v5-c-card--BackgroundColor: var(--rh-red-50, #ffeaea);
+.pf-v6-c-card.pf-m-selectable.pf-m-selected {
+  --pf-v6-c-card--BackgroundColor: var(--rh-red-50, #ffeaea);
 }
 
 /* Narrow centered layout for form-style pages */
@@ -173,11 +173,11 @@ code, pre, .pf-v5-u-font-family-mono {
 }
 
 /* Button overrides: primary buttons use brand blue */
-.pf-v5-c-button.pf-m-primary {
-  --pf-v5-c-button--m-primary--BackgroundColor: #0066cc;
-  --pf-v5-c-button--m-primary--hover--BackgroundColor: #004d99;
-  --pf-v5-c-button--m-primary--active--BackgroundColor: #003d7a;
-  --pf-v5-c-button--m-primary--focus--BackgroundColor: #004d99;
+.pf-v6-c-button.pf-m-primary {
+  --pf-v6-c-button--m-primary--BackgroundColor: #0066cc;
+  --pf-v6-c-button--m-primary--hover--BackgroundColor: #004d99;
+  --pf-v6-c-button--m-primary--active--BackgroundColor: #003d7a;
+  --pf-v6-c-button--m-primary--focus--BackgroundColor: #004d99;
 }
 
 /* ── Top nav ──────────────────────────────────────────────────────────────── */
@@ -279,7 +279,7 @@ code, pre, .pf-v5-u-font-family-mono {
     align-items: stretch;
     gap: 0.75rem;
   }
-  .rh-qe-footer .pf-v5-c-button { width: 100%; justify-content: center; }
+  .rh-qe-footer .pf-v6-c-button { width: 100%; justify-content: center; }
 
   /* Hide version badge to give nav links more room */
   :root { --rh-version-display: none; }
@@ -510,6 +510,6 @@ code, pre, .pf-v5-u-font-family-mono {
 }
 
 /* PatternFly Switch — match page font size so labels feel native */
-.pf-v5-c-switch__label {
+.pf-v6-c-switch__label {
   font-size: 13px;
 }

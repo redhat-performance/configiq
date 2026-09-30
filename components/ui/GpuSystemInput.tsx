@@ -9,7 +9,7 @@ import {
   MenuToggle,
 } from '@patternfly/react-core'
 import { getAppConfig } from '@/lib/app-config'
-import type { GpuOption } from '@/lib/hooks/useAicCatalog'
+import type { GpuOption } from '@/lib/hooks/useCatalog'
 import styles from './GpuSystemInput.module.css'
 
 interface GpuSystemInputProps {

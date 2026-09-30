@@ -1,6 +1,6 @@
 /* ============================================================================
    Routing Economics — UI styling
-   Follows QuickEstimate.module.css patterns. Uses --gc-* theme tokens with
+   Follows Performance.module.css patterns. Uses --gc-* theme tokens with
    safe fallbacks. NO font-size below 11.5px; no text lighter than --gc-text-2.
    ============================================================================ */
 
@@ -375,7 +375,7 @@
   font-size: 13px;
   color: var(--t2);
 }
-.modeToggle :global(.pf-v5-c-switch__label) {
+.modeToggle :global(.pf-v6-c-switch__label) {
   font-size: 13px;
   color: var(--t2);
 }

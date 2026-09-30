@@ -1,5 +1,5 @@
 import type { RecommendRequest } from './schemas'
-import { aicTimeoutSeconds } from './timeout'
+import { gatewayTimeoutSeconds } from './timeout'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -12,7 +12,7 @@ export type ServingMode = 'agg' | 'disagg'
 
 /**
  * One worker role in a disaggregated deployment (prefill / decode / encode).
- * `gpusPerWorker` = tp·pp·dp·cp (the aiconfigurator WORKER_GPU_DIMS; for MoE this
+ * `gpusPerWorker` = tp·pp·dp·cp (the aisimulate WORKER_GPU_DIMS; for MoE this
  * already equals etp·ep·pp — expert dims do not add GPUs). A replica's GPU count
  * is the sum of `workers × gpusPerWorker` across all phases.
  */
@@ -39,7 +39,7 @@ export interface RecommendResult {
     gpusNeeded: number
     /** GPUs in one replica (the smallest scalable unit). */
     gpusPerReplica: number
-    /** GPUs per worker (agg). Equals gpusPerReplica for disagg. */
+    /** Compatibility field for the smallest scalable unit; equals gpusPerReplica. */
     totalGpus: number
     replicasNeeded: number
     tensorParallelSize: number
@@ -71,6 +71,11 @@ export interface RecommendResult {
     /** Worst-case peak memory usage per GPU (GB). Checked against one GPU's HBM. */
     value: number
     unit: 'GB'
+    breakdown: {
+      weightsGb: number
+      kvCacheGb: number
+      overheadGb: number
+    } | null
   }
   metadata: {
     modelPath: string
@@ -94,6 +99,18 @@ export interface RecommendErrorResponse {
 
 export type RecommendResponse = RecommendResult | RecommendErrorResponse
 
+export interface RecommendWindow {
+  minGpus: number
+  maxGpus: number
+}
+
+export type RecommendProgressEvent =
+  | { type: 'search_started'; maxGpus: number }
+  | { type: 'window_started'; window: RecommendWindow }
+  | { type: 'window_completed'; window: RecommendWindow; candidateGpus: number | null }
+  | { type: 'refining'; window: RecommendWindow; candidateGpus: number }
+  | { type: 'completed'; response: RecommendResponse }
+
 // ─── Request ID ──────────────────────────────────────────────────────────────
 
 export function generateRequestId(): string {
@@ -102,7 +119,7 @@ export function generateRequestId(): string {
 
 // ─── Phase (disagg worker) parsing ───────────────────────────────────────────
 
-/** Shape of a WorkerConfig as returned by the AIConfigurator gateway. */
+/** Shape of a WorkerConfig as returned by the AISimulators gateway. */
 interface RawWorkerConfig {
   tp?: number | null
   pp?: number | null
@@ -129,7 +146,7 @@ const dim = (v: number | null | undefined): number => (v != null && v > 0 ? v : 
 
 /**
  * GPUs consumed by a single worker = tp·pp·dp·cp. This mirrors the
- * aiconfigurator SDK's WORKER_GPU_DIMS = (tp, pp, dp, cp) exactly and applies to
+ * aisimulate SDK's WORKER_GPU_DIMS = (tp, pp, dp, cp) exactly and applies to
  * both dense and MoE models (for MoE, tp·pp·dp already equals etp·ep·pp; the
  * expert dims do not multiply the GPU count). cp (context parallel) is included
  * — omitting it undercounts prefill pools.
@@ -162,16 +179,18 @@ function parsePhase(raw: RawWorkerConfig | null | undefined): PhaseConfig | null
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export async function callRecommend(
-  request: RecommendRequest
+  request: RecommendRequest,
+  options: { window?: RecommendWindow; timeoutSeconds?: number; signal?: AbortSignal } = {},
 ): Promise<RecommendResponse> {
   const requestId = generateRequestId()
   const startTime = performance.now()
 
-  const baseUrl = process.env.AICONFIGURATOR_GATEWAY_URL
-  const timeoutSeconds = aicTimeoutSeconds()
+  const baseUrl = process.env.AISIMULATORS_GATEWAY_URL
+  const timeoutSeconds = gatewayTimeoutSeconds()
+  const requestTimeoutSeconds = options.timeoutSeconds ?? timeoutSeconds
 
   if (!baseUrl) {
-    return makeError(requestId, 'AIC_NOT_CONFIGURED', 'AIConfigurator API URL is not configured')
+    return makeError(requestId, 'AISIM_NOT_CONFIGURED', 'AISimulators API URL is not configured')
   }
 
   const externalPayload: Record<string, unknown> = {
@@ -186,40 +205,63 @@ export async function callRecommend(
     top_n: request.top_n ?? 5,
   }
 
+  if (request.max_seq_len != null) externalPayload.max_seq_len = request.max_seq_len
+  if (request.prefill_max_seq_len != null) externalPayload.prefill_max_seq_len = request.prefill_max_seq_len
+  if (request.decode_max_seq_len != null) externalPayload.decode_max_seq_len = request.decode_max_seq_len
+
   if (request.backend_version != null) externalPayload.backend_version = request.backend_version
   if (request.target_request_rate != null) externalPayload.target_request_rate = request.target_request_rate
   if (request.target_concurrency != null) externalPayload.target_concurrency = request.target_concurrency
   if (request.request_latency != null) externalPayload.request_latency = request.request_latency
   if (request.prefix != null) externalPayload.prefix = request.prefix
   if (request.model_config != null) externalPayload.model_config = request.model_config
+  if (options.window?.minGpus != null) externalPayload.min_candidate_gpus = options.window.minGpus
+  if (options.window?.maxGpus != null) externalPayload.max_candidate_gpus = options.window.maxGpus
 
   let response: Response
   try {
-    response = await fetch(`${baseUrl}/recommend`, {
+    const timeoutSignal = AbortSignal.timeout(requestTimeoutSeconds * 1000)
+    const signal = options.signal
+      ? AbortSignal.any([timeoutSignal, options.signal])
+      : timeoutSignal
+    // Native AISimulators keeps the detailed memory estimate behind the
+    // optional include flag; the sizing result renders that value directly.
+    const recommendUrl = `${baseUrl}/recommend?include=memory`
+    response = await fetch(recommendUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
       body: JSON.stringify(externalPayload),
-      signal: AbortSignal.timeout(timeoutSeconds * 1000),
+      signal,
     })
   } catch (err: unknown) {
+    if (options.signal?.aborted) throw err
     const durationMs = Math.round(performance.now() - startTime)
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      return makeError(requestId, 'AIC_TIMEOUT', `The AIConfigurator API did not respond within ${timeoutSeconds} seconds (waited ${durationMs}ms)`)
+      return makeError(requestId, 'AISIM_TIMEOUT', `The AISimulators API did not respond within ${requestTimeoutSeconds} seconds (waited ${durationMs}ms)`)
     }
-    return makeError(requestId, 'AIC_UNAVAILABLE', 'AIConfigurator API is unreachable')
+    return makeError(requestId, 'AISIM_UNAVAILABLE', 'AISimulators API is unreachable')
   }
 
   if (!response.ok) {
-    let detail = `AIConfigurator API returned HTTP ${response.status}`
+    let detail = `AISimulators API returned HTTP ${response.status}`
     try {
       const body = await response.json()
       if (typeof body.detail === 'string') detail = body.detail
     } catch { /* ignore parse errors */ }
 
-    const code = response.status === 422 ? 'AIC_NO_CONFIGURATION' : 'AIC_UNAVAILABLE'
+    // Current AISimulators deployments can surface an undersized bounded
+    // search as a 500 NoViableParallelConfig. It is a normal signal for the
+    // incremental search to try the next GPU window, not a service outage.
+    // Keep the message check while older gateways are still in circulation;
+    // the service now maps this condition to 422 as well.
+    const noViableWindow = detail.includes('NoViableParallelConfig') ||
+      detail.includes('no deployment_mode has a viable parallel config')
+    const code = response.status === 422 || noViableWindow
+      ? 'AISIM_NO_CONFIGURATION'
+      : 'AISIM_UNAVAILABLE'
     return makeError(requestId, code, detail)
   }
 
@@ -227,20 +269,20 @@ export async function callRecommend(
   try {
     rawData = await response.json() as Record<string, unknown>
   } catch {
-    return makeError(requestId, 'AIC_INVALID_RESPONSE', 'AIConfigurator API returned non-JSON response')
+    return makeError(requestId, 'AISIM_INVALID_RESPONSE', 'AISimulators API returned non-JSON response')
   }
 
   const configs = rawData.configs as Array<Record<string, unknown>> | undefined
   if (!configs || configs.length === 0) {
-    return makeError(requestId, 'AIC_NO_CONFIGURATION', 'No valid GPU configuration found for this model and hardware combination.')
+    return makeError(requestId, 'AISIM_NO_CONFIGURATION', 'No valid GPU configuration found for this model and hardware combination.')
   }
 
   const best = configs[0]
   const chosenMode = typeof rawData.chosen_mode === 'string' ? rawData.chosen_mode : 'agg'
   const mode: ServingMode = chosenMode.startsWith('disagg') ? 'disagg' : 'agg'
 
-  const totalGpusNeeded = (best.total_gpus_needed as number) ?? 0
-  const replicasNeeded = (best.replicas_needed as number) ?? 1
+  const rawTotalGpusNeeded = (best.total_gpus_needed as number) ?? 0
+  const rawReplicasNeeded = (best.replicas_needed as number) ?? 0
 
   const prefill = parsePhase(best.prefill_config as RawWorkerConfig | undefined)
   const decode = parsePhase(best.decode_config as RawWorkerConfig | undefined)
@@ -254,34 +296,103 @@ export async function callRecommend(
   const moeEp = (best.moe_ep as number | null) ?? null
   const batchSize = (best.bs as number | null) ?? null
 
-  const warnings: RecommendWarning[] = []
   let gpusPerReplica: number
+  let replicasNeeded: number
   if (mode === 'disagg') {
     // A replica is one prefill/decode(/encode) set: sum of workers × gpus/worker.
     gpusPerReplica = [prefill, decode, encode].reduce(
       (sum, phase) => sum + (phase ? phase.workers * phase.gpusPerWorker : 0),
       0,
     )
+    replicasNeeded = Number.isFinite(rawReplicasNeeded) && rawReplicasNeeded > 0
+      ? Math.ceil(rawReplicasNeeded)
+      : 1
   } else {
-    // Agg: gpus/replica == gpus/worker == num_total_gpus (tp·pp·dp·cp).
-    const numTotalGpus = (best.num_total_gpus as number) ?? gpusPerWorker(tp, pp, dp, cp)
-    gpusPerReplica = numTotalGpus
+    // Agg: GPUs per replica are the parallelism product. Older gateway builds
+    // reported cluster-wide `used_gpus` as num_total_gpus, so deriving this
+    // from the topology prevents a multi-replica recommendation from being
+    // multiplied a second time by the cost calculator.
     const parallelismProduct = gpusPerWorker(tp, pp, dp, cp)
-    if (parallelismProduct !== numTotalGpus) {
-      warnings.push({
-        code: 'GPU_TOPOLOGY_MISMATCH',
-        message: `Parallelism dimensions (TP=${tp} x PP=${pp} x DP=${dp} x CP=${cp} = ${parallelismProduct}) do not equal GPUs per worker (${numTotalGpus})`,
-      })
-    }
+    replicasNeeded = Number.isFinite(rawReplicasNeeded) && rawReplicasNeeded > 0
+      ? Math.ceil(rawReplicasNeeded)
+      : rawTotalGpusNeeded > 0
+        ? Math.max(Math.ceil(rawTotalGpusNeeded / parallelismProduct), 1)
+        : 1
+    const derivedPerReplica = rawTotalGpusNeeded > 0
+      ? Math.max(Math.ceil(rawTotalGpusNeeded / replicasNeeded), 1)
+      : parallelismProduct
+    const hasTopology = best.tp != null || best.pp != null || best.dp != null || best.cp != null
+    gpusPerReplica = hasTopology ? parallelismProduct : derivedPerReplica
+  }
+
+  const totalGpusNeeded = Number.isFinite(rawTotalGpusNeeded) && rawTotalGpusNeeded > 0
+    ? Math.ceil(rawTotalGpusNeeded)
+    : gpusPerReplica * replicasNeeded
+  const topologyClusterGpus = gpusPerReplica * replicasNeeded
+  if (totalGpusNeeded !== topologyClusterGpus) {
+    return makeError(
+      requestId,
+      'AISIM_INVALID_RESPONSE',
+      `AISimulators returned inconsistent GPU topology: cluster total ${totalGpusNeeded} does not equal ${gpusPerReplica} GPUs per replica x ${replicasNeeded} replicas.`,
+    )
   }
 
   const durationMs = Math.round(performance.now() - startTime)
 
-  // The gateway reports concurrency, request rate, and tokens/s per replica;
-  // scale to cluster totals so the headline matches the whole deployment.
-  // Per-GPU and per-user rates are already per-unit and stay as-is.
-  const clusterConcurrency = Math.round(((best.concurrency as number) ?? 0) * replicasNeeded)
-  const clusterTokensPerSecond = ((best.tokens_per_second as number) ?? 0) * replicasNeeded
+  // AISimulators candidate metrics describe the complete candidate cluster:
+  // output_throughput_tok_s_per_gpu * used_gpus equals output_throughput_tok_s.
+  // Do not multiply them by replicas again. The capacity calculator divides
+  // this cluster value by replicas to obtain one scalable replica's capacity.
+  const clusterConcurrency = Math.round((best.concurrency as number) ?? 0)
+  const clusterTokensPerSecond = (best.tokens_per_second as number) ?? 0
+  const ttftLatencyMs = (best.ttft as number) ?? 0
+  const tpotMs = (best.tpot as number) ?? 0
+  const requestLatencyMs = (best.request_latency as number) ?? 0
+  const memoryBreakdown = best.memory_breakdown as Record<string, unknown> | undefined
+  const bytes = (field: string): number => {
+    const value = memoryBreakdown?.[field]
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+  }
+  const memoryBreakdownGb = memoryBreakdown
+    ? {
+        weightsGb: bytes('weights_bytes') / (1024 ** 3),
+        kvCacheGb: bytes('kv_cache_bytes') / (1024 ** 3),
+        overheadGb: (bytes('activations_bytes') + bytes('runtime_overhead_bytes') + bytes('comm_overhead_bytes')) / (1024 ** 3),
+      }
+    : null
+  const memoryFromBreakdown = memoryBreakdown
+    ? (memoryBreakdownGb!.weightsGb + memoryBreakdownGb!.kvCacheGb + memoryBreakdownGb!.overheadGb)
+    : 0
+  const memoryGb = typeof best.memory === 'number' && Number.isFinite(best.memory)
+    ? best.memory
+    : memoryFromBreakdown
+
+  const requiredValues = [
+    totalGpusNeeded,
+    gpusPerReplica,
+    replicasNeeded,
+    clusterTokensPerSecond,
+    ttftLatencyMs,
+    tpotMs,
+  ]
+  if (requiredValues.some(value => !Number.isFinite(value) || value <= 0)) {
+    return makeError(
+      requestId,
+      'AISIM_INVALID_RESPONSE',
+      'AISimulators returned an incomplete recommendation without positive GPU, throughput, TTFT, and TPOT values.',
+    )
+  }
+
+  const missesLatencyTarget = request.request_latency != null
+    ? !Number.isFinite(requestLatencyMs) || requestLatencyMs <= 0 || requestLatencyMs > request.request_latency
+    : ttftLatencyMs > request.ttft || tpotMs > (request.tpot ?? 30)
+  if (missesLatencyTarget) {
+    return makeError(
+      requestId,
+      'AISIM_NO_CONFIGURATION',
+      'AISimulators did not return a configuration that satisfies the requested latency targets.',
+    )
+  }
 
   return {
     requestId,
@@ -302,9 +413,9 @@ export async function callRecommend(
     },
     phases: { prefill, decode, encode },
     performance: {
-      ttftLatencyMs: (best.ttft as number) ?? 0,
-      tpotMs: (best.tpot as number) ?? 0,
-      requestLatencyMs: (best.request_latency as number) ?? 0,
+      ttftLatencyMs,
+      tpotMs,
+      requestLatencyMs,
       concurrency: clusterConcurrency,
     },
     throughput: {
@@ -313,8 +424,9 @@ export async function callRecommend(
       tokensPerSecondPerUser: (best.tokens_per_second_per_user as number) ?? 0,
     },
     memory: {
-      value: (best.memory as number) ?? 0,
+      value: memoryGb,
       unit: 'GB',
+      breakdown: memoryBreakdownGb,
     },
     metadata: {
       modelPath: request.model_path,
@@ -324,8 +436,91 @@ export async function callRecommend(
       targetTtftMs: request.ttft,
       durationMs,
     },
-    warnings,
+    warnings: [],
   }
+}
+
+/**
+ * Search progressively larger GPU windows, then refine the first feasible
+ * window. A feasible result from a range is provisional until its lower
+ * sub-range has been checked.
+ */
+export async function* incrementalRecommend(
+  request: RecommendRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<RecommendProgressEvent> {
+  const maxGpus = configuredMaxCandidateGpus()
+  const totalTimeoutSeconds = gatewayTimeoutSeconds()
+  const deadline = performance.now() + Math.max(1, totalTimeoutSeconds - 1) * 1000
+  let windowMin = 1
+  let windowMax = 1
+  let best: RecommendResult | null = null
+
+  yield { type: 'search_started', maxGpus }
+
+  while (windowMin <= maxGpus) {
+    if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
+    const window = { minGpus: windowMin, maxGpus: windowMax }
+    yield { type: 'window_started', window }
+    const remainingSeconds = Math.ceil((deadline - performance.now()) / 1000)
+    if (remainingSeconds <= 0) {
+      yield {
+        type: 'completed',
+        response: best ?? makeError(generateRequestId(), 'AISIM_TIMEOUT', 'The incremental recommendation search exceeded its overall time budget.'),
+      }
+      return
+    }
+    const response = await callRecommend(request, {
+      window,
+      timeoutSeconds: remainingSeconds,
+      signal,
+    })
+
+    if (response.status === 'failed') {
+      if (response.error.code !== 'AISIM_NO_CONFIGURATION') {
+        yield { type: 'completed', response: best ?? response }
+        return
+      }
+
+      yield { type: 'window_completed', window, candidateGpus: null }
+      if (best != null) {
+        yield { type: 'completed', response: best }
+        return
+      }
+      windowMin = windowMax + 1
+      windowMax = Math.min(maxGpus, Math.max(windowMin, windowMax * 2))
+      continue
+    }
+
+    const candidateGpus = response.recommendation.gpusNeeded
+    if (best == null || candidateGpus < best.recommendation.gpusNeeded) best = response
+    yield { type: 'window_completed', window, candidateGpus }
+
+    if (candidateGpus <= windowMin) {
+      yield { type: 'completed', response: best }
+      return
+    }
+
+    const refinementMax = candidateGpus - 1
+    if (refinementMax >= windowMin) {
+      yield { type: 'refining', window: { minGpus: windowMin, maxGpus: refinementMax }, candidateGpus }
+      windowMax = refinementMax
+      continue
+    }
+
+    yield { type: 'completed', response: best }
+    return
+  }
+
+  yield {
+    type: 'completed',
+    response: makeError(generateRequestId(), 'AISIM_NO_CONFIGURATION', 'No valid GPU configuration found for this workload.'),
+  }
+}
+
+function configuredMaxCandidateGpus(): number {
+  const value = Number(process.env.AISIMULATORS_MAX_CANDIDATE_GPUS)
+  return Number.isInteger(value) && value > 0 ? value : 1024
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

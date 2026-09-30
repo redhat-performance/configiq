@@ -15,6 +15,9 @@ import valkey
 logger = logging.getLogger(__name__)
 
 VALKEY_URL = os.environ.get("VALKEY_URL", "valkey://localhost:6379/0")
+VALKEY_SOCKET_TIMEOUT = 10
+VALKEY_SOCKET_CONNECT_TIMEOUT = 5
+VALKEY_HEALTH_CHECK_INTERVAL = 30
 
 # TTLs per data category
 TTL_MODELS = 25 * 3600          # 25 hours
@@ -51,7 +54,14 @@ class ValkeyStore:
         self._client: valkey.Valkey | None = None
 
     def connect(self) -> None:
-        self._client = valkey.from_url(self._url, decode_responses=True)
+        self._client = valkey.from_url(
+            self._url,
+            decode_responses=True,
+            socket_timeout=VALKEY_SOCKET_TIMEOUT,
+            socket_connect_timeout=VALKEY_SOCKET_CONNECT_TIMEOUT,
+            health_check_interval=VALKEY_HEALTH_CHECK_INTERVAL,
+            retry_on_timeout=True,
+        )
         self._client.ping()
         logger.info("Connected to Valkey at %s", self._url)
 

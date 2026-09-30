@@ -28,7 +28,7 @@ const GPU_CATALOG: GpuCatalogEntry[] = [
   { id: 'mi300x',  label: 'MI300X 192GB', rate: 4.20, price: 38000, tdpW: 750,  mem: 192 },
 ]
 
-// Maps a cluster-cost catalog id to the aicostings/aiconfigurator systemId used
+// Maps a cluster-cost catalog id to the aicostings/aisimulators systemId used
 // by useCostings. Only ids with a confident 1:1 match are listed; a GPU with no
 // entry (a100_40 40GB, mi300x — not in the costings hardware seed) keeps its
 // built-in fallback values.
@@ -403,7 +403,7 @@ function useParticles(ref: React.RefObject<HTMLCanvasElement>, breakdown: CalcRe
       cancelAnimationFrame(raf)
       ro.disconnect()
     }
-  }, [breakdown])
+  }, [breakdown, ref])
 }
 
 // Compact layer visualization - horizontal bar + rows
@@ -554,7 +554,7 @@ export default function ClusterCostPage() {
       // Check if we're using fallback (first provider is 'gcp' with exactly those GPUs)
       const isFallback = data.length > 0 && data[0]?.id === 'gcp' && data[0]?.gpus?.length === 4
       if (isFallback) {
-        setProviderError('Could not reach pricing worker — using cached prices')
+        setProviderError('Could not reach aicostings — live rates unavailable')
       }
     } catch (error) {
       setProviderError('Failed to load provider data')

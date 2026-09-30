@@ -2,9 +2,28 @@
 
 """Tests for ValkeyStore — requires a running Valkey instance."""
 
+from unittest.mock import Mock, patch
+
 import pytest
 
 from tools.api_service.valkey import ValkeyStore
+
+
+class TestValkeyConnection:
+    def test_connect_configures_timeout_and_health_checks(self):
+        client = Mock()
+        with patch("tools.api_service.valkey.valkey.from_url", return_value=client) as from_url:
+            ValkeyStore("valkey://example:6379/0").connect()
+
+        from_url.assert_called_once_with(
+            "valkey://example:6379/0",
+            decode_responses=True,
+            socket_timeout=10,
+            socket_connect_timeout=5,
+            health_check_interval=30,
+            retry_on_timeout=True,
+        )
+        client.ping.assert_called_once_with()
 
 
 @pytest.fixture

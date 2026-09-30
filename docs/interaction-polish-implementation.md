@@ -252,10 +252,10 @@ Add to `app/globals.css` or `app/theme.css`:
 import "./theme.css";
 ```
 
-### **Step 2: Update Performance page**
+### **Step 2: Update Predict performance page**
 
 ```tsx
-// app/performance/page.tsx
+// app/predict/page.tsx
 "use client";
 
 import { useCountUp } from "@/hooks/useCountUp";
@@ -319,4 +319,4 @@ const weightGB = useCountUp(result.weightGB, 1500);
 5. **Smooth animations** - Flip (600ms), count-up (1500ms), accordion (300ms)
 
 **Status:** Components created, implementation guide ready.
-**Next:** Apply to Performance page systematically.
+**Next:** Apply to Predict performance page systematically.

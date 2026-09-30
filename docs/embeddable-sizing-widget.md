@@ -27,7 +27,7 @@ its model and GPU options through the `config` property.
   const widget = document.querySelector('#sizing');
   widget.setAttribute(
     'full-url',
-    new URL('/performance', configiqOrigin).href,
+    new URL('/predict', configiqOrigin).href,
   );
   widget.config = {
     models: [
@@ -74,7 +74,7 @@ that ConfigIQ accepts. The widget handles validation, requests, status updates,
 results, and responsive presentation.
 
 When `full-url` is present, the widget keeps its `model` and `system` query
-parameters aligned with the current selections. The `/performance` page reads
+parameters aligned with the current selections. The `/predict` page reads
 valid parameters and uses its catalog defaults for missing values.
 
 ## Endpoint contract

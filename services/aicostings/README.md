@@ -19,13 +19,13 @@ results in Valkey, and serves them via a REST API.
 | `GET,POST /mcp` | MCP endpoint exposing the API as tools (requires the `mcp` extra) |
 
 The GPU system catalog and vendor display names in `/systems` come from the
-aiconfigurator SDK (via the shared `configiq.systems` module), so aicostings and
-the aiconfigurator API never drift on which GPUs exist or how they're named.
+aisimulate SDK (via the shared `configiq.systems` module), so aicostings and
+the aisimulators API never drift on which GPUs exist or how they're named.
 
 ## Quick start
 
 This service depends on the in-tree [`configiq`](../configiq-py) package (a uv
-path dependency) and on the aiconfigurator SDK wheels published by the Red Hat
+path dependency) and on the aisimulate SDK wheels published by the Red Hat
 fork. The SDK's Rust-compiled core is currently **manylinux x86_64 only**, so a
 full install (and the test suite) runs on x86-64 Linux or in the container.
 

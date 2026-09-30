@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { recordErrorCode } from '@/lib/otel-metrics'
 
 const HF_BASE = 'https://huggingface.co'
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
@@ -28,6 +29,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   const modelId = searchParams.get('model')?.trim()
 
   if (!modelId || !MODEL_ID_RE.test(modelId)) {
+    recordErrorCode('/api/hf-config', 'invalid_model_id', 400)
     return NextResponse.json(
       { error: 'invalid_model_id', message: 'Model ID must be in the format "owner/model-name" using only letters, numbers, ".", "_" or "-".' },
       { status: 400 }
@@ -45,6 +47,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   try {
     configRes = await hfFetch(configUrl, token)
   } catch {
+    recordErrorCode('/api/hf-config', 'network_error', 503)
     return NextResponse.json(
       { error: 'network_error', message: 'Could not reach HuggingFace. Check your network connection.' },
       { status: 503 }
@@ -52,6 +55,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   }
 
   if (configRes.status === 403 || configRes.status === 401) {
+    recordErrorCode('/api/hf-config', 'gated', 403)
     return NextResponse.json(
       { error: 'gated', message: 'This model is gated. Provide a HuggingFace access token to continue.' },
       { status: 403 }
@@ -59,6 +63,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   }
 
   if (configRes.status === 404) {
+    recordErrorCode('/api/hf-config', 'not_found', 404)
     return NextResponse.json(
       { error: 'not_found', message: `Model "${modelId}" was not found on HuggingFace.` },
       { status: 404 }
@@ -66,6 +71,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   }
 
   if (!configRes.ok) {
+    recordErrorCode('/api/hf-config', 'network_error', 502)
     return NextResponse.json(
       { error: 'network_error', message: `HuggingFace returned HTTP ${configRes.status} for config.json` },
       { status: 502 }
@@ -76,6 +82,7 @@ export async function GET(req: NextRequest): Promise<NextResponse<HFConfigRespon
   try {
     config = await configRes.json() as Record<string, unknown>
   } catch {
+    recordErrorCode('/api/hf-config', 'network_error', 502)
     return NextResponse.json(
       { error: 'network_error', message: 'config.json from HuggingFace could not be parsed as JSON.' },
       { status: 502 }

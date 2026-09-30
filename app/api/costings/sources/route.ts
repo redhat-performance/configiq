@@ -9,6 +9,7 @@
 // correct client-side (no build-time NEXT_PUBLIC_AICOSTINGS_API_URL).
 
 import { NextResponse } from 'next/server'
+import { recordErrorCode } from '@/lib/otel-metrics'
 
 const DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -27,6 +28,7 @@ export async function GET() {
     })
 
     if (!res.ok) {
+      recordErrorCode('/api/costings/sources', 'COSTINGS_ERROR', 502)
       return NextResponse.json(
         {
           status: 'failed',
@@ -48,11 +50,13 @@ export async function GET() {
     })
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      recordErrorCode('/api/costings/sources', 'COSTINGS_TIMEOUT', 504)
       return NextResponse.json(
         { status: 'failed', error: { code: 'COSTINGS_TIMEOUT', message: 'aicostings API timed out' } },
         { status: 504, headers: { 'Access-Control-Allow-Origin': '*' } },
       )
     }
+    recordErrorCode('/api/costings/sources', 'COSTINGS_UNAVAILABLE', 502)
     return NextResponse.json(
       { status: 'failed', error: { code: 'COSTINGS_UNAVAILABLE', message: 'aicostings API is unreachable' } },
       { status: 502, headers: { 'Access-Control-Allow-Origin': '*' } },

@@ -64,6 +64,26 @@
 /* ── Field layout ── */
 .fieldWrap { display: flex; flex-direction: column; gap: 6px; }
 
+.toggle :global(.pf-v6-c-switch) {
+  --pf-v6-c-switch--Height: 18px !important;
+  --pf-v6-c-switch__toggle--Width: 32px !important;
+  --pf-v6-c-switch__toggle--Height: 16px !important;
+  --pf-v6-c-switch__toggle--BorderRadius: 9px !important;
+  font-size: 11px !important;
+}
+.toggle :global(.pf-v6-c-switch__label) {
+  font-size: 11px !important;
+  font-weight: 500;
+}
+.toggle :global(.pf-v6-c-switch__toggle) {
+  width: 32px !important;
+  height: 16px !important;
+}
+.toggle :global(.pf-v6-c-switch__toggle::before) {
+  width: 12px !important;
+  height: 12px !important;
+}
+
 .fieldLabel {
   font-family: var(--mono);
   font-size: 12px;
@@ -103,7 +123,7 @@
   transform: translateY(-50%);
   pointer-events: none;
 }
-.autoChipWrapper :global(.pf-v5-c-label) {
+.autoChipWrapper :global(.pf-v6-c-label) {
   font-size: 12px;
   font-weight: 500;
 }
@@ -139,7 +159,7 @@
   flex: 1;
   max-width: none;
 }
-.tokenRow :global(.pf-v5-c-button) {
+.tokenRow :global(.pf-v6-c-button) {
   border: 1px solid var(--border-light, #b8bbbe);
   border-radius: 0 4px 4px 0;
   height: 42px;

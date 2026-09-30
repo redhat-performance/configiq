@@ -12,7 +12,7 @@ examples.
 | `tests/widgets/configiq-sizing-widget.test.mjs` | Public contract and lifecycle tests |
 | `tests/widgets/fixtures/configiq-sizing-widget-host.html` | Cross-origin host preview |
 | `next.config.js` | Widget CORS and cache headers |
-| `app/performance/performance-prefill.ts` | Full-workflow query handoff |
+| `app/predict/performance-prefill.ts` | Full-workflow query handoff |
 
 ## Component boundaries
 

@@ -1,0 +1,62 @@
+# AISimulators REST API service.
+#
+# Build context is services/ (not this directory) so the image can pull in the
+# shared configiq-py package alongside this service. Build from the repo root:
+#
+#   podman build -f services/aisimulators/Containerfile -t aisimulators services/
+#
+# Unlike the aisimulate monorepo's Containerfile (a multi-stage Rust/maturin
+# wheel *builder*), this image just installs the already-published single
+# aisimulate SDK wheel from the Red Hat fork's GitHub Releases and layers the
+# thin FastAPI wrapper (plus the shared configiq package) on top. The SDK wheel
+# URL is pinned in pyproject.toml; bump it there to move to a newer SDK.
+
+FROM python:3.12-slim
+
+# Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
+# name it shares. Set on package creation; add here so future publishes resolve
+# to configiq/packages rather than redhat-performance/aisimulators.
+LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/opt/venv/bin:${PATH}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+
+# Shared ConfigIQ library, with the observability + MCP extras so /metrics,
+# tracing, and the MCP server light up in the deployed container.
+COPY configiq-py /src/configiq-py
+RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
+
+# Runtime deps, read from pyproject.toml (single source of truth) by the shared
+# installer — incl. the aisimulate SDK + its Rust-compiled core, which
+# pyproject.toml references by exact fork-release wheel URL. Copy pyproject.toml
+# alone first so this layer only rebuilds when the deps change. `python` here is
+# the venv's (PATH=/opt/venv/bin), so pip installs into /opt/venv.
+COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
+RUN python /tmp/install-deps.py /tmp/pyproject.toml
+
+# Thin REST wrapper. CMD imports it as api_service.app:app.
+COPY aisimulators/tools/api_service /app/api_service
+
+# OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
+# group-writable so an arbitrary assigned UID can still write.
+RUN chown -R 1001:0 /app /opt/venv \
+    && chmod -R g=u /app /opt/venv
+
+USER 1001
+
+EXPOSE 7860
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD /opt/venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/systems', timeout=5)" || exit 1
+
+CMD ["uvicorn", "api_service.app:app", "--host", "0.0.0.0", "--port", "7860", "--workers", "2"]

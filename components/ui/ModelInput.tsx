@@ -91,7 +91,7 @@ export function ModelInput({
           {status === 'supported' && <Label color="blue" isCompact icon={<CheckCircleIcon />}>Tested</Label>}
           {status === 'catalog' && <Label color="green" isCompact icon={<CheckCircleIcon />}>In catalog</Label>}
           {status === 'fetching' && <Label color="grey" isCompact>Checking...</Label>}
-          {status === 'fetched' && <Label color="gold" isCompact icon={<CheckCircleIcon />}>From HuggingFace</Label>}
+          {status === 'fetched' && <Label color="yellow" isCompact icon={<CheckCircleIcon />}>From HuggingFace</Label>}
           {status === 'error' && <Label color="red" isCompact icon={<ExclamationTriangleIcon />}>Not found</Label>}
           {status === 'idle' && isLoading && <Label color="grey" isCompact>Loading...</Label>}
         </div>

@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 store = ValkeyStore()
 
 # GPU vendor display names, keyed by system id, loaded once at startup from the
-# aiconfigurator SDK (the same source the aiconfigurator API uses) so the two
+# aisimulate SDK (the same source the aisimulators API uses) so the two
 # services never drift. Falls back to the system id when a name is unavailable.
 _DEVICE_DISPLAY_NAMES: dict[str, str] = {}
 
@@ -173,7 +173,7 @@ async def job_load_hardware_costs() -> None:
 async def lifespan(app: FastAPI):
     store.connect()
 
-    # Load GPU display names from the aiconfigurator SDK once at startup.
+    # Load GPU display names from the aisimulate SDK once at startup.
     global _DEVICE_DISPLAY_NAMES
     _DEVICE_DISPLAY_NAMES = load_device_names_from_perf_data()
 

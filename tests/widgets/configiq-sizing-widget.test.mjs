@@ -133,7 +133,7 @@ describe('ConfigIQ sizing widget lifecycle', () => {
   it('supports a dark host theme and an optional configurable full-tool link', () => {
     const widget = mountWidget();
     widget.setAttribute('theme', 'dark');
-    widget.setAttribute('full-url', 'https://configiq.example/performance?model=qwen');
+    widget.setAttribute('full-url', 'https://configiq.example/predict?model=qwen');
     widget.setAttribute('full-label', 'Open detailed sizing');
     const link = widget.shadowRoot.querySelector('.full-link');
     expect(widget.getAttribute('theme')).toBe('dark');
@@ -168,19 +168,19 @@ describe('ConfigIQ sizing widget lifecycle', () => {
 
   it('keeps the default full-tool label concise', () => {
     const widget = mountWidget();
-    widget.setAttribute('full-url', 'https://configiq.example/performance');
+    widget.setAttribute('full-url', 'https://configiq.example/predict');
     expect(widget.shadowRoot.querySelector('.full-link').textContent).toContain('Open full ConfigIQ');
   });
 
   it('resolves a relative full-tool link against the embedding document', () => {
     const widget = mountWidget();
-    widget.setAttribute('full-url', '/performance');
+    widget.setAttribute('full-url', '/predict');
     expect(widget.shadowRoot.querySelector('.full-link').origin).toBe(new URL(document.baseURI).origin);
   });
 
   it('keeps the full-tool handoff aligned with edited selections', () => {
     const widget = mountWidget();
-    widget.setAttribute('full-url', 'https://configiq.example/performance');
+    widget.setAttribute('full-url', 'https://configiq.example/predict');
     widget.config = {
       models: [
         ...config.models,

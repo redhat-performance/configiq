@@ -1,5 +1,7 @@
-// Provider pricing from Cloudflare Worker
-// Fetches live GPU pricing from multiple cloud providers
+// Provider pricing adapter for the aicostings systems API.
+
+import { normalizeCloudRates } from '@/lib/hooks/useCostings'
+import { CLIENT_CACHE_TTL_MS } from '@/lib/cache-policy'
 
 export interface ProviderGpu {
   model: string
@@ -17,184 +19,103 @@ interface CacheEntry {
   timestamp: number
 }
 
-const CACHE_TTL_MS = 30 * 60 * 1000 // 30 minutes
 let cache: CacheEntry | null = null
 
-const WORKER_URL = process.env.NEXT_PUBLIC_PRICING_WORKER_URL ||
-  'https://gpu-pricing-worker.vikasgrover2004.workers.dev/'
+interface AicostingsSystem {
+  id: string
+  name: string
+  cloud_rates: Record<string, {
+    on_demand?: unknown
+    rate_basis?: unknown
+    gpus_per_instance?: unknown
+    spot_median?: unknown
+  }>
+}
 
-// Fallback providers when worker is unreachable
-const FALLBACK_PROVIDERS: Provider[] = [
-  {
-    id: 'gcp',
-    label: 'GCP',
-    gpus: [
-      { model: 'H100 SXM', price: 3.20 },
-      { model: 'H200 SXM', price: null },
-      { model: 'A100 80GB', price: 2.40 },
-      { model: 'L40S', price: 1.85 },
-    ],
-  },
-  {
-    id: 'aws',
-    label: 'AWS',
-    gpus: [
-      { model: 'H100 SXM', price: 3.89 },
-      { model: 'H200 SXM', price: 4.50 },
-      { model: 'A100 80GB', price: 3.20 },
-      { model: 'A100 40GB', price: 2.40 },
-    ],
-  },
-  {
-    id: 'lambda',
-    label: 'Lambda',
-    gpus: [
-      { model: 'H100 SXM', price: 2.99 },
-      { model: 'A100 80GB', price: 1.99 },
-      { model: 'A10', price: 0.75 },
-    ],
-  },
-  {
-    id: 'coreweave',
-    label: 'CoreWeave',
-    gpus: [
-      { model: 'H100 SXM', price: 2.45 },
-      { model: 'H200 SXM', price: null },
-      { model: 'A100 80GB', price: 1.92 },
-      { model: 'L40S', price: 1.19 },
-    ],
-  },
-  {
-    id: 'runpod',
-    label: 'RunPod',
-    gpus: [
-      { model: 'H100 SXM', price: 2.59 },
-      { model: 'A100 80GB', price: 1.64 },
-      { model: 'L40S', price: 0.99 },
-      { model: 'A40', price: 0.49 },
-    ],
-  },
-  {
-    id: 'azure',
-    label: 'Azure',
-    gpus: [
-      { model: 'H100 SXM', price: 3.67 },
-      { model: 'A100 80GB', price: 2.88 },
-      { model: 'H200 SXM', price: null },
-    ],
-  },
-  {
-    id: 'vastai',
-    label: 'Vast.ai',
-    gpus: [
-      { model: 'H100 SXM', price: 0.87 },
-      { model: 'A100 80GB', price: 0.52 },
-      { model: 'A100 40GB', price: 0.24 },
-      { model: 'L40S', price: 0.39 },
-    ],
-  },
-  {
-    id: 'nebius',
-    label: 'Nebius',
-    gpus: [
-      { model: 'H100 SXM', price: 2.18 },
-      { model: 'H200 SXM', price: 3.20 },
-      { model: 'A100 80GB', price: 1.55 },
-    ],
-  },
-]
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object'
+}
 
-/**
- * Fetch all providers from worker. Tries multiple endpoints until success.
- * Returns fallback providers on error.
- */
+function parseSystems(data: unknown): AicostingsSystem[] {
+  if (!isRecord(data) || !Array.isArray(data.systems)) return []
+
+  return data.systems.flatMap((value): AicostingsSystem[] => {
+    if (!isRecord(value) || typeof value.id !== 'string' || !value.id.trim() ||
+      typeof value.name !== 'string' || !isRecord(value.cloud_rates)) return []
+
+    const cloudRates = Object.fromEntries(
+      Object.entries(value.cloud_rates).flatMap(([providerRegion, rawRates]) => {
+        if (!isRecord(rawRates)) return []
+        return [[providerRegion, {
+          on_demand: rawRates.on_demand,
+          rate_basis: rawRates.rate_basis,
+          gpus_per_instance: rawRates.gpus_per_instance,
+          spot_median: rawRates.spot_median,
+        }]]
+      }),
+    )
+    return [{ id: value.id, name: value.name, cloud_rates: cloudRates }]
+  })
+}
+
+function providerLabel(providerRegion: string): string {
+  const [provider, ...region] = providerRegion.split('.')
+  const label = provider.toUpperCase()
+  return region.length > 0 ? `${label} (${region.join('.')})` : label
+}
+
+function parseAicostingsResponse(data: unknown): Provider[] {
+  const providers = new Map<string, Provider>()
+  for (const system of parseSystems(data)) {
+    for (const [providerRegion, rates] of Object.entries(system.cloud_rates)) {
+      const normalized = normalizeCloudRates(system.id, providerRegion, {
+        on_demand: typeof rates.on_demand === 'number' ? rates.on_demand : null,
+        reserved_1yr: null,
+        reserved_3yr: null,
+        spot_median: typeof rates.spot_median === 'number' ? rates.spot_median : null,
+        rate_basis: rates.rate_basis === 'gpu_hour' || rates.rate_basis === 'instance_hour'
+          ? rates.rate_basis
+          : undefined,
+        gpus_per_instance: typeof rates.gpus_per_instance === 'number'
+          ? rates.gpus_per_instance
+          : null,
+      })
+      if (!normalized) continue
+      const price = normalized.on_demand ?? normalized.spot_median
+      const provider = providers.get(providerRegion) ?? {
+        id: providerRegion,
+        label: providerLabel(providerRegion),
+        gpus: [],
+      }
+      provider.gpus.push({ model: system.name, price })
+      providers.set(providerRegion, provider)
+    }
+  }
+  return [...providers.values()].filter(provider => provider.gpus.length > 0)
+}
+
+/** Fetch provider-region GPU rates from the same-origin aicostings proxy. */
 export async function fetchAllProviders(): Promise<Provider[]> {
-  // Check cache first
-  if (cache && Date.now() - cache.timestamp < CACHE_TTL_MS) {
+  if (cache && Date.now() - cache.timestamp < CLIENT_CACHE_TTL_MS.costings) {
     return cache.data
   }
 
-  const endpoints = ['/', '/api/prices', '/prices']
-
-  for (const endpoint of endpoints) {
-    try {
-      const url = WORKER_URL + endpoint.replace(/^\//, '')
-      console.log(`[Pricing] Trying ${url}`)
-
-      const response = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(10000), // 10s timeout
-      })
-
-      if (!response.ok) {
-        console.warn(`[Pricing] ${url} returned ${response.status}`)
-        continue
-      }
-
-      const data = await response.json()
-      console.log(`[Pricing] Response shape:`, Object.keys(data))
-
-      // Adapt to whatever shape the worker returns
-      const providers = parseWorkerResponse(data)
-
-      if (providers.length > 0) {
-        console.log(`[Pricing] ✓ Loaded ${providers.length} providers from ${url}`)
-        cache = { data: providers, timestamp: Date.now() }
-        return providers
-      }
-    } catch (error) {
-      console.warn(`[Pricing] Failed to fetch from ${endpoint}:`, error)
-    }
+  const response = await fetch('/api/costings/systems?include=cloud', {
+    headers: { 'Accept': 'application/json' },
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!response.ok) {
+    throw new Error(`aicostings /systems returned ${response.status}`)
   }
 
-  console.warn('[Pricing] All endpoints failed, using fallback providers')
-  return FALLBACK_PROVIDERS
-}
-
-/**
- * Parse worker response - adapts to actual shape returned
- */
-function parseWorkerResponse(data: any): Provider[] {
-  // Try common response shapes
-  if (Array.isArray(data)) {
-    return data as Provider[]
-  }
-
-  if (data.providers && Array.isArray(data.providers)) {
-    return data.providers as Provider[]
-  }
-
-  if (data.data && Array.isArray(data.data)) {
-    return data.data as Provider[]
-  }
-
-  if (data.data && data.data.providers && Array.isArray(data.data.providers)) {
-    return data.data.providers as Provider[]
-  }
-
-  console.warn('[Pricing] Unknown response shape, trying to extract providers')
-
-  // If it's an object with provider-like keys, try to parse it
-  if (typeof data === 'object' && data !== null) {
-    const providers: Provider[] = []
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof value === 'object' && value !== null && 'gpus' in value) {
-        providers.push({
-          id: key,
-          label: (value as any).label || key,
-          gpus: (value as any).gpus || [],
-        })
-      }
-    }
-    if (providers.length > 0) return providers
-  }
-
-  return []
+  const providers = parseAicostingsResponse(await response.json())
+  cache = { data: providers, timestamp: Date.now() }
+  return providers
 }
 
 /**
  * Get effective rate for a provider/GPU combination.
- * Checks overrides first, then worker data.
+ * Checks overrides first, then aicostings data.
  */
 export function getEffectiveRate(
   providerId: string,
@@ -209,7 +130,7 @@ export function getEffectiveRate(
     return overrides[key]!
   }
 
-  // Check worker data
+  // Check aicostings data
   const provider = providers.find(p => p.id === providerId)
   const gpu = provider?.gpus.find(g => g.model === gpuModel)
   return gpu?.price ?? null
