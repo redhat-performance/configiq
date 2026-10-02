@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { buildModelItems, needsHfConfig } from '../model-options'
 import type { AppConfig } from '../app-config'
 
-// buildModelItems reads testedModels + huggingFaceModels from getAppConfig().
+// buildModelItems accepts live tested model IDs separately from app config.
 vi.mock('../app-config', () => ({ getAppConfig: vi.fn() }))
 import { getAppConfig } from '../app-config'
 const mockGetAppConfig = vi.mocked(getAppConfig)
@@ -13,7 +13,6 @@ const BASE: AppConfig = {
   defaultModel: '',
   defaultOpenModel: '',
   defaultFrontierModel: '',
-  testedModels: [],
   huggingFaceModels: [],
   suggestedModelNames: [],
   modelRequestUrl: '',
@@ -21,11 +20,11 @@ const BASE: AppConfig = {
 }
 
 const CATALOG_MODELS = ['org-a/catalog-model', 'org-a/tested-in-catalog', 'plain-model']
+const TESTED_MODELS = ['org-a/tested-in-catalog', 'org-b/tested-only']
 
 beforeEach(() => {
   mockGetAppConfig.mockReturnValue({
     ...BASE,
-    testedModels: ['org-a/tested-in-catalog', 'org-b/tested-only'],
     huggingFaceModels: ['org-c/hf-only', 'org-a/tested-in-catalog'],
   })
 })
@@ -37,13 +36,13 @@ describe('buildModelItems', () => {
   })
 
   it('flags a tested model that is also in the catalog', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-a/tested-in-catalog')!
+    const item = buildModelItems(CATALOG_MODELS, TESTED_MODELS).find(i => i.value === 'org-a/tested-in-catalog')!
     // Present in all three sources → all flags set, but appears exactly once.
     expect(item).toMatchObject({ inCatalog: true, isTested: true, isHuggingFace: true })
   })
 
   it('includes a tested model that is NOT in the catalog', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-b/tested-only')
+    const item = buildModelItems(CATALOG_MODELS, TESTED_MODELS).find(i => i.value === 'org-b/tested-only')
     expect(item).toBeDefined()
     expect(item).toMatchObject({ inCatalog: false, isTested: true, isHuggingFace: false })
   })
@@ -66,7 +65,7 @@ describe('buildModelItems', () => {
   })
 
   it('lists catalog models before tested-only and hf-only models', () => {
-    const values = buildModelItems(CATALOG_MODELS).map(i => i.value)
+    const values = buildModelItems(CATALOG_MODELS, TESTED_MODELS).map(i => i.value)
     expect(values.indexOf('org-a/catalog-model')).toBeLessThan(values.indexOf('org-b/tested-only'))
     expect(values.indexOf('org-b/tested-only')).toBeLessThan(values.indexOf('org-c/hf-only'))
   })

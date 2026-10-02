@@ -27,6 +27,7 @@ import { useSettings } from '@/contexts/SettingsContext'
 import type { RecommendResult } from '@/lib/api/recommend'
 import { readRecommendStream } from '@/lib/api/recommend-stream'
 import { useCatalog, type GpuOption, type ModelSpec } from '@/lib/hooks/useCatalog'
+import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import {
   useCostings,
   type FrontierModel,
@@ -60,7 +61,9 @@ import {
   modelParameterBillions,
   modelSizeLabel,
   modelTierLabel,
-} from '@/lib/hybrid-savings/model-catalogue'
+  modelTypeLabel,
+  normalizeModelId,
+} from '@/lib/model-metadata'
 import styles from './hybrid-savings.module.css'
 
 const CostComparisonChart = dynamic(() => import('./CostComparisonChart'), {
@@ -199,12 +202,6 @@ function preciseRate(value: number): string {
   return value.toPrecision(3)
 }
 
-function modelTypeLabel(spec: ModelSpec | undefined): string {
-  if (spec?.num_experts && spec.num_experts > 1) return 'Mixture of experts'
-  if (spec?.architecture?.toLowerCase().includes('conditionalgeneration')) return 'Multimodal'
-  return 'Dense model'
-}
-
 function modelSummary(modelId: string, spec: ModelSpec | undefined): string {
   const organization = modelId.includes('/') ? modelId.split('/')[0] : 'the catalogue provider'
   if (spec?.num_experts && spec.num_experts > 1) {
@@ -221,10 +218,6 @@ function formatMonthlyUsage(value: number): string {
   if (value >= 1_000) return `$${compactNumber(value)}/mo`
   if (value >= 1) return `${currencyFormatter.format(value)}/mo`
   return `${preciseCurrencyFormatter.format(value)}/mo`
-}
-
-function normalizeModelId(value: string): string {
-  return value.trim().toLowerCase()
 }
 
 function hostedProviderLabel(value: string): string {
@@ -515,7 +508,6 @@ export default function HybridSavings() {
   const {
     hydrated,
     defaultModel,
-    testedModels,
     inferenceBackend,
     costingsEnabled,
     preferredCloudProvider,
@@ -528,6 +520,7 @@ export default function HybridSavings() {
     isLoading: catalogLoading,
     error: catalogError,
   } = useCatalog()
+  const { modelIds: testedModelIds } = useTestedModels()
   const costings = useCostings(costingsEnabled, pricingSource)
   const staleCostingSources = React.useMemo(
     () => Object.entries(costings.health?.sources ?? {})
@@ -993,7 +986,7 @@ export default function HybridSavings() {
                   )
                   const selectedPrice = pricing.selected
                   const selected = candidateId === model
-                  const isTestedModel = isModelListedAsTested(candidateId, testedModels)
+                              const isTestedModel = isModelListedAsTested(candidateId, testedModelIds)
                   return (
                     <Card
                       component="button"

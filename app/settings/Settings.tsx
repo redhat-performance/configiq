@@ -7,6 +7,7 @@ import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
+import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import styles from './Settings.module.css';
 
@@ -25,6 +26,7 @@ export function Settings() {
     costingsEnabled, setCostingsEnabled,
   } = useSettings();
   const { modelOptions, backendOptions, isLoading: catalogLoading } = useCatalog();
+  const { modelIds: testedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [localModel, setLocalModel] = React.useState('');
   const [modelStatus, setModelStatus] = React.useState<ModelStatus>('idle');
@@ -62,7 +64,7 @@ export function Settings() {
     if (catalogLoading) { setModelStatus('idle'); return; }
     if (!localModel || !localModel.includes('/')) { setModelStatus('idle'); return; }
     const timer = setTimeout(() => {
-      if (getAppConfig().testedModels.includes(localModel)) { setModelStatus('supported'); return; }
+      if (testedModelIds.includes(localModel)) { setModelStatus('supported'); return; }
       const inCatalog = modelOptions.includes(localModel);
       if (inCatalog) { setModelStatus('catalog'); return; }
       setModelStatus('fetching');
@@ -71,7 +73,7 @@ export function Settings() {
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelOptions, catalogLoading, hydrated]);
+  }, [localModel, hfToken, modelOptions, catalogLoading, hydrated, testedModelIds]);
 
   React.useEffect(() => {
     if (hydrated && backendOptions.length > 0 && !backendDefaultAttempted.current) {
@@ -160,12 +162,12 @@ export function Settings() {
                 Models tested for use with the AISimulators sizing engine.
               </div>
             </div>
-            <Label color="blue" isCompact>{getAppConfig().testedModels.length} models</Label>
+            <Label color="blue" isCompact>{testedModelsAvailable ? `${testedModelIds.length} models` : 'Unavailable'}</Label>
           </div>
           {validatedOpen && (
             <div className={styles.fieldWrap}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 8px' }}>
-                {getAppConfig().testedModels.map(m => (
+                 {testedModelIds.map(m => (
                   <Label
                     key={m}
                     color="blue"

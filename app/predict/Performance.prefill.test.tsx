@@ -122,7 +122,6 @@ let root: ReturnType<typeof createRoot>;
 const makeSettings = (costingsEnabled: boolean): ReturnType<typeof useSettings> => ({
   hydrated: true,
   defaultModel: 'settings/default-model',
-  testedModels: [],
   hfToken: '',
   inferenceBackend: 'vllm',
   backendVersion: 'latest',

@@ -33,13 +33,17 @@ import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
+import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, type ModelSpec } from '@/lib/hooks/useCatalog';
+import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
+import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
+import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import Link from 'next/link';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import { parsePerformancePrefill } from './performance-prefill';
@@ -131,9 +135,18 @@ export default function Performance() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { gpuOptions: catalogGpus, modelOptions: catalogModels, modelSpecs, backendOptions, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { pairs: testedPairs, modelIds: testedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
+  const testedSystemsForModel = React.useMemo(
+    () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
+    [testedPairs, model],
+  );
+  const selectableGpus = React.useMemo(
+    () => testedSystemsForModel.size > 0 ? catalogGpus.filter(option => testedSystemsForModel.has(option.systemId)) : catalogGpus,
+    [catalogGpus, testedSystemsForModel],
+  );
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const modelWasPrefilled = React.useRef(false);
 
@@ -146,7 +159,7 @@ export default function Performance() {
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels), [catalogModels, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, testedModelIds, modelSpecs), [catalogModels, testedModelIds, modelSpecs, hydrated]);
 
   // Set model from settings after context has loaded from localStorage
   const modelFromSettings = React.useRef(false);
@@ -165,10 +178,10 @@ export default function Performance() {
   }, []);
 
   React.useEffect(() => {
-    if (prefillChecked && catalogGpus.length > 0 && !catalogGpus.find(g => g.systemId === gpu) && !gpuWasPrefilled.current) {
-      setGpu(catalogGpus[0].systemId);
+    if (prefillChecked && selectableGpus.length > 0 && !selectableGpus.find(g => g.systemId === gpu)) {
+      setGpu(selectableGpus[0].systemId);
     }
-  }, [catalogGpus, gpu, prefillChecked]);
+  }, [gpu, prefillChecked, selectableGpus]);
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -193,7 +206,7 @@ export default function Performance() {
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
 
-  const modelStatus: ModelStatus = getAppConfig().testedModels.includes(model)
+  const modelStatus: ModelStatus = testedModelIds.includes(model)
     ? 'supported'
     : catalogModels.includes(model)
     ? 'catalog'
@@ -638,7 +651,65 @@ export default function Performance() {
   const isMoe = detectMoe(spec, hfConfig)
 
   // Use live pricing if available, fallback to estimated pricing from hardware cost
-  const currentCatalogGpu = catalogGpus.find(g => g.systemId === gpu);
+  const currentCatalogGpu = selectableGpus.find(g => g.systemId === gpu);
+  const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
+    if (!testResult) return null;
+    const phase = (value: EstimatePhase | undefined): ClassifierPhaseInput | null => value ? {
+      tp_size: value.tp_size,
+      pp_size: value.pp_size,
+      dp_size: 1,
+      cp_size: 1,
+      moe_tp_size: testMoeEtpSize,
+      moe_ep_size: testMoeEpSize,
+      workers: value.workers,
+      batch_size: value.batch_size,
+    } : null;
+    return {
+      effective: {
+        model_id: model,
+        system_id: gpu,
+        backend: inferenceBackend,
+        backend_version: backendVersion || null,
+        isl: testISL,
+        osl: testOSL,
+        max_seq_len: effectiveContextLimit,
+        prefill_max_seq_len: prefillMaxSeqLen,
+        decode_max_seq_len: decodeMaxSeqLen,
+        concurrency: testConcurrentUsers,
+        tp_size: testResult.memory_analysis.tp_size,
+        pp_size: testResult.parallelism_strategy.pp_size || 1,
+        dp_size: 1,
+        cp_size: 1,
+        moe_tp_size: testMoeEtpSize,
+        moe_ep_size: testMoeEpSize,
+        shared_prefix_tokens: testPrefix,
+        prefix_caching_enabled: testResult.vllm_config.enable_prefix_caching,
+        weight_precision: actualWeightPrecision,
+        kv_cache_precision: testKVCachePrecision,
+        moe_quant_mode: isMoe ? testMoeQuantMode : null,
+        gpu_memory_utilization: effectiveGpuMemoryUtilization,
+        max_num_seqs: testResult.vllm_config.max_num_seqs,
+        chunked_prefill_enabled: testResult.vllm_config.enable_chunked_prefill,
+        serving_mode: servingMode,
+        replicas: testResult.memory_analysis.replicas,
+        prefill: phase(disagg?.prefill),
+        decode: phase(disagg?.decode),
+        encode: null,
+      },
+      request: {
+        request_kind: 'predict',
+        target_request_rate: null,
+        target_concurrency: null,
+        target_latency_ms: null,
+        target_ttft_ms: null,
+        target_tpot_ms: null,
+        database_mode: null,
+        top_n: null,
+      },
+      model_config: hfConfig as Record<string, unknown> | null,
+    };
+  }, [actualWeightPrecision, backendVersion, decodeMaxSeqLen, disagg, effectiveContextLimit, effectiveGpuMemoryUtilization, gpu, hfConfig, inferenceBackend, isMoe, model, prefillMaxSeqLen, servingMode, testKVCachePrecision, testMoeEpSize, testMoeEtpSize, testMoeQuantMode, testPrefix, testResult, testConcurrentUsers, testISL, testOSL]);
+  const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
   const hwCostEntry = costings.gpuHardwareCosts.get(gpu)
   const catalogGpuForPricing = hwCostEntry?.new_usd != null
     ? { hardware_cost_usd: hwCostEntry.new_usd, name: currentCatalogGpu?.label ?? gpu }
@@ -1283,13 +1354,13 @@ export default function Performance() {
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
-              supportedModels={getAppConfig().testedModels}
+               supportedModels={testedModelsAvailable ? testedModelIds : undefined}
               hfToken={hfToken}
             />
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={catalogGpus} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={selectableGpus} />
 
         </div>
         
@@ -1464,6 +1535,8 @@ export default function Performance() {
           </div>
         </div>
       )}
+
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} />
 
       {/* ---------- result tiles ---------- */}
       {!testResult && !isCalculating && !testError}
