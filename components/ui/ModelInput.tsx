@@ -5,6 +5,7 @@ import { Label, Switch } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon'
 import { getAppConfig } from '@/lib/app-config'
+import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import styles from './ModelInput.module.css'
 
 export type ModelStatus = 'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'
@@ -38,7 +39,7 @@ export function ModelInput({
 }: ModelInputProps) {
   const [testedOnly, setTestedOnly] = React.useState(false)
   const cfg = getAppConfig()
-  const testedModels = cfg.testedModels ?? []
+  const { modelIds: testedModels, isAvailable: testedModelsAvailable } = useTestedModels()
   const filteredModels = modelOptions.filter(m => testedModels.includes(m))
   const displayModels = testedOnly ? filteredModels : modelOptions
   const datalistId = `${id}-options`
@@ -69,6 +70,7 @@ export function ModelInput({
           isChecked={testedOnly}
           onChange={handleToggle}
           isReversed
+          isDisabled={!testedModelsAvailable}
         />
       </div>
 
@@ -102,7 +104,7 @@ export function ModelInput({
             <span>Tested: {suggestedNames()}, ... — type to autocomplete</span>
           ) : (
             <>
-              <div>Tested: {suggestedNames()}, ... — type to autocomplete</div>
+              <div>{testedModelsAvailable ? `Tested: ${suggestedNames()}, ... — type to autocomplete` : 'Tested models are currently unavailable.'}</div>
               {model && !testedModels.includes(model) && cfg.modelRequestUrl && (
                 <div>New model? <a href={cfg.modelRequestUrl + encodeURIComponent(model)} target="_blank" rel="noopener" className={styles.requestLink}>Request testing →</a></div>
               )}

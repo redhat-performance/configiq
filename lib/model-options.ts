@@ -6,7 +6,7 @@ import { modelFacets } from '@/lib/model-metadata'
 /**
  * Build the model dropdown items from the three model sources, deduped:
  *   1. AISimulate catalog (from the /models REST endpoint)   → "in catalog" (green)
- *   2. Tested models (config.testedModels)                   → "tested" (blue)
+ *   2. Tested models (live tested-model registry)             → "tested" (blue)
  *   3. Hugging Face models (config.huggingFaceModels)        → "hugging face" (gold)
  *
  * A model can belong to more than one source; the flags are set independently
@@ -25,10 +25,11 @@ export function buildModelItems(
 ): ComboBoxItem[] {
   const config = getAppConfig()
   const catalog = new Set(catalogModels)
+  const testedValues = config.testedModels
 
   const seen = new Set<string>()
   const items: ComboBoxItem[] = []
-  for (const m of [...catalogModels, ...config.testedModels, ...config.huggingFaceModels]) {
+  for (const m of [...catalogModels, ...testedValues, ...config.huggingFaceModels]) {
     if (seen.has(m)) continue
     seen.add(m)
     const slash = m.indexOf('/')
