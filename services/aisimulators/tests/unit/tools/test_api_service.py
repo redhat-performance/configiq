@@ -1290,32 +1290,75 @@ class TestMCPServer:
         resp = client.get("/systems")
         assert resp.status_code == 200
 
-    def test_mcp_endpoint_available_when_enabled(self):
-        """MCP SSE endpoint is available when fastapi-mcp is installed."""
+    # Every REST operation the README promises as an MCP tool, by the name
+    # fastapi-mcp gives it (the FastAPI operation id).
+    EXPECTED_MCP_TOOLS = frozenset({
+        "post_recommend_recommend_post",
+        "post_predict_predict_post",
+        "post_memory_memory_post",
+        "get_models_models_get",
+        "get_systems_systems_get",
+        "get_backends_backends_get",
+    })
+
+    def test_mcp_exposes_every_api_route(self):
+        """MCP is mounted after the last route, so every endpoint is a tool.
+
+        fastapi-mcp snapshots the routes when the server is built; mounting
+        earlier silently exposed only /backends.
+        """
         if not app_module._MCP:
             pytest.skip("fastapi-mcp not installed")
+        tools = {t.name for t in app_module._MCP_SERVER.tools}
+        missing = self.EXPECTED_MCP_TOOLS - tools
+        assert not missing, f"not exposed as MCP tools: {sorted(missing)}"
 
-        # MCP server exposes an SSE endpoint at /mcp for the protocol
-        # The exact path depends on fastapi-mcp's routing; verify it exists
-        resp = client.get("/openapi.json")
-        assert resp.status_code == 200
-        openapi = resp.json()
-        paths = openapi.get("paths", {})
-
-        # MCP should add some paths - check the app has our original endpoints
-        assert "/systems" in paths
-        assert "/models" in paths
-        assert "/recommend" in paths
-
-    @patch("tools.api_service.app._run_aisimulate_recommendation")
-    def test_mcp_tools_wrap_api_endpoints(self, mock_recommend):
-        """MCP tools are properly registered when MCP is available."""
+    def test_mcp_serves_sse_and_streamable_http(self):
+        """SSE stays at /mcp; streamable HTTP is served at /mcp/http."""
         if not app_module._MCP:
             pytest.skip("fastapi-mcp not installed")
+        routes = {(getattr(r, "path", ""), m) for r in app.routes for m in (getattr(r, "methods", None) or ())}
+        assert ("/mcp", "GET") in routes
+        assert ("/mcp/messages/", "POST") in routes
+        assert ("/mcp/http", "POST") in routes
 
-        # Verify MCP wiring is present: the shared mount helper was imported.
-        # For now, verify the app initialized successfully with MCP.
-        assert hasattr(app_module, "mcp_support") or not app_module._MCP
+    def test_streamable_http_lists_the_tools(self):
+        """An MCP client speaking streamable HTTP sees the API's tools."""
+        if not app_module._MCP:
+            pytest.skip("fastapi-mcp not installed")
+        with TestClient(app) as c:
+            names = _mcp_http_tool_names(c, "/mcp/http")
+        assert self.EXPECTED_MCP_TOOLS <= names
+
+
+def _mcp_http_tool_names(c: TestClient, path: str) -> set[str]:
+    """initialize -> notifications/initialized -> tools/list over streamable HTTP."""
+    import json as _json
+
+    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+
+    def rpc(body: dict, session: str | None = None):
+        h = dict(headers)
+        if session:
+            h["mcp-session-id"] = session
+        resp = c.post(path, json=body, headers=h)
+        assert resp.status_code in (200, 202), resp.text
+        return resp
+
+    def payload(resp) -> dict:
+        if resp.headers.get("content-type", "").startswith("text/event-stream"):
+            data = [ln[5:].strip() for ln in resp.text.splitlines() if ln.startswith("data:")]
+            return _json.loads(data[-1])
+        return resp.json()
+
+    init = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-03-26", "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0"}}})
+    session = init.headers.get("mcp-session-id")
+    assert payload(init)["result"]["serverInfo"]["name"]
+    rpc({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
+    listed = payload(rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, session))
+    return {t["name"] for t in listed["result"]["tools"]}
 
 
 class TestMetrics:
