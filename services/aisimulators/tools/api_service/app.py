@@ -1069,13 +1069,6 @@ def get_backends():
         })
     return {"backends": result}
 
-# Expose the API as MCP tools if the optional extra is present.
-if _MCP:
-    mcp_support.mount(app, name="aisimulators",
-                      description="GPU recommendation and performance estimation for LLM inference")
-else:
-    logger.info("MCP server unavailable (install with: pip install '.[mcp]')")
-
 
 @app.on_event("startup")
 def startup_event():
@@ -1431,6 +1424,19 @@ def get_metrics(request: Request):
             detail="Metrics unavailable (install with: pip install '.[otel]')",
         )
     return observability.metrics_response(request.headers.get("accept", "text/plain"))
+
+
+# ─── MCP ─────────────────────────────────────────────────────────────────────
+
+# Expose the API as MCP tools if the optional extra is present. Mounted after
+# every route: fastapi-mcp snapshots the routes when the server is built, so a
+# route declared below this block would not become a tool.
+_MCP_SERVER = None
+if _MCP:
+    _MCP_SERVER = mcp_support.mount(app, name="aisimulators",
+                                    description="GPU recommendation and performance estimation for LLM inference")
+else:
+    logger.info("MCP server unavailable (install with: pip install '.[mcp]')")
 
 
 # ─── Entrypoint ──────────────────────────────────────────────────────────────
