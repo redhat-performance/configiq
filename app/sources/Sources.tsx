@@ -6,6 +6,7 @@ import { useSettings, DEFAULT_PRICING_SOURCE } from '@/contexts/SettingsContext'
 import { useCostings, type SourceStatus } from '@/lib/hooks/useCostings';
 import { useOnPremProfile, DEFAULT_PROFILE, type OnPremCostProfile } from '@/lib/hooks/useOnPremProfile';
 import styles from './Sources.module.css';
+import CostAssumptionsEditor from './CostAssumptionsEditor';
 
 // Pricing-feed metadata, served by GET /api/costings/sources. The API owns the
 // feed list and labels, so nothing here is hardcoded per feed.
@@ -426,6 +427,8 @@ export default function Sources() {
           </div>
         )}
       </div>
+
+      <CostAssumptionsEditor />
 
       {/* ── Section 3: On-prem cost profiles ── */}
       <div className={styles.section}>

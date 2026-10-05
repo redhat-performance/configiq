@@ -41,6 +41,7 @@
   font-size: 15px;
   font-weight: 600;
   color: var(--gc-text);
+  margin: 0;
 }
 
 .sectionDesc {
@@ -276,4 +277,20 @@
   color: var(--gc-text-2);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+}
+
+/* Shared cost assumptions use the same section surface and PatternFly fields. */
+.assumptionsBody { padding: 16px 20px 20px; }
+.assumptionsBasis { margin: 0 0 8px; color: var(--gc-text-2); font-size: 13px; font-variant-numeric: tabular-nums; }
+.assumptionGroups { display: grid; gap: 16px; margin-top: 20px; }
+.assumptionGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 24px; margin-top: 16px; }
+.assumptionGrid :global(.pf-v6-c-form-control) { min-height: 42px; font-size: 14px; }
+.assumptionGrid :global(.pf-v6-c-form__group-label) { color: var(--gc-text); font-size: 13px; }
+.assumptionError, .assumptionSaved { font-size: 12px; margin: 4px 0 0; }
+.assumptionError { color: #c9190b; }
+.assumptionSaved { color: var(--gc-text-2); }
+.section[id='cost-assumptions'] { scroll-margin-top: 100px; }
+@media (max-width: 600px) {
+  .assumptionGrid { grid-template-columns: minmax(0, 1fr); }
+  .sectionHead { flex-wrap: wrap; gap: 12px; }
 }
