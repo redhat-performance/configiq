@@ -4,6 +4,10 @@ This directory is the replacement home for the tested-model research pipeline.
 It will generate datasets, leakage-safe train/validation/test splits, Triton
 classifier artifacts, registry metadata, and dashboard payloads.
 
+The end-to-end data contract and host deployment procedure are documented in
+[`docs/tested-models.md`](../../docs/tested-models.md). This README focuses on
+running the scripts and tests.
+
 ## Setup
 
 From the repository root, install the shared Python automation environment with
@@ -35,9 +39,9 @@ columns. Run IDs, UUIDs, MLflow IDs, timestamps, raw runtime arguments, and
 other administrative fields are dropped before parquet is written.
 
 `legacy_mvp.py` is retained temporarily as a migration reference from the
-`configiq-tested-models` repository. It must not be used to publish production
-artifacts because it contains placeholder knee labeling, row-level validation,
-and Python pickle outputs.
+former `configiq-tested-models` repository. It must not be used to publish
+production artifacts because it contains placeholder knee labeling, row-level
+validation, and Python pickle outputs.
 
 The production pipeline will be added incrementally in this directory:
 
@@ -76,7 +80,8 @@ Hugging Face commit before starting the automation workflow.
 
 ## Stage 5: performance envelope classifiers
 
-Run the complete leakage-safe pipeline from the repository root:
+Run the complete leakage-safe pipeline from the repository root after
+`download_ground_truth.py` has populated `data/tested-models`:
 
 ```bash
 uv run --group tested-models python scripts/tested_models/split_dataset.py
