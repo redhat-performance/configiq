@@ -83,7 +83,6 @@ export async function fetchModelConfig(
   const url = `https://huggingface.co/${modelId}/resolve/main/config.json`
 
   console.log('🔄 Fetching config from HuggingFace:', url)
-  console.log('🔑 HF Token provided:', hfToken ? `Yes (${hfToken.substring(0, 7)}...)` : 'No')
 
   try {
     const headers: HeadersInit = {
@@ -98,7 +97,6 @@ export async function fetchModelConfig(
       console.log('⚠️ No token - requesting as public (gated models will fail)')
     }
 
-    console.log('📤 Request headers:', JSON.stringify(headers, null, 2))
 
     const response = await fetch(url, {
       method: 'GET',
