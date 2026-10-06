@@ -7,8 +7,11 @@ from fastapi.testclient import TestClient
 
 from api_service.app import create_app
 
+captured_requests: list[httpx.Request] = []
+
 
 def _transport(request: httpx.Request) -> httpx.Response:
+    captured_requests.append(request)
     if request.url.path == "/recommend":
         return httpx.Response(200, json={"configs": [{"total_gpus_needed": 2}]})
     if request.url.path == "/models":
@@ -47,15 +50,23 @@ def test_health_is_not_an_mcp_tool():
 
 def test_proxy_preserves_json_response():
     app = create_app(transport=httpx.MockTransport(_transport))
+    captured_requests.clear()
 
     with TestClient(app) as client:
         response = client.post(
             "/recommend",
-            json={"model_path": "Qwen/Qwen3-32B", "system": "h100_sxm"},
+            json={
+                "model_path": "Qwen/Qwen3-32B",
+                "system": "h100_sxm",
+                "target_concurrency": 32,
+                "include": "config,memory",
+            },
         )
 
     assert response.status_code == 200
     assert response.json() == {"configs": [{"total_gpus_needed": 2}]}
+    assert captured_requests[-1].url.params["include"] == "config,memory"
+    assert "include" not in json.loads(captured_requests[-1].content)
 
 
 def test_mcp_http_lists_curated_tools():

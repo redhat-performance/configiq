@@ -27,8 +27,6 @@ class InferenceRequest(BaseModel):
     backend: str = "vllm"
     backend_version: str | None = None
     include: str | None = None
-    target_request_rate: float | None = None
-    target_concurrency: float | None = None
     isl: int = 4000
     osl: int = 1000
     max_seq_len: int | None = None
@@ -38,12 +36,20 @@ class InferenceRequest(BaseModel):
     tpot: float = 30.0
     request_latency: float | None = None
     prefix: int = 0
+    database_mode: str = "HYBRID"
+
+
+class RecommendationRequest(InferenceRequest):
+    target_request_rate: float | None = None
+    target_concurrency: float | None = None
+    top_n: int = 5
+
+
+class PredictionRequest(InferenceRequest):
     max_num_seqs: int | None = None
     tp_size: int = 1
     pp_size: int = 1
     batch_size: int = 128
-    database_mode: str = "HYBRID"
-    top_n: int = 5
     mode: Literal["agg", "disagg"] = "agg"
 
 
@@ -111,14 +117,20 @@ def create_app(
         base_url: str,
         path: str,
         body: BaseModel | None = None,
+        include_as_query: bool = False,
     ) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
         params = dict(request.query_params)
+        payload = body.model_dump(mode="json") if body is not None else None
+        if include_as_query and payload is not None:
+            include = payload.pop("include", None)
+            if include is not None and "include" not in params:
+                params["include"] = include
         response = await clients.client.request(
             request.method,
             f"{base_url}{path}",
             params=params,
-            json=body.model_dump(mode="json") if body is not None else None,
+            json=payload,
         )
         return Response(
             content=response.content,
@@ -127,19 +139,28 @@ def create_app(
         )
 
     @app.post("/recommend", operation_id="recommend", tags=["inference"])
-    async def recommend(request: Request, body: InferenceRequest) -> Response:
+    async def recommend(request: Request, body: RecommendationRequest) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
-        return await proxy(request, base_url=clients.aisimulators_url, path="/recommend", body=body)
+        return await proxy(
+            request, base_url=clients.aisimulators_url, path="/recommend", body=body,
+            include_as_query=True,
+        )
 
     @app.post("/predict", operation_id="predict", tags=["inference"])
-    async def predict(request: Request, body: InferenceRequest) -> Response:
+    async def predict(request: Request, body: PredictionRequest) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
-        return await proxy(request, base_url=clients.aisimulators_url, path="/predict", body=body)
+        return await proxy(
+            request, base_url=clients.aisimulators_url, path="/predict", body=body,
+            include_as_query=True,
+        )
 
     @app.post("/estimate", operation_id="estimate", tags=["inference"])
-    async def estimate(request: Request, body: InferenceRequest) -> Response:
+    async def estimate(request: Request, body: PredictionRequest) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
-        return await proxy(request, base_url=clients.aisimulators_url, path="/estimate", body=body)
+        return await proxy(
+            request, base_url=clients.aisimulators_url, path="/estimate", body=body,
+            include_as_query=True,
+        )
 
     @app.post("/memory", operation_id="memory", tags=["inference"])
     async def memory(request: Request, body: MemoryRequest) -> Response:
