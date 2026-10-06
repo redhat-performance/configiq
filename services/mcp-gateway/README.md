@@ -9,6 +9,7 @@ process, separate from the horizontally-scaled AISimulators REST service.
 - `GET /mcp` — MCP over SSE
 - `GET,POST,DELETE /mcp/http` — MCP over Streamable HTTP
 - `GET /health` — readiness check (not an MCP tool)
+- `GET /metrics` — Prometheus or OTLP metrics for request counts and latency
 
 ## Tools
 
