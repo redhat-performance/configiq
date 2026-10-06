@@ -12,7 +12,7 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip
 
 COPY configiq-py /src/configiq-py
-RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[mcp]"
+RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 
 COPY mcp-gateway/pyproject.toml /tmp/pyproject.toml
 COPY scripts/install-deps.py /tmp/install-deps.py

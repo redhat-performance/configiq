@@ -8,6 +8,7 @@ from typing import Literal
 
 import httpx
 from configiq import mcp as mcp_support
+from configiq import observability
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -97,6 +98,12 @@ def create_app(
         description="Unified inference sizing and GPU pricing tools.",
         lifespan=lifespan,
     )
+    observability.enable(
+        app,
+        service_name="configiq-mcp",
+        service_version="0.1.0",
+        meter_name="configiq.mcp",
+    )
 
     async def proxy(
         request: Request,
@@ -180,6 +187,10 @@ def create_app(
     @app.get("/health", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        return observability.metrics_response(request.headers.get("accept", "text/plain"))
 
     return app
 

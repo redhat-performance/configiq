@@ -25,6 +25,7 @@ def test_health_is_not_an_mcp_tool():
 
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
+        metrics = client.get("/metrics")
 
     names = {tool.name for tool in app.state.mcp_server.tools}
     assert names == {
@@ -40,6 +41,8 @@ def test_health_is_not_an_mcp_tool():
         "pricing_systems",
     }
     assert "health" not in names
+    assert "metrics" not in names
+    assert metrics.status_code == 200
 
 
 def test_proxy_preserves_json_response():
