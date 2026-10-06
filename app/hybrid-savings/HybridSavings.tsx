@@ -413,7 +413,7 @@ export default function HybridSavings() {
 
   const canCalculate = assumptionsHydrated && !invalidWorkload && !!hostedPrice && !!model && gpuOptions.length > 0 &&
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
-    (!needsHfConfig(model, modelOptions) || modelConfig?.model === model || testedModels.includes(model))
+    (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
   const hostedOption = comparison?.options.find(option => option.key === 'hosted')
   const rentedOption = comparison?.options.find(option => option.key === 'rented')
   const ownedOption = comparison?.options.find(option => option.key === 'owned')

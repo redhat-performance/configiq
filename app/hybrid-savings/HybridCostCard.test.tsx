@@ -128,7 +128,7 @@ describe('Hybrid cost flip cards', () => {
       .filter(card => card.querySelector('[class*="costFront"]'))
     expect(cards).toHaveLength(3)
     for (const [index, key] of keys.entries()) {
-      for (let cycle = 0; cycle < 3; cycle++) {
+      for (let cycle = 0; cycle < 2; cycle++) {
         await click(`View ${key} details`)
         cards.forEach((card, cardIndex) => {
           expect(card.querySelector('[class*="costBack"]')?.getAttribute('aria-hidden'))

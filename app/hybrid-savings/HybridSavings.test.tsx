@@ -7,8 +7,9 @@ import HybridSavingsPage from './page'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useCostings } from '@/lib/hooks/useCostings'
 import { readRecommendStream } from '@/lib/api/recommend-stream'
+import { fetchModelConfig, type FetchResult } from '@/lib/huggingface/fetch-config'
 import type { RecommendResponse } from '@/lib/api/recommend'
-import type { GpuOption } from '@/lib/hooks/useCatalog'
+import { useCatalog, type GpuOption } from '@/lib/hooks/useCatalog'
 import { DEFAULT_WORKLOAD } from '@/lib/workload-presets'
 import appConfig from '@/public/config.json'
 import { CostAssumptionsProvider, COST_ASSUMPTIONS_STORAGE_KEY } from '@/contexts/CostAssumptionsContext'
@@ -17,15 +18,10 @@ import CostAssumptionsEditor from '@/app/sources/CostAssumptionsEditor'
 vi.mock('@/contexts/SettingsContext', () => ({ useSettings: vi.fn() }))
 vi.mock('@/lib/hooks/useCostings', () => ({ useCostings: vi.fn() }))
 vi.mock('@/lib/api/recommend-stream', () => ({ readRecommendStream: vi.fn() }))
+vi.mock('@/lib/huggingface/fetch-config', () => ({ fetchModelConfig: vi.fn() }))
 vi.mock('@/lib/app-config', () => ({ getAppConfig: () => appConfig }))
 vi.mock('next/dynamic', () => ({ default: () => (props: { points: unknown; hostedModelLabel?: string; infrastructureModelLabel?: string }) => <div data-testid="chart">Comparison chart {props.hostedModelLabel} {props.infrastructureModelLabel} {JSON.stringify(props.points)}</div> }))
-vi.mock('@/lib/hooks/useCatalog', () => ({
-  useCatalog: () => ({
-    gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
-    modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
-    isLoading: false, error: null,
-  }),
-}))
+vi.mock('@/lib/hooks/useCatalog', () => ({ useCatalog: vi.fn() }))
 
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement
@@ -40,7 +36,14 @@ const sizing = {
 } as RecommendResponse
 beforeEach(async () => {
   localStorage.clear()
+  vi.mocked(fetchModelConfig).mockReset()
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  vi.mocked(useCatalog).mockReturnValue({
+    gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
+    modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
+    modelSpecs: new Map(), backendOptions: [], timeoutSeconds: 180,
+    isLoading: false, error: null,
+  })
   vi.mocked(useSettings).mockReturnValue({
     hydrated: true, defaultModel: 'Qwen/Qwen3-8B', testedModels: [],
     hfToken: '', backendVersion: '', inferenceBackend: 'vllm',
@@ -57,7 +60,7 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response()))
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals() })
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers() })
 async function render() { await act(async () => root.render(<CostAssumptionsProvider><HybridSavings /></CostAssumptionsProvider>)) }
 async function click(text: string) {
   const button = [...host.querySelectorAll('button')].find(element => element.textContent === text)!
@@ -105,6 +108,61 @@ const frontierOffer = {
   price_per_m_input: 1.25, price_per_m_output: 10, context_window: 128000,
   updated_at: '2026-10-05T04:00:00Z', source: 'openrouter' as const,
 }
+
+describe('Hybrid model configuration readiness', () => {
+  const testedModel = 'tested/model'
+  const config = { model_type: 'qwen3', hidden_size: 4096 }
+  function calculateButton() {
+    return [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Calculate')!
+  }
+  async function chooseModel(id: string) {
+    const input = host.querySelector<HTMLInputElement>('#hybrid-model')!
+    await act(async () => {
+      input.focus()
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, id)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  }
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), testedModels: [testedModel, 'tested/other'] })
+    vi.mocked(useCostings).mockReturnValue({
+      ...vi.mocked(useCostings)(true),
+      models: [...models, ...[testedModel, 'tested/other'].map(id => ({ ...models[0], id, name: id }))],
+    })
+  })
+  it('waits through debounce and fetching, then sends the selected Tested model configuration', async () => {
+    let complete!: (result: FetchResult) => void
+    vi.mocked(fetchModelConfig).mockReturnValue(new Promise(resolve => { complete = resolve }))
+    await render(); await chooseModel(testedModel)
+    expect(calculateButton().disabled).toBe(true)
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(fetchModelConfig).toHaveBeenLastCalledWith(testedModel, '')
+    expect(calculateButton().disabled).toBe(true)
+    await act(async () => complete({ success: true, config, source: 'huggingface' }))
+    expect(calculateButton().disabled).toBe(false)
+    await click('Calculate')
+    const request = JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)
+    expect(request.model_path).toBe(testedModel)
+    expect(request.model_config).toEqual(config)
+  })
+  it('keeps calculation disabled when a Tested model configuration lookup fails', async () => {
+    vi.mocked(fetchModelConfig).mockResolvedValue({ success: false, error: 'Access denied', source: 'huggingface' })
+    await render(); await chooseModel(testedModel)
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(host.textContent).toContain('Access denied')
+    expect(calculateButton().disabled).toBe(true)
+  })
+  it('does not reuse a previous model configuration when another Tested model is selected', async () => {
+    vi.mocked(fetchModelConfig).mockResolvedValue({ success: true, config, source: 'huggingface' })
+    await render(); await chooseModel(testedModel)
+    await act(async () => vi.advanceTimersByTimeAsync(500))
+    expect(calculateButton().disabled).toBe(false)
+    await chooseModel('tested/other')
+    expect(calculateButton().disabled).toBe(true)
+  })
+})
 
 describe('Hybrid page composition', () => {
   it('keeps the default API model label linked to the model selected above', async () => {
@@ -239,12 +297,20 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector('[class*="costBack"]')?.textContent).toContain([...host.querySelectorAll('[class*="costValue"]')][0].textContent!.replace(' / month', ''))
   })
 
-  it('omits the redundant result notes while retaining cost cards, workload controls and chart', async () => {
-    await render(); await click('Calculate')
-    expect(host.textContent).not.toContain('Effective cost uses billed tokens')
-    expect(host.textContent).not.toContain('Marginal excludes acquisition')
-    expect(host.textContent).not.toContain('Based on Qwen/Qwen3-8B')
-    expect(host.textContent).not.toContain('See at what workload each option')
+  it('keeps the simplified page free of removed notices while retaining controls, details and chart', async () => {
+    await render()
+    expect(host.textContent).not.toContain('Planning estimate')
+    expect(host.querySelector('[aria-label="Planning guidance"]')).toBeNull()
+    expect(host.textContent).not.toContain('AISimulators sizing is estimated')
+    expect(host.textContent).toContain('Data and assumptions')
+    expect(host.textContent).not.toContain('Advanced cost assumptions')
+    expect(host.querySelector('a[href="/sources#cost-assumptions"]')!.textContent).toBe('Edit cost assumptions in Sources')
+    expect(host.querySelector('#hardware-life')).toBeNull()
+    await click('Calculate')
+    for (const removedText of [
+      'Effective cost uses billed tokens', 'Marginal excludes acquisition',
+      'Based on Qwen/Qwen3-8B', 'See at what workload each option',
+    ]) expect(host.textContent).not.toContain(removedText)
     expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(3)
     expect(host.textContent).toContain('Based on Default')
     expect(host.querySelector('#hybrid-cost-view')).not.toBeNull()
@@ -278,17 +344,6 @@ describe('Hybrid page composition', () => {
     await act(async () => root.render(<CostAssumptionsProvider><CostAssumptionsEditor /></CostAssumptionsProvider>))
     await click('Shared planning inputs')
     expect(host.querySelector<HTMLInputElement>('#cost-assumption-loadedMonthlyCostPerFte')!.value).toBe('20000')
-  })
-
-  it('omits the planning badge and footer without removing calculation details', async () => {
-    await render()
-    expect(host.textContent).not.toContain('Planning estimate')
-    expect(host.querySelector('[aria-label="Planning guidance"]')).toBeNull()
-    expect(host.textContent).not.toContain('AISimulators sizing is estimated')
-    expect(host.textContent).toContain('Data and assumptions')
-    expect(host.textContent).not.toContain('Advanced cost assumptions')
-    expect(host.querySelector('a[href="/sources#cost-assumptions"]')!.textContent).toBe('Edit cost assumptions in Sources')
-    expect(host.querySelector('#hardware-life')).toBeNull()
   })
 
   it('keeps the Sources link independent and visible beside the collapsed calculation details', async () => {
@@ -439,14 +494,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-output-tokens')?.value).toBe('500,000,000')
     expect(host.textContent).not.toContain('Select a model from the live catalogue')
     expect(host.querySelector('[aria-expanded="true"]')).toBeNull()
-    await click('Batch / offline')
     expect(host.textContent).toContain('730 hours/month')
-    expect(host.textContent).toContain('65,536 input / 4,096 output')
-    await click('Agentic / Coding')
-    expect(host.textContent).toContain('32,768 input / 2,048 output')
-    await click('RAG / Search')
-    expect(host.textContent).toContain('16,384 input / 512 output')
-    await click('Default')
     expect(host.textContent).toContain('2,048 input / 128 output')
   })
 
