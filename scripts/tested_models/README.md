@@ -43,7 +43,7 @@ former `configiq-tested-models` repository. It must not be used to publish
 production artifacts because it contains placeholder knee labeling, row-level
 validation, and Python pickle outputs.
 
-The production pipeline will be added incrementally in this directory:
+The production pipeline is implemented incrementally by the scripts that follow in this directory:
 
 ```text
 discover_data.py       # Find available model/hardware ground truth
