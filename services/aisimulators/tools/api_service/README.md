@@ -55,12 +55,16 @@ The API can be exposed as an **MCP server**, making it available as tools for Cl
 
 ### MCP Endpoint
 
-When `fastapi-mcp` is installed, the server automatically exposes:
-- **SSE endpoint:** `http://localhost:8000/mcp`
+When `fastapi-mcp` is installed, the server automatically exposes the same tools
+over two transports:
+- **SSE:** `http://localhost:8000/mcp`
+- **Streamable HTTP:** `http://localhost:8000/mcp/http` (the transport the MCP
+  spec recommends since 2025-03-26; use it with clients that do not speak SSE)
 
 ### Available MCP Tools
 
-`fastapi-mcp` automatically exposes all REST API endpoints as MCP tools:
+`fastapi-mcp` automatically exposes all REST API endpoints as MCP tools. Tool
+names are the FastAPI operation ids (e.g. `post_recommend_recommend_post`):
 
 1. **POST `/recommend`** - Find optimal GPU count and parallelism for serving an LLM
 2. **POST `/predict`** - Predict throughput/latency for a specific GPU configuration
@@ -68,6 +72,7 @@ When `fastapi-mcp` is installed, the server automatically exposes:
 4. **POST `/memory`** - Estimate KV cache memory usage
 5. **GET `/models`** - Get all supported model architectures
 6. **GET `/systems`** - Get all supported GPU systems
+7. **GET `/backends`** - Get supported serving backends and their versions
 
 Tools are automatically generated from the OpenAPI schema with full parameter validation.
 
@@ -90,6 +95,8 @@ Tools are automatically generated from the OpenAPI schema with full parameter va
 ```bash
 npx @modelcontextprotocol/inspector http://localhost:8000/mcp
 ```
+
+For a streamable-HTTP client, use `http://localhost:8000/mcp/http` as the URL.
 
 The MCP protocol handles tool discovery automatically - clients will see all available tools with their schemas and descriptions.
 

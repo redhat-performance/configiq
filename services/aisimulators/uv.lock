@@ -594,7 +594,7 @@ otel = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi-mcp", marker = "extra == 'mcp'" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = "<2.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.29,<2.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'" },
     { name = "opentelemetry-exporter-prometheus", marker = "extra == 'otel'" },
     { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'otel'" },

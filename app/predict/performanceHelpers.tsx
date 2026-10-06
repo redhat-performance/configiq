@@ -62,6 +62,10 @@ export const GLOSSARY: Record<string, { title: string; body: string }> = {
     title: 'TPOT · time per output token',
     body: 'Milliseconds between each output token during generation. Affects streaming speed — lower values feel more responsive. Typical targets: 10-50ms for interactive chat, can be higher for batch jobs.',
   },
+  throughput: {
+    title: 'Throughput',
+    body: 'The rate at which the serving configuration generates output tokens. Higher throughput means the GPUs can produce more tokens per second across active requests.',
+  },
   requestLatency: {
     title: 'Request latency (E2E)',
     body: 'Total end-to-end time for a request, from submission to completion. Equals TTFT + (OSL × TPOT). Constrains both prefill and decode performance.',

@@ -29,7 +29,7 @@ otel = [
 # Import `configiq.mcp`.
 mcp = [
     "fastapi-mcp",
-    "mcp<2.0",  # required for fastapi-mcp compatibility
+    "mcp>=1.29,<2.0",  # required for the native Streamable HTTP adapter
 ]
 
 [tool.hatch.build.targets.wheel]

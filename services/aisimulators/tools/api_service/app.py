@@ -702,6 +702,27 @@ def _per_user_throughput(metrics: dict[str, Any], concurrency: int | None) -> fl
     return throughput / concurrency
 
 
+def _prediction_total_gpus(summary: dict[str, Any], req: EstimateRequest) -> int | None:
+    reported = _coerce_int(summary.get("num_total_gpus"))
+    if reported is not None and reported > 0:
+        return reported
+    if req.mode == "agg":
+        return req.tp_size * req.pp_size * req.attention_dp_size
+    prefill_gpus = (
+        (req.prefill_tp_size or req.tp_size)
+        * (req.prefill_pp_size or req.pp_size)
+        * req.attention_dp_size
+        * (req.prefill_num_workers or 1)
+    )
+    decode_gpus = (
+        (req.decode_tp_size or req.tp_size)
+        * (req.decode_pp_size or req.pp_size)
+        * req.attention_dp_size
+        * (req.decode_num_workers or 1)
+    )
+    return prefill_gpus + decode_gpus
+
+
 def _aisimulate_worker_config(raw: dict[str, Any], role: str, req: RecommendRequest) -> WorkerConfig | None:
     worker = (raw.get("engine") or {}).get("workers", {}).get(role)
     if not isinstance(worker, dict):
@@ -1069,13 +1090,6 @@ def get_backends():
         })
     return {"backends": result}
 
-# Expose the API as MCP tools if the optional extra is present.
-if _MCP:
-    mcp_support.mount(app, name="aisimulators",
-                      description="GPU recommendation and performance estimation for LLM inference")
-else:
-    logger.info("MCP server unavailable (install with: pip install '.[mcp]')")
-
 
 @app.on_event("startup")
 def startup_event():
@@ -1206,7 +1220,7 @@ def post_predict(
         tokens_per_second=_metric(prediction.summary, "output_throughput_tok_s", "tokens_per_second"),
         tokens_per_second_per_gpu=_per_gpu_throughput(
             prediction.summary,
-            _coerce_int(prediction.summary.get("num_total_gpus")),
+            _prediction_total_gpus(prediction.summary, req),
         ),
         tokens_per_second_per_user=_per_user_throughput(prediction.summary, req.batch_size),
         memory=None,
@@ -1431,6 +1445,19 @@ def get_metrics(request: Request):
             detail="Metrics unavailable (install with: pip install '.[otel]')",
         )
     return observability.metrics_response(request.headers.get("accept", "text/plain"))
+
+
+# ─── MCP ─────────────────────────────────────────────────────────────────────
+
+# Expose the API as MCP tools if the optional extra is present. Mounted after
+# every route: fastapi-mcp snapshots the routes when the server is built, so a
+# route declared below this block would not become a tool.
+_MCP_SERVER = None
+if _MCP:
+    _MCP_SERVER = mcp_support.mount(app, name="aisimulators",
+                                    description="GPU recommendation and performance estimation for LLM inference")
+else:
+    logger.info("MCP server unavailable (install with: pip install '.[mcp]')")
 
 
 # ─── Entrypoint ──────────────────────────────────────────────────────────────
