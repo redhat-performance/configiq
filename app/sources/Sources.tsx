@@ -204,8 +204,8 @@ export default function Sources() {
   const staleOrErrored = sortedSources.filter(([, s]) => s.stale || s.last_error).length;
   const allFresh = sortedSources.length > 0 && staleOrErrored === 0;
 
-  // Gate the whole page on the Settings toggle. useCostings already fires no
-  // requests while disabled, so this only controls what is rendered.
+  // Gate live pricing sections on the Settings toggle, but keep shared cost
+  // assumptions editable for tools that remain available without costings.
   if (hydrated && !costingsEnabled) {
     return (
       <div className={styles.page}>
@@ -222,6 +222,7 @@ export default function Sources() {
             to view data sources.
           </div>
         </div>
+        <CostAssumptionsEditor />
       </div>
     );
   }
