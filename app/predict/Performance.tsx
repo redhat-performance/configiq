@@ -254,10 +254,22 @@ export default function Performance() {
   const [testMoeEpSize, setTestMoeEpSize] = React.useState(1);
   const [testMoeEtpSize, setTestMoeEtpSize] = React.useState(1);
 
+  // Estimator backend toggle
+  const [estimatorBackend, setEstimatorBackend] = React.useState<'aisimulate' | 'blis'>('aisimulate');
+  const isBlis = estimatorBackend === 'blis';
+
   // Disagg: prefill and decode pools with independent parallelism / batch.
   const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg');
   const [prefillCfg, setPrefillCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '1' });
   const [decodeCfg, setDecodeCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '64' });
+
+  React.useEffect(() => {
+    if (isBlis) {
+      if (testPpSize !== 1) { setTestPpSize(1); setPpSizeInput('1'); }
+      if (servingMode !== 'agg') { setServingMode('agg'); setTestResult(null); }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estimatorBackend]);
 
   const [islInput, setIslInput] = React.useState('2048');
   const [oslInput, setOslInput] = React.useState('128');
@@ -443,6 +455,7 @@ export default function Performance() {
           osl: testOSL,
           batch_size: testConcurrentUsers,
           tp_size: testTpSize,
+          estimator_backend: estimatorBackend,
           ...(effectiveContextLimit != null ? { max_seq_len: effectiveContextLimit } : {}),
           ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
           ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
@@ -734,6 +747,7 @@ export default function Performance() {
       model_path: model || '(select model)',
       system: gpu || '(select GPU)',
       backend: inferenceBackend,
+      estimator_backend: estimatorBackend,
       isl: testISL,
       osl: testOSL,
       ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
@@ -773,7 +787,7 @@ export default function Performance() {
         decode_batch_size: parsePerfPhase(decodeCfg).batch,
       })
     };
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize]);
+  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize, estimatorBackend]);
 
   // Copy API request body to clipboard
   const handleCopyAPIRequest = async () => {
@@ -989,6 +1003,7 @@ export default function Performance() {
           type: 'number' as const,
           placeholder: 'Optional override',
           invalid: invalidPrefillMaxSeqLen,
+          disabled: isBlis,
           onChange: (val: string) => handleSequenceLengthChange(val, setPrefillMaxSeqLenInput, setPrefillMaxSeqLen),
         },
         {
@@ -998,6 +1013,7 @@ export default function Performance() {
           type: 'number' as const,
           placeholder: 'Optional override',
           invalid: invalidDecodeMaxSeqLen,
+          disabled: isBlis,
           onChange: (val: string) => handleSequenceLengthChange(val, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
         },
       ],
@@ -1022,6 +1038,7 @@ export default function Performance() {
           value: testWeightPrecision,
           type: 'select' as const,
           term: 'weightPrecision',
+          disabled: isBlis,
           options: ['FP16', 'FP8', 'INT8', 'INT4', 'MXFP4', 'NVFP4'] as const,
           onChange: (val: string) => {
             if (val === 'FP16' || val === 'FP8' || val === 'INT8' || val === 'INT4' || val === 'MXFP4' || val === 'NVFP4') {
@@ -1046,6 +1063,7 @@ export default function Performance() {
           value: testMoeQuantMode,
           type: 'select' as const,
           term: 'moeQuantization',
+          disabled: isBlis,
           options: [
             { value: 'w4a16_mxfp4', label: 'W4A16 MXFP4' },
             { value: 'w4a8_mxfp4_mxfp8', label: 'W4A8 MXFP4+FP8' },
@@ -1118,6 +1136,7 @@ export default function Performance() {
           readonly: false,
           type: 'number' as const,
           invalid: invalidPpSize,
+          disabled: isBlis,
           onChange: (val: string) => handlePpSizeChange(val),
         },
         {
@@ -1127,6 +1146,7 @@ export default function Performance() {
           readonly: false,
           type: 'number' as const,
           placeholder: 'Optional',
+          disabled: isBlis,
           onChange: (val: string) => handleMoeEpSizeChange(val),
         },
         {
@@ -1136,6 +1156,7 @@ export default function Performance() {
           readonly: false,
           type: 'number' as const,
           placeholder: 'Optional',
+          disabled: isBlis,
           onChange: (val: string) => handleMoeEtpSizeChange(val),
         },
         {
@@ -1224,6 +1245,7 @@ export default function Performance() {
           value: vllmOverride && vllmManualChunkedPrefill !== null ? (vllmManualChunkedPrefill ? 'Yes' : 'No') : testResult ? (testResult.vllm_config.enable_chunked_prefill ? 'Yes' : 'No') : '—',
           term: 'chunkedPrefill',
           readonly: !vllmOverride,
+          disabled: isBlis,
           type: vllmOverride ? 'select' as const : undefined,
           options: vllmOverride ? ['Yes', 'No'] : undefined,
           onChange: vllmOverride ? (val: string) => setVllmManualChunkedPrefill(val === 'Yes') : undefined
@@ -1305,12 +1327,20 @@ export default function Performance() {
 
       </div>
 
-      {/* ---------- serving mode (agg / disagg) ---------- */}
+      {/* ---------- estimator backend + serving mode ---------- */}
       <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Estimator:</span>
+          <Button variant={estimatorBackend === 'aisimulate' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('aisimulate')}>AISimulate</Button>
+          <Button variant={estimatorBackend === 'blis' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('blis')}>BLIS</Button>
+          {isBlis && (
+            <span style={{ fontSize: '12px', color: '#54585c' }}>Discrete-event simulation. Grayed-out inputs are not applicable.</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
           <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
-          <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
+          <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }} isDisabled={isBlis}>Disaggregated</Button>
           {servingMode === 'disagg' && (
             <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
           )}
@@ -2098,6 +2128,7 @@ export default function Performance() {
                             <FormSelect
                               value={String(f.value)}
                               aria-label={f.label}
+                              isDisabled={f.disabled}
                               onChange={(_, val) => f.onChange?.(val)}
                             >
                               {(f.options || [f.value]).map((o: any) => {
@@ -2125,6 +2156,7 @@ export default function Performance() {
                               max={f.max}
                               step={f.step}
                               value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
+                              disabled={f.disabled}
                               onChange={(e) => f.onChange?.(Number(e.target.value))}
                               style={{ width: '100%' }}
                             />
@@ -2135,12 +2167,14 @@ export default function Performance() {
                             aria-label={f.label}
                             type="number"
                             validated={f.invalid ? 'error' : 'default'}
+                            isDisabled={f.disabled}
                             onChange={(_, val) => f.onChange?.(val)}
                           />
                         ) : (
                           <TextInput
                             value={String(f.value)}
                             aria-label={f.label}
+                            isDisabled={f.disabled}
                             onChange={(_, val) => f.onChange?.(val)}
                           />
                         )}

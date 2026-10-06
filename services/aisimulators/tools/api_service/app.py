@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -164,6 +165,7 @@ class EstimateRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+    estimator_backend: str = Field(default="aisimulate", description="Estimator backend to use.")
 
 
 class MemoryBreakdown(BaseModel):
@@ -777,20 +779,25 @@ def _run_aisimulate_recommendation(req: RecommendRequest):
         )
 
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
-    from aisimulate.predict import run_prediction
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config.cli import CorePredictionConfig
     from aisimulate.sweeper.replay import ReplayOutputRequirements
 
     with _with_model_config(req.model_path, req.model_config_data) as effective_path:
         prediction_req = req.model_copy(update={"model_path": effective_path})
-        return run_prediction(
-            _aisimulate_prediction_config(prediction_req),
-            stack="engine",
-            runner_factory=_aisimulate_runner_factory(),
+        config = CorePredictionConfig.model_validate(
+            _aisimulate_prediction_config(prediction_req)
+        )
+        spec = prediction_to_replay_spec(config)
+        runner = _aisimulate_runner_factory().create(worker_id=0)
+        report = runner.run(
+            spec,
             output_requirements=ReplayOutputRequirements(
                 include_raw_report=True,
                 capture_memory_diagnostics="memory" in include,
             ),
         )
+        return _PredictionResult(dict(report.metrics))
 
 
 def _worker_config_from_row(row: pd.Series, prefix: str, req: RecommendRequest) -> WorkerConfig | None:
@@ -1161,6 +1168,118 @@ def post_recommend(
     return RecommendResponse(configs=configs, chosen_mode=chosen_mode)
 
 
+_SYSTEM_TO_BLIS_HARDWARE: dict[str, str] = {
+    "h100_sxm": "H100",
+    "h100_pcie": "H100",
+    "h200_sxm": "H200",
+    "a100_sxm": "A100-SXM",
+    "a100_pcie": "A100-80",
+    "l40s": "L40S",
+}
+
+_BLIS_TIMEOUT_SECONDS = 120
+
+
+class _PredictionResult:
+    """Wraps a metrics dict as .summary for post_predict consumption."""
+
+    def __init__(self, summary: dict[str, float | None]):
+        self.summary = summary
+
+
+_KVCACHE_QUANT_TO_BLIS_DTYPE: dict[str, str] = {
+    "FP8": "fp8",
+    "FP8_E4M3": "fp8_e4m3",
+    "FP8_E5M2": "fp8_e5m2",
+    "FP16": "fp16",
+    "BF16": "bf16",
+    "FP32": "fp32",
+}
+
+
+def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
+    hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
+    if hardware is None:
+        raise ValueError(
+            f"No BLIS hardware mapping for system '{req.system}'. "
+            f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
+        )
+
+    blis_binary = os.environ.get("BLIS_BINARY", "blis")
+    blis_home = os.environ.get("BLIS_HOME")
+    cmd = [
+        blis_binary, "run",
+        "--model", req.model_path,
+        "--hardware", hardware,
+        "--tp", str(req.tp_size),
+        "--prompt-tokens", str(req.isl),
+        "--output-tokens", str(req.osl),
+        "--concurrency", str(req.batch_size),
+    ]
+
+    if req.gpu_memory_utilization is not None:
+        cmd.extend(["--gpu-memory-utilization", str(req.gpu_memory_utilization)])
+
+    if req.max_num_seqs is not None:
+        cmd.extend(["--max-num-seqs", str(req.max_num_seqs)])
+
+    if req.max_seq_len is not None:
+        cmd.extend(["--max-model-len", str(req.max_seq_len)])
+
+    if req.kvcache_quant_mode is not None:
+        blis_dtype = _KVCACHE_QUANT_TO_BLIS_DTYPE.get(req.kvcache_quant_mode.upper())
+        if blis_dtype is not None:
+            cmd.extend(["--kv-cache-dtype", blis_dtype])
+
+    if req.prefix > 0:
+        cmd.extend(["--prefix-tokens", str(req.prefix)])
+
+    if req.moe_ep_size is not None and req.moe_ep_size > 1:
+        cmd.append("--enable-expert-parallel")
+
+    catalog = os.environ.get("BLIS_CATALOG")
+    if catalog:
+        cmd.extend(["--catalog", catalog])
+
+    logger.info("BLIS command: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_BLIS_TIMEOUT_SECONDS,
+            cwd=blis_home,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"BLIS timed out after {_BLIS_TIMEOUT_SECONDS}s")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"BLIS failed (exit {result.returncode}): {stderr}")
+
+    marker = "=== Simulation Metrics ==="
+    idx = result.stdout.find(marker)
+    if idx == -1:
+        raise RuntimeError("BLIS output missing '=== Simulation Metrics ===' marker")
+
+    json_str = result.stdout[idx + len(marker) :].strip()
+    try:
+        blis_metrics = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
+
+    summary: dict[str, float | None] = {
+        "ttft_ms": blis_metrics.get("ttft_mean_ms"),
+        "tpot_ms": blis_metrics.get("itl_mean_ms"),
+        "e2e_latency_ms": blis_metrics.get("e2e_mean_ms"),
+        "output_throughput_tok_s": blis_metrics.get("tokens_per_sec"),
+        "num_total_gpus": float(req.tp_size),
+        "power_w": None,
+    }
+
+    return _PredictionResult(summary)
+
 def post_predict(
     req: EstimateRequest,
     include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
@@ -1189,7 +1308,12 @@ def post_predict(
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
     try:
-        prediction = _run_aisimulate_prediction(req, _parse_include(include))
+        if req.estimator_backend == "aisimulate":
+            prediction = _run_aisimulate_prediction(req, _parse_include(include))
+        elif req.estimator_backend == "blis":
+            prediction = _blis_estimate(req)
+        else:
+            _common_error_handler(Exception(f"Invalid estimator backend: {req.estimator_backend}"), "estimate", req.model_path, req.backend, req.system)
     except Exception as e:
         _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
 
