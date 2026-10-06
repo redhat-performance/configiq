@@ -1002,6 +1002,18 @@ class TestEstimate:
         assert resp.status_code == 200
         assert resp.json()["ttft"] == pytest.approx(471.378)
 
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_predict_derives_per_gpu_throughput_from_requested_topology(self, mock_estimate):
+        mock_estimate.return_value = MockPredictionResult(summary={
+            "ttft_ms": 471.378,
+            "tpot_ms": 28.118,
+            "output_throughput_tok_s": 1678.925,
+        })
+        resp = client.post("/predict", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert resp.json()["tokens_per_second_per_gpu"] == pytest.approx(839.462)
+
     def test_estimate_is_marked_deprecated(self):
         schema = client.get("/openapi.json").json()
         assert schema["paths"]["/estimate"]["post"]["deprecated"] is True
@@ -1128,8 +1140,7 @@ class TestEstimate:
     def test_disagg_mode(self, mock_estimate):
         mock_estimate.return_value = MockPredictionResult(
             summary={"ttft_ms": 500.0, "tpot_ms": 30.0,
-                     "output_throughput_tok_s": 1000.0,
-                     "output_throughput_tok_s_per_gpu": 250.0}
+                     "output_throughput_tok_s": 1000.0}
         )
         body = {
             **VALID_ESTIMATE_BODY,
@@ -1150,6 +1161,7 @@ class TestEstimate:
         assert data["prefill_config"]["batch_size"] == 1
         assert data["decode_config"]["tp"] == 4
         assert data["decode_config"]["batch_size"] == 64
+        assert data["tokens_per_second_per_gpu"] == pytest.approx(125.0)
         # Per-GPU peak is the worst case across pools, not summed.
         assert data["memory"] is None
         # SDK invoked in disagg mode with the per-role params.
