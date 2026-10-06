@@ -1,14 +1,16 @@
 'use client'
 
+import * as React from 'react'
 import {
   Chart,
   ChartAxis,
   ChartGroup,
   ChartLine,
   ChartScatter,
+  ChartTooltip,
   ChartVoronoiContainer,
 } from '@patternfly/react-charts/victory'
-import type { CostLens, CostPoint } from '@/lib/hybrid-savings/calc'
+import { HYBRID_PLANNING_HORIZON_TOKENS, type CostLens, type CostPoint } from '@/lib/hybrid-savings/calc'
 import styles from './hybrid-savings.module.css'
 
 interface CostComparisonChartProps {
@@ -20,6 +22,8 @@ interface CostComparisonChartProps {
   rentedLowestCostTokens: number | null
   ownedLowestCostTokens: number | null
   transitionsVerified: boolean
+  hostedModelLabel?: string
+  infrastructureModelLabel?: string
 }
 
 function compactNumber(value: number): string {
@@ -42,7 +46,20 @@ export default function CostComparisonChart({
   rentedLowestCostTokens,
   ownedLowestCostTokens,
   transitionsVerified,
+  hostedModelLabel,
+  infrastructureModelLabel,
 }: CostComparisonChartProps) {
+  const canvasRef = React.useRef<HTMLDivElement>(null)
+  const [width, setWidth] = React.useState(1060)
+  React.useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width > 0) setWidth(entry.contentRect.width)
+    })
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [])
   if (points.length < 2) return null
 
   const maximumTokens = points.reduce((maximum, point) => Math.max(maximum, point.tokens), 1)
@@ -57,7 +74,7 @@ export default function CostComparisonChart({
     ? [{ x: currentTokens, y: 0 }, { x: currentTokens, y: maximumCost }]
     : []
   const currentLinePosition = (
-    (82 + (currentTokens / maximumTokens) * (1060 - 82 - 32)) / 1060 * 100
+    (82 + (currentTokens / maximumTokens) * (width - 82 - 24)) / width * 100
   )
   const currentLabelTransform = currentLinePosition < 18
     ? 'translateX(0)'
@@ -74,7 +91,11 @@ export default function CostComparisonChart({
     return cost == null ? [] : [{ x: tokens, y: cost, name: key }]
   }
   const transitionText = (tokens: number | null) =>
-    !transitionsVerified ? 'Not verified' : tokens === null ? 'Not reached' : `≈ ${compactNumber(tokens)} tokens/month`
+    !transitionsVerified ? 'Not verified' : tokens === null
+      ? maximumTokens > HYBRID_PLANNING_HORIZON_TOKENS
+        ? `Not reached by ${compactNumber(HYBRID_PLANNING_HORIZON_TOKENS)}`
+        : 'Not reached'
+      : `≈ ${compactNumber(tokens)} tokens/month`
   const rentedLowestMarker = markerPoint('rented', rentedLowestCostTokens)
   const ownedLowestMarker = markerPoint('owned', ownedLowestCostTokens)
   const rentedBreakEvenMarker = markerPoint('rented', rentedBreakEvenTokens)
@@ -96,6 +117,7 @@ export default function CostComparisonChart({
           <span><i className={styles.ownedSwatch} />Purchased</span>
         </div>
       </div>
+      {hostedModelLabel && <p className={styles.calculationNote}>Hosted API: {hostedModelLabel} · Rented / purchased: {infrastructureModelLabel}</p>}
       <div className={styles.chartMilestones} aria-label="Modeled cost milestones">
         <div className={styles.breakEvenMilestone}>
           <strong>Cheaper than hosted API</strong>
@@ -111,7 +133,7 @@ export default function CostComparisonChart({
       {!transitionsVerified && (
         <p className={styles.currentMarker}>This workload is too complex to verify transitions across the full range. Current monthly costs remain available; narrow the inputs to check crossover points.</p>
       )}
-      <div className={styles.chartCanvas}>
+      <div className={styles.chartCanvas} ref={canvasRef}>
         {currentLine.length > 0 && (
           <span
             className={styles.currentWorkloadLabel}
@@ -127,6 +149,7 @@ export default function CostComparisonChart({
             <ChartVoronoiContainer
               constrainToVisibleArea
               voronoiBlacklist={['current-workload']}
+              labelComponent={<ChartTooltip style={{ fontFamily: 'var(--sans)', fontSize: 12 }} />}
               labels={({ datum }: { datum: { x?: number; y?: number } }) =>
                 `${compactNumber(Number(datum.x))} tokens/month: ${compactCurrency(Number(datum.y))}`
               }
@@ -134,25 +157,28 @@ export default function CostComparisonChart({
           }
           domain={{ x: [0, maximumTokens], y: [0, maximumCost] }}
           height={360}
-          padding={{ top: 24, right: 32, bottom: 58, left: 82 }}
-          width={1060}
+          padding={{ top: 40, right: 24, bottom: 58, left: 82 }}
+          width={width}
         >
           <ChartAxis
             label="Billed tokens per month"
+            crossAxis={false}
+            tickValues={Array.from({ length: width < 600 ? 3 : 5 }, (_, index) => index * maximumTokens / (width < 600 ? 2 : 4))}
             tickFormat={(tick: number) => compactNumber(Number(tick))}
             style={{
-              axisLabel: { padding: 40, fontSize: 12 },
-              tickLabels: { fontSize: 11.5 },
+              axisLabel: { padding: 40, fontSize: 12, fontFamily: 'var(--sans)' },
+              tickLabels: { fontSize: 11.5, fontFamily: 'var(--mono)' },
             }}
           />
           <ChartAxis
             dependentAxis
+            crossAxis={false}
             label="Monthly cost (USD)"
             tickFormat={(tick: number) => compactCurrency(Number(tick))}
             style={{
-              axisLabel: { padding: 58, fontSize: 12 },
+              axisLabel: { padding: 58, fontSize: 12, fontFamily: 'var(--sans)' },
               grid: { stroke: '#d2d2d2', strokeDasharray: '3,4' },
-              tickLabels: { fontSize: 11.5 },
+              tickLabels: { fontSize: 11.5, fontFamily: 'var(--mono)' },
             }}
           />
           <ChartGroup>
@@ -206,14 +232,6 @@ export default function CostComparisonChart({
           </ChartGroup>
         </Chart>
       </div>
-      {currentLine.length > 0 && (
-        <p className={styles.currentMarker}>
-          Dashed line: current workload ({compactNumber(currentTokens)} tokens/month)
-        </p>
-      )}
-      <p className={styles.currentMarker}>
-        Scale-to-zero rented cost follows modeled GPU runtime. Purchased hardware, active-window rental and always-on rental increase in whole deployment steps.
-      </p>
     </div>
   )
 }

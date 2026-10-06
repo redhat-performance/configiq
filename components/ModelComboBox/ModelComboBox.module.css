@@ -98,6 +98,20 @@
   width: 100%;
 }
 
+.optionText {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.optionDescription {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--gc-text-2, #3c3f42);
+}
+
 .badges {
   display: flex;
   gap: 4px;

@@ -47,9 +47,6 @@ const candidate: InfrastructureCandidate = {
   purchasePriceSourceUrl: null,
   purchasePriceSourceDate: '2026-09-23',
   tdpWattsPerGpu: 0,
-  ttftMs: 100,
-  tpotMs: 20,
-  source: 'Audit fixture',
 }
 
 const assumptions: CostAssumptions = {

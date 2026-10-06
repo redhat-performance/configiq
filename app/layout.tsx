@@ -42,6 +42,7 @@ import "./theme.css";
 import { AppShell } from "@/components/layout/AppShell";
 import { RecommendProvider } from "@/contexts/RecommendContext";
 import { SettingsProvider } from "@/contexts/SettingsContext";
+import { CostAssumptionsProvider } from "@/contexts/CostAssumptionsContext";
 
 const redHatDisplay = Red_Hat_Display({
   subsets: ["latin"],
@@ -77,7 +78,9 @@ export default function RootLayout({
       <body className={`${redHatDisplay.variable} ${redHatText.variable} ${redHatMono.variable}`}>
         <RecommendProvider>
           <SettingsProvider>
-            <AppShell>{children}</AppShell>
+            <CostAssumptionsProvider>
+              <AppShell>{children}</AppShell>
+            </CostAssumptionsProvider>
           </SettingsProvider>
         </RecommendProvider>
       </body>
