@@ -120,6 +120,20 @@ podman pull ghcr.io/redhat-performance/configiq:latest
 podman pull ghcr.io/redhat-performance/configiq:dev
 ```
 
+## Tested-model bundle releases
+
+Tested-model classifiers are data artifacts, not container-image contents. The
+`tested-models.yml` workflow builds a sanitized bundle from the pinned
+`TESTED_DATASET_REVISION` and uploads it as a workflow artifact. Follow
+[`docs/tested-models.md`](tested-models.md) to publish ground truth, reproduce
+the build, and install the bundle with `configiq-deploy/deploy-tested-models.sh`.
+
+Install the bundle independently on each host. The installer atomically
+replaces `/var/lib/configiq/tested-models` and explicitly loads the generated
+FIL models into Triton; do not rely on repository polling alone when Triton is
+running in explicit model-control mode. The deployment-owned K2 and Qwen
+models are separate from the generated bundle.
+
 ## Rollback
 
 To roll back, deploy a previous tagged version (do so for all four images so
