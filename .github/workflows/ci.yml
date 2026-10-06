@@ -10,7 +10,7 @@ on:
 permissions:
   contents: read
 
-# No path filters on any job: every push/PR checks all three components, matching
+# No path filters on any job: every push/PR checks all four components, matching
 # the "release in unison" model of the build workflow.
 jobs:
   check:
@@ -98,4 +98,28 @@ jobs:
 
       - name: Test
         working-directory: services/aicostings
+        run: uv run pytest
+
+  mcp-gateway:
+    name: MCP gateway — lint and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        working-directory: services/mcp-gateway
+        run: uv sync
+
+      - name: Lint
+        working-directory: services/mcp-gateway
+        run: uv run ruff check .
+
+      - name: Test
+        working-directory: services/mcp-gateway
         run: uv run pytest
