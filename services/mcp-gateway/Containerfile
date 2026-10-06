@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/opt/venv/bin:${PATH}
+
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip
+
+COPY configiq-py /src/configiq-py
+RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[mcp]"
+
+COPY mcp-gateway/pyproject.toml /tmp/pyproject.toml
+COPY scripts/install-deps.py /tmp/install-deps.py
+RUN /opt/venv/bin/python /tmp/install-deps.py /tmp/pyproject.toml
+
+COPY mcp-gateway /app
+
+RUN chown -R 1001:0 /app /opt/venv \
+    && chmod -R g=u /app /opt/venv
+
+USER 1001
+
+EXPOSE 8090
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD /opt/venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=5)" || exit 1
+
+CMD ["uvicorn", "api_service.app:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1"]
