@@ -1766,7 +1766,7 @@ export default function Performance() {
                       </div>
                     </div>
                     <div>
-                      <div className={styles.fieldLabel}>Throughput</div>
+                      <div className={styles.fieldLabel}>Throughput <Term k="throughput" /></div>
                       <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.throughput_tokens_per_sec.toFixed(1)} tok/s
                       </div>
