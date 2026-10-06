@@ -1766,12 +1766,12 @@ export default function Performance() {
                       </div>
                     </div>
                     <div>
-                      <div className={styles.fieldLabel}>Concurrency <Term k="concurrent" /></div>
+                      <div className={styles.fieldLabel}>Throughput</div>
                       <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
-                        {testResult.performance.concurrency}
+                        {testResult.performance.throughput_tokens_per_sec.toFixed(1)} tok/s
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                        Concurrent users supported
+                        Output tokens per second
                       </div>
                     </div>
                     <div>
