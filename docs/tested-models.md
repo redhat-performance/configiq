@@ -50,10 +50,9 @@ published by that workflow.
 
 The GitHub workflow `.github/workflows/publish-performance-data.yml` downloads
 the aggregate, prepares sanitized Parquet pairs, and compares their content
-with the public Hugging Face dataset. Pushes to
-`feat/ground-truth-vs-aisim` run this preparation and comparison without
-publishing. The workflow also runs at 00:00 Monday in `America/New_York` on
-the default branch. Scheduled publishing requires the GitHub repository
+with the public Hugging Face dataset. It runs at 00:00 Monday in
+`America/New_York` on the default branch, or manually through
+`workflow_dispatch`. Scheduled publishing requires the GitHub repository
 variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
 only prepare and compare. A manual run on `main` publishes only when its
 `publish` input is selected. Unchanged content is never uploaded.
@@ -62,7 +61,7 @@ Hugging Face publishing uses a Trusted Publisher on the dataset repository,
 restricted to `redhat-performance/configiq`, branch `main`, and workflow
 `publish-performance-data.yml`. No persistent Hugging Face token is stored in
 GitHub. The AWS read-only role must trust the repository's OIDC subject for
-`main` as well as any branch used for S3 dry runs.
+`main`.
 
 The earlier API extraction path remains available from an approved data
 environment:
