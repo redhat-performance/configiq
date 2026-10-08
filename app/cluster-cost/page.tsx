@@ -5,6 +5,9 @@ import styles from './cluster-cost.module.css'
 import { fetchAllProviders, getEffectiveRate, loadUserOverrides, setUserOverride, clearUserOverride, loadSelectedGpus, saveSelectedGpu, type Provider } from '@/lib/pricing/providerPricing'
 import { useCostings, resolveCloudRate, type CostingsData } from '@/lib/hooks/useCostings'
 import { useSettings } from '@/contexts/SettingsContext'
+import Link from 'next/link'
+import { useCostAssumptions } from '@/contexts/CostAssumptionsContext'
+import { applyClusterCostAssumptions, CLUSTER_SHARED_ASSUMPTIONS } from '@/lib/cluster-cost/shared-assumptions'
 
 interface GpuCatalogEntry {
   id: string
@@ -481,6 +484,7 @@ function LayerViz({
 
 // Main component
 export default function ClusterCostPage() {
+  const { overrides: sharedOverrides } = useCostAssumptions()
   const { costingsEnabled, preferredCloudProvider, pricingSource } = useSettings()
   const costings = useCostings(costingsEnabled, pricingSource)
 
@@ -501,7 +505,8 @@ export default function ClusterCostPage() {
   const [viewMode, setViewMode] = useState<'cloud' | 'onprem' | 'both'>('cloud')
   const [load, setLoad] = useState(75)
   const [ratesOpen, setRatesOpen] = useState(false)
-  const [rates, setRates] = useState(JSON.parse(JSON.stringify(BACKEND_DEFAULTS)))
+  const [localRates, setRates] = useState<typeof BACKEND_DEFAULTS>(() => structuredClone(BACKEND_DEFAULTS))
+  const rates = useMemo(() => applyClusterCostAssumptions(localRates, sharedOverrides), [localRates, sharedOverrides])
   const [toast, setToast] = useState<string | null>(null)
 
   // Cloud provider pricing state
@@ -695,6 +700,11 @@ export default function ClusterCostPage() {
 
   const rstRate = (side: 'cloud' | 'onprem', k: string) =>
     setRates((r: any) => ({ ...r, [side]: { ...r[side], [k]: (BACKEND_DEFAULTS as any)[side][k] } }))
+
+  const isSharedOverride = (key: string) => {
+    const assumption = CLUSTER_SHARED_ASSUMPTIONS[key as keyof typeof CLUSTER_SHARED_ASSUMPTIONS]
+    return assumption !== undefined && sharedOverrides[assumption] !== undefined
+  }
 
   const capStatus =
     load < 50
@@ -1259,6 +1269,9 @@ export default function ClusterCostPage() {
                 </div>
               ))}
               <div className={styles.rateGroup}>🖥 On-prem other costs</div>
+              <p style={{ padding: '0 12px', fontSize: 13 }}>
+                Shared planning overrides are managed in <Link href="/sources#cost-assumptions">Sources</Link>.
+              </p>
               {ONPREM_RATES.map(([k, lbl, unit]) => (
                 <div key={k} className={styles.rateRow}>
                   <span className={styles.rateK}>{lbl}</span>
@@ -1266,10 +1279,12 @@ export default function ClusterCostPage() {
                     className={`${styles.rateIn} ${isOv('onprem', k) ? styles.ov : ''}`}
                     type="number"
                     value={(rates as any).onprem[k]}
+                    readOnly={isSharedOverride(k)}
+                    title={isSharedOverride(k) ? 'Saved override — edit in Sources' : undefined}
                     onChange={e => upRate('onprem', k, parseFloat(e.target.value) || 0)}
                   />
                   <span className={styles.rateU}>{unit}</span>
-                  {isOv('onprem', k) && (
+                  {isSharedOverride(k) ? <Link className={styles.rateRst} href="/sources#cost-assumptions">Sources</Link> : isOv('onprem', k) && (
                     <button className={styles.rateRst} onClick={() => rstRate('onprem', k)}>
                       reset
                     </button>
@@ -1281,7 +1296,7 @@ export default function ClusterCostPage() {
                   onClick={() => setRates(JSON.parse(JSON.stringify(BACKEND_DEFAULTS)))}
                   style={{ width: '100%', padding: 7, borderRadius: 4, border: '1.5px solid #e0e0e0', background: '#fafafa', fontSize: 12, cursor: 'pointer', color: '#707070' }}
                 >
-                  Reset all rates to defaults
+                  Reset page-specific rates to defaults
                 </button>
               </div>
             </div>

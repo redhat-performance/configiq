@@ -21,6 +21,17 @@ Built with Next.js + PatternFly, powered by our [AISimulators](https://github.co
 | **Routing Economics** | Analyze request routing between model tiers |
 | **Cluster cost** | Estimate costs for multi-node GPU clusters |
 
+## Tested-model validation
+
+ConfigIQ maintains empirically trained performance-envelope classifiers for
+supported model and hardware pairs. The classifiers are built from sanitized,
+pinned ground-truth data and served by Triton FIL; the webapp consumes their
+registry and dashboard payloads through `/api/tested-models`.
+
+The complete pipeline, data boundary, artifact schema, and deployment procedure
+are documented in [docs/tested-models.md](docs/tested-models.md). Source scripts
+and regression tests are under [scripts/tested_models](scripts/tested_models).
+
 ## Getting started
 
 ### Prerequisites
@@ -88,6 +99,7 @@ components/
 lib/
   api/                AISimulators and aicostings API clients
 docs/                 Architecture docs and ADRs
+scripts/tested_models/ Tested-model dataset, classifier, and artifact pipeline
 ```
 
 ## Contributing

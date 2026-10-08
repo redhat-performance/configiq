@@ -18,7 +18,7 @@ jobs:
       packages: write
 
     strategy:
-      # Release all three images in unison. fail-fast cancels the remaining legs
+      # Release all four images in unison. fail-fast cancels the remaining legs
       # the moment one fails, which shrinks — but does not eliminate — the window
       # where a tag has only some images: each leg pushes independently (push:
       # true), so a leg that finished before the failure has already published.
@@ -43,6 +43,11 @@ jobs:
             context: services
             file: services/aicostings/Containerfile
             image: ghcr.io/redhat-performance/aicostings
+            build-args: ""
+          - name: mcp-gateway
+            context: services
+            file: services/mcp-gateway/Containerfile
+            image: ghcr.io/redhat-performance/configiq-mcp
             build-args: ""
     steps:
       - uses: actions/checkout@v4

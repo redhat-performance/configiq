@@ -3,9 +3,8 @@ import type { FrontierModel } from '@/lib/hooks/useCostings'
 export interface HostedPricingResolution {
   selected: FrontierModel | null
   matches: FrontierModel[]
-  /** Cheapest exact-checkpoint offer from each distinct provider, in cost order. */
+  /** Cheapest exact-checkpoint offer per provider and pricing source, in cost order. */
   providerMatches: FrontierModel[]
-  selectedMonthlyUsageCost: number | null
 }
 
 function normalizeModelId(value: string): string {
@@ -126,12 +125,12 @@ function normalizedModelName(value: string): string {
  * important: final-segment matching alone incorrectly treated checkpoints
  * such as `deepseek-r1-0528-distill-qwen3-8b` as Qwen3-8B offers.
  */
-function isExactCheckpointOffer(modelId: string, price: FrontierModel): boolean {
+function isExactCheckpointOffer(aliases: string[], price: FrontierModel): boolean {
   const candidate = normalizeModelId(price.id)
   const candidateParts = candidate.split('/')
   const candidateName = normalizedModelName(price.name)
 
-  return hostedPricingAliases(modelId).some(alias => {
+  return aliases.some(alias => {
     const aliasParts = alias.split('/')
     const aliasSegment = aliasParts.at(-1) ?? ''
     return candidate === alias ||
@@ -147,7 +146,8 @@ function hasUsablePrice(model: FrontierModel): boolean {
     model.price_per_m_output >= 0
 }
 
-function usageCost(
+/** Token charges only; excludes fixed fees, staffing and implementation. */
+export function hostedTokenUsageCost(
   model: FrontierModel,
   monthlyInputTokens: number,
   monthlyOutputTokens: number,
@@ -175,28 +175,30 @@ export function resolveHostedPricing(
 ): HostedPricingResolution {
   const requestedSegment = finalModelSegment(modelId)
   if (!requestedSegment) {
-    return { selected: null, matches: [], providerMatches: [], selectedMonthlyUsageCost: null }
+    return { selected: null, matches: [], providerMatches: [] }
   }
 
+  const aliases = hostedPricingAliases(modelId)
+  const requestedId = normalizeModelId(modelId)
   const matches = prices.filter(price =>
-    hasUsablePrice(price) && isExactCheckpointOffer(modelId, price),
+    hasUsablePrice(price) && isExactCheckpointOffer(aliases, price),
   )
 
   const ranked = [...matches].sort((left, right) => {
-    const costDifference = usageCost(left, monthlyInputTokens, monthlyOutputTokens) -
-      usageCost(right, monthlyInputTokens, monthlyOutputTokens)
+    const costDifference = hostedTokenUsageCost(left, monthlyInputTokens, monthlyOutputTokens) -
+      hostedTokenUsageCost(right, monthlyInputTokens, monthlyOutputTokens)
     if (Math.abs(costDifference) > Number.EPSILON) return costDifference
 
     const exactDifference =
-      Number(normalizeModelId(right.id) === normalizeModelId(modelId)) -
-      Number(normalizeModelId(left.id) === normalizeModelId(modelId))
+      Number(normalizeModelId(right.id) === requestedId) -
+      Number(normalizeModelId(left.id) === requestedId)
     if (exactDifference !== 0) return exactDifference
 
     return left.id.localeCompare(right.id)
   })
   const seenProviders = new Set<string>()
   const providerMatches = ranked.filter(offer => {
-    const provider = offer.provider.trim().toLowerCase()
+    const provider = `${offer.provider.trim().toLowerCase()}::${offer.source ?? ''}`
     if (seenProviders.has(provider)) return false
     seenProviders.add(provider)
     return true
@@ -207,8 +209,5 @@ export function resolveHostedPricing(
     selected,
     matches: ranked,
     providerMatches,
-    selectedMonthlyUsageCost: selected
-      ? usageCost(selected, monthlyInputTokens, monthlyOutputTokens)
-      : null,
   }
 }

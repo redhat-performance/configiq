@@ -62,11 +62,7 @@ async function mount(props: Partial<React.ComponentProps<typeof ComboBox>> = {})
   return { onChange };
 }
 
-/**
- * PatternFly's TextInputGroupMain puts the `id` prop on its wrapper div and
- * forwards only role/aria-* to the inner input, so the field has to be found
- * by role rather than by id.
- */
+/** Find the editable combobox rather than PatternFly's toggle wrapper. */
 function input(): HTMLInputElement {
   const el = container.querySelector<HTMLInputElement>('input[role="combobox"]');
   if (!el) throw new Error('combobox input not rendered');
@@ -233,5 +229,42 @@ describe('custom model entry', () => {
     await type('my-org/My-Model');
     await key('Enter');
     expect(onChange).toHaveBeenCalledWith('my-org/My-Model');
+  });
+});
+
+describe('provider and hardware choices', () => {
+  const offers: ComboBoxItem[] = [
+    { value: 'cheap', label: 'Z provider', group: '', description: '$150 / month' },
+    { value: 'other', label: 'A provider', group: '', description: '$300 / month' },
+  ];
+
+  it('preserves price order and accessible labelling without model metadata', async () => {
+    const { onChange } = await mount({
+      items: offers, label: 'Provider', preserveOrder: true, portalMenu: true,
+    });
+    await open();
+    expect(input().id).toBe('mb');
+    expect(input().getAttribute('aria-label')).toBe('Provider');
+    expect(optionLabels()).toEqual(['Z provider$150 / month', 'A provider$300 / month']);
+    expect(document.querySelectorAll('[class*="optionMeta"]')).toHaveLength(0);
+    await key('ArrowDown');
+    await key('Enter');
+    expect(onChange).toHaveBeenCalledWith('cheap');
+  });
+
+  it('searches price descriptions and selects the matching offer', async () => {
+    const { onChange } = await mount({ items: offers, preserveOrder: true });
+    await open();
+    await type('$300');
+    expect(optionLabels()).toEqual(['A provider$300 / month']);
+    await key('Enter');
+    expect(onChange).toHaveBeenCalledWith('other');
+  });
+
+  it('keeps alphabetical browsing as the default without mutating source order', async () => {
+    await mount({ items: offers });
+    await open();
+    expect(optionLabels()).toEqual(['A provider$300 / month', 'Z provider$150 / month']);
+    expect(offers.map(offer => offer.value)).toEqual(['cheap', 'other']);
   });
 });
