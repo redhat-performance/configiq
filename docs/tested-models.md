@@ -29,11 +29,14 @@ The deployment-owned `qwen3_8b` model is a fallback and is normally unloaded.
 
 ## Data boundary
 
-Ground-truth extraction runs only from an approved environment. The source
-endpoint is supplied through `PERF_DATA_API_URL` and is never written to the
-published artifacts. Extraction removes run IDs, UUIDs, MLflow identifiers,
-timestamps, raw runtime arguments, and other administrative fields before
-publication.
+Ground-truth extraction runs only from an approved environment. The legacy API
+extractor receives its source endpoint through `PERF_DATA_API_URL`; the GitHub
+publisher reads the approved S3 aggregate with an OIDC read-only role. Neither
+source location is written to published artifacts. Extraction removes run IDs,
+UUIDs, MLflow identifiers, timestamps, raw runtime arguments, and other
+administrative fields before publication. The S3 importer includes only models
+in `public/config.json`'s `testedModels` list and retains all source version
+labels. Consumers can select versions for a particular comparison later.
 
 The scheduled GitHub Actions workflow consumes a pinned revision of the public
 `redhat-performance/configiq-performance-data` Hugging Face dataset. It uploads
@@ -44,6 +47,24 @@ published by that workflow.
 ## Production workflow
 
 ### 1. Publish ground truth
+
+The GitHub workflow `.github/workflows/publish-performance-data.yml` downloads
+the aggregate, prepares sanitized Parquet pairs, and compares their content
+with the public Hugging Face dataset. It runs at 00:00 Monday in
+`America/New_York` on the default branch, or manually through
+`workflow_dispatch`. Scheduled publishing requires the GitHub repository
+variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
+only prepare and compare. A manual run on `main` publishes only when its
+`publish` input is selected. Unchanged content is never uploaded.
+
+Hugging Face publishing uses a Trusted Publisher on the dataset repository,
+restricted to `redhat-performance/configiq`, branch `main`, and workflow
+`publish-performance-data.yml`. No persistent Hugging Face token is stored in
+GitHub. The AWS read-only role must trust the repository's OIDC subject for
+`main`.
+
+The earlier API extraction path remains available from an approved data
+environment:
 
 From the approved data environment, extract and publish a sanitized dataset:
 

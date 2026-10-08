@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 from dataset_common import file_sha256, validate_public_frame
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -66,7 +66,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("data/tested-models/hf-ground-truth"))
     parser.add_argument("--repo-id", default="redhat-performance/configiq-performance-data")
     parser.add_argument("--revision", default=None, help="Optional branch or tag to update; defaults to the repository default branch.")
+    parser.add_argument("--check-only", action="store_true", help="Compare prepared data with Hugging Face without uploading.")
     return parser.parse_args()
+
+
+def _content_signature(manifest: dict) -> list[tuple[str, int, tuple[str, ...], str | None]]:
+    return sorted(
+        (
+            pair["id"], pair["records"], tuple(pair["columns"]),
+            pair.get("data_sha256"),
+        )
+        for pair in manifest["pairs"]
+    )
 
 
 def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
@@ -147,8 +158,21 @@ def main() -> int:
     args = parse_args()
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
-    api.create_repo(args.repo_id, repo_type="dataset", private=False, exist_ok=True)
-    parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision).sha
+    parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision, token=False).sha
+    remote_manifest_path = hf_hub_download(
+        repo_id=args.repo_id,
+        repo_type="dataset",
+        filename="manifest.json",
+        revision=parent_commit,
+        token=False,
+    )
+    remote_manifest = json.loads(Path(remote_manifest_path).read_text())
+    if _content_signature(manifest) == _content_signature(remote_manifest):
+        print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
+        return 0
+    if args.check_only:
+        print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
+        return 0
     commit = api.upload_folder(
         repo_id=args.repo_id,
         repo_type="dataset",
