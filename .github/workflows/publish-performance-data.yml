@@ -8,8 +8,6 @@ on:
         required: true
         type: boolean
         default: false
-  push:
-    branches: ['feat/ground-truth-vs-aisim']
   schedule:
     - cron: '0 0 * * 1'
       timezone: America/New_York
@@ -65,22 +63,11 @@ jobs:
       - name: Compare with current Hugging Face dataset
         run: uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py --check-only
 
-      - name: Verify branch Hugging Face publisher
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/ground-truth-vs-aisim'
-        env:
-          HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-data
-        run: |
-          uv run --locked --group tested-models hf auth token > /dev/null
-          echo 'Hugging Face trusted publisher exchange succeeded'
-
       - name: Publish changed data
         if: >-
-          (github.ref == 'refs/heads/main' &&
-           ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
-            (github.event_name == 'schedule' && vars.PERFORMANCE_DATA_PUBLISH_ENABLED == 'true'))) ||
-          (github.event_name == 'push' &&
-           github.ref == 'refs/heads/feat/ground-truth-vs-aisim' &&
-           contains(github.event.head_commit.message, '[publish-performance-data]'))
+          github.ref == 'refs/heads/main' &&
+          ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
+           (github.event_name == 'schedule' && vars.PERFORMANCE_DATA_PUBLISH_ENABLED == 'true'))
         env:
           HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-data
         run: |
