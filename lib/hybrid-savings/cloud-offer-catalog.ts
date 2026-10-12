@@ -73,7 +73,7 @@ function offer(
  * Calculator. They fill the topology/SKU gap in the current aggregate
  * aicostings response and make the two calculators compare the same shapes.
  */
-export const RENTED_CLOUD_OFFERS: RentedCloudOffer[] = [
+const RENTED_CLOUD_OFFERS: RentedCloudOffer[] = [
   offer('aws-g6e-xlarge', 'l40s', 'aws', 'aws.us-east-1', 'EC2 g6e.xlarge', 1, 1.861, 'AWS EC2 Linux On-Demand catalogue', AWS_SOURCE),
   offer('aws-g6e-12xlarge', 'l40s', 'aws', 'aws.us-east-1', 'EC2 g6e.12xlarge', 4, 10.49264, 'AWS EC2 Linux On-Demand catalogue', AWS_SOURCE),
   offer('aws-g6e-48xlarge', 'l40s', 'aws', 'aws.us-east-1', 'EC2 g6e.48xlarge', 8, 30.13118, 'AWS EC2 Linux On-Demand catalogue', AWS_SOURCE),

@@ -35,9 +35,10 @@ max_batch_size: 32768
 default_model_filename: "xgboost.json"
 input [{{ name: "input__0" data_type: TYPE_FP32 dims: [ {feature_count} ] }}]
 output [{{ name: "output__0" data_type: TYPE_FP32 dims: [ 1 ] }}]
-instance_group [{{ kind: KIND_AUTO }}]
+instance_group [{{ kind: KIND_CPU }}]
 parameters: {{ key: "model_type" value: {{ string_value: "xgboost_json" }} }}
 parameters: {{ key: "is_classifier" value: {{ string_value: "true" }} }}
+parameters: {{ key: "threshold" value: {{ string_value: "0.5" }} }}
 dynamic_batching {{}}
 ''')
         count += 1

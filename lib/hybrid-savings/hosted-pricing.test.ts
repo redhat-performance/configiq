@@ -68,6 +68,23 @@ describe('hosted pricing resolution', () => {
     expect(result.matches.map(match => match.provider)).toEqual(['Llamagate', 'OpenRouter'])
   })
 
+  it('preserves distinct pricing sources while deduplicating aliases within each source', () => {
+    const prices: FrontierModel[] = [
+      { ...pricedModel('route-a/owner/model-a', 'Provider A', 1, 2), source: 'openrouter' },
+      { ...pricedModel('route-b/owner/model-a', ' Provider A ', 2, 3), source: 'openrouter' },
+      { ...pricedModel('route-c/owner/model-a', 'provider a', 1.5, 2), source: 'litellm' },
+    ]
+    const originalOrder = prices.map(offer => offer.id)
+    const result = resolveHostedPricing('owner/model-a', prices, 2_000_000, 1_000_000)
+
+    expect(result.providerMatches.map(offer => offer.id)).toEqual([
+      'route-a/owner/model-a', 'route-c/owner/model-a',
+    ])
+    expect(result.selected).toBe(prices[0])
+    expect(result.matches).toHaveLength(3)
+    expect(prices.map(offer => offer.id)).toEqual(originalOrder)
+  })
+
   it('uses the same hosted model price for a serving-format checkpoint', () => {
     const prices = [pricedModel('qwen/qwen3-32b', 'Qwen', 0.08, 0.28)]
     const result = resolveHostedPricing(

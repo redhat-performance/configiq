@@ -11,6 +11,17 @@
 # thin FastAPI wrapper (plus the shared configiq package) on top. The SDK wheel
 # URL is pinned in pyproject.toml; bump it there to move to a newer SDK.
 
+ARG BLIS_IMAGE=ghcr.io/inference-sim/blis:v0.9.2@sha256:ed47ec919bfdb4406379de4037336cc657023fd433325b333e2e490fa313f58f
+FROM ${BLIS_IMAGE} AS blis
+
+FROM alpine/git:2.47.2 AS blis_catalog
+ARG BLIS_CATALOG_COMMIT=6fe4664576bc43d601bba6619aca4fbb42c5087b
+RUN git init /opt/blis-catalog \
+    && git -C /opt/blis-catalog remote add origin https://github.com/inference-sim/blis-catalog.git \
+    && git -C /opt/blis-catalog fetch --depth 1 origin "${BLIS_CATALOG_COMMIT}" \
+    && git -C /opt/blis-catalog checkout --detach FETCH_HEAD \
+    && rm -rf /opt/blis-catalog/.git
+
 FROM python:3.12-slim
 
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
@@ -20,8 +31,12 @@ LABEL org.opencontainers.image.source=https://github.com/redhat-performance/conf
 
 WORKDIR /app
 
+COPY --from=blis /usr/local/bin/blis /usr/local/bin/blis
+COPY --from=blis_catalog /opt/blis-catalog /opt/blis/catalog
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    BLIS_CATALOG=/opt/blis/catalog \
     PATH=/opt/venv/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,6 +58,15 @@ RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 # the venv's (PATH=/opt/venv/bin), so pip installs into /opt/venv.
 COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
+
+# Expose both simulator CLIs at stable system paths. The aisimulate wheel ships
+# its console entrypoint and cached model configs; the exporter adds those model
+# configs to the pinned BLIS catalog without changing BLIS hardware facts.
+COPY aisimulators/tools/export_blis_catalog.py /tmp/export_blis_catalog.py
+RUN python /tmp/export_blis_catalog.py /opt/blis/catalog \
+    && ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
+    && /usr/local/bin/aisimulate --help >/dev/null \
+    && /usr/local/bin/blis --help >/dev/null
 
 # Thin REST wrapper. CMD imports it as api_service.app:app.
 COPY aisimulators/tools/api_service /app/api_service

@@ -1,0 +1,17 @@
+--- a/utils/metrics.py
++++ b/utils/metrics.py
+@@ -30,8 +30,13 @@
+
+ import triton_python_backend_utils as pb_utils
+ from vllm.config import VllmConfig
+-from vllm.v1.metrics.loggers import StatLoggerBase, build_1_2_5_buckets
++from vllm.v1.metrics.loggers import StatLoggerBase
++from vllm.v1.metrics.buckets import histogram_buckets
+ from vllm.v1.metrics.stats import IterationStats, MultiModalCacheStats, SchedulerStats
+
++
++def build_1_2_5_buckets(max_model_len: int) -> list[float]:
++    return histogram_buckets("request_tokens", max_model_len=max_model_len)
++
+
+ class TritonMetrics:

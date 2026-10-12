@@ -1,0 +1,32 @@
+[project]
+name = "configiq-mcp-gateway"
+version = "0.1.0"
+description = "Unified MCP gateway for ConfigIQ inference sizing and pricing APIs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "configiq[otel,mcp]",
+    "fastapi",
+    "httpx",
+    "pydantic",
+    "uvicorn[standard]",
+]
+
+[dependency-groups]
+dev = [
+    "httpx",
+    "pytest",
+    "ruff",
+]
+
+[tool.uv.sources]
+configiq = { path = "../configiq-py", editable = true }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

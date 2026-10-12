@@ -1,4 +1,5 @@
 import { firstWinningVolume, TransitionSearchLimitError, type CostCurve } from './transition-search'
+import type { PlanningCostAssumptions } from '@/lib/costing-assumptions'
 
 export type CloudBillingMode = 'scale-to-zero' | 'active-window' | 'always-on'
 export type CostLens = 'fully-loaded' | 'marginal'
@@ -20,6 +21,8 @@ export interface HostedPrice {
 }
 
 export interface InfrastructureCandidate {
+  /** Stable offer/server identity; never derived from a mutable price or performance estimate. */
+  configurationId?: string
   systemId: string
   label: string
   gpusPerReplica: number
@@ -36,7 +39,6 @@ export interface InfrastructureCandidate {
   cloudProviderRegion?: string | null
   cloudRateKind: 'on_demand' | 'spot' | 'capacity_block' | null
   cloudMaxInstancesPerReplica?: number | null
-  cloudInterconnect?: string | null
   cloudPriceSource?: string | null
   cloudPriceSourceUrl?: string | null
   cloudPriceSourceDate?: string | null
@@ -48,43 +50,12 @@ export interface InfrastructureCandidate {
   purchasePriceSourceUrl: string | null
   purchasePriceSourceDate: string | null
   tdpWattsPerGpu: number | null
-  ttftMs: number
-  tpotMs: number
-  source: string
 }
 
-export interface CostAssumptions {
+export interface CostAssumptions extends PlanningCostAssumptions {
   costLens: CostLens
   cloudBillingMode: CloudBillingMode
-  cloudRuntimeBufferPct: number
-  /** Usable share of benchmarked throughput retained for planning headroom. */
-  planningCapacityUsePct: number
-  hoursPerMonth: number
-  analysisMonths: number
-  loadedMonthlyCostPerFte: number
-  hostedOperationsFte: number
-  hostedImplementation: number
-  rentedDirectInfrastructureMonthly: number
-  rentedOperationsFte: number
-  rentedImplementation: number
-  hardwareLifeYears: number
-  hardwareResidualPct: number
-  annualCostOfCapitalPct: number
-  annualMaintenancePct: number
-  electricityPerKwh: number
-  pue: number
-  ownedBaseSystemPowerWattsPerServer: number
-  /** Additional user-entered installation cost above the catalogue estimate. */
-  ownedInstallationPerServer: number
-  ownedFacilityMonthlyPerServer: number
-  ownedDirectInfrastructureMonthly: number
-  ownedOperationsFte: number
-  ownedImplementation: number
-  hostedFixedMonthly: number
-  rentedFixedMonthly: number
-  ownedFixedMonthly: number
 }
-
 export interface CostBreakdownItem {
   label: string
   monthlyCost: number
@@ -112,6 +83,23 @@ export interface CostPoint {
   hosted: number | null
   rented: number | null
   owned: number | null
+}
+
+export interface HardwareSelections {
+  rented?: string | null
+  owned?: string | null
+}
+
+export type InfrastructurePath = 'rented' | 'owned'
+
+/** Keep provider, instance topology and billing terms distinct in manual selections. */
+export function infrastructureCandidateKey(candidate: InfrastructureCandidate, path: InfrastructurePath): string {
+  return JSON.stringify([path, candidate.systemId, candidate.configurationId ?? (
+    path === 'rented'
+      ? [candidate.cloudProvider, candidate.cloudProviderRegion, candidate.cloudInstanceName,
+        candidate.cloudGpusPerInstance, candidate.cloudRateKind, candidate.cloudMaxInstancesPerReplica]
+      : [candidate.purchaseGpusPerServer ?? candidate.gpusPerReplica, candidate.purchasePriceSource]
+  )])
 }
 
 export interface HybridComparison {
@@ -510,7 +498,7 @@ function ownedCostForCandidate(
     Math.max(Math.ceil(analysisMonths / lifeMonths) - 1, 0),
     MAX_REPLACEMENT_CYCLES,
   )
-  let elapsedMonths = completedCycles * lifeMonths
+  const elapsedMonths = completedCycles * lifeMonths
   let depreciationConsumed = completedCycles * (acquisition - residualValue)
   let installationConsumed = completedCycles * installationAcquisition
   let capitalChargeTotal = completedCycles *
@@ -532,7 +520,6 @@ function ownedCostForCandidate(
       ((openingBookValue + endingBookValue) / 2) *
       annualCostOfCapital *
       (heldMonths / 12)
-    elapsedMonths += heldMonths
   }
 
   const amortization = depreciationConsumed / analysisMonths
@@ -593,9 +580,13 @@ function ownedCostForCandidate(
 }
 
 function lowestCostOption(options: Array<CostOption | null>): CostOption | null {
-  return options
-    .filter((option): option is CostOption => option !== null)
-    .sort((left, right) => left.monthlyCost - right.monthlyCost)[0] ?? null
+  let cheapest: CostOption | null = null
+  for (const option of options) {
+    if (option && (cheapest === null || option.monthlyCost < cheapest.monthlyCost)) {
+      cheapest = option
+    }
+  }
+  return cheapest
 }
 
 export function bestRentedAtVolume(
@@ -620,10 +611,48 @@ export function bestOwnedAtVolume(
   )
 }
 
+/** Eligible dropdown choices, costed by the same formulas as cards and charts. */
+export function infrastructureOptionsAtVolume(
+  path: InfrastructurePath,
+  workload: HybridWorkload,
+  candidates: InfrastructureCandidate[],
+  assumptions: CostAssumptions,
+  volume: number,
+): CostOption[] {
+  const costCandidate = path === 'rented' ? rentedCostForCandidate : ownedCostForCandidate
+  const options = candidates
+    .map(candidate => costCandidate(workload, candidate, assumptions, volume))
+    .filter((option): option is CostOption => option !== null)
+    .sort((left, right) => left.monthlyCost - right.monthlyCost)
+  const seen = new Set<string>()
+  return options.filter(option => {
+    const key = infrastructureCandidateKey(option.candidate!, path)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function selectedCandidates(
+  path: InfrastructurePath,
+  workload: HybridWorkload,
+  candidates: InfrastructureCandidate[],
+  assumptions: CostAssumptions,
+  volume: number,
+  key: string | null | undefined,
+): InfrastructureCandidate[] {
+  if (!key) return candidates
+  const selected = infrastructureOptionsAtVolume(path, workload, candidates, assumptions, volume)
+    .find(option => infrastructureCandidateKey(option.candidate!, path) === key)?.candidate
+  // A stale or now-ineligible manual choice safely returns to automatic selection.
+  return selected ? [selected] : candidates
+}
+
 function candidateCurves(
   workload: HybridWorkload,
   candidates: InfrastructureCandidate[],
   assumptions: CostAssumptions,
+  ownedCandidates: InfrastructureCandidate[],
 ): { rented: CostCurve[]; owned: CostCurve[] } {
   const rented: CostCurve[] = []
   const owned: CostCurve[] = []
@@ -661,7 +690,10 @@ function candidateCurves(
         }
       }
     }
-
+  }
+  for (const candidate of ownedCandidates) {
+    const replicaCapacity = candidateCapacityTokens(workload, candidate, assumptions.planningCapacityUsePct)
+    if (!Number.isFinite(replicaCapacity) || replicaCapacity <= 0) continue
     const ownedAtZero = ownedCostForCandidate(workload, candidate, assumptions, 0)
     if (ownedAtZero) {
       const gpusPerReplica = Math.max(Math.ceil(positive(candidate.gpusPerReplica)), 1)
@@ -684,15 +716,20 @@ function chartMaximum(
   currentVolume: number,
   crossovers: Array<number | null>,
 ): number {
-  const found = crossovers.filter((value): value is number => value !== null)
+  const found = crossovers.filter((value): value is number =>
+    value !== null && Number.isFinite(value) && value > 0,
+  )
+  // The visible range is independent of the transition search horizon: a
+  // crossover near its limit still needs continuation, and the current
+  // workload must never disappear off the chart. Keep small crossovers in
+  // focus rather than imposing a large fixed minimum on them.
   const raw = found.length > 0
-    ? Math.max(currentVolume * 1.25, ...found.map(value => value * 1.18), 10_000_000)
-    : Math.max(currentVolume * 5, 100_000_000_000)
-  const capped = Math.min(raw, DEFAULT_SEARCH_MAXIMUM)
-  const magnitude = 10 ** Math.floor(Math.log10(Math.max(capped, 1)))
-  const normalized = capped / magnitude
-  const rounded = Math.ceil(normalized * 10) / 10
-  return rounded * magnitude
+    ? Math.max(currentVolume, ...found) * 1.18
+    : Math.max(currentVolume * 3, 1_000_000_000)
+  // Round upwards to a readable three-significant-digit limit without
+  // introducing another long tail (less than 1% additional range).
+  const step = 10 ** (Math.floor(Math.log10(Math.max(raw, 1))) - 2)
+  return Math.ceil(raw / step) * step
 }
 
 function chartVolumes(
@@ -746,8 +783,11 @@ export function calculateHybridComparison(
   hostedPrice: HostedPrice,
   candidates: InfrastructureCandidate[],
   assumptions: CostAssumptions,
+  selections: HardwareSelections = {},
 ): HybridComparison {
   const facts = workloadFacts(workload)
+  const rentedCandidates = selectedCandidates('rented', workload, candidates, assumptions, facts.monthlyTokens, selections.rented)
+  const ownedCandidates = selectedCandidates('owned', workload, candidates, assumptions, facts.monthlyTokens, selections.owned)
   const hosted = hostedCostAtVolume(
     workload,
     hostedPrice,
@@ -756,21 +796,21 @@ export function calculateHybridComparison(
   )
   const rented = bestRentedAtVolume(
     workload,
-    candidates,
+    rentedCandidates,
     assumptions,
     facts.monthlyTokens,
   )
   const owned = bestOwnedAtVolume(
     workload,
-    candidates,
+    ownedCandidates,
     assumptions,
     facts.monthlyTokens,
   )
   const options = [hosted, rented, owned].filter(
     (option): option is CostOption => option !== null,
   )
-  const cheapest = [...options].sort((left, right) => left.monthlyCost - right.monthlyCost)[0] ?? null
-  const curves = candidateCurves(workload, candidates, assumptions)
+  const cheapest = lowestCostOption(options)
+  const curves = candidateCurves(workload, rentedCandidates, assumptions, ownedCandidates)
   const inputShare = workloadMix(workload).inputShare
   const hostedCurve: CostCurve = {
     kind: 'linear',
@@ -828,8 +868,8 @@ export function calculateHybridComparison(
     .map(tokens => ({
       tokens,
       hosted: hostedCostAtVolume(workload, hostedPrice, assumptions, tokens).monthlyCost,
-      rented: bestRentedAtVolume(workload, candidates, assumptions, tokens)?.monthlyCost ?? null,
-      owned: bestOwnedAtVolume(workload, candidates, assumptions, tokens)?.monthlyCost ?? null,
+      rented: bestRentedAtVolume(workload, rentedCandidates, assumptions, tokens)?.monthlyCost ?? null,
+      owned: bestOwnedAtVolume(workload, ownedCandidates, assumptions, tokens)?.monthlyCost ?? null,
     }))
 
   return {

@@ -5,6 +5,8 @@ import {
   calculateHybridComparison,
   candidateCapacityTokens,
   hostedCostAtVolume,
+  infrastructureCandidateKey,
+  infrastructureOptionsAtVolume,
   workloadFacts,
   type CostAssumptions,
   type HostedPrice,
@@ -75,12 +77,19 @@ const candidate: InfrastructureCandidate = {
   purchasePriceSourceUrl: null,
   purchasePriceSourceDate: '2026-09-16',
   tdpWattsPerGpu: 500,
-  ttftMs: 300,
-  tpotMs: 40,
-  source: 'AISimulators',
 }
 
 describe('hybrid savings calculations', () => {
+  it('preserves candidate order when multiple configurations have equal costs', () => {
+    const equivalent = { ...candidate, systemId: 'equivalent', label: 'Equivalent GPU' }
+    for (const choose of [bestRentedAtVolume, bestOwnedAtVolume]) {
+      const candidates = [candidate, equivalent]
+      expect(choose(workload, candidates, assumptions, 25_000_000)?.candidate).toBe(candidate)
+      expect(choose(workload, [...candidates].reverse(), assumptions, 25_000_000)?.candidate).toBe(equivalent)
+      expect(candidates).toEqual([candidate, equivalent])
+    }
+  })
+
   it('derives request demand from billed tokens and the request shape', () => {
     const facts = workloadFacts(workload)
     expect(facts.monthlyTokens).toBe(25_000_000)
@@ -498,7 +507,81 @@ describe('hybrid savings calculations', () => {
       result.ownedLowestCostTokens ?? 0,
     )
     expect(result.chartMaximumTokens).toBeGreaterThan(furthestRelevantPoint)
-    expect(result.chartMaximumTokens).toBeLessThanOrEqual(furthestRelevantPoint * 2)
+    expect(result.chartMaximumTokens).toBeGreaterThanOrEqual(furthestRelevantPoint * 1.18)
+    expect(result.chartMaximumTokens).toBeLessThan(furthestRelevantPoint * 1.192)
+  })
+
+  it('focuses on small crossovers without imposing a large minimum range', () => {
+    const tinyWorkload = { ...workload, monthlyInputTokens: 4, monthlyOutputTokens: 1 }
+    const result = calculateHybridComparison(
+      tinyWorkload,
+      { ...hostedPrice, inputPerMillion: 1_000_000, outputPerMillion: 1_000_000 },
+      [candidate], assumptions,
+    )
+    const transitions = [result.rentedBreakEvenTokens, result.ownedBreakEvenTokens,
+      result.rentedLowestCostTokens, result.ownedLowestCostTokens]
+      .filter((value): value is number => value !== null)
+    expect(transitions.length).toBeGreaterThan(0)
+    const last = Math.max(result.monthlyTokens, ...transitions)
+    expect(result.chartMaximumTokens).toBeGreaterThanOrEqual(last * 1.18)
+    expect(result.chartMaximumTokens).toBeLessThan(last * 1.192)
+    expect(result.chartMaximumTokens).toBeLessThan(10_000_000)
+    expect(transitions.every(tokens => result.chartPoints.some(point => point.tokens === tokens))).toBe(true)
+  })
+
+  it('includes the current workload with a short tail when it exceeds the crossovers and search horizon', () => {
+    const largeWorkload = { ...workload, monthlyInputTokens: 1.6e12, monthlyOutputTokens: 0.4e12 }
+    const result = calculateHybridComparison(
+      largeWorkload,
+      { ...hostedPrice, inputPerMillion: 100, outputPerMillion: 100 },
+      [candidate], assumptions,
+    )
+    expect(result.chartMaximumTokens).toBe(2.36e12)
+    expect(result.chartPoints.some(point => point.tokens === result.monthlyTokens)).toBe(true)
+    expect(result.chartPoints.at(-1)?.tokens).toBe(result.chartMaximumTokens)
+    expect(result.chartPoints.length).toBeLessThan(1_000)
+  })
+
+  it('uses a workload-relative fallback when no crossover exists', () => {
+    for (const monthlyTokens of [0, 25e6, 2.5e9]) {
+      const result = calculateHybridComparison(
+        { ...workload, monthlyInputTokens: monthlyTokens * 0.8, monthlyOutputTokens: monthlyTokens * 0.2 },
+        { ...hostedPrice, inputPerMillion: 0, outputPerMillion: 0 },
+        [candidate], assumptions,
+      )
+      expect(result.rentedBreakEvenTokens).toBeNull()
+      expect(result.ownedBreakEvenTokens).toBeNull()
+      expect(result.chartMaximumTokens).toBe(Math.max(monthlyTokens * 3, 1e9))
+      expect(result.chartPoints[0].tokens).toBe(0)
+      expect(result.chartPoints.some(point => point.tokens === monthlyTokens)).toBe(true)
+    }
+  })
+
+  it('recalculates the visible range for hosted prices and billing modes without changing plotted formulas', () => {
+    const changingRanges: boolean[] = []
+    for (const cloudBillingMode of ['scale-to-zero', 'active-window', 'always-on'] as const) {
+      const planning = { ...assumptions, cloudBillingMode }
+      const limits: number[] = []
+      for (const rate of [10, 100]) {
+        const price = { ...hostedPrice, inputPerMillion: rate, outputPerMillion: rate }
+        const result = calculateHybridComparison(workload, price, [candidate], planning)
+        const last = Math.max(result.monthlyTokens, result.rentedBreakEvenTokens ?? 0,
+          result.ownedBreakEvenTokens ?? 0, result.rentedLowestCostTokens ?? 0, result.ownedLowestCostTokens ?? 0)
+        expect(result.chartMaximumTokens).toBeGreaterThanOrEqual(last * 1.18)
+        expect(result.chartMaximumTokens).toBeLessThan(last * 1.192)
+        limits.push(result.chartMaximumTokens)
+        for (const point of result.chartPoints) {
+          expect(point.hosted).toBeCloseTo(hostedCostAtVolume(workload, price, planning, point.tokens).monthlyCost)
+          expect(point.rented).toBeCloseTo(bestRentedAtVolume(workload, [candidate], planning, point.tokens)!.monthlyCost)
+          expect(point.owned).toBeCloseTo(bestOwnedAtVolume(workload, [candidate], planning, point.tokens)!.monthlyCost)
+        }
+      }
+      // An infrastructure-to-infrastructure crossover can still be the
+      // furthest anchor, even when a hosted price changes.
+      expect(limits[1]).toBeLessThanOrEqual(limits[0])
+      changingRanges.push(limits[1] < limits[0])
+    }
+    expect(changingRanges).toContain(true)
   })
 
   it('finds a narrow crossover after the eightieth capacity boundary', () => {
@@ -531,6 +614,18 @@ describe('hybrid savings calculations', () => {
     // token where hosted reaches that amount is 809.95B tokens.
     expect(result.rentedBreakEvenTokens).toBe(809_950_000_000)
     expect(result.chartPoints.some(point => point.tokens === tenBillionTokenStep * 81)).toBe(true)
+    expect(result.chartMaximumTokens).toBeGreaterThan(result.rentedBreakEvenTokens! * 1.18)
+
+    const nearHorizon = calculateHybridComparison(
+      workload,
+      { ...hostedPrice, inputPerMillion: 0.01, outputPerMillion: 0.01 },
+      [lateCandidate],
+      { ...lateAssumptions, rentedDirectInfrastructureMonthly: 99.5 },
+    )
+    expect(nearHorizon.rentedBreakEvenTokens).toBe(999_950_000_000)
+    expect(nearHorizon.chartMaximumTokens).toBe(1.18e12)
+    expect(nearHorizon.chartPoints.some(point => point.tokens === nearHorizon.rentedBreakEvenTokens)).toBe(true)
+    expect(nearHorizon.chartPoints.at(-1)!.tokens).toBeGreaterThan(1e12)
   })
 
   it('matches exhaustive whole-token transitions for every rented billing mode', () => {
@@ -724,8 +819,6 @@ describe('hybrid savings calculations', () => {
       purchasePricePerReplica: 35_000,
       purchaseInstallationPerReplica: 2_500,
       tdpWattsPerGpu: 350,
-      ttftMs: 590.247,
-      tpotMs: 58.979,
     }
     const result = calculateHybridComparison(
       workload,
@@ -815,5 +908,106 @@ describe('hybrid savings calculations', () => {
       .toBeCloseTo(1_000)
     expect(result?.breakdown.find(item => item.label === 'Installation and commissioning')?.monthlyCost)
       .toBeCloseTo(100)
+  })
+})
+
+describe('independent hardware selections', () => {
+  const expensive: InfrastructureCandidate = {
+    ...candidate, configurationId: 'expensive-offer', systemId: 'expensive',
+    label: 'Expensive GPU', cloudRatePerGpuHour: 4, purchasePricePerReplica: 24_000,
+  }
+  const candidates = [expensive, candidate]
+  const rentedKey = infrastructureCandidateKey(expensive, 'rented')
+  const ownedKey = infrastructureCandidateKey(expensive, 'owned')
+  const option = (result: ReturnType<typeof calculateHybridComparison>, key: 'rented' | 'owned') =>
+    result.options.find(item => item.key === key)!
+
+  it('preserves automatic cheapest selection and existing callers exactly', () => {
+    const automatic = calculateHybridComparison(workload, hostedPrice, candidates, assumptions)
+    expect(calculateHybridComparison(workload, hostedPrice, candidates, assumptions, {})).toEqual(automatic)
+    expect(option(automatic, 'rented').candidate).toBe(candidate)
+    expect(option(automatic, 'owned').candidate).toBe(candidate)
+  })
+
+  it('costs a manual rented offer without affecting purchased selection', () => {
+    const result = calculateHybridComparison(workload, hostedPrice, candidates, assumptions, { rented: rentedKey })
+    expect(option(result, 'rented')).toEqual(bestRentedAtVolume(workload, [expensive], assumptions, 25_000_000))
+    expect(option(result, 'owned')).toEqual(bestOwnedAtVolume(workload, candidates, assumptions, 25_000_000))
+  })
+
+  it('costs a manual purchased server without affecting rented selection', () => {
+    const result = calculateHybridComparison(workload, hostedPrice, candidates, assumptions, { owned: ownedKey })
+    expect(option(result, 'owned')).toEqual(bestOwnedAtVolume(workload, [expensive], assumptions, 25_000_000))
+    expect(option(result, 'rented')).toEqual(bestRentedAtVolume(workload, candidates, assumptions, 25_000_000))
+  })
+
+  it('uses both selected configurations for every point, current cost and transitions', () => {
+    const result = calculateHybridComparison(workload, hostedPrice, candidates, assumptions, {
+      rented: rentedKey, owned: ownedKey,
+    })
+    // A pinned comparison must be identical to evaluating only that configuration.
+    expect(result).toEqual(calculateHybridComparison(workload, hostedPrice, [expensive], assumptions))
+    const current = result.chartPoints.find(point => point.tokens === result.monthlyTokens)!
+    expect(current.rented).toBe(option(result, 'rented').monthlyCost)
+    expect(current.owned).toBe(option(result, 'owned').monthlyCost)
+    for (const point of result.chartPoints) {
+      expect(point.rented).toBe(bestRentedAtVolume(workload, [expensive], assumptions, point.tokens)?.monthlyCost)
+      expect(point.owned).toBe(bestOwnedAtVolume(workload, [expensive], assumptions, point.tokens)?.monthlyCost)
+    }
+    const automatic = calculateHybridComparison(workload, hostedPrice, candidates, assumptions)
+    expect(result.rentedBreakEvenTokens).not.toBe(automatic.rentedBreakEvenTokens)
+    expect(result.ownedBreakEvenTokens).not.toBe(automatic.ownedBreakEvenTokens)
+  })
+
+  it('returns to automatic when a selected configuration disappears or loses eligibility', () => {
+    const automatic = calculateHybridComparison(workload, hostedPrice, [candidate], assumptions)
+    expect(calculateHybridComparison(workload, hostedPrice, [candidate], assumptions, {
+      rented: rentedKey, owned: ownedKey,
+    })).toEqual(automatic)
+    const invalid = { ...expensive, clusterOutputTokensPerSecond: 0 }
+    expect(calculateHybridComparison(workload, hostedPrice, [candidate, invalid], assumptions, {
+      rented: rentedKey, owned: ownedKey,
+    })).toEqual(automatic)
+  })
+
+  it('retains identities across fresh sizing and pricing, but distinguishes provider and topology', () => {
+    const refreshed = { ...expensive, clusterOutputTokensPerSecond: 120, cloudRatePerGpuHour: 5, purchasePricePerReplica: 30_000 }
+    expect(infrastructureCandidateKey(refreshed, 'rented')).toBe(rentedKey)
+    expect(infrastructureCandidateKey(refreshed, 'owned')).toBe(ownedKey)
+    const result = calculateHybridComparison(workload, hostedPrice, [candidate, refreshed], assumptions, {
+      rented: rentedKey, owned: ownedKey,
+    })
+    expect(option(result, 'rented').candidate).toBe(refreshed)
+    expect(option(result, 'owned').candidate).toBe(refreshed)
+    expect(infrastructureCandidateKey({ ...candidate, cloudProvider: 'another-provider' }, 'rented'))
+      .not.toBe(infrastructureCandidateKey(candidate, 'rented'))
+    expect(infrastructureCandidateKey({ ...candidate, purchaseGpusPerServer: 8 }, 'owned'))
+      .not.toBe(infrastructureCandidateKey(candidate, 'owned'))
+  })
+
+  it('deduplicates eligible selector choices and sorts by actual workload cost', () => {
+    const duplicate = { ...candidate, cloudRatePerGpuHour: 10, purchasePricePerReplica: 100_000 }
+    const invalid = { ...candidate, systemId: 'invalid', clusterOutputTokensPerSecond: 0 }
+    for (const path of ['rented', 'owned'] as const) {
+      const choices = infrastructureOptionsAtVolume(path, workload, [duplicate, expensive, invalid, candidate], assumptions, 25_000_000)
+      expect(choices).toHaveLength(2)
+      expect(choices[0].candidate).toBe(candidate)
+      expect(choices[1].candidate).toBe(expensive)
+    }
+  })
+
+  it('updates the cheapest badge basis and preserves selections across cost views', () => {
+    const price = { ...hostedPrice, inputPerMillion: 20, outputPerMillion: 20 }
+    const automatic = calculateHybridComparison(workload, price, candidates, assumptions)
+    expect(automatic.cheapest?.key).toBe('owned')
+    const manual = calculateHybridComparison(workload, price, candidates, assumptions, {
+      rented: rentedKey, owned: ownedKey,
+    })
+    expect(manual.cheapest?.key).toBe('hosted')
+    const marginal = calculateHybridComparison(workload, price, candidates, { ...assumptions, costLens: 'marginal' }, {
+      rented: rentedKey, owned: ownedKey,
+    })
+    expect(option(marginal, 'owned').candidate).toBe(expensive)
+    expect(option(marginal, 'rented').candidate).toBe(expensive)
   })
 })

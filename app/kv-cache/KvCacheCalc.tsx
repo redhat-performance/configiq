@@ -80,6 +80,7 @@ export default function KvCacheCalc() {
     setBackend(inferenceBackend)
     setBackendVersion(settingsBackendVersion)
   }, [hydrated, settingsDefaultModel, inferenceBackend, settingsBackendVersion])
+
   const [maxNumTokens, setMaxNumTokens] = React.useState(8192)
   const [maxBatchSize, setMaxBatchSize] = React.useState(128)
   const [tpSize, setTpSize] = React.useState(1)
@@ -92,6 +93,7 @@ export default function KvCacheCalc() {
   const [decodePar, setDecodePar] = React.useState<PhaseParallelInput>({ tp: '1', pp: '1', moeTp: '', moeEp: '' })
   const [memFractionKind, setMemFractionKind] = React.useState('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
+  const memFractionValueUserEdited = React.useRef(false)
   const [advancedOpen, setAdvancedOpen] = React.useState(false)
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
@@ -107,6 +109,25 @@ export default function KvCacheCalc() {
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
+
+  // Use the selected backend's catalog defaults for the memory controls. The
+  // fields remain editable after the backend default has been applied.
+  React.useEffect(() => {
+    if (!hydrated || catalogLoading) return
+    const selectedBackend = backendOptions.find(option => option.id === backend)
+    if (!selectedBackend) return
+
+    if (selectedBackend.memoryFraction != null) {
+      if (!memFractionValueUserEdited.current) {
+        setMemFractionValue(selectedBackend.memoryFraction)
+        setMemFractionValueInput(String(selectedBackend.memoryFraction))
+      }
+    } else if (!memFractionValueUserEdited.current) {
+      setMemFractionValue(1.0)
+      setMemFractionValueInput('1.0')
+    }
+    setMemFractionKind(selectedBackend.memoryFractionKind)
+  }, [backend, backendOptions, catalogLoading, hydrated])
 
   const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
   const invalidMaxBatchSize = maxBatchSizeInput === '' || parseInt(maxBatchSizeInput, 10) < 1;
@@ -166,6 +187,7 @@ export default function KvCacheCalc() {
   };
 
   const handleMemFractionValueChange = (raw: string) => {
+    memFractionValueUserEdited.current = true
     const cleaned = raw.replace(/[^0-9.]/g, '');
     setMemFractionValueInput(cleaned);
     const n = Number(cleaned);
@@ -321,7 +343,13 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-backend"
                   value={backend}
-                  onChange={e => setBackend(e.target.value)}
+                  onChange={e => {
+                    const nextBackend = e.target.value
+                    if (backendOptions.find(option => option.id === nextBackend)?.memoryFraction != null) {
+                      memFractionValueUserEdited.current = false
+                    }
+                    setBackend(nextBackend)
+                  }}
                   className={styles.gpuSelect}
                 >
                   {backendOptions.map(option => (

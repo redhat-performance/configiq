@@ -109,6 +109,7 @@ output [{{ name: "output__0" data_type: TYPE_FP32 dims: [ 2 ] }}]
 instance_group [{{ kind: KIND_CPU count: 1 }}]
 parameters: {{ key: "model_type" value: {{ string_value: "xgboost_json" }} }}
 parameters: {{ key: "predict_proba" value: {{ string_value: "true" }} }}
+parameters: {{ key: "threshold" value: {{ string_value: "0.5" }} }}
 '''
 
 

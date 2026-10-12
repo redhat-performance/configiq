@@ -49,6 +49,22 @@ export interface BackendOption {
   systems: Record<string, string[]>
 }
 
+export function mapBackendOption(backend: Record<string, unknown>): BackendOption | null {
+  if (typeof backend.id !== 'string' || !Array.isArray(backend.versions)) return null
+  return {
+    id: backend.id,
+    aisimulateId: typeof backend.aisimulate_id === 'string' ? backend.aisimulate_id : backend.id,
+    versions: backend.versions.filter((v): v is string => typeof v === 'string'),
+    defaultVersion: typeof backend.default_version === 'string' ? backend.default_version : null,
+    memoryFraction: typeof backend.memory_fraction === 'number' ? backend.memory_fraction : null,
+    memoryFractionKind: backend.memory_fraction_kind === 'of_free' ? 'of_free' : 'of_total',
+    runtimeField: typeof backend.runtime_field === 'string' ? backend.runtime_field : null,
+    systems: backend.systems && typeof backend.systems === 'object'
+      ? backend.systems as Record<string, string[]>
+      : {},
+  }
+}
+
 export interface Catalog {
   gpuOptions: GpuOption[]
   modelOptions: string[]
@@ -133,20 +149,9 @@ export function useCatalog(): Catalog {
 
           const rawModels = (data.models ?? []) as unknown[]
           const backendList = (data.backends ?? []) as Record<string, unknown>[]
-          const backends: BackendOption[] = backendList.flatMap((backend) => {
-            if (typeof backend.id !== 'string' || !Array.isArray(backend.versions)) return []
-            return [{
-              id: backend.id,
-              aisimulateId: typeof backend.aisimulate_id === 'string' ? backend.aisimulate_id : backend.id,
-              versions: backend.versions.filter((v): v is string => typeof v === 'string'),
-              defaultVersion: typeof backend.default_version === 'string' ? backend.default_version : null,
-              memoryFraction: typeof backend.memory_fraction === 'number' ? backend.memory_fraction : null,
-              memoryFractionKind: backend.memory_fraction_kind === 'of_free' ? 'of_free' : 'of_total',
-              runtimeField: typeof backend.runtime_field === 'string' ? backend.runtime_field : null,
-              systems: backend.systems && typeof backend.systems === 'object'
-                ? backend.systems as Record<string, string[]>
-                : {},
-            }]
+          const backends: BackendOption[] = backendList.flatMap(backend => {
+            const option = mapBackendOption(backend)
+            return option ? [option] : []
           })
           const modelList: string[] = []
           const specsMap = new Map<string, ModelSpec>()

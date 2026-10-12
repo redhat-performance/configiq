@@ -16,7 +16,8 @@ results in Valkey, and serves them via a REST API.
 | `GET /systems` | GPU pricing (cloud $/hr by provider.region, hardware new/used range) |
 | `GET /health` | Service status (last scrape timestamps, staleness flags) |
 | `GET /metrics` | Prometheus / OTLP-JSON metrics (requires the `otel` extra) |
-| `GET,POST /mcp` | MCP endpoint exposing the API as tools (requires the `mcp` extra) |
+| `GET /mcp` | MCP over SSE, exposing the API as tools (requires the `mcp` extra) |
+| `GET,POST,DELETE /mcp/http` | The same MCP tools over streamable HTTP |
 
 The GPU system catalog and vendor display names in `/systems` come from the
 aisimulate SDK (via the shared `configiq.systems` module), so aicostings and

@@ -207,25 +207,22 @@
 /* ---------- serving-mode toggle ---------- */
 .modeToggle {
   display: inline-flex;
-  border: 1px solid var(--line2);
-  border-radius: 4px;
-  overflow: hidden;
+  gap: 8px;
 }
 .modeButton {
-  padding: 7px 18px;
-  border: none;
+  padding: 4px 14px;
+  border: 1px solid var(--line2);
+  border-radius: var(--pf-t--global--border--radius--pill, 999px);
   background: #ffffff;
-  color: var(--t2);
+  color: var(--blue);
   font-family: var(--sans);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
 }
-.modeButton + .modeButton { border-left: 1px solid var(--line2); }
 .modeButton:hover:not(.modeButtonActive) { background: var(--bg2, #f5f5f5); }
 .modeButtonActive {
-  background: var(--blue);
-  color: #ffffff;
+  border-color: var(--blue);
 }
 
 /* ---------- per-phase parallelism label ---------- */

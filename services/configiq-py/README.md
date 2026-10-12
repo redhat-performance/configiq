@@ -14,7 +14,7 @@ Import name: `configiq`. Distribution name: `configiq`.
 | `configiq.otel` | `otel` | OpenTelemetry tracing + dual Prometheus/OTLP-JSON metric providers. |
 | `configiq.metrics` | `otel` | Generic HTTP + process instruments, `record_http_request`, `MetricsMiddleware`, and `get_meter` for domain instruments. |
 | `configiq.observability` | `otel` | One call — `enable(app, ...)` — to wire tracing + metrics + middleware, plus `metrics_response(accept)` for a `/metrics` endpoint. |
-| `configiq.mcp` | `mcp` | `mount(app, ...)` to expose a FastAPI app as MCP tools at `/mcp`. |
+| `configiq.mcp` | `mcp` | `mount(app, ...)` to expose a FastAPI app as MCP tools — SSE at `/mcp`, streamable HTTP at `/mcp/http`. Call it after the last route. |
 
 The `otel`/`metrics`/`observability`/`mcp` modules import their dependencies at
 module load, so import them behind a `try/except ImportError` in services that
@@ -38,12 +38,17 @@ try:
 except ImportError:
     _OBS = False
 
-# MCP (optional)
+# MCP (optional) — mount AFTER the last route: fastapi-mcp builds its tool
+# list from the routes that exist when mount() runs. The shared helper mounts
+# SSE at /mcp and Streamable HTTP at /mcp/http.
 try:
     from configiq import mcp as mcp_support
-    mcp_support.mount(app, name="aicostings", description="...")
+    _MCP = True
 except ImportError:
-    pass
+    _MCP = False
+...  # every @app.get / @app.post
+if _MCP:
+    mcp_support.mount(app, name="aicostings", description="...")
 ```
 
 ## Consumed as a path dependency

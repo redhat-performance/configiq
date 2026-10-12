@@ -1,0 +1,40 @@
+# Mixed Triton image: NVIDIA FIL for tested XGBoost classifiers and the Triton
+# vLLM backend for native K2-Horizon serving.
+
+FROM nvcr.io/nvidia/tritonserver:26.09-py3
+
+ARG VLLM_VERSION=0.30.0
+ARG VLLM_BACKEND_COMMIT=c19b8d5e74db4328b5ba8bc031943ccb71e6f0a3
+
+LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+LABEL org.opencontainers.image.title=configiq-tritonserver
+LABEL ai.configiq.vllm.version=${VLLM_VERSION}
+LABEL ai.configiq.vllm-backend.commit=${VLLM_BACKEND_COMMIT}
+
+USER 0
+
+COPY patches/vllm-030-metrics.patch /tmp/vllm-030-metrics.patch
+
+# The standard Triton image already contains FIL. Install vLLM into an isolated
+# target directory because vLLM 0.30 and Triton use incompatible pydantic/numpy
+# requirements. The backend subprocess receives this environment via PYTHONPATH.
+RUN rm -rf /opt/vllm-site \
+    && mkdir -p /opt/vllm-site \
+    && python3 -m pip install --no-cache-dir --target /opt/vllm-site "vllm==${VLLM_VERSION}" \
+    && mkdir -p /tmp/vllm_backend /opt/tritonserver/backends/vllm \
+    && python3 -c "import urllib.request; urllib.request.urlretrieve('https://github.com/triton-inference-server/vllm_backend/archive/${VLLM_BACKEND_COMMIT}.tar.gz', '/tmp/vllm_backend.tar.gz')" \
+    && tar -xzf /tmp/vllm_backend.tar.gz --strip-components=1 -C /tmp/vllm_backend \
+    && cp -a /tmp/vllm_backend/src/. /opt/tritonserver/backends/vllm/ \
+    && patch -p1 -d /opt/tritonserver/backends/vllm < /tmp/vllm-030-metrics.patch \
+    && rm -rf /tmp/vllm_backend /tmp/vllm_backend.tar.gz
+
+ENV PATH=/opt/vllm-site/bin:${PATH} \
+    PYTHONPATH=/opt/vllm-site
+
+# Fail the image build if either backend or the intended K2 architecture is
+# absent. The L4 runtime check is performed on the deployment host.
+RUN test -f /opt/tritonserver/backends/fil/libtriton_fil.so \
+    && test -f /opt/tritonserver/backends/vllm/model.py \
+    && python3 -c "import inspect, vllm; from vllm.engine.arg_utils import AsyncEngineArgs; from vllm.model_executor.models.registry import ModelRegistry; assert vllm.__version__.startswith('${VLLM_VERSION}'); assert 'reasoning_parser' in inspect.signature(AsyncEngineArgs).parameters; assert 'K2HorizonForCausalLM' in ModelRegistry.get_supported_archs()"
+
+USER 1000

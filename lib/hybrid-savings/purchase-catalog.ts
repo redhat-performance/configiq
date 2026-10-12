@@ -66,7 +66,7 @@ const h200 = {
   8: configuration(8, 370_000, 18_900, 'Exxact and GSA eight-GPU H200 system prices', 'https://www.exxactcorp.com/Exxact-TS4-118380266-E118380266'),
 }
 
-export const PURCHASE_CATALOGUE: PurchaseCatalogue = {
+const PURCHASE_CATALOGUE: PurchaseCatalogue = {
   l40s,
   a100_sxm: a100,
   h100_sxm: h100,

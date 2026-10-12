@@ -20,7 +20,6 @@ jobs:
     if: github.repository == 'redhat-performance/configiq'
     permissions:
       contents: read
-      actions: write
 
     steps:
       - name: Check out source
@@ -38,17 +37,13 @@ jobs:
       - name: Run tested-model regression tests
         run: uv run --locked --group tested-models pytest scripts/tested_models/tests -q
 
-      - name: Discover available model and hardware pairs
+      - name: Download pinned ground-truth dataset
         env:
-          PERF_DATA_API_URL: ${{ secrets.PERF_DATA_API_URL }}
+          TESTED_DATASET_REVISION: ${{ vars.TESTED_DATASET_REVISION }}
         run: |
-          test -n "$PERF_DATA_API_URL"
-          uv run --locked --group tested-models python scripts/tested_models/discover_data.py --insecure
-
-      - name: Extract normalized parquet datasets
-        env:
-          PERF_DATA_API_URL: ${{ secrets.PERF_DATA_API_URL }}
-        run: uv run --locked --group tested-models python scripts/tested_models/extract_datasets.py --insecure
+          test -n "$TESTED_DATASET_REVISION"
+          uv run --locked --group tested-models python scripts/tested_models/download_ground_truth.py \
+            --revision "$TESTED_DATASET_REVISION"
 
       - name: Create immutable grouped splits
         run: uv run --locked --group tested-models python scripts/tested_models/split_dataset.py

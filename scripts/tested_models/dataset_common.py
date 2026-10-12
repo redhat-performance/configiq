@@ -127,17 +127,39 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     frame["model_id"] = model_id
     frame["accelerator"] = accelerator
     frame["pair_id"] = pair_id(model_id, accelerator)
+    if not frame.empty:
+        validate_public_frame(frame)
+    return frame
+
+
+def validate_public_frame(frame: pd.DataFrame) -> None:
+    """Reject empty, unexpected, or potentially sensitive public dataset content."""
+    if frame.empty:
+        raise ValueError("ground-truth parquet must contain at least one row")
+    unexpected = sorted(set(frame.columns) - CLASSIFICATION_COLUMNS)
+    if unexpected:
+        raise ValueError(f"ground-truth parquet contains non-public columns: {unexpected}")
+    sensitive_columns = [column for column in frame.columns if SENSITIVE_COLUMN_PATTERN.search(str(column))]
+    if sensitive_columns:
+        raise ValueError(f"ground-truth parquet contains potentially sensitive columns: {sensitive_columns}")
     string_values = frame.select_dtypes(include=["object", "string"]).astype("string").melt(value_name="value")["value"].dropna().astype(str)
     sensitive_values = string_values[string_values.str.contains(SENSITIVE_VALUE_PATTERN, regex=True)]
     if not sensitive_values.empty:
-        raise ValueError("source contains potentially sensitive URL, email, or internal-host values")
-    return frame
+        raise ValueError("ground-truth parquet contains potentially sensitive URL, email, or internal-host values")
 
 
 def dataframe_sha256(frame: pd.DataFrame) -> str:
     """Hash a deterministic JSON representation for manifest provenance."""
     payload = frame.sort_index(axis=1).to_json(orient="records", date_format="iso", default_handler=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def write_parquet(frame: pd.DataFrame, output_path: Path) -> None:
