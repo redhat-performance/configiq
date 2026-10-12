@@ -244,6 +244,9 @@ export default function Sizing() {
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
+  // Estimator backend toggle
+  const [estimatorBackend, setEstimatorBackend] = React.useState<'aisimulate' | 'blis'>('aisimulate');
+
   // GPU sizer (persistent across navigation)
   const { isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
   const [debugOpen, setDebugOpen] = React.useState(false);
@@ -403,6 +406,7 @@ export default function Sizing() {
       ...(backendVersion ? { backend_version: backendVersion } : {}),
       // Send the HF config for models AISimulators can't resolve from its catalog.
       ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+      estimator_backend: estimatorBackend,
     });
   };
 
@@ -454,6 +458,16 @@ export default function Sizing() {
           </div>
 
           <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={catalogGpus} />
+        </div>
+
+        {/* Estimator toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Estimator:</span>
+          <Button variant={estimatorBackend === 'aisimulate' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('aisimulate')}>AISimulate</Button>
+          <Button variant={estimatorBackend === 'blis' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('blis')}>BLIS</Button>
+          {estimatorBackend === 'blis' && (
+            <span style={{ fontSize: '12px', color: '#54585c' }}>Discrete-event simulation. Searches TP 1–64 for the smallest feasible config.</span>
+          )}
         </div>
 
         {/* Calculate button */}

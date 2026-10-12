@@ -90,6 +90,7 @@ class RecommendRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+    estimator_backend: str = Field(default="aisimulate", description="Estimator backend to use.")
 
     @model_validator(mode="after")
     def exactly_one_load_target(self):
@@ -1113,6 +1114,15 @@ def post_recommend(
     include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
 ):
     """Find optimal GPU configuration for a workload."""
+    if req.estimator_backend == "blis":
+        try:
+            configs = _blis_recommend(req)
+        except Exception as e:
+            _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
+        if not configs:
+            raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+        return RecommendResponse(configs=configs, chosen_mode="agg")
+
     try:
         result = _run_aisimulate_recommendation(req)
     except Exception as e:
@@ -1215,6 +1225,7 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
         "--prompt-tokens", str(req.isl),
         "--output-tokens", str(req.osl),
         "--concurrency", str(req.batch_size),
+        "--num-requests", str(req.batch_size),
     ]
 
     if req.gpu_memory_utilization is not None:
@@ -1264,8 +1275,11 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
         raise RuntimeError("BLIS output missing '=== Simulation Metrics ===' marker")
 
     json_str = result.stdout[idx + len(marker) :].strip()
+    json_start = json_str.find("{")
+    if json_start == -1:
+        raise RuntimeError("BLIS output contains no JSON object after metrics marker")
     try:
-        blis_metrics = json.loads(json_str)
+        blis_metrics, _ = json.JSONDecoder().raw_decode(json_str, json_start)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
 
@@ -1279,6 +1293,167 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
     }
 
     return _PredictionResult(summary)
+
+
+def _run_blis(
+    model_path: str,
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int,
+    *,
+    max_seq_len: int | None = None,
+    prefix: int = 0,
+    gpu_memory_utilization: float | None = None,
+) -> dict[str, Any] | None:
+    """Run a single BLIS simulation and return parsed metrics, or None on failure."""
+    blis_binary = os.environ.get("BLIS_BINARY", "blis")
+    blis_home = os.environ.get("BLIS_HOME")
+
+    cmd = [
+        blis_binary, "run",
+        "--model", model_path,
+        "--hardware", hardware,
+        "--tp", str(tp),
+        "--prompt-tokens", str(isl),
+        "--output-tokens", str(osl),
+        "--concurrency", str(concurrency),
+        "--num-requests", str(concurrency),
+    ]
+
+    if max_seq_len is not None:
+        cmd.extend(["--max-model-len", str(max_seq_len)])
+    if prefix > 0:
+        cmd.extend(["--prefix-tokens", str(prefix)])
+    if gpu_memory_utilization is not None:
+        cmd.extend(["--gpu-memory-utilization", str(gpu_memory_utilization)])
+
+    catalog = os.environ.get("BLIS_CATALOG")
+    if catalog:
+        cmd.extend(["--catalog", catalog])
+
+    logger.info("BLIS recommend probe: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_BLIS_TIMEOUT_SECONDS,
+            cwd=blis_home,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("BLIS timed out at TP=%d", tp)
+        return None
+
+    if result.returncode != 0:
+        logger.info("BLIS infeasible at TP=%d: %s", tp, result.stderr.strip()[:200])
+        return None
+
+    marker = "=== Simulation Metrics ==="
+    idx = result.stdout.find(marker)
+    if idx == -1:
+        logger.warning("BLIS output missing metrics marker at TP=%d", tp)
+        return None
+
+    raw = result.stdout[idx + len(marker):].strip()
+    json_start = raw.find("{")
+    if json_start == -1:
+        raise RuntimeError("BLIS output contains no JSON object after metrics marker")
+    try:
+        metrics, _ = json.JSONDecoder().raw_decode(raw, json_start)
+        return metrics
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
+
+
+def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
+    """Search TP values (powers of 2) for the smallest feasible BLIS config."""
+    hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
+    if hardware is None:
+        raise ValueError(
+            f"No BLIS hardware mapping for system '{req.system}'. "
+            f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
+        )
+
+    concurrency = int(req.target_concurrency or 1)
+    max_seq_len = req.max_seq_len or req.isl + req.osl
+    min_tp = req.min_candidate_gpus or 1
+    max_tp = min(req.max_candidate_gpus or 64, 64)
+
+    tp_candidates = [tp for tp in (1 << i for i in range(7)) if min_tp <= tp <= max_tp]
+
+    feasible: list[RecommendConfig] = []
+
+    for tp in tp_candidates:
+        metrics = _run_blis(
+            model_path=req.model_path,
+            hardware=hardware,
+            tp=tp,
+            isl=req.isl,
+            osl=req.osl,
+            concurrency=concurrency,
+            max_seq_len=max_seq_len,
+            prefix=req.prefix,
+        )
+        if metrics is None:
+            continue
+
+        if metrics.get("dropped_unservable", 0) > 0:
+            logger.info("BLIS TP=%d: %d requests dropped as unservable", tp, metrics["dropped_unservable"])
+            continue
+
+        if metrics.get("completed_requests", 0) == 0:
+            logger.info("BLIS TP=%d: no requests completed", tp)
+            continue
+
+        ttft = metrics.get("ttft_mean_ms", 0.0)
+        itl = metrics.get("itl_mean_ms", 0.0)
+        e2e = metrics.get("e2e_mean_ms", 0.0)
+
+        if req.request_latency is not None:
+            if e2e > req.request_latency:
+                logger.info("BLIS TP=%d: e2e %.1fms exceeds target %.1fms", tp, e2e, req.request_latency)
+                continue
+        else:
+            if ttft > req.ttft:
+                logger.info("BLIS TP=%d: TTFT %.1fms exceeds target %.1fms", tp, ttft, req.ttft)
+                continue
+            if itl > req.tpot:
+                logger.info("BLIS TP=%d: ITL %.1fms exceeds target %.1fms", tp, itl, req.tpot)
+                continue
+
+        feasible.append(RecommendConfig(
+            total_gpus_needed=tp,
+            replicas_needed=1,
+            num_total_gpus=tp,
+            tp=tp,
+            pp=1,
+            bs=concurrency,
+            ttft=ttft,
+            tpot=itl,
+            request_latency=e2e,
+            tokens_per_second=metrics.get("tokens_per_sec"),
+            tokens_per_second_per_gpu=(
+                metrics["tokens_per_sec"] / tp if metrics.get("tokens_per_sec") and tp > 0 else None
+            ),
+            tokens_per_second_per_user=(
+                metrics["tokens_per_sec"] / concurrency if metrics.get("tokens_per_sec") and concurrency > 0 else None
+            ),
+            concurrency=concurrency,
+            model=req.model_path,
+            system=req.system,
+            backend=req.backend,
+            backend_version=req.backend_version,
+            mode="agg",
+        ))
+
+        if len(feasible) >= req.top_n:
+            break
+
+    return feasible
+
 
 def post_predict(
     req: EstimateRequest,
