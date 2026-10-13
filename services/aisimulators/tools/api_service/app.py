@@ -1256,6 +1256,25 @@ def _resolve_blis_binary() -> str:
     return str(path)
 
 
+def _validate_inputs(hardware: str, tp: int, isl: int, osl: int, concurrency: int,
+        max_seq_len: int | None = None, prefix: int = 0, gpu_memory_utilization: float | None = None):
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", hardware):
+         raise ValueError("Invalid hardware value")
+    tp = _require_int_in_range("tp", tp, min_value=1, max_value=64)
+    isl = _require_int_in_range("isl", isl, min_value=1, max_value=1_000_000)
+    osl = _require_int_in_range("osl", osl, min_value=1, max_value=1_000_000)
+    concurrency = _require_int_in_range("concurrency", concurrency, min_value=1, max_value=10_000)
+    prefix = _require_int_in_range("prefix", prefix, min_value=0, max_value=1_000_000)
+    if max_seq_len is not None:
+        max_seq_len = _require_int_in_range("max_seq_len", max_seq_len, min_value=1, max_value=1_000_000)
+    if gpu_memory_utilization is not None:
+        if not isinstance(gpu_memory_utilization, (int, float)):
+            raise ValueError("gpu_memory_utilization must be a number")
+        gpu_memory_utilization = float(gpu_memory_utilization)
+        if gpu_memory_utilization <= 0.0 or gpu_memory_utilization > 1.0:
+            raise ValueError("gpu_memory_utilization must be in the range (0, 1]")
+
+
 def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
     hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
     if hardware is None:
@@ -1263,6 +1282,15 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
             f"No BLIS hardware mapping for system '{req.system}'. "
             f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
         )
+
+    _validate_inputs(
+        model_path=req.model_path,
+        hardware=hardware,
+        tp=req.tp_size,
+        isl=req.isl,
+        osl=req.osl,
+        concurrency=req.batch_size,
+    )
 
     blis_binary = _resolve_blis_binary()
     blis_home = os.environ.get("BLIS_HOME")
@@ -1276,6 +1304,9 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
         "--concurrency", str(req.batch_size),
         "--num-requests", str(req.batch_size),
     ]
+
+    if req.attention_dp_size > 1:
+        cmd.extend(["--dp", str(req.attention_dp_size)])
 
     if req.gpu_memory_utilization is not None:
         cmd.extend(["--gpu-memory-utilization", str(req.gpu_memory_utilization)])
@@ -1310,7 +1341,7 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
             text=True,
             timeout=_BLIS_TIMEOUT_SECONDS,
             cwd=blis_home,
-            check=True,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"BLIS timed out after {_BLIS_TIMEOUT_SECONDS}s")
@@ -1333,12 +1364,15 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
 
+    # BLIS --dp N spawns N per-rank replicas of size TP; keep this aligned with
+    # response.dp (attention_dp_size) and _prediction_total_gpus.
+    total_gpus = req.tp_size * req.pp_size * req.attention_dp_size
     summary: dict[str, float | None] = {
         "ttft_ms": blis_metrics.get("ttft_mean_ms"),
         "tpot_ms": blis_metrics.get("itl_mean_ms"),
         "e2e_latency_ms": blis_metrics.get("e2e_mean_ms"),
         "output_throughput_tok_s": blis_metrics.get("tokens_per_sec"),
-        "num_total_gpus": float(req.tp_size),
+        "num_total_gpus": float(total_gpus),
         "power_w": None,
     }
 
@@ -1362,6 +1396,14 @@ def _sanitize_blis_model_arg(model_path: str) -> str:
         raise HTTPException(status_code=422, detail="model_path contains unsupported characters.")
     return candidate
 
+def _require_int_in_range(name: str, value: int, *, min_value: int, max_value: int) -> int:
+    if not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < min_value or value > max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
+
+
 def _run_blis(
     model_path: str,
     hardware: str,
@@ -1374,6 +1416,19 @@ def _run_blis(
     prefix: int = 0,
     gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any] | None:
+
+    _validate_inputs(
+        model_path=model_path,
+        hardware=hardware,
+        tp=tp,
+        isl=isl,
+        osl=osl,
+        concurrency=concurrency,
+        max_seq_len=max_seq_len,
+        prefix=prefix,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+
     """Run a single BLIS simulation and return parsed metrics, or None on failure."""
     blis_binary = _resolve_blis_binary()
     blis_home = os.environ.get("BLIS_HOME")
