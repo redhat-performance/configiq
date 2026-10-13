@@ -14,9 +14,11 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1222,6 +1224,37 @@ _KVCACHE_QUANT_TO_BLIS_DTYPE: dict[str, str] = {
     "FP32": "fp32",
 }
 
+_ALLOWED_BLIS_NAMES = frozenset({"blis", "blis.exe"})
+
+
+@lru_cache(maxsize=1)
+def _resolve_blis_binary() -> str:
+    """Resolve and validate the BLIS executable from BLIS_BINARY or PATH."""
+    raw = os.environ.get("BLIS_BINARY") or shutil.which("blis")
+    if not raw:
+        raise RuntimeError("BLIS binary not found; set BLIS_BINARY or put blis on PATH")
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        found = shutil.which(raw)
+        if not found:
+            raise RuntimeError(f"BLIS_BINARY '{raw}' is not on PATH")
+        path = Path(found)
+    path = path.resolve()
+
+    if path.name not in _ALLOWED_BLIS_NAMES:
+        raise RuntimeError(f"BLIS_BINARY must be named blis, got '{path.name}'")
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(f"BLIS_BINARY is not an executable file: {path}")
+
+    blis_home = os.environ.get("BLIS_HOME")
+    if blis_home:
+        home = Path(blis_home).expanduser().resolve()
+        if not path.is_relative_to(home):
+            raise RuntimeError(f"BLIS_BINARY {path} is outside BLIS_HOME {home}")
+
+    return str(path)
+
 
 def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
     hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
@@ -1231,7 +1264,7 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
             f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
         )
 
-    blis_binary = os.environ.get("BLIS_BINARY", "blis")
+    blis_binary = _resolve_blis_binary()
     blis_home = os.environ.get("BLIS_HOME")
     cmd = [
         blis_binary, "run",
@@ -1277,6 +1310,7 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
             text=True,
             timeout=_BLIS_TIMEOUT_SECONDS,
             cwd=blis_home,
+            check=True,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"BLIS timed out after {_BLIS_TIMEOUT_SECONDS}s")
@@ -1341,7 +1375,7 @@ def _run_blis(
     gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any] | None:
     """Run a single BLIS simulation and return parsed metrics, or None on failure."""
-    blis_binary = os.environ.get("BLIS_BINARY", "blis")
+    blis_binary = _resolve_blis_binary()
     blis_home = os.environ.get("BLIS_HOME")
     safe_model_path = _sanitize_blis_model_arg(model_path)
 
@@ -1376,6 +1410,7 @@ def _run_blis(
             text=True,
             timeout=_BLIS_TIMEOUT_SECONDS,
             cwd=blis_home,
+            check=True,
         )
     except subprocess.TimeoutExpired:
         logger.warning("BLIS timed out at TP=%d", tp)
@@ -1516,17 +1551,20 @@ def post_predict(
     d_moe_tp = req.decode_moe_tp_size or req.moe_tp_size
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
-    try:
-        if req.estimator_backend == "aisimulate":
+    if req.estimator_backend == "aisimulate":
+        try:
             prediction = _run_aisimulate_prediction(req, _parse_include(include))
-        elif req.estimator_backend == "blis":
-            if is_disagg or p_pp > 1: 
-                raise HTTPException(status_code=422, detail="Disaggregated mode and per-phase parallelism are not supported with BLIS.")
+        except Exception as e:
+            _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+    elif req.estimator_backend == "blis":
+        if is_disagg or p_pp > 1: 
+            raise HTTPException(status_code=422, detail="Disaggregated mode and per-phase parallelism are not supported with BLIS.")
+        try:
             prediction = _blis_estimate(req)
-        else:
-            _common_error_handler(Exception(f"Invalid estimator backend: {req.estimator_backend}"), "estimate", req.model_path, req.backend, req.system)
-    except Exception as e:
-        _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+        except Exception as e:
+            _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+    else:
+        _common_error_handler(Exception(f"Invalid estimator backend: {req.estimator_backend}"), "estimate", req.model_path, req.backend, req.system)
 
     includes = _parse_include(include)
 
