@@ -17,6 +17,7 @@ const VALID_REQUEST = {
   prefix: 0,
   database_mode: 'HYBRID' as const,
   top_n: 5,
+  estimator_backend: 'aisimulate' as const,
 }
 
 const EXTERNAL_RESPONSE = {
@@ -86,6 +87,22 @@ describe('RecommendRequestSchema', () => {
       decode_max_seq_len: 64000,
     })
     expect(result.success).toBe(true)
+  })
+
+  it('accepts estimator_backend', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      estimator_backend: 'blis',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.estimator_backend).toBe('blis')
+  })
+
+  it('defaults estimator_backend to aisimulate', () => {
+    const { estimator_backend: _omit, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse(rest)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.estimator_backend).toBe('aisimulate')
   })
 
   it('accepts target_request_rate instead of target_concurrency', () => {
@@ -356,6 +373,16 @@ describe('callRecommend', () => {
 
     const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(sentBody.model_config).toEqual(model_config)
+  })
+
+  it('forwards estimator_backend to the upstream request', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await callRecommend({ ...VALID_REQUEST, estimator_backend: 'blis' })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody.estimator_backend).toBe('blis')
   })
 
   it('forwards context window limits to the upstream request', async () => {

@@ -1129,6 +1129,7 @@ def post_recommend(
 ):
     """Find optimal GPU configuration for a workload."""
     if req.estimator_backend == "blis":
+        del req.estimator_backend
         try:
             configs = _blis_recommend(req)
         except Exception as e:
@@ -1137,6 +1138,7 @@ def post_recommend(
             raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
         return RecommendResponse(configs=configs, chosen_mode="agg")
 
+    del req.estimator_backend
     try:
         result = _run_aisimulate_recommendation(req)
     except Exception as e:
@@ -1392,7 +1394,7 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
         )
 
     concurrency = int(req.target_concurrency or 1)
-    max_seq_len = req.max_seq_len or req.isl + req.osl
+    max_seq_len = req.max_seq_len 
     min_tp = req.min_candidate_gpus or 1
     max_tp = min(req.max_candidate_gpus or 64, 64)
 
