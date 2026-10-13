@@ -266,6 +266,10 @@ export default function Performance() {
   React.useEffect(() => {
     if (isBlis) {
       if (testPpSize !== 1) { setTestPpSize(1); setPpSizeInput('1'); }
+      if (testMoeEpSize !== 1) { setTestMoeEpSize(1); setMoeEpSizeInput('1'); }
+      if (testWeightPrecision !== 'FP16') setTestWeightPrecision('FP16');
+      if (prefillMaxSeqLen != null) { setPrefillMaxSeqLen(null); setPrefillMaxSeqLenInput(''); }
+      if (decodeMaxSeqLen != null) { setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput(''); }
       if (servingMode !== 'agg') { setServingMode('agg'); setTestResult(null); }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1334,7 +1338,7 @@ export default function Performance() {
           <Button variant={estimatorBackend === 'aisimulate' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('aisimulate')}>AISimulate</Button>
           <Button variant={estimatorBackend === 'blis' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('blis')}>BLIS</Button>
           {isBlis && (
-            <span style={{ fontSize: '12px', color: '#54585c' }}>Discrete-event simulation. Grayed-out inputs are not applicable.</span>
+            <span style={{ fontSize: '12px', color: '#3c3f42' }}>Discrete-event simulation. Grayed-out inputs are not applicable.</span>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>

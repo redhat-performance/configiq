@@ -90,7 +90,7 @@ class RecommendRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
-    estimator_backend: str = Field(default="aisimulate", description="Estimator backend to use.")
+    estimator_backend: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Estimator backend to use.")
 
     @model_validator(mode="after")
     def exactly_one_load_target(self):
@@ -1310,6 +1310,23 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
 
     return _PredictionResult(summary)
 
+def _sanitize_blis_model_arg(model_path: str) -> str:
+    """Validate model argument passed to BLIS CLI."""
+    candidate = model_path.strip()
+    if not candidate:
+        raise HTTPException(status_code=422, detail="model_path must not be empty.")
+    if len(candidate) > 4096:
+        raise HTTPException(status_code=422, detail="model_path is too long.")
+    if any(ch in candidate for ch in ("\x00", "\n", "\r")):
+        raise HTTPException(status_code=422, detail="model_path contains invalid control characters.")
+    # Disallow leading '-' in either the full value or final path segment to prevent option-style injection.
+    norm = Path(candidate)
+    if candidate.startswith("-") or norm.name.startswith("-"):
+        raise HTTPException(status_code=422, detail="model_path must not start with '-'.")
+    # Conservative allowlist for local paths and model identifiers.
+    if not re.fullmatch(r"[A-Za-z0-9._/\-:]+", candidate):
+        raise HTTPException(status_code=422, detail="model_path contains unsupported characters.")
+    return candidate
 
 def _run_blis(
     model_path: str,
@@ -1326,10 +1343,11 @@ def _run_blis(
     """Run a single BLIS simulation and return parsed metrics, or None on failure."""
     blis_binary = os.environ.get("BLIS_BINARY", "blis")
     blis_home = os.environ.get("BLIS_HOME")
+    safe_model_path = _sanitize_blis_model_arg(model_path)
 
     cmd = [
         blis_binary, "run",
-        "--model", model_path,
+        "--model", safe_model_path,
         "--hardware", hardware,
         "--tp", str(tp),
         "--prompt-tokens", str(isl),
@@ -1502,6 +1520,8 @@ def post_predict(
         if req.estimator_backend == "aisimulate":
             prediction = _run_aisimulate_prediction(req, _parse_include(include))
         elif req.estimator_backend == "blis":
+            if is_disagg or p_pp > 1: 
+                raise HTTPException(status_code=422, detail="Disaggregated mode and per-phase parallelism are not supported with BLIS.")
             prediction = _blis_estimate(req)
         else:
             _common_error_handler(Exception(f"Invalid estimator backend: {req.estimator_backend}"), "estimate", req.model_path, req.backend, req.system)

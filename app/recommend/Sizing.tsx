@@ -466,7 +466,7 @@ export default function Sizing() {
           <Button variant={estimatorBackend === 'aisimulate' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('aisimulate')}>AISimulate</Button>
           <Button variant={estimatorBackend === 'blis' ? 'secondary' : 'tertiary'} size="sm" onClick={() => setEstimatorBackend('blis')}>BLIS</Button>
           {estimatorBackend === 'blis' && (
-            <span style={{ fontSize: '12px', color: '#54585c' }}>Discrete-event simulation. Searches TP 1–64 for the smallest feasible config.</span>
+            <span style={{ fontSize: '12px', color: '#3c3f42' }}>Discrete-event simulation. Searches TP 1–64 for the smallest feasible config.</span>
           )}
         </div>
 

@@ -46,7 +46,6 @@ dev = [
 # from ./configiq-py before this service.
 [tool.uv.sources]
 configiq = { path = "../configiq-py", editable = true }
-aisimulate = { path = "/home/mazam/aisimulate/target/wheels/aisimulate-0.13.0-cp311-abi3-linux_x86_64.whl" }
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
