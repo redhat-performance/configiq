@@ -125,6 +125,12 @@ class EstimateRequest(BaseModel):
     tp_size: int = Field(default=1, description="Tensor parallel size.")
     pp_size: int = Field(default=1, description="Pipeline parallel size.")
     batch_size: int = Field(default=128, description="Batch size (max concurrent requests).")
+    requests_per_load_unit: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description="Optional simulated requests per concurrency slot. When omitted, stop after one total request.",
+    )
     database_mode: str = Field(default="HYBRID", description="Perf database mode.")
     gemm_quant_mode: str | None = Field(default=None)
     moe_quant_mode: str | None = Field(default=None)
@@ -629,7 +635,11 @@ def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
                 "cached_prefix_tokens": req.prefix,
             },
             "load": {"type": "concurrency", "concurrency": req.batch_size},
-            "stop": {"requests": 1},
+            "stop": (
+                {"requests": 1}
+                if req.requests_per_load_unit is None
+                else {"requests_per_load_unit": req.requests_per_load_unit}
+            ),
         },
         "engine": {
             "mode": mode,

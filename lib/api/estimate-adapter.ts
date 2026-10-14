@@ -28,6 +28,7 @@ export interface EstimateAdapterInput {
   prefill_max_seq_len?: number
   decode_max_seq_len?: number
   batch_size: number
+  requests_per_load_unit?: number
   tp_size: number
   pp_size?: number
   gpu_memory_utilization?: number
@@ -116,6 +117,7 @@ export async function fetchEstimateAsInferenceResult(
   }
 
   if (input.max_seq_len != null) body.max_seq_len = input.max_seq_len
+  if (input.requests_per_load_unit != null) body.requests_per_load_unit = input.requests_per_load_unit
   if (input.prefill_max_seq_len != null) body.prefill_max_seq_len = input.prefill_max_seq_len
   if (input.decode_max_seq_len != null) body.decode_max_seq_len = input.decode_max_seq_len
 
