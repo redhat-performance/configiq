@@ -1207,14 +1207,6 @@ _SYSTEM_TO_BLIS_HARDWARE: dict[str, str] = {
 
 _BLIS_TIMEOUT_SECONDS = 120
 
-# Sample size used when probing BLIS in open-loop --rate mode (recommend with
-# target_request_rate). Matches BLIS's own --num-requests default.
-_BLIS_RATE_PROBE_NUM_REQUESTS = 100
-
-# Relative slack when comparing BLIS's measured completion rate against the
-# requested arrival rate, to absorb float/scheduling jitter at the boundary.
-_BLIS_RATE_TOLERANCE_FRACTION = 0.01
-
 
 class _PredictionResult:
     """Wraps a metrics dict as .summary for post_predict consumption."""
@@ -1269,9 +1261,8 @@ def _validate_inputs(
     tp: int,
     isl: int,
     osl: int,
-    concurrency: int | None = None,
+    concurrency: int,
     *,
-    rate: float | None = None,
     max_seq_len: int | None = None,
     prefix: int = 0,
     gpu_memory_utilization: float | None = None,
@@ -1283,10 +1274,6 @@ def _validate_inputs(
     value reaching `subprocess.run` has actually flowed through an
     allowlist / numeric-range check rather than merely being checked
     as a side effect.
-
-    Exactly one of `concurrency` (closed-loop) or `rate` (open-loop arrival
-    rate, BLIS's `--rate`) drives the probe; the other is left `None` in the
-    returned dict.
     """
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", hardware):
         raise ValueError("Invalid hardware value")
@@ -1296,23 +1283,11 @@ def _validate_inputs(
         "tp": _require_int_in_range("tp", tp, min_value=1, max_value=64),
         "isl": _require_int_in_range("isl", isl, min_value=1, max_value=1_000_000),
         "osl": _require_int_in_range("osl", osl, min_value=1, max_value=1_000_000),
+        "concurrency": _require_int_in_range("concurrency", concurrency, min_value=1, max_value=10_000),
         "prefix": _require_int_in_range("prefix", prefix, min_value=0, max_value=1_000_000),
         "max_seq_len": max_seq_len,
         "gpu_memory_utilization": gpu_memory_utilization,
-        "concurrency": None,
-        "rate": None,
     }
-    if rate is not None:
-        if not isinstance(rate, (int, float)):
-            raise ValueError("rate must be a number")
-        rate_value = float(rate)
-        if rate_value <= 0.0 or rate_value > 100_000.0:
-            raise ValueError("rate must be in the range (0, 100000]")
-        validated["rate"] = rate_value
-    else:
-        validated["concurrency"] = _require_int_in_range(
-            "concurrency", concurrency if concurrency is not None else 1, min_value=1, max_value=10_000
-        )
     if max_seq_len is not None:
         validated["max_seq_len"] = _require_int_in_range(
             "max_seq_len", max_seq_len, min_value=1, max_value=1_000_000
@@ -1352,10 +1327,6 @@ def _build_blis_cmd(
     against a strict allowlist regex or numeric range. Nothing taken
     directly from the request is interpolated into `cmd` unchecked.
 
-    `concurrency` (closed-loop, BLIS's `--concurrency`) and `rate`
-    (open-loop arrival rate, BLIS's `--rate`) are mutually exclusive; when
-    `rate` is given it takes precedence and `concurrency` is ignored.
-
     Returns (blis_home, cmd); `blis_home` is used as the subprocess cwd.
     """
     validated = _validate_inputs(
@@ -1364,7 +1335,6 @@ def _build_blis_cmd(
         isl=isl,
         osl=osl,
         concurrency=concurrency,
-        rate=rate,
         max_seq_len=max_seq_len,
         prefix=prefix,
         gpu_memory_utilization=gpu_memory_utilization,
@@ -1381,13 +1351,9 @@ def _build_blis_cmd(
         "--tp", str(validated["tp"]),
         "--prompt-tokens", str(validated["isl"]),
         "--output-tokens", str(validated["osl"]),
+        "--concurrency", str(validated["concurrency"]),
+        "--num-requests", str(validated["concurrency"]),
     ]
-    if validated["rate"] is not None:
-        cmd.extend(["--rate", str(validated["rate"])])
-        cmd.extend(["--num-requests", str(_BLIS_RATE_PROBE_NUM_REQUESTS)])
-    else:
-        cmd.extend(["--concurrency", str(validated["concurrency"])])
-        cmd.extend(["--num-requests", str(validated["concurrency"])])
 
     if attention_dp_size > 1:
         safe_dp = _require_int_in_range(
@@ -1505,12 +1471,31 @@ def _sanitize_blis_model_arg(model_path: str) -> str:
         raise HTTPException(status_code=422, detail="model_path is too long.")
     if any(ch in candidate for ch in ("\x00", "\n", "\r")):
         raise HTTPException(status_code=422, detail="model_path contains invalid control characters.")
+
+    raw_path = Path(candidate)
     # Disallow leading '-' in either the full value or final path segment to prevent option-style injection.
-    norm = Path(candidate)
-    if candidate.startswith("-") or norm.name.startswith("-"):
+    if candidate.startswith("-") or raw_path.name.startswith("-"):
         raise HTTPException(status_code=422, detail="model_path must not start with '-'.")
     # Conservative allowlist for local paths and model identifiers.
-    if not re.fullmatch(r"[A-Za-z0-9._/\-:]+", candidate):
+    # If this looks like a filesystem path, normalize and require it to exist.
+    looks_like_path = (
+        raw_path.is_absolute()
+        or candidate.startswith(".")
+        or "/" in candidate
+        or "\\" in candidate
+    )
+    if looks_like_path:
+        if ".." in raw_path.parts:
+            raise HTTPException(status_code=422, detail="model_path must not contain '..' segments.")
+        resolved = raw_path.expanduser().resolve(strict=False)
+        if not resolved.exists():
+            raise HTTPException(status_code=422, detail="model_path does not exist.")
+        if not (resolved.is_file() or resolved.is_dir()):
+            raise HTTPException(status_code=422, detail="model_path must reference a file or directory.")
+        return str(resolved)
+    # Otherwise treat as a model identifier and enforce a strict allowlist.
+    # Examples: "meta-llama/Llama-3.1-8B-Instruct", "my_model.v1"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*", candidate):
         raise HTTPException(status_code=422, detail="model_path contains unsupported characters.")
     return candidate
 
@@ -1598,13 +1583,8 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
             f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
         )
 
-    # Exactly one of target_request_rate / target_concurrency is guaranteed
-    # by RecommendRequest.exactly_one_load_target. target_request_rate maps
-    # to BLIS's open-loop --rate; target_concurrency keeps the existing
-    # closed-loop --concurrency behavior.
-    rate = req.target_request_rate
-    concurrency = int(req.target_concurrency) if req.target_concurrency is not None else None
-    max_seq_len = req.max_seq_len
+    concurrency = int(req.target_concurrency or 1)
+    max_seq_len = req.max_seq_len 
     min_tp = req.min_candidate_gpus or 1
     max_tp = min(req.max_candidate_gpus or 64, 64)
 
@@ -1651,38 +1631,13 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
                 logger.info("BLIS TP=%d: ITL %.1fms exceeds target %.1fms", tp, itl, req.tpot)
                 continue
 
-        if rate is not None:
-            # Open-loop probe: BLIS may not sustain the requested arrival
-            # rate at low TP (admission/queueing falls behind), in which
-            # case the measured completion rate undershoots the target.
-            # Reject that candidate rather than reporting it as feasible.
-            achieved_rate = metrics.get("responses_per_sec") or 0.0
-            if achieved_rate < rate * (1 - _BLIS_RATE_TOLERANCE_FRACTION):
-                logger.info(
-                    "BLIS TP=%d: achieved %.3f req/s below target %.3f req/s", tp, achieved_rate, rate
-                )
-                continue
-
-        if concurrency is not None:
-            reported_concurrency = concurrency
-        else:
-            # Derive effective concurrency from the achieved rate via
-            # Little's law (L = λW) since BLIS's --rate mode has no fixed
-            # user count to report directly.
-            responses_per_sec = metrics.get("responses_per_sec")
-            reported_concurrency = (
-                max(1, round(responses_per_sec * e2e / 1000.0))
-                if responses_per_sec and e2e
-                else None
-            )
-
         feasible.append(RecommendConfig(
             total_gpus_needed=tp,
             replicas_needed=1,
             num_total_gpus=tp,
             tp=tp,
             pp=1,
-            bs=reported_concurrency,
+            bs=concurrency,
             ttft=ttft,
             tpot=itl,
             request_latency=e2e,
@@ -1691,11 +1646,9 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
                 metrics["tokens_per_sec"] / tp if metrics.get("tokens_per_sec") and tp > 0 else None
             ),
             tokens_per_second_per_user=(
-                metrics["tokens_per_sec"] / reported_concurrency
-                if metrics.get("tokens_per_sec") and reported_concurrency
-                else None
+                metrics["tokens_per_sec"] / concurrency if metrics.get("tokens_per_sec") and concurrency > 0 else None
             ),
-            concurrency=reported_concurrency,
+            concurrency=concurrency,
             model=req.model_path,
             system=req.system,
             backend=req.backend,
