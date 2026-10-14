@@ -21,6 +21,7 @@ interface RecommendParams {
   request_latency?: number;
   prefix?: number;
   model_config?: Record<string, unknown> | null;
+  estimator_backend?: 'aisimulate' | 'blis';
 }
 
 interface RecommendState {
@@ -114,6 +115,7 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     if (p.request_latency != null) requestBody.request_latency = p.request_latency;
     if (p.prefix != null && p.prefix > 0) requestBody.prefix = p.prefix;
     if (p.model_config != null) requestBody.model_config = p.model_config;
+    if (p.estimator_backend) requestBody.estimator_backend = p.estimator_backend;
 
     setParams(p);
     setIsLoading(true);

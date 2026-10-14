@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from configiq.systems import load_device_names_from_perf_data, supported_systems
@@ -1200,14 +1200,25 @@ class TestEstimate:
         resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
         assert resp.status_code == 500
 
-    @patch("aisimulate.predict.run_prediction")
     @patch("tools.api_service.app._aisimulate_runner_factory")
-    def test_model_config_is_forwarded_to_prediction(self, mock_factory, mock_run):
-        def check(config, **_kwargs):
-            assert Path(config.engine.model, "config.json").is_file()
-            return make_mock_estimate_result()
+    @patch("aisimulate.compiler.prediction_to_replay_spec")
+    def test_model_config_is_forwarded_to_prediction(self, mock_compile, mock_factory):
+        mock_report = MagicMock()
+        mock_report.metrics = {
+            "ttft_ms": 471.378, "tpot_ms": 28.118,
+            "e2e_latency_ms": 28589.5, "output_throughput_tok_s": 4479.8,
+            "num_total_gpus": 1.0, "power_w": None,
+        }
+        mock_report.metadata = {}
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = mock_report
+        mock_factory.return_value.create.return_value = mock_runner
 
-        mock_run.side_effect = check
+        def check_config(config):
+            assert Path(config.engine.model, "config.json").is_file()
+            return MagicMock()
+
+        mock_compile.side_effect = check_config
         body = {**VALID_ESTIMATE_BODY, "model_config": {"hidden_size": 8192, "architectures": ["LlamaForCausalLM"]}}
         request = app_module.EstimateRequest.model_validate(body)
         app_module._run_aisimulate_prediction(request, set())
