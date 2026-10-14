@@ -1207,6 +1207,14 @@ _SYSTEM_TO_BLIS_HARDWARE: dict[str, str] = {
 
 _BLIS_TIMEOUT_SECONDS = 120
 
+# Sample size used when probing BLIS in open-loop --rate mode (recommend with
+# target_request_rate). Matches BLIS's own --num-requests default.
+_BLIS_RATE_PROBE_NUM_REQUESTS = 100
+
+# Relative slack when comparing BLIS's measured completion rate against the
+# requested arrival rate, to absorb float/scheduling jitter at the boundary.
+_BLIS_RATE_TOLERANCE_FRACTION = 0.01
+
 
 class _PredictionResult:
     """Wraps a metrics dict as .summary for post_predict consumption."""
@@ -1256,23 +1264,166 @@ def _resolve_blis_binary() -> str:
     return str(path)
 
 
-def _validate_inputs(hardware: str, tp: int, isl: int, osl: int, concurrency: int,
-        max_seq_len: int | None = None, prefix: int = 0, gpu_memory_utilization: float | None = None):
+def _validate_inputs(
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int | None = None,
+    *,
+    rate: float | None = None,
+    max_seq_len: int | None = None,
+    prefix: int = 0,
+    gpu_memory_utilization: float | None = None,
+) -> dict[str, Any]:
+    """Validate BLIS CLI arguments and return the normalized values.
+
+    Callers must build the subprocess argument list from this function's
+    *return value*, not from the original request fields, so that every
+    value reaching `subprocess.run` has actually flowed through an
+    allowlist / numeric-range check rather than merely being checked
+    as a side effect.
+
+    Exactly one of `concurrency` (closed-loop) or `rate` (open-loop arrival
+    rate, BLIS's `--rate`) drives the probe; the other is left `None` in the
+    returned dict.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", hardware):
-         raise ValueError("Invalid hardware value")
-    tp = _require_int_in_range("tp", tp, min_value=1, max_value=64)
-    isl = _require_int_in_range("isl", isl, min_value=1, max_value=1_000_000)
-    osl = _require_int_in_range("osl", osl, min_value=1, max_value=1_000_000)
-    concurrency = _require_int_in_range("concurrency", concurrency, min_value=1, max_value=10_000)
-    prefix = _require_int_in_range("prefix", prefix, min_value=0, max_value=1_000_000)
+        raise ValueError("Invalid hardware value")
+
+    validated: dict[str, Any] = {
+        "hardware": hardware,
+        "tp": _require_int_in_range("tp", tp, min_value=1, max_value=64),
+        "isl": _require_int_in_range("isl", isl, min_value=1, max_value=1_000_000),
+        "osl": _require_int_in_range("osl", osl, min_value=1, max_value=1_000_000),
+        "prefix": _require_int_in_range("prefix", prefix, min_value=0, max_value=1_000_000),
+        "max_seq_len": max_seq_len,
+        "gpu_memory_utilization": gpu_memory_utilization,
+        "concurrency": None,
+        "rate": None,
+    }
+    if rate is not None:
+        if not isinstance(rate, (int, float)):
+            raise ValueError("rate must be a number")
+        rate_value = float(rate)
+        if rate_value <= 0.0 or rate_value > 100_000.0:
+            raise ValueError("rate must be in the range (0, 100000]")
+        validated["rate"] = rate_value
+    else:
+        validated["concurrency"] = _require_int_in_range(
+            "concurrency", concurrency if concurrency is not None else 1, min_value=1, max_value=10_000
+        )
     if max_seq_len is not None:
-        max_seq_len = _require_int_in_range("max_seq_len", max_seq_len, min_value=1, max_value=1_000_000)
+        validated["max_seq_len"] = _require_int_in_range(
+            "max_seq_len", max_seq_len, min_value=1, max_value=1_000_000
+        )
     if gpu_memory_utilization is not None:
         if not isinstance(gpu_memory_utilization, (int, float)):
             raise ValueError("gpu_memory_utilization must be a number")
-        gpu_memory_utilization = float(gpu_memory_utilization)
-        if gpu_memory_utilization <= 0.0 or gpu_memory_utilization > 1.0:
+        value = float(gpu_memory_utilization)
+        if value <= 0.0 or value > 1.0:
             raise ValueError("gpu_memory_utilization must be in the range (0, 1]")
+        validated["gpu_memory_utilization"] = value
+    return validated
+
+
+def _build_blis_cmd(
+    *,
+    model_path: str,
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int | None = None,
+    rate: float | None = None,
+    attention_dp_size: int = 1,
+    gpu_memory_utilization: float | None = None,
+    max_num_seqs: int | None = None,
+    max_seq_len: int | None = None,
+    kvcache_quant_mode: str | None = None,
+    prefix: int = 0,
+    moe_ep_size: int | None = None,
+) -> tuple[str | None, list[str]]:
+    """Single choke point for building the BLIS CLI argv.
+
+    Every element appended to `cmd` is either a hard-coded literal (flag
+    names, dtype strings from the fixed `_KVCACHE_QUANT_TO_BLIS_DTYPE`
+    lookup table) or a value that was validated immediately beforehand
+    against a strict allowlist regex or numeric range. Nothing taken
+    directly from the request is interpolated into `cmd` unchecked.
+
+    `concurrency` (closed-loop, BLIS's `--concurrency`) and `rate`
+    (open-loop arrival rate, BLIS's `--rate`) are mutually exclusive; when
+    `rate` is given it takes precedence and `concurrency` is ignored.
+
+    Returns (blis_home, cmd); `blis_home` is used as the subprocess cwd.
+    """
+    validated = _validate_inputs(
+        hardware=hardware,
+        tp=tp,
+        isl=isl,
+        osl=osl,
+        concurrency=concurrency,
+        rate=rate,
+        max_seq_len=max_seq_len,
+        prefix=prefix,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+    safe_model_path = _sanitize_blis_model_arg(model_path)
+
+    blis_binary = _resolve_blis_binary()
+    blis_home = os.environ.get("BLIS_HOME")
+
+    cmd = [
+        blis_binary, "run",
+        "--model", safe_model_path,
+        "--hardware", validated["hardware"],
+        "--tp", str(validated["tp"]),
+        "--prompt-tokens", str(validated["isl"]),
+        "--output-tokens", str(validated["osl"]),
+    ]
+    if validated["rate"] is not None:
+        cmd.extend(["--rate", str(validated["rate"])])
+        cmd.extend(["--num-requests", str(_BLIS_RATE_PROBE_NUM_REQUESTS)])
+    else:
+        cmd.extend(["--concurrency", str(validated["concurrency"])])
+        cmd.extend(["--num-requests", str(validated["concurrency"])])
+
+    if attention_dp_size > 1:
+        safe_dp = _require_int_in_range(
+            "attention_dp_size", attention_dp_size, min_value=1, max_value=64
+        )
+        cmd.extend(["--dp", str(safe_dp)])
+
+    if validated["gpu_memory_utilization"] is not None:
+        cmd.extend(["--gpu-memory-utilization", str(validated["gpu_memory_utilization"])])
+
+    if max_num_seqs is not None:
+        safe_max_num_seqs = _require_int_in_range(
+            "max_num_seqs", max_num_seqs, min_value=1, max_value=100_000
+        )
+        cmd.extend(["--max-num-seqs", str(safe_max_num_seqs)])
+
+    if validated["max_seq_len"] is not None:
+        cmd.extend(["--max-model-len", str(validated["max_seq_len"])])
+
+    if kvcache_quant_mode is not None:
+        blis_dtype = _KVCACHE_QUANT_TO_BLIS_DTYPE.get(kvcache_quant_mode.upper())
+        if blis_dtype is not None:
+            cmd.extend(["--kv-cache-dtype", blis_dtype])
+
+    if validated["prefix"] > 0:
+        cmd.extend(["--prefix-tokens", str(validated["prefix"])])
+
+    if moe_ep_size is not None and moe_ep_size > 1:
+        _require_int_in_range("moe_ep_size", moe_ep_size, min_value=1, max_value=64)
+        cmd.append("--enable-expert-parallel")
+
+    catalog = os.environ.get("BLIS_CATALOG")
+    if catalog:
+        cmd.extend(["--catalog", catalog])
+
+    return blis_home, cmd
 
 
 def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
@@ -1283,55 +1434,21 @@ def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
             f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
         )
 
-    _validate_inputs(
+    blis_home, cmd = _build_blis_cmd(
+        model_path=req.model_path,
         hardware=hardware,
         tp=req.tp_size,
         isl=req.isl,
         osl=req.osl,
         concurrency=req.batch_size,
+        attention_dp_size=req.attention_dp_size,
+        gpu_memory_utilization=req.gpu_memory_utilization,
+        max_num_seqs=req.max_num_seqs,
         max_seq_len=req.max_seq_len,
+        kvcache_quant_mode=req.kvcache_quant_mode,
         prefix=req.prefix,
+        moe_ep_size=req.moe_ep_size,
     )
-
-    blis_binary = _resolve_blis_binary()
-    blis_home = os.environ.get("BLIS_HOME")
-    cmd = [
-        blis_binary, "run",
-        "--model", req.model_path,
-        "--hardware", hardware,
-        "--tp", str(req.tp_size),
-        "--prompt-tokens", str(req.isl),
-        "--output-tokens", str(req.osl),
-        "--concurrency", str(req.batch_size),
-        "--num-requests", str(req.batch_size),
-    ]
-
-    if req.attention_dp_size > 1:
-        cmd.extend(["--dp", str(req.attention_dp_size)])
-
-    if req.gpu_memory_utilization is not None:
-        cmd.extend(["--gpu-memory-utilization", str(req.gpu_memory_utilization)])
-
-    if req.max_num_seqs is not None:
-        cmd.extend(["--max-num-seqs", str(req.max_num_seqs)])
-
-    if req.max_seq_len is not None:
-        cmd.extend(["--max-model-len", str(req.max_seq_len)])
-
-    if req.kvcache_quant_mode is not None:
-        blis_dtype = _KVCACHE_QUANT_TO_BLIS_DTYPE.get(req.kvcache_quant_mode.upper())
-        if blis_dtype is not None:
-            cmd.extend(["--kv-cache-dtype", blis_dtype])
-
-    if req.prefix > 0:
-        cmd.extend(["--prefix-tokens", str(req.prefix)])
-
-    if req.moe_ep_size is not None and req.moe_ep_size > 1:
-        cmd.append("--enable-expert-parallel")
-
-    catalog = os.environ.get("BLIS_CATALOG")
-    if catalog:
-        cmd.extend(["--catalog", catalog])
 
     logger.info("BLIS command: %s", " ".join(cmd))
 
@@ -1411,50 +1528,30 @@ def _run_blis(
     tp: int,
     isl: int,
     osl: int,
-    concurrency: int,
+    concurrency: int | None = None,
     *,
+    rate: float | None = None,
     max_seq_len: int | None = None,
     prefix: int = 0,
     gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any] | None:
+    """Run a single BLIS simulation and return parsed metrics, or None on failure.
 
-    _validate_inputs(
+    `rate` (requests/sec, open-loop) and `concurrency` (closed-loop) are
+    mutually exclusive; when `rate` is given it takes precedence.
+    """
+    blis_home, cmd = _build_blis_cmd(
+        model_path=model_path,
         hardware=hardware,
         tp=tp,
         isl=isl,
         osl=osl,
         concurrency=concurrency,
+        rate=rate,
         max_seq_len=max_seq_len,
         prefix=prefix,
         gpu_memory_utilization=gpu_memory_utilization,
     )
-
-    """Run a single BLIS simulation and return parsed metrics, or None on failure."""
-    blis_binary = _resolve_blis_binary()
-    blis_home = os.environ.get("BLIS_HOME")
-    safe_model_path = _sanitize_blis_model_arg(model_path)
-
-    cmd = [
-        blis_binary, "run",
-        "--model", safe_model_path,
-        "--hardware", hardware,
-        "--tp", str(tp),
-        "--prompt-tokens", str(isl),
-        "--output-tokens", str(osl),
-        "--concurrency", str(concurrency),
-        "--num-requests", str(concurrency),
-    ]
-
-    if max_seq_len is not None:
-        cmd.extend(["--max-model-len", str(max_seq_len)])
-    if prefix > 0:
-        cmd.extend(["--prefix-tokens", str(prefix)])
-    if gpu_memory_utilization is not None:
-        cmd.extend(["--gpu-memory-utilization", str(gpu_memory_utilization)])
-
-    catalog = os.environ.get("BLIS_CATALOG")
-    if catalog:
-        cmd.extend(["--catalog", catalog])
 
     logger.info("BLIS recommend probe: %s", " ".join(cmd))
 
@@ -1465,7 +1562,7 @@ def _run_blis(
             text=True,
             timeout=_BLIS_TIMEOUT_SECONDS,
             cwd=blis_home,
-            check=True,
+            check=False,
         )
     except subprocess.TimeoutExpired:
         logger.warning("BLIS timed out at TP=%d", tp)
@@ -1501,8 +1598,13 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
             f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
         )
 
-    concurrency = int(req.target_concurrency or 1)
-    max_seq_len = req.max_seq_len 
+    # Exactly one of target_request_rate / target_concurrency is guaranteed
+    # by RecommendRequest.exactly_one_load_target. target_request_rate maps
+    # to BLIS's open-loop --rate; target_concurrency keeps the existing
+    # closed-loop --concurrency behavior.
+    rate = req.target_request_rate
+    concurrency = int(req.target_concurrency) if req.target_concurrency is not None else None
+    max_seq_len = req.max_seq_len
     min_tp = req.min_candidate_gpus or 1
     max_tp = min(req.max_candidate_gpus or 64, 64)
 
@@ -1518,6 +1620,7 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
             isl=req.isl,
             osl=req.osl,
             concurrency=concurrency,
+            rate=rate,
             max_seq_len=max_seq_len,
             prefix=req.prefix,
         )
@@ -1548,13 +1651,38 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
                 logger.info("BLIS TP=%d: ITL %.1fms exceeds target %.1fms", tp, itl, req.tpot)
                 continue
 
+        if rate is not None:
+            # Open-loop probe: BLIS may not sustain the requested arrival
+            # rate at low TP (admission/queueing falls behind), in which
+            # case the measured completion rate undershoots the target.
+            # Reject that candidate rather than reporting it as feasible.
+            achieved_rate = metrics.get("responses_per_sec") or 0.0
+            if achieved_rate < rate * (1 - _BLIS_RATE_TOLERANCE_FRACTION):
+                logger.info(
+                    "BLIS TP=%d: achieved %.3f req/s below target %.3f req/s", tp, achieved_rate, rate
+                )
+                continue
+
+        if concurrency is not None:
+            reported_concurrency = concurrency
+        else:
+            # Derive effective concurrency from the achieved rate via
+            # Little's law (L = λW) since BLIS's --rate mode has no fixed
+            # user count to report directly.
+            responses_per_sec = metrics.get("responses_per_sec")
+            reported_concurrency = (
+                max(1, round(responses_per_sec * e2e / 1000.0))
+                if responses_per_sec and e2e
+                else None
+            )
+
         feasible.append(RecommendConfig(
             total_gpus_needed=tp,
             replicas_needed=1,
             num_total_gpus=tp,
             tp=tp,
             pp=1,
-            bs=concurrency,
+            bs=reported_concurrency,
             ttft=ttft,
             tpot=itl,
             request_latency=e2e,
@@ -1563,9 +1691,11 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
                 metrics["tokens_per_sec"] / tp if metrics.get("tokens_per_sec") and tp > 0 else None
             ),
             tokens_per_second_per_user=(
-                metrics["tokens_per_sec"] / concurrency if metrics.get("tokens_per_sec") and concurrency > 0 else None
+                metrics["tokens_per_sec"] / reported_concurrency
+                if metrics.get("tokens_per_sec") and reported_concurrency
+                else None
             ),
-            concurrency=concurrency,
+            concurrency=reported_concurrency,
             model=req.model_path,
             system=req.system,
             backend=req.backend,
