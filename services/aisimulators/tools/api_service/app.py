@@ -1310,7 +1310,6 @@ def _build_blis_cmd(
     isl: int,
     osl: int,
     concurrency: int | None = None,
-    rate: float | None = None,
     attention_dp_size: int = 1,
     gpu_memory_utilization: float | None = None,
     max_num_seqs: int | None = None,
@@ -1476,6 +1475,7 @@ def _sanitize_blis_model_arg(model_path: str) -> str:
     # Disallow leading '-' in either the full value or final path segment to prevent option-style injection.
     if candidate.startswith("-") or raw_path.name.startswith("-"):
         raise HTTPException(status_code=422, detail="model_path must not start with '-'.")
+
     # Conservative allowlist for local paths and model identifiers.
     # If this looks like a filesystem path, normalize and require it to exist.
     looks_like_path = (
@@ -1488,15 +1488,31 @@ def _sanitize_blis_model_arg(model_path: str) -> str:
         if ".." in raw_path.parts:
             raise HTTPException(status_code=422, detail="model_path must not contain '..' segments.")
         resolved = raw_path.expanduser().resolve(strict=False)
+        allowed_root_cfg = os.environ.get("BLIS_MODEL_ROOT")
+        if allowed_root_cfg:
+            allowed_root = Path(allowed_root_cfg).expanduser().resolve(strict=False)
+            try:
+                resolved.relative_to(allowed_root)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"model_path must be within configured BLIS_MODEL_ROOT: {allowed_root}",
+                )
         if not resolved.exists():
             raise HTTPException(status_code=422, detail="model_path does not exist.")
         if not (resolved.is_file() or resolved.is_dir()):
             raise HTTPException(status_code=422, detail="model_path must reference a file or directory.")
         return str(resolved)
+
     # Otherwise treat as a model identifier and enforce a strict allowlist.
     # Examples: "meta-llama/Llama-3.1-8B-Instruct", "my_model.v1"
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*", candidate):
         raise HTTPException(status_code=422, detail="model_path contains unsupported characters.")
+
+    # Restrict to known model identifiers to avoid uncontrolled command args.
+    allowed_models = set(get_default_models().keys())
+    if candidate not in allowed_models:
+        raise HTTPException(status_code=422, detail="model_path is not an allowed model.")
     return candidate
 
 def _require_int_in_range(name: str, value: int, *, min_value: int, max_value: int) -> int:
@@ -1515,15 +1531,11 @@ def _run_blis(
     osl: int,
     concurrency: int | None = None,
     *,
-    rate: float | None = None,
     max_seq_len: int | None = None,
     prefix: int = 0,
     gpu_memory_utilization: float | None = None,
 ) -> dict[str, Any] | None:
     """Run a single BLIS simulation and return parsed metrics, or None on failure.
-
-    `rate` (requests/sec, open-loop) and `concurrency` (closed-loop) are
-    mutually exclusive; when `rate` is given it takes precedence.
     """
     blis_home, cmd = _build_blis_cmd(
         model_path=model_path,
@@ -1532,7 +1544,6 @@ def _run_blis(
         isl=isl,
         osl=osl,
         concurrency=concurrency,
-        rate=rate,
         max_seq_len=max_seq_len,
         prefix=prefix,
         gpu_memory_utilization=gpu_memory_utilization,
@@ -1600,7 +1611,6 @@ def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
             isl=req.isl,
             osl=req.osl,
             concurrency=concurrency,
-            rate=rate,
             max_seq_len=max_seq_len,
             prefix=req.prefix,
         )
