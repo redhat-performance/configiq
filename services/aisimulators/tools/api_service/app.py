@@ -1489,11 +1489,15 @@ def _sanitize_blis_model_arg(model_path: str) -> str:
             raise HTTPException(status_code=422, detail="model_path must not contain '..' segments.")
         resolved = raw_path.expanduser().resolve(strict=False)
         allowed_root_cfg = os.environ.get("BLIS_MODEL_ROOT")
-        if allowed_root_cfg:
-            allowed_root = Path(allowed_root_cfg).expanduser().resolve(strict=False)
-            try:
-                resolved.relative_to(allowed_root)
-            except ValueError:
+        if not allowed_root_cfg:
+            raise HTTPException(
+                status_code=422,
+                detail="Local filesystem model_path requires BLIS_MODEL_ROOT to be configured.",
+            )
+        allowed_root = Path(allowed_root_cfg).expanduser().resolve(strict=False)
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError:
                 raise HTTPException(
                     status_code=422,
                     detail=f"model_path must be within configured BLIS_MODEL_ROOT: {allowed_root}",
