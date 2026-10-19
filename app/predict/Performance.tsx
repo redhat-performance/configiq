@@ -1090,7 +1090,7 @@ export default function Performance() {
     },
     {
       id: 'parallel',
-      title: 'Parallelism',
+      title: servingMode === 'disagg' ? 'Parallelism — Prefill / Decode pools' : 'Parallelism',
       summary: [
         { k: 'TP', v: `${testTpSize}` },
         { k: 'PP', v: `${testPpSize}` },
@@ -1101,49 +1101,66 @@ export default function Performance() {
             ]
           : []),
       ],
-      fields: [
-        {
-          label: 'Tensor parallel size (TP)',
-          value: tpSizeInput,
-          term: 'tensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidTpSize,
-          onChange: (val: string) => handleTpSizeChange(val),
-        },
-        {
-          label: 'Pipeline parallel size (PP)',
-          value: ppSizeInput,
-          term: 'pipelineParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidPpSize,
-          onChange: (val: string) => handlePpSizeChange(val),
-        },
-        {
-          label: 'MoE expert parallel (EP)',
-          value: moeEpSizeInput,
-          term: 'moeExpertParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEpSizeChange(val),
-        },
-        {
-          label: 'MoE tensor parallel (ETP)',
-          value: moeEtpSizeInput,
-          term: 'moeTensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEtpSizeChange(val),
-        },
-        {
-          label: 'Total GPUs',
-          value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
-          readonly: true,
-        },
-      ],
+      fields: servingMode === 'disagg'
+        ? [
+            { label: 'Prefill TP', value: prefillCfg.tp, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill PP', value: prefillCfg.pp, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill workers', value: prefillCfg.workers, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill batch', value: prefillCfg.batch, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            {
+              label: 'Total GPUs',
+              value: `${parsePerfPhase(prefillCfg).tp * parsePerfPhase(prefillCfg).pp * parsePerfPhase(prefillCfg).workers + parsePerfPhase(decodeCfg).tp * parsePerfPhase(decodeCfg).pp * parsePerfPhase(decodeCfg).workers}`,
+              readonly: true,
+            },
+            { label: 'Decode TP', value: decodeCfg.tp, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode PP', value: decodeCfg.pp, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            { label: '', value: '', readonly: true, spacer: true },
+          ]
+        : [
+            {
+              label: 'Tensor parallel size (TP)',
+              value: tpSizeInput,
+              term: 'tensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidTpSize,
+              onChange: (val: string) => handleTpSizeChange(val),
+            },
+            {
+              label: 'Pipeline parallel size (PP)',
+              value: ppSizeInput,
+              term: 'pipelineParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidPpSize,
+              onChange: (val: string) => handlePpSizeChange(val),
+            },
+            {
+              label: 'MoE expert parallel (EP)',
+              value: moeEpSizeInput,
+              term: 'moeExpertParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEpSizeChange(val),
+            },
+            {
+              label: 'MoE tensor parallel (ETP)',
+              value: moeEtpSizeInput,
+              term: 'moeTensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEtpSizeChange(val),
+            },
+            {
+              label: 'Total GPUs',
+              value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
+              readonly: true,
+            },
+          ],
     },
     {
       id: 'serving',
@@ -1314,14 +1331,7 @@ export default function Performance() {
           <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
         )}
       </div>
-      {servingMode === 'disagg' && (
-        <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-            <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
-            <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
-          </div>
-        </div>
-      )}
+      
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (
@@ -2054,7 +2064,9 @@ export default function Performance() {
             const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
             const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
-            const renderField = (f: any) => (
+            const renderField = (f: any) => {
+              if (f.spacer) return <div key="spacer" />;
+              return (
               <div key={f.label} className={styles.accField}>
                 <label className={styles.accFieldLabel}>
                   {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
@@ -2114,6 +2126,7 @@ export default function Performance() {
                 )}
               </div>
             );
+            };
 
             return (
               <>
