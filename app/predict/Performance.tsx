@@ -1294,13 +1294,13 @@ export default function Performance() {
         </div>
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <Button
-            variant="primary"
+          <button
+            className={styles.calcBtn}
             onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
+            disabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
-          </Button>
+          </button>
         </div>
 
       </div>
