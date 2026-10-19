@@ -2047,110 +2047,126 @@ export default function Performance() {
         transition: 'grid-template-rows 250ms ease-out'
       }}>
         <div style={{ overflow: 'hidden' }}>
-          <p className={styles.assumptionsSub} style={{ marginBottom: 12 }}>
-            Every number above comes from these. Open a section to tune it — closed sections show their current values.
-          </p>
+          <div className={styles.card} style={{ padding: 20, marginBottom: 16 }}>
+          {(() => {
+            const allSections = buildAccordionSections();
+            const alwaysOpenIds = new Set(['workload', 'context-window', 'memory', 'parallel']);
+            const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
+            const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
-          <Accordion asDefinitionList={false}>
-            {buildAccordionSections().map((sec) => (
-              <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
-                <AccordionToggle
-                  id={`acc-${sec.id}`}
-                  onClick={() => toggleAcc(sec.id)}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%' }}>
-                    <span className={styles.cardTitle} style={{ fontSize: 16 }}>{sec.title}</span>
-                    {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
-                    {'hasOverride' in sec && sec.hasOverride && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          sec.onOverrideToggle?.();
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); sec.onOverrideToggle?.(); } }}
-                        style={{ fontSize: '13px', marginLeft: 'auto', padding: '4px 8px', color: 'var(--gc-link)', cursor: 'pointer' }}
-                      >
-                        {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
-                      </span>
-                    )}
-                    {!expanded.includes(sec.id) && (
-                      <span className={styles.accSummary}>
-                        {sec.summary.map((p) => (
-                          <span key={p.k}><span className="k">{p.k}</span> {p.v}</span>
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                </AccordionToggle>
-                <AccordionContent>
-                  <div className={styles.accGrid}>
-                    {sec.fields.map((f: any) => (
-                      <div key={f.label} className={styles.accField}>
-                        <label className={styles.accFieldLabel}>
-                          {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
-                        </label>
-                        {f.readonly ? (
-                          <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
-                        ) : f.type === 'select' ? (
-                          <>
-                            <FormSelect
-                              value={String(f.value)}
-                              aria-label={f.label}
-                              onChange={(_, val) => f.onChange?.(val)}
-                            >
-                              {(f.options || [f.value]).map((o: any) => {
-                                const optValue = typeof o === 'string' ? o : o.value;
-                                const optLabel = typeof o === 'string' ? o : o.label;
-                                return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
-                              })}
-                            </FormSelect>
-                            {f.help && (
-                              <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
-                                {f.help}
-                              </div>
-                            )}
-                          </>
-                        ) : f.type === 'range' ? (
-                          <div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                              <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
-                                {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min={f.min}
-                              max={f.max}
-                              step={f.step}
-                              value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
-                              onChange={(e) => f.onChange?.(Number(e.target.value))}
-                              style={{ width: '100%' }}
-                            />
-                          </div>
-                        ) : f.type === 'number' ? (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            type="number"
-                            validated={f.invalid ? 'error' : 'default'}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        ) : (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        )}
+            const renderField = (f: any) => (
+              <div key={f.label} className={styles.accField}>
+                <label className={styles.accFieldLabel}>
+                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                </label>
+                {f.readonly ? (
+                  <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
+                ) : f.type === 'select' ? (
+                  <>
+                    <FormSelect
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    >
+                      {(f.options || [f.value]).map((o: any) => {
+                        const optValue = typeof o === 'string' ? o : o.value;
+                        const optLabel = typeof o === 'string' ? o : o.label;
+                        return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
+                      })}
+                    </FormSelect>
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
                       </div>
-                    ))}
+                    )}
+                  </>
+                ) : f.type === 'range' ? (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
+                        {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={f.min}
+                      max={f.max}
+                      step={f.step}
+                      value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
+                      onChange={(e) => f.onChange?.(Number(e.target.value))}
+                      style={{ width: '100%' }}
+                    />
                   </div>
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
+                ) : f.type === 'number' ? (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    type="number"
+                    validated={f.invalid ? 'error' : 'default'}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                ) : (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                )}
+              </div>
+            );
+
+            return (
+              <>
+                {/* Always-visible sections */}
+                {openSections.map(sec => (
+                  <div key={sec.id}>
+                    <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      {sec.title}
+                      {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                      {'hasOverride' in sec && sec.hasOverride && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => sec.onOverrideToggle?.()}
+                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') sec.onOverrideToggle?.(); }}
+                          style={{ fontSize: '13px', padding: '4px 8px', color: 'var(--gc-link)', cursor: 'pointer', textTransform: 'none', letterSpacing: 'normal', fontWeight: 500 }}
+                        >
+                          {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                        </span>
+                      )}
+                    </div>
+                    <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
+                      {sec.fields.map(renderField)}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Collapsible sections */}
+                {accordionSections.length > 0 && (
+                  <Accordion asDefinitionList={false} style={{ marginTop: 16 }}>
+                    {accordionSections.map((sec) => (
+                      <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
+                        <AccordionToggle
+                          id={`acc-${sec.id}`}
+                          onClick={() => toggleAcc(sec.id)}
+                        >
+                          <span style={{ fontWeight: 600 }}>{sec.title}</span>
+                        </AccordionToggle>
+                        <AccordionContent>
+                          <div style={{ paddingTop: 12 }}>
+                            <div className={styles.accGrid}>
+                              {sec.fields.map(renderField)}
+                            </div>
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    ))}
+                  </Accordion>
+                )}
+              </>
+            );
+          })()}
+          </div>
         </div>
       </div>
 
