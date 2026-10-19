@@ -303,7 +303,7 @@ export default function KvCacheCalc() {
       </div>
 
       {/* Input card */}
-      <div className={styles.inputCard}>
+      <div className={`${styles.card} ${styles.inputCard}`}>
         <div className={styles.inputRow}>
           <div className={styles.field}>
             <ComboBox
@@ -346,7 +346,7 @@ export default function KvCacheCalc() {
       )}
 
       {/* ---------- advanced settings ---------- */}
-      <div className={styles.inputCard} style={{ marginBottom: 16 }}>
+      <div className={`${styles.card} ${styles.inputCard}`}>
         <button
           type="button"
           className={styles.advancedToggle}
