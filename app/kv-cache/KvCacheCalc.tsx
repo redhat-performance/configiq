@@ -14,6 +14,7 @@ import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelCom
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
+import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
@@ -95,7 +96,7 @@ export default function KvCacheCalc() {
   const [memFractionKind, setMemFractionKind] = React.useState('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
-  const [advancedOpen, setAdvancedOpen] = React.useState(false)
+  const [expanded, setExpanded] = React.useState<string[]>([])
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
   const [error, setError] = React.useState<string | null>(null)
@@ -345,27 +346,18 @@ export default function KvCacheCalc() {
         </div>
       )}
 
-      {/* ---------- advanced settings ---------- */}
-      <div className={`${styles.card} ${styles.inputCard}`}>
-        <button
-          type="button"
-          className={styles.advancedToggle}
-          onClick={() => setAdvancedOpen(prev => !prev)}
-          aria-expanded={advancedOpen}
-        >
-          <span className={styles.advancedToggleIcon}>{advancedOpen ? '▾' : '▸'}</span>
-          Advanced settings
-          {!advancedOpen && (
-            <span className={styles.advancedSummary}>
-              {backend}{backendVersion ? ` v${backendVersion}` : ''} · tokens: {maxNumTokens.toLocaleString()} · batch: {maxBatchSize}
-              {servingMode === 'disagg'
-                ? ` · disagg · P: TP ${prefillPar.tp}/PP ${prefillPar.pp} · D: TP ${decodePar.tp}/PP ${decodePar.pp}`
-                : ` · TP ${tpSize}${ppSize > 1 ? ` · PP ${ppSize}` : ''}${moeTpSize ? ` · MoE TP ${moeTpSize}` : ''}`}
-            </span>
-          )}
-        </button>
-        {advancedOpen && (
-          <div className={styles.advancedBody}>
+      {/* ---------- info strip ---------- */}
+      <InfoStrip>
+        Based on your configuration — Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
+        {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
+          Adjust? (edit fields below)
+        </InfoStripAction>
+      </InfoStrip>
+
+      {/* ---------- customization section ---------- */}
+      {expanded.includes('customize') && (
+        <div className={styles.card} style={{ marginBottom: 16 }}>
+          <div className={styles.advancedBody} style={{ padding: 20 }}>
             {/* Serving config */}
             <div className={styles.advancedSectionLabel}>Serving config</div>
             <div className={styles.advancedRow4}>
@@ -530,8 +522,8 @@ export default function KvCacheCalc() {
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (

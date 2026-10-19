@@ -45,14 +45,11 @@
 }
 .subtitle { font-size: 15px; color: var(--t2); margin: 0; }
 
+/* ---------- shared card ---------- */
+.card { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+
 /* ---------- input card ---------- */
-.inputCard {
-  background: #ffffff;
-  border: 1px solid #d2d2d2;
-  border-radius: var(--radius);
-  padding: 20px 24px;
-  margin-bottom: 24px;
-}
+.inputCard { padding: 18px 20px; margin-bottom: 16px; }
 .inputRow {
   display: grid;
   grid-template-columns: 1.6fr 1fr;
