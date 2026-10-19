@@ -64,6 +64,25 @@
 
 /* ---------- input row ---------- */
 .inputCard { padding: 18px 20px; margin-bottom: 16px; }
+.calcBtn {
+  height: 42px;
+  padding: 0 28px;
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  border-radius: var(--pf-t--global--border--radius--pill, 999px);
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms;
+  white-space: nowrap;
+}
+.calcBtn:hover { background: #004d99; }
+.calcBtn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
 .inputRow {
   display: grid;
   grid-template-columns: 1.6fr 1fr;
