@@ -1306,22 +1306,22 @@ export default function Performance() {
       </div>
 
       {/* ---------- serving mode (agg / disagg) ---------- */}
-      <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
-          <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
-          {servingMode === 'disagg' && (
-            <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
-          )}
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
+        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
         {servingMode === 'disagg' && (
-          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+          <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+        )}
+      </div>
+      {servingMode === 'disagg' && (
+        <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
             <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (

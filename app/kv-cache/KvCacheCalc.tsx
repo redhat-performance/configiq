@@ -333,6 +333,16 @@ export default function KvCacheCalc() {
         </div>
       </div>
 
+      {/* ---------- serving mode (agg / disagg) ---------- */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
+        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
+        {servingMode === 'disagg' && (
+          <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+        )}
+      </div>
+
       {/* ---------- workload presets ---------- */}
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -358,8 +368,6 @@ export default function KvCacheCalc() {
       {expanded.includes('customize') && (
         <div className={styles.card} style={{ marginBottom: 16 }}>
           <div className={styles.advancedBody} style={{ padding: 20 }}>
-            {/* Serving config */}
-            <div className={styles.advancedSectionLabel}>Serving config</div>
             <div className={styles.advancedRow4}>
               <div className={styles.field}>
                 <label htmlFor="kv-backend" className={styles.fieldLabel}>Backend</label>
@@ -413,27 +421,6 @@ export default function KvCacheCalc() {
                   className={invalidMaxBatchSize ? styles.paramInputInvalid : styles.numberInput}
                 />
               </div>
-            </div>
-
-            {/* Serving mode */}
-            <div className={styles.advancedSectionLabel}>Serving mode</div>
-            <div className={styles.modeToggle}>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'agg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('agg'); setResults([]); }}
-                aria-pressed={servingMode === 'agg'}
-              >
-                Aggregated
-              </button>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'disagg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('disagg'); setResults([]); }}
-                aria-pressed={servingMode === 'disagg'}
-              >
-                Disaggregated
-              </button>
             </div>
 
             {/* Parallelism */}
