@@ -368,6 +368,8 @@ export default function KvCacheCalc() {
       {expanded.includes('customize') && (
         <div className={styles.card} style={{ marginBottom: 16 }}>
           <div className={styles.advancedBody} style={{ padding: 20 }}>
+            {/* Serving config */}
+            <div className={styles.advancedSectionLabel}>Serving config</div>
             <div className={styles.advancedRow4}>
               <div className={styles.field}>
                 <label htmlFor="kv-backend" className={styles.fieldLabel}>Backend</label>
