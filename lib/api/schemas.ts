@@ -48,6 +48,7 @@ export const RecommendRequestSchema = z.object({
   top_n: z.number().int().min(1).max(20).default(5),
   // HF config.json for models AISimulators can't resolve from its catalog (nullish = resolve from HF).
   model_config: z.record(z.string(), z.unknown()).nullish(),
+  estimator_backend: z.enum(['aisimulate', 'blis']).default('aisimulate'),
 }).strict().refine(
   data => (data.target_request_rate != null) !== (data.target_concurrency != null),
   { message: 'Exactly one of target_request_rate or target_concurrency must be provided' }

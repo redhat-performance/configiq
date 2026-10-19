@@ -215,6 +215,7 @@ export async function callRecommend(
   if (request.request_latency != null) externalPayload.request_latency = request.request_latency
   if (request.prefix != null) externalPayload.prefix = request.prefix
   if (request.model_config != null) externalPayload.model_config = request.model_config
+  if (request.estimator_backend != null) externalPayload.estimator_backend = request.estimator_backend
   if (options.window?.minGpus != null) externalPayload.min_candidate_gpus = options.window.minGpus
   if (options.window?.maxGpus != null) externalPayload.max_candidate_gpus = options.window.maxGpus
 

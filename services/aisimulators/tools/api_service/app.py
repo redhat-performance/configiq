@@ -14,8 +14,11 @@ import logging
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -89,6 +92,7 @@ class RecommendRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+    estimator_backend: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Estimator backend to use.")
 
     @model_validator(mode="after")
     def exactly_one_load_target(self):
@@ -170,6 +174,7 @@ class EstimateRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
+    estimator_backend: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Estimator backend to use.")
 
 
 class MemoryBreakdown(BaseModel):
@@ -808,20 +813,25 @@ def _run_aisimulate_recommendation(req: RecommendRequest):
         )
 
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
-    from aisimulate.predict import run_prediction
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config.cli import CorePredictionConfig
     from aisimulate.sweeper.replay import ReplayOutputRequirements
 
     with _with_model_config(req.model_path, req.model_config_data) as effective_path:
         prediction_req = req.model_copy(update={"model_path": effective_path})
-        return run_prediction(
-            _aisimulate_prediction_config(prediction_req),
-            stack="engine",
-            runner_factory=_aisimulate_runner_factory(),
+        config = CorePredictionConfig.model_validate(
+            _aisimulate_prediction_config(prediction_req)
+        )
+        spec = prediction_to_replay_spec(config)
+        runner = _aisimulate_runner_factory().create(worker_id=0)
+        report = runner.run(
+            spec,
             output_requirements=ReplayOutputRequirements(
                 include_raw_report=True,
                 capture_memory_diagnostics="memory" in include,
             ),
         )
+        return _PredictionResult(dict(report.metrics))
 
 
 def _worker_config_from_row(row: pd.Series, prefix: str, req: RecommendRequest) -> WorkerConfig | None:
@@ -1130,6 +1140,17 @@ def post_recommend(
     include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
 ):
     """Find optimal GPU configuration for a workload."""
+    if req.estimator_backend == "blis":
+        del req.estimator_backend
+        try:
+            configs = _blis_recommend(req)
+        except Exception as e:
+            _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
+        if not configs:
+            raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+        return RecommendResponse(configs=configs, chosen_mode="agg")
+
+    del req.estimator_backend
     try:
         result = _run_aisimulate_recommendation(req)
     except Exception as e:
@@ -1185,6 +1206,486 @@ def post_recommend(
     return RecommendResponse(configs=configs, chosen_mode=chosen_mode)
 
 
+_SYSTEM_TO_BLIS_HARDWARE: dict[str, str] = {
+    "h100_sxm": "H100",
+    "h100_pcie": "H100",
+    "h200_sxm": "H200",
+    "a100_sxm": "A100-SXM",
+    "a100_pcie": "A100-80",
+    "l40s": "L40S",
+}
+
+_BLIS_TIMEOUT_SECONDS = 120
+
+
+class _PredictionResult:
+    """Wraps a metrics dict as .summary for post_predict consumption."""
+
+    def __init__(self, summary: dict[str, float | None]):
+        self.summary = summary
+
+
+_KVCACHE_QUANT_TO_BLIS_DTYPE: dict[str, str] = {
+    "FP8": "fp8",
+    "FP8_E4M3": "fp8_e4m3",
+    "FP8_E5M2": "fp8_e5m2",
+    "FP16": "fp16",
+    "BF16": "bf16",
+    "FP32": "fp32",
+}
+
+_ALLOWED_BLIS_NAMES = frozenset({"blis", "blis.exe"})
+
+
+@lru_cache(maxsize=1)
+def _resolve_blis_binary() -> str:
+    """Resolve and validate the BLIS executable from BLIS_BINARY or PATH."""
+    raw = os.environ.get("BLIS_BINARY") or shutil.which("blis")
+    if not raw:
+        raise RuntimeError("BLIS binary not found; set BLIS_BINARY or put blis on PATH")
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        found = shutil.which(raw)
+        if not found:
+            raise RuntimeError(f"BLIS_BINARY '{raw}' is not on PATH")
+        path = Path(found)
+    path = path.resolve()
+
+    if path.name not in _ALLOWED_BLIS_NAMES:
+        raise RuntimeError(f"BLIS_BINARY must be named blis, got '{path.name}'")
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise RuntimeError(f"BLIS_BINARY is not an executable file: {path}")
+
+    blis_home = os.environ.get("BLIS_HOME")
+    if blis_home:
+        home = Path(blis_home).expanduser().resolve()
+        if not path.is_relative_to(home):
+            raise RuntimeError(f"BLIS_BINARY {path} is outside BLIS_HOME {home}")
+
+    return str(path)
+
+
+def _validate_inputs(
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int,
+    *,
+    max_seq_len: int | None = None,
+    prefix: int = 0,
+    gpu_memory_utilization: float | None = None,
+) -> dict[str, Any]:
+    """Validate BLIS CLI arguments and return the normalized values.
+
+    Callers must build the subprocess argument list from this function's
+    *return value*, not from the original request fields, so that every
+    value reaching `subprocess.run` has actually flowed through an
+    allowlist / numeric-range check rather than merely being checked
+    as a side effect.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", hardware):
+        raise ValueError("Invalid hardware value")
+
+    validated: dict[str, Any] = {
+        "hardware": hardware,
+        "tp": _require_int_in_range("tp", tp, min_value=1, max_value=64),
+        "isl": _require_int_in_range("isl", isl, min_value=1, max_value=1_000_000),
+        "osl": _require_int_in_range("osl", osl, min_value=1, max_value=1_000_000),
+        "concurrency": _require_int_in_range("concurrency", concurrency, min_value=1, max_value=10_000),
+        "prefix": _require_int_in_range("prefix", prefix, min_value=0, max_value=1_000_000),
+        "max_seq_len": max_seq_len,
+        "gpu_memory_utilization": gpu_memory_utilization,
+    }
+    if max_seq_len is not None:
+        validated["max_seq_len"] = _require_int_in_range(
+            "max_seq_len", max_seq_len, min_value=1, max_value=1_000_000
+        )
+    if gpu_memory_utilization is not None:
+        if not isinstance(gpu_memory_utilization, (int, float)):
+            raise ValueError("gpu_memory_utilization must be a number")
+        value = float(gpu_memory_utilization)
+        if value <= 0.0 or value > 1.0:
+            raise ValueError("gpu_memory_utilization must be in the range (0, 1]")
+        validated["gpu_memory_utilization"] = value
+    return validated
+
+
+def _build_blis_cmd(
+    *,
+    model_path: str,
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int | None = None,
+    attention_dp_size: int = 1,
+    gpu_memory_utilization: float | None = None,
+    max_num_seqs: int | None = None,
+    max_seq_len: int | None = None,
+    kvcache_quant_mode: str | None = None,
+    prefix: int = 0,
+    moe_ep_size: int | None = None,
+) -> tuple[str | None, list[str]]:
+    """Single choke point for building the BLIS CLI argv.
+
+    Every element appended to `cmd` is either a hard-coded literal (flag
+    names, dtype strings from the fixed `_KVCACHE_QUANT_TO_BLIS_DTYPE`
+    lookup table) or a value that was validated immediately beforehand
+    against a strict allowlist regex or numeric range. Nothing taken
+    directly from the request is interpolated into `cmd` unchecked.
+
+    Returns (blis_home, cmd); `blis_home` is used as the subprocess cwd.
+    """
+    validated = _validate_inputs(
+        hardware=hardware,
+        tp=tp,
+        isl=isl,
+        osl=osl,
+        concurrency=concurrency,
+        max_seq_len=max_seq_len,
+        prefix=prefix,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+    safe_model_path = _sanitize_blis_model_arg(model_path)
+
+    blis_binary = _resolve_blis_binary()
+    blis_home = os.environ.get("BLIS_HOME")
+
+    cmd = [
+        blis_binary, "run",
+        "--model", safe_model_path,
+        "--hardware", validated["hardware"],
+        "--tp", str(validated["tp"]),
+        "--prompt-tokens", str(validated["isl"]),
+        "--output-tokens", str(validated["osl"]),
+        "--concurrency", str(validated["concurrency"]),
+        "--num-requests", str(validated["concurrency"]),
+    ]
+
+    if attention_dp_size > 1:
+        safe_dp = _require_int_in_range(
+            "attention_dp_size", attention_dp_size, min_value=1, max_value=64
+        )
+        cmd.extend(["--dp", str(safe_dp)])
+
+    if validated["gpu_memory_utilization"] is not None:
+        cmd.extend(["--gpu-memory-utilization", str(validated["gpu_memory_utilization"])])
+
+    if max_num_seqs is not None:
+        safe_max_num_seqs = _require_int_in_range(
+            "max_num_seqs", max_num_seqs, min_value=1, max_value=100_000
+        )
+        cmd.extend(["--max-num-seqs", str(safe_max_num_seqs)])
+
+    if validated["max_seq_len"] is not None:
+        cmd.extend(["--max-model-len", str(validated["max_seq_len"])])
+
+    if kvcache_quant_mode is not None:
+        blis_dtype = _KVCACHE_QUANT_TO_BLIS_DTYPE.get(kvcache_quant_mode.upper())
+        if blis_dtype is not None:
+            cmd.extend(["--kv-cache-dtype", blis_dtype])
+
+    if validated["prefix"] > 0:
+        cmd.extend(["--prefix-tokens", str(validated["prefix"])])
+
+    if moe_ep_size is not None and moe_ep_size > 1:
+        _require_int_in_range("moe_ep_size", moe_ep_size, min_value=1, max_value=64)
+        cmd.append("--enable-expert-parallel")
+
+    catalog = os.environ.get("BLIS_CATALOG")
+    if catalog:
+        cmd.extend(["--catalog", catalog])
+
+    return blis_home, cmd
+
+
+def _blis_estimate(req: EstimateRequest) -> _PredictionResult:
+    hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
+    if hardware is None:
+        raise ValueError(
+            f"No BLIS hardware mapping for system '{req.system}'. "
+            f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
+        )
+
+    blis_home, cmd = _build_blis_cmd(
+        model_path=req.model_path,
+        hardware=hardware,
+        tp=req.tp_size,
+        isl=req.isl,
+        osl=req.osl,
+        concurrency=req.batch_size,
+        attention_dp_size=req.attention_dp_size,
+        gpu_memory_utilization=req.gpu_memory_utilization,
+        max_num_seqs=req.max_num_seqs,
+        max_seq_len=req.max_seq_len,
+        kvcache_quant_mode=req.kvcache_quant_mode,
+        prefix=req.prefix,
+        moe_ep_size=req.moe_ep_size,
+    )
+
+    logger.info("BLIS command: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_BLIS_TIMEOUT_SECONDS,
+            cwd=blis_home,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"BLIS timed out after {_BLIS_TIMEOUT_SECONDS}s")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(f"BLIS failed (exit {result.returncode}): {stderr}")
+
+    marker = "=== Simulation Metrics ==="
+    idx = result.stdout.find(marker)
+    if idx == -1:
+        raise RuntimeError("BLIS output missing '=== Simulation Metrics ===' marker")
+
+    json_str = result.stdout[idx + len(marker) :].strip()
+    json_start = json_str.find("{")
+    if json_start == -1:
+        raise RuntimeError("BLIS output contains no JSON object after metrics marker")
+    try:
+        blis_metrics, _ = json.JSONDecoder().raw_decode(json_str, json_start)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
+
+    # BLIS --dp N spawns N per-rank replicas of size TP; keep this aligned with
+    # response.dp (attention_dp_size) and _prediction_total_gpus.
+    total_gpus = req.tp_size * req.pp_size * req.attention_dp_size
+    summary: dict[str, float | None] = {
+        "ttft_ms": blis_metrics.get("ttft_mean_ms"),
+        "tpot_ms": blis_metrics.get("itl_mean_ms"),
+        "e2e_latency_ms": blis_metrics.get("e2e_mean_ms"),
+        "output_throughput_tok_s": blis_metrics.get("tokens_per_sec"),
+        "num_total_gpus": float(total_gpus),
+        "power_w": None,
+    }
+
+    return _PredictionResult(summary)
+
+def _sanitize_blis_model_arg(model_path: str) -> str:
+    """Validate model argument passed to BLIS CLI."""
+    candidate = model_path.strip()
+    if not candidate:
+        raise HTTPException(status_code=422, detail="model_path must not be empty.")
+    if len(candidate) > 4096:
+        raise HTTPException(status_code=422, detail="model_path is too long.")
+    if any(ch in candidate for ch in ("\x00", "\n", "\r")):
+        raise HTTPException(status_code=422, detail="model_path contains invalid control characters.")
+
+    raw_path = Path(candidate)
+    # Disallow leading '-' in either the full value or final path segment to prevent option-style injection.
+    if candidate.startswith("-") or raw_path.name.startswith("-"):
+        raise HTTPException(status_code=422, detail="model_path must not start with '-'.")
+
+    # Conservative allowlist for local paths and model identifiers.
+    # If this looks like a filesystem path, normalize and require it to exist.
+    looks_like_path = (
+        raw_path.is_absolute()
+        or candidate.startswith(".")
+        or "/" in candidate
+        or "\\" in candidate
+    )
+    if looks_like_path:
+        if ".." in raw_path.parts:
+            raise HTTPException(status_code=422, detail="model_path must not contain '..' segments.")
+        resolved = raw_path.expanduser().resolve(strict=False)
+        allowed_root_cfg = os.environ.get("BLIS_MODEL_ROOT")
+        if not allowed_root_cfg:
+            raise HTTPException(
+                status_code=422,
+                detail="Local filesystem model_path requires BLIS_MODEL_ROOT to be configured.",
+            )
+        allowed_root = Path(allowed_root_cfg).expanduser().resolve(strict=False)
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"model_path must be within configured BLIS_MODEL_ROOT: {allowed_root}",
+                )
+        if not resolved.exists():
+            raise HTTPException(status_code=422, detail="model_path does not exist.")
+        if not (resolved.is_file() or resolved.is_dir()):
+            raise HTTPException(status_code=422, detail="model_path must reference a file or directory.")
+        return str(resolved)
+
+    # Otherwise treat as a model identifier and enforce a strict allowlist.
+    # Examples: "meta-llama/Llama-3.1-8B-Instruct", "my_model.v1"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*", candidate):
+        raise HTTPException(status_code=422, detail="model_path contains unsupported characters.")
+
+    # Restrict to known model identifiers to avoid uncontrolled command args.
+    allowed_models = set(get_default_models().keys())
+    if candidate not in allowed_models:
+        raise HTTPException(status_code=422, detail="model_path is not an allowed model.")
+    return candidate
+
+def _require_int_in_range(name: str, value: int, *, min_value: int, max_value: int) -> int:
+    if not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < min_value or value > max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
+
+
+def _run_blis(
+    model_path: str,
+    hardware: str,
+    tp: int,
+    isl: int,
+    osl: int,
+    concurrency: int | None = None,
+    *,
+    max_seq_len: int | None = None,
+    prefix: int = 0,
+    gpu_memory_utilization: float | None = None,
+) -> dict[str, Any] | None:
+    """Run a single BLIS simulation and return parsed metrics, or None on failure.
+    """
+    blis_home, cmd = _build_blis_cmd(
+        model_path=model_path,
+        hardware=hardware,
+        tp=tp,
+        isl=isl,
+        osl=osl,
+        concurrency=concurrency,
+        max_seq_len=max_seq_len,
+        prefix=prefix,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+
+    logger.info("BLIS recommend probe: %s", " ".join(cmd))
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_BLIS_TIMEOUT_SECONDS,
+            cwd=blis_home,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("BLIS timed out at TP=%d", tp)
+        return None
+
+    if result.returncode != 0:
+        logger.info("BLIS infeasible at TP=%d: %s", tp, result.stderr.strip()[:200])
+        return None
+
+    marker = "=== Simulation Metrics ==="
+    idx = result.stdout.find(marker)
+    if idx == -1:
+        logger.warning("BLIS output missing metrics marker at TP=%d", tp)
+        return None
+
+    raw = result.stdout[idx + len(marker):].strip()
+    json_start = raw.find("{")
+    if json_start == -1:
+        raise RuntimeError("BLIS output contains no JSON object after metrics marker")
+    try:
+        metrics, _ = json.JSONDecoder().raw_decode(raw, json_start)
+        return metrics
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse BLIS JSON output: {exc}")
+
+
+def _blis_recommend(req: RecommendRequest) -> list[RecommendConfig]:
+    """Search TP values (powers of 2) for the smallest feasible BLIS config."""
+    hardware = _SYSTEM_TO_BLIS_HARDWARE.get(req.system)
+    if hardware is None:
+        raise ValueError(
+            f"No BLIS hardware mapping for system '{req.system}'. "
+            f"Supported: {', '.join(sorted(_SYSTEM_TO_BLIS_HARDWARE))}"
+        )
+
+    concurrency = int(req.target_concurrency or 1)
+    max_seq_len = req.max_seq_len 
+    min_tp = req.min_candidate_gpus or 1
+    max_tp = min(req.max_candidate_gpus or 64, 64)
+
+    tp_candidates = [tp for tp in (1 << i for i in range(7)) if min_tp <= tp <= max_tp]
+
+    feasible: list[RecommendConfig] = []
+
+    for tp in tp_candidates:
+        metrics = _run_blis(
+            model_path=req.model_path,
+            hardware=hardware,
+            tp=tp,
+            isl=req.isl,
+            osl=req.osl,
+            concurrency=concurrency,
+            max_seq_len=max_seq_len,
+            prefix=req.prefix,
+        )
+        if metrics is None:
+            continue
+
+        if metrics.get("dropped_unservable", 0) > 0:
+            logger.info("BLIS TP=%d: %d requests dropped as unservable", tp, metrics["dropped_unservable"])
+            continue
+
+        if metrics.get("completed_requests", 0) == 0:
+            logger.info("BLIS TP=%d: no requests completed", tp)
+            continue
+
+        ttft = metrics.get("ttft_mean_ms", 0.0)
+        itl = metrics.get("itl_mean_ms", 0.0)
+        e2e = metrics.get("e2e_mean_ms", 0.0)
+
+        if req.request_latency is not None:
+            if e2e > req.request_latency:
+                logger.info("BLIS TP=%d: e2e %.1fms exceeds target %.1fms", tp, e2e, req.request_latency)
+                continue
+        else:
+            if ttft > req.ttft:
+                logger.info("BLIS TP=%d: TTFT %.1fms exceeds target %.1fms", tp, ttft, req.ttft)
+                continue
+            if itl > req.tpot:
+                logger.info("BLIS TP=%d: ITL %.1fms exceeds target %.1fms", tp, itl, req.tpot)
+                continue
+
+        feasible.append(RecommendConfig(
+            total_gpus_needed=tp,
+            replicas_needed=1,
+            num_total_gpus=tp,
+            tp=tp,
+            pp=1,
+            bs=concurrency,
+            ttft=ttft,
+            tpot=itl,
+            request_latency=e2e,
+            tokens_per_second=metrics.get("tokens_per_sec"),
+            tokens_per_second_per_gpu=(
+                metrics["tokens_per_sec"] / tp if metrics.get("tokens_per_sec") and tp > 0 else None
+            ),
+            tokens_per_second_per_user=(
+                metrics["tokens_per_sec"] / concurrency if metrics.get("tokens_per_sec") and concurrency > 0 else None
+            ),
+            concurrency=concurrency,
+            model=req.model_path,
+            system=req.system,
+            backend=req.backend,
+            backend_version=req.backend_version,
+            mode="agg",
+        ))
+
+        if len(feasible) >= req.top_n:
+            break
+
+    return feasible
+
+
 def post_predict(
     req: EstimateRequest,
     include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
@@ -1212,10 +1713,20 @@ def post_predict(
     d_moe_tp = req.decode_moe_tp_size or req.moe_tp_size
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
-    try:
-        prediction = _run_aisimulate_prediction(req, _parse_include(include))
-    except Exception as e:
-        _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+    if req.estimator_backend == "aisimulate":
+        try:
+            prediction = _run_aisimulate_prediction(req, _parse_include(include))
+        except Exception as e:
+            _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+    elif req.estimator_backend == "blis":
+        if is_disagg or p_pp > 1: 
+            raise HTTPException(status_code=422, detail="Disaggregated mode and per-phase parallelism are not supported with BLIS.")
+        try:
+            prediction = _blis_estimate(req)
+        except Exception as e:
+            _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
+    else:
+        _common_error_handler(Exception(f"Invalid estimator backend: {req.estimator_backend}"), "estimate", req.model_path, req.backend, req.system)
 
     includes = _parse_include(include)
 

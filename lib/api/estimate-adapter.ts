@@ -44,6 +44,7 @@ export interface EstimateAdapterInput {
   prefix?: number
   kvcache_quant_mode?: string | null
   gemm_quant_mode?: string | null
+  estimator_backend?: 'aisimulate' | 'blis'
   // Disagg: when mode='disagg', prefill/decode drive separate pools.
   mode?: 'agg' | 'disagg'
   prefill?: EstimatePhaseInput
@@ -121,6 +122,7 @@ export async function fetchEstimateAsInferenceResult(
   if (input.prefill_max_seq_len != null) body.prefill_max_seq_len = input.prefill_max_seq_len
   if (input.decode_max_seq_len != null) body.decode_max_seq_len = input.decode_max_seq_len
 
+  if (input.estimator_backend) body.estimator_backend = input.estimator_backend
   if (input.pp_size != null && input.pp_size > 1) body.pp_size = input.pp_size
   if (input.gpu_memory_utilization != null) body.gpu_memory_utilization = input.gpu_memory_utilization
   if (input.max_num_seqs != null) body.max_num_seqs = input.max_num_seqs
