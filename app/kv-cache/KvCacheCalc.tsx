@@ -1,13 +1,14 @@
 'use client'
 
 import * as React from 'react'
-import { Alert, Label, Spinner } from '@patternfly/react-core'
+import { Alert, Button, Label, Spinner } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import { formatBytes } from '@/lib/utils/format'
 import { useCountUp } from '@/app/predict/performanceHelpers'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
+import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -109,6 +110,21 @@ export default function KvCacheCalc() {
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
+
+  const [activePreset, setActivePreset] = React.useState<string>('default')
+
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency'>) => {
+    const tokens = p.isl + p.osl
+    setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
+    setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
+    setActivePreset(p.key)
+  }
+
+  const resetToDefaults = () => {
+    setMaxNumTokens(8192); setMaxNumTokensInput('8192')
+    setMaxBatchSize(128); setMaxBatchSizeInput('128')
+    setActivePreset('default')
+  }
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -314,8 +330,23 @@ export default function KvCacheCalc() {
             {loading ? 'Calculating…' : 'Calculate'}
           </button>
         </div>
+      </div>
 
-        {/* Advanced settings accordion */}
+      {/* ---------- workload presets ---------- */}
+      {hydrated && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
+          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          {getAppConfig().workloadPresets.map(p => (
+            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- advanced settings ---------- */}
+      <div className={styles.inputCard} style={{ marginBottom: 16 }}>
         <button
           type="button"
           className={styles.advancedToggle}
