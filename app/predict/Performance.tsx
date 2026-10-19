@@ -1337,8 +1337,8 @@ export default function Performance() {
       )}
 
       <InfoStrip data-tour="warning">
-        Based on your configuration — ISL {testISL}, OSL {testOSL}, {testKVCachePrecision} KV cache,
-        {' '}{testConcurrentUsers} concurrent users.
+        Based on your configuration — ISL: {testISL}, OSL: {testOSL}, {testKVCachePrecision} KV cache,
+        {' '}{testConcurrentUsers} Concurrent Users.
         {' '}<InfoStripAction onClick={handleCustomizeClick}>Adjust? (see &lsquo;Want to change assumptions?&rsquo; below)</InfoStripAction>
       </InfoStrip>
 
