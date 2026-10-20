@@ -31,6 +31,7 @@ import {
   CogIcon,
   DatabaseIcon,
   ListIcon,
+  ChartLineIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getBuildTimeString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
@@ -204,6 +205,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="#"
               isActive={false}
             />}
+
+            <div style={groupLabelStyle}>VALIDATION</div>
+
+            <NavItemWithIcon
+              icon={ChartLineIcon}
+              label="Ground truth comparison"
+              href="/validation/compare"
+              isActive={pathname === "/validation/compare"}
+            />
 
             {costingsEnabled && <>
             <div style={groupLabelStyle}>COSTINGS</div>
