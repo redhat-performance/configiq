@@ -577,7 +577,6 @@
   margin-top: 20px;
   margin-bottom: 8px;
 }
-.sectionLabel:first-child { margin-top: 4px; }
 
 /* ---------- footer actions ---------- */
 .footerRow { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; align-items: center; }

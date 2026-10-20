@@ -2131,21 +2131,15 @@ export default function Performance() {
             return (
               <>
                 {/* Always-visible sections */}
-                {openSections.map(sec => (
+                {openSections.map((sec, idx) => (
                   <div key={sec.id}>
-                    <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', ...(idx === 0 ? { marginTop: 4 } : {}) }}>
                       {sec.title}
                       {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
                       {'hasOverride' in sec && sec.hasOverride && (
-                        <span
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => sec.onOverrideToggle?.()}
-                          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') sec.onOverrideToggle?.(); }}
-                          style={{ fontSize: '13px', padding: '4px 8px', color: 'var(--gc-link)', cursor: 'pointer', textTransform: 'none', letterSpacing: 'normal', fontWeight: 500 }}
-                        >
-                          {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
-                        </span>
+                        <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()} style={{ fontSize: '13px' }}>
+                        {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                        </Button>
                       )}
                     </div>
                     <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
@@ -2167,6 +2161,14 @@ export default function Performance() {
                         </AccordionToggle>
                         <AccordionContent>
                           <div style={{ paddingTop: 12 }}>
+                            {'hasOverride' in sec && sec.hasOverride && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                                {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                                <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()}>
+                                  {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                                </Button>
+                              </div>
+                            )}
                             <div className={styles.accGrid}>
                               {sec.fields.map(renderField)}
                             </div>

@@ -119,12 +119,14 @@ export default function KvCacheCalc() {
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
     setActivePreset(p.key)
+    setResults([])
   }
 
   const resetToDefaults = () => {
     setMaxNumTokens(8192); setMaxNumTokensInput('8192')
     setMaxBatchSize(128); setMaxBatchSizeInput('128')
     setActivePreset('default')
+    setResults([])
   }
 
   // Use the selected backend's catalog defaults for the memory controls. The
@@ -160,6 +162,7 @@ export default function KvCacheCalc() {
     setMaxNumTokensInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxNumTokens(n);
+    setActivePreset('');
   };
   
   const handleMaxBatchSizeChange = (raw: string) => {
@@ -167,6 +170,7 @@ export default function KvCacheCalc() {
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
+    setActivePreset('');
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
