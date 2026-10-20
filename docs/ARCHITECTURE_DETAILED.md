@@ -43,6 +43,7 @@ services, typically behind nginx. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
 | KV cache calculator | `app/kv-cache/` | `/api/memory` requests and memory breakdown display |
 | Catalog hook | `lib/hooks/useCatalog.ts` | Same-origin GPU, model, and backend catalog |
 | Costings hook | `lib/hooks/useCostings.ts` | Same-origin pricing and health data |
+| Ground truth comparison | `app/validation/compare/` | Hugging Face benchmark filters, AISimulators comparison, and PatternFly charts |
 | API adapters | `lib/api/` | Request shapes, response normalization, and error handling |
 | Legacy catalogs | `lib/gpu-math/` | Historical static data and types; no new sizing formulas |
 
@@ -79,6 +80,20 @@ GPU sizing formulas or call external service URLs directly from the browser.
 4. Those routes proxy the aicostings service; pricing data is not part of the
    AISimulators sizing response.
 
+### Ground truth comparison
+
+1. The comparison page requests the current benchmark rows through the same-origin
+   `/api/validation/ground-truth` route.
+2. The route reads the public Hugging Face Parquet-file listing and parses its
+   files directly, caches the current rows for five minutes, and derives
+   dependent filter options and exact measured runtime configurations from them.
+3. Selected measurements are grouped by concurrency; ConfigIQ calls its existing
+   `/api/predict` proxy for AISimulators estimates at up to 24 measured concurrency
+   levels, with at most three requests in flight. MoE expert parallelism is set
+   from catalog or Hugging Face expert-count metadata so its width matches TP.
+4. PatternFly charts show measured and predicted values for TTFT, TPOT,
+   throughput, throughput per user, and request latency.
+
 ## API route map
 
 | Route | Method | Upstream or role |
@@ -88,6 +103,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
 | `/api/catalog` | GET | Combined AISimulators systems, models, and backends |
+| `/api/validation/ground-truth` | GET | Hugging Face dataset-backed filters and aggregated benchmark measurements |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |
 | `/api/costings/models` | GET | aicostings hosted-model pricing |
