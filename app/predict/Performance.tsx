@@ -513,9 +513,9 @@ export default function Performance() {
           }
         }
       } finally {
+        clearInterval(elapsedTimer);
         if (!isStale()) {
           setIsCalculating(false);
-          clearInterval(elapsedTimer);
         }
       }
     }, 0);
