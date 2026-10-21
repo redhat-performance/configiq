@@ -276,6 +276,11 @@ export default function Performance() {
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
+  const invalidPhase = (p: PerfPhaseInput) =>
+    (['tp', 'pp', 'workers', 'batch'] as const).some(k => p[k] === '' || parseInt(p[k], 10) < 1);
+  const invalidParallelism = servingMode === 'disagg'
+    ? invalidPhase(prefillCfg) || invalidPhase(decodeCfg)
+    : invalidTpSize || invalidPpSize;
   const invalidMaxSeqLen = maxSeqLenInput !== '' && parseInt(maxSeqLenInput, 10) < 1;
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && parseInt(prefillMaxSeqLenInput, 10) < 1;
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && parseInt(decodeMaxSeqLenInput, 10) < 1;
@@ -356,13 +361,17 @@ export default function Performance() {
   };
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const calcGenRef = React.useRef(0);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency' | 'prefix'>) => {
+    calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
     setTestPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setTestResult(null);
+    setIsCalculating(false);
   };
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
@@ -424,7 +433,9 @@ export default function Performance() {
 
     if (calcTrigger === 0) return; // don't auto-run on mount
 
+    const gen = calcGenRef.current;
     let cancelled = false;
+    const isStale = () => cancelled || calcGenRef.current !== gen;
     setIsCalculating(true);
     setElapsed(0);
     const elapsedTimer = setInterval(() => setElapsed(e => e + 1), 1000);
@@ -480,7 +491,7 @@ export default function Performance() {
         const response = await fetchEstimateAsInferenceResult(estimateInput, true);
 
         const result = 'result' in response ? response.result : response;
-        if (!cancelled) {
+        if (!isStale()) {
           setTestResult(result);
           setTestError(null);
           setTestErrorCode(null);
@@ -492,7 +503,7 @@ export default function Performance() {
           }
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!isStale()) {
           if (error instanceof EstimateError) {
             setTestErrorCode(error.code)
             setTestError(error.message)
@@ -502,7 +513,7 @@ export default function Performance() {
           }
         }
       } finally {
-        if (!cancelled) {
+        if (!isStale()) {
           setIsCalculating(false);
           clearInterval(elapsedTimer);
         }
@@ -1103,19 +1114,19 @@ export default function Performance() {
       ],
       fields: servingMode === 'disagg'
         ? [
-            { label: 'Prefill TP', value: prefillCfg.tp, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Prefill PP', value: prefillCfg.pp, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Prefill workers', value: prefillCfg.workers, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Prefill batch', value: prefillCfg.batch, type: 'number' as const, onChange: (val: string) => setPrefillCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill TP', value: prefillCfg.tp, type: 'number' as const, invalid: prefillCfg.tp === '' || parseInt(prefillCfg.tp, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill PP', value: prefillCfg.pp, type: 'number' as const, invalid: prefillCfg.pp === '' || parseInt(prefillCfg.pp, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill workers', value: prefillCfg.workers, type: 'number' as const, invalid: prefillCfg.workers === '' || parseInt(prefillCfg.workers, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill batch', value: prefillCfg.batch, type: 'number' as const, invalid: prefillCfg.batch === '' || parseInt(prefillCfg.batch, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
             {
               label: 'Total GPUs',
               value: `${parsePerfPhase(prefillCfg).tp * parsePerfPhase(prefillCfg).pp * parsePerfPhase(prefillCfg).workers + parsePerfPhase(decodeCfg).tp * parsePerfPhase(decodeCfg).pp * parsePerfPhase(decodeCfg).workers}`,
               readonly: true,
             },
-            { label: 'Decode TP', value: decodeCfg.tp, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Decode PP', value: decodeCfg.pp, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
-            { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, onChange: (val: string) => setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode TP', value: decodeCfg.tp, type: 'number' as const, invalid: decodeCfg.tp === '' || parseInt(decodeCfg.tp, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode PP', value: decodeCfg.pp, type: 'number' as const, invalid: decodeCfg.pp === '' || parseInt(decodeCfg.pp, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, invalid: decodeCfg.workers === '' || parseInt(decodeCfg.workers, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, invalid: decodeCfg.batch === '' || parseInt(decodeCfg.batch, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
             { label: '', value: '', readonly: true, spacer: true },
           ]
         : [
@@ -1314,7 +1325,7 @@ export default function Performance() {
           <button
             className={styles.calcBtn}
             onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            disabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
+            disabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </button>

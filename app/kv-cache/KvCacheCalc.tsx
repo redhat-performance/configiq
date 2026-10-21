@@ -100,6 +100,7 @@ export default function KvCacheCalc() {
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
   const [error, setError] = React.useState<string | null>(null)
+  const calcAbortRef = React.useRef<AbortController | null>(null)
   const [debugOpen, setDebugOpen] = React.useState(false)
   const [debugRequest, setDebugRequest] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
   const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
@@ -115,6 +116,7 @@ export default function KvCacheCalc() {
   const [activePreset, setActivePreset] = React.useState<string>('default')
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency'>) => {
+    if (calcAbortRef.current) calcAbortRef.current.abort()
     const tokens = p.isl + p.osl
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
@@ -123,6 +125,7 @@ export default function KvCacheCalc() {
   }
 
   const resetToDefaults = () => {
+    if (calcAbortRef.current) calcAbortRef.current.abort()
     setMaxNumTokens(8192); setMaxNumTokensInput('8192')
     setMaxBatchSize(128); setMaxBatchSizeInput('128')
     setActivePreset('default')
@@ -242,6 +245,10 @@ export default function KvCacheCalc() {
   }
 
   async function handleCalculate() {
+    if (calcAbortRef.current) calcAbortRef.current.abort()
+    const controller = new AbortController()
+    calcAbortRef.current = controller
+
     setLoading(true)
     setError(null)
     setResults([])
@@ -271,11 +278,14 @@ export default function KvCacheCalc() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: controller.signal,
           })
           const data = await res.json()
           return { label, status: res.status, data }
         }),
       )
+
+      if (controller.signal.aborted) return
 
       const failed = responses.find(r => r.data?.status === 'failed')
 
@@ -289,11 +299,12 @@ export default function KvCacheCalc() {
       }
 
       setResults(responses.map(r => ({ label: r.label, result: r.data as KvCacheCalcResult })))
-    } catch {
+    } catch (err) {
+      if (controller.signal.aborted) return
       setDebugDuration(Math.round(performance.now() - t0))
       setError('Failed to connect to the server. Please try again.')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
@@ -340,8 +351,8 @@ export default function KvCacheCalc() {
       {/* ---------- serving mode (agg / disagg) ---------- */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
         <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
-        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
+        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
+        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
         {servingMode === 'disagg' && (
           <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
         )}
@@ -351,9 +362,9 @@ export default function KvCacheCalc() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -362,7 +373,7 @@ export default function KvCacheCalc() {
 
       {/* ---------- info strip ---------- */}
       <InfoStrip>
-        Based on your configuration — Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
+        Based on your configuration — Maximum Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
