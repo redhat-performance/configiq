@@ -1,18 +1,20 @@
 'use client'
 
 import * as React from 'react'
-import { Alert, Label, Spinner } from '@patternfly/react-core'
+import { Alert, Button, Label, Spinner } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import { formatBytes } from '@/lib/utils/format'
 import { useCountUp } from '@/app/predict/performanceHelpers'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
+import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
+import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
@@ -94,10 +96,11 @@ export default function KvCacheCalc() {
   const [memFractionKind, setMemFractionKind] = React.useState('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
-  const [advancedOpen, setAdvancedOpen] = React.useState(false)
+  const [expanded, setExpanded] = React.useState<string[]>([])
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
   const [error, setError] = React.useState<string | null>(null)
+  const calcAbortRef = React.useRef<AbortController | null>(null)
   const [debugOpen, setDebugOpen] = React.useState(false)
   const [debugRequest, setDebugRequest] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
   const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
@@ -109,6 +112,31 @@ export default function KvCacheCalc() {
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
+
+  const [activePreset, setActivePreset] = React.useState<string>('default')
+
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency'>) => {
+    if (calcAbortRef.current) {
+      setLoading(false)
+      calcAbortRef.current.abort()
+    }
+    const tokens = p.isl + p.osl
+    setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
+    setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
+    setActivePreset(p.key)
+    setResults([])
+  }
+
+  const resetToDefaults = () => {
+    if (calcAbortRef.current) {
+      setLoading(false)
+      calcAbortRef.current.abort()
+    }
+    setMaxNumTokens(8192); setMaxNumTokensInput('8192')
+    setMaxBatchSize(128); setMaxBatchSizeInput('128')
+    setActivePreset('default')
+    setResults([])
+  }
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -143,6 +171,7 @@ export default function KvCacheCalc() {
     setMaxNumTokensInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxNumTokens(n);
+    setActivePreset('');
   };
   
   const handleMaxBatchSizeChange = (raw: string) => {
@@ -150,6 +179,7 @@ export default function KvCacheCalc() {
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
+    setActivePreset('');
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -221,6 +251,10 @@ export default function KvCacheCalc() {
   }
 
   async function handleCalculate() {
+    if (calcAbortRef.current) calcAbortRef.current.abort()
+    const controller = new AbortController()
+    calcAbortRef.current = controller
+
     setLoading(true)
     setError(null)
     setResults([])
@@ -250,11 +284,14 @@ export default function KvCacheCalc() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: controller.signal,
           })
           const data = await res.json()
           return { label, status: res.status, data }
         }),
       )
+
+      if (controller.signal.aborted) return
 
       const failed = responses.find(r => r.data?.status === 'failed')
 
@@ -268,11 +305,12 @@ export default function KvCacheCalc() {
       }
 
       setResults(responses.map(r => ({ label: r.label, result: r.data as KvCacheCalcResult })))
-    } catch {
+    } catch (err) {
+      if (controller.signal.aborted) return
       setDebugDuration(Math.round(performance.now() - t0))
       setError('Failed to connect to the server. Please try again.')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
@@ -287,7 +325,7 @@ export default function KvCacheCalc() {
       </div>
 
       {/* Input card */}
-      <div className={styles.inputCard}>
+      <div className={`${styles.card} ${styles.inputCard}`}>
         <div className={styles.inputRow}>
           <div className={styles.field}>
             <ComboBox
@@ -314,27 +352,43 @@ export default function KvCacheCalc() {
             {loading ? 'Calculating…' : 'Calculate'}
           </button>
         </div>
+      </div>
 
-        {/* Advanced settings accordion */}
-        <button
-          type="button"
-          className={styles.advancedToggle}
-          onClick={() => setAdvancedOpen(prev => !prev)}
-          aria-expanded={advancedOpen}
-        >
-          <span className={styles.advancedToggleIcon}>{advancedOpen ? '▾' : '▸'}</span>
-          Advanced settings
-          {!advancedOpen && (
-            <span className={styles.advancedSummary}>
-              {backend}{backendVersion ? ` v${backendVersion}` : ''} · tokens: {maxNumTokens.toLocaleString()} · batch: {maxBatchSize}
-              {servingMode === 'disagg'
-                ? ` · disagg · P: TP ${prefillPar.tp}/PP ${prefillPar.pp} · D: TP ${decodePar.tp}/PP ${decodePar.pp}`
-                : ` · TP ${tpSize}${ppSize > 1 ? ` · PP ${ppSize}` : ''}${moeTpSize ? ` · MoE TP ${moeTpSize}` : ''}`}
-            </span>
-          )}
-        </button>
-        {advancedOpen && (
-          <div className={styles.advancedBody}>
+      {/* ---------- serving mode (agg / disagg) ---------- */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
+        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
+        {servingMode === 'disagg' && (
+          <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+        )}
+      </div>
+
+      {/* ---------- workload presets ---------- */}
+      {hydrated && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
+          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          {getAppConfig().workloadPresets.map(p => (
+            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- info strip ---------- */}
+      <InfoStrip>
+        Based on your configuration — Maximum Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
+        {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
+          Adjust? (edit fields below)
+        </InfoStripAction>
+      </InfoStrip>
+
+      {/* ---------- customization section ---------- */}
+      {expanded.includes('customize') && (
+        <div className={styles.card} style={{ marginBottom: 16 }}>
+          <div className={styles.advancedBody} style={{ padding: 20 }}>
             {/* Serving config */}
             <div className={styles.advancedSectionLabel}>Serving config</div>
             <div className={styles.advancedRow4}>
@@ -390,27 +444,6 @@ export default function KvCacheCalc() {
                   className={invalidMaxBatchSize ? styles.paramInputInvalid : styles.numberInput}
                 />
               </div>
-            </div>
-
-            {/* Serving mode */}
-            <div className={styles.advancedSectionLabel}>Serving mode</div>
-            <div className={styles.modeToggle}>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'agg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('agg'); setResults([]); }}
-                aria-pressed={servingMode === 'agg'}
-              >
-                Aggregated
-              </button>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'disagg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('disagg'); setResults([]); }}
-                aria-pressed={servingMode === 'disagg'}
-              >
-                Disaggregated
-              </button>
             </div>
 
             {/* Parallelism */}
@@ -499,8 +532,8 @@ export default function KvCacheCalc() {
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (

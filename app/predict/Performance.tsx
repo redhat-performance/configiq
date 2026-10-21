@@ -276,6 +276,11 @@ export default function Performance() {
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
+  const invalidPhase = (p: PerfPhaseInput) =>
+    (['tp', 'pp', 'workers', 'batch'] as const).some(k => p[k] === '' || parseInt(p[k], 10) < 1);
+  const invalidParallelism = servingMode === 'disagg'
+    ? invalidPhase(prefillCfg) || invalidPhase(decodeCfg)
+    : invalidTpSize || invalidPpSize;
   const invalidMaxSeqLen = maxSeqLenInput !== '' && parseInt(maxSeqLenInput, 10) < 1;
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && parseInt(prefillMaxSeqLenInput, 10) < 1;
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && parseInt(decodeMaxSeqLenInput, 10) < 1;
@@ -356,13 +361,17 @@ export default function Performance() {
   };
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const calcGenRef = React.useRef(0);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency' | 'prefix'>) => {
+    calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
     setTestPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setTestResult(null);
+    setIsCalculating(false);
   };
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
@@ -424,7 +433,9 @@ export default function Performance() {
 
     if (calcTrigger === 0) return; // don't auto-run on mount
 
+    const gen = calcGenRef.current;
     let cancelled = false;
+    const isStale = () => cancelled || calcGenRef.current !== gen;
     setIsCalculating(true);
     setElapsed(0);
     const elapsedTimer = setInterval(() => setElapsed(e => e + 1), 1000);
@@ -480,7 +491,7 @@ export default function Performance() {
         const response = await fetchEstimateAsInferenceResult(estimateInput, true);
 
         const result = 'result' in response ? response.result : response;
-        if (!cancelled) {
+        if (!isStale()) {
           setTestResult(result);
           setTestError(null);
           setTestErrorCode(null);
@@ -492,7 +503,7 @@ export default function Performance() {
           }
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!isStale()) {
           if (error instanceof EstimateError) {
             setTestErrorCode(error.code)
             setTestError(error.message)
@@ -502,9 +513,9 @@ export default function Performance() {
           }
         }
       } finally {
-        if (!cancelled) {
+        clearInterval(elapsedTimer);
+        if (!isStale()) {
           setIsCalculating(false);
-          clearInterval(elapsedTimer);
         }
       }
     }, 0);
@@ -1090,7 +1101,7 @@ export default function Performance() {
     },
     {
       id: 'parallel',
-      title: 'Parallelism',
+      title: servingMode === 'disagg' ? 'Parallelism — Prefill / Decode pools' : 'Parallelism',
       summary: [
         { k: 'TP', v: `${testTpSize}` },
         { k: 'PP', v: `${testPpSize}` },
@@ -1101,49 +1112,66 @@ export default function Performance() {
             ]
           : []),
       ],
-      fields: [
-        {
-          label: 'Tensor parallel size (TP)',
-          value: tpSizeInput,
-          term: 'tensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidTpSize,
-          onChange: (val: string) => handleTpSizeChange(val),
-        },
-        {
-          label: 'Pipeline parallel size (PP)',
-          value: ppSizeInput,
-          term: 'pipelineParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidPpSize,
-          onChange: (val: string) => handlePpSizeChange(val),
-        },
-        {
-          label: 'MoE expert parallel (EP)',
-          value: moeEpSizeInput,
-          term: 'moeExpertParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEpSizeChange(val),
-        },
-        {
-          label: 'MoE tensor parallel (ETP)',
-          value: moeEtpSizeInput,
-          term: 'moeTensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEtpSizeChange(val),
-        },
-        {
-          label: 'Total GPUs',
-          value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
-          readonly: true,
-        },
-      ],
+      fields: servingMode === 'disagg'
+        ? [
+            { label: 'Prefill TP', value: prefillCfg.tp, type: 'number' as const, invalid: prefillCfg.tp === '' || parseInt(prefillCfg.tp, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill PP', value: prefillCfg.pp, type: 'number' as const, invalid: prefillCfg.pp === '' || parseInt(prefillCfg.pp, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill workers', value: prefillCfg.workers, type: 'number' as const, invalid: prefillCfg.workers === '' || parseInt(prefillCfg.workers, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Prefill batch', value: prefillCfg.batch, type: 'number' as const, invalid: prefillCfg.batch === '' || parseInt(prefillCfg.batch, 10) < 1, onChange: (val: string) => setPrefillCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            {
+              label: 'Total GPUs',
+              value: `${parsePerfPhase(prefillCfg).tp * parsePerfPhase(prefillCfg).pp * parsePerfPhase(prefillCfg).workers + parsePerfPhase(decodeCfg).tp * parsePerfPhase(decodeCfg).pp * parsePerfPhase(decodeCfg).workers}`,
+              readonly: true,
+            },
+            { label: 'Decode TP', value: decodeCfg.tp, type: 'number' as const, invalid: decodeCfg.tp === '' || parseInt(decodeCfg.tp, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode PP', value: decodeCfg.pp, type: 'number' as const, invalid: decodeCfg.pp === '' || parseInt(decodeCfg.pp, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, invalid: decodeCfg.workers === '' || parseInt(decodeCfg.workers, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })) },
+            { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, invalid: decodeCfg.batch === '' || parseInt(decodeCfg.batch, 10) < 1, onChange: (val: string) => setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })) },
+            { label: '', value: '', readonly: true, spacer: true },
+          ]
+        : [
+            {
+              label: 'Tensor parallel size (TP)',
+              value: tpSizeInput,
+              term: 'tensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidTpSize,
+              onChange: (val: string) => handleTpSizeChange(val),
+            },
+            {
+              label: 'Pipeline parallel size (PP)',
+              value: ppSizeInput,
+              term: 'pipelineParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidPpSize,
+              onChange: (val: string) => handlePpSizeChange(val),
+            },
+            {
+              label: 'MoE expert parallel (EP)',
+              value: moeEpSizeInput,
+              term: 'moeExpertParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEpSizeChange(val),
+            },
+            {
+              label: 'MoE tensor parallel (ETP)',
+              value: moeEtpSizeInput,
+              term: 'moeTensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEtpSizeChange(val),
+            },
+            {
+              label: 'Total GPUs',
+              value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
+              readonly: true,
+            },
+          ],
     },
     {
       id: 'serving',
@@ -1294,34 +1322,27 @@ export default function Performance() {
         </div>
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <Button
-            variant="primary"
+          <button
+            className={styles.calcBtn}
             onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
+            disabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
-          </Button>
+          </button>
         </div>
 
       </div>
 
       {/* ---------- serving mode (agg / disagg) ---------- */}
-      <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
-          <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
-          {servingMode === 'disagg' && (
-            <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
-          )}
-        </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
+        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
         {servingMode === 'disagg' && (
-          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-            <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
-            <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
-          </div>
+          <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
         )}
       </div>
+      
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (
@@ -1337,8 +1358,8 @@ export default function Performance() {
       )}
 
       <InfoStrip data-tour="warning">
-        Based on your configuration — ISL {testISL}, OSL {testOSL}, {testKVCachePrecision} KV cache,
-        {' '}{testConcurrentUsers} concurrent users.
+        Based on your configuration — ISL: {testISL}, OSL: {testOSL}, {testKVCachePrecision} KV cache,
+        {' '}{testConcurrentUsers} Concurrent Users.
         {' '}<InfoStripAction onClick={handleCustomizeClick}>Adjust? (see &lsquo;Want to change assumptions?&rsquo; below)</InfoStripAction>
       </InfoStrip>
 
@@ -2047,110 +2068,131 @@ export default function Performance() {
         transition: 'grid-template-rows 250ms ease-out'
       }}>
         <div style={{ overflow: 'hidden' }}>
-          <p className={styles.assumptionsSub} style={{ marginBottom: 12 }}>
-            Every number above comes from these. Open a section to tune it — closed sections show their current values.
-          </p>
+          <div className={styles.card} style={{ padding: 20, marginBottom: 16 }}>
+          {(() => {
+            const allSections = buildAccordionSections();
+            const alwaysOpenIds = new Set(['workload', 'context-window', 'memory', 'parallel']);
+            const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
+            const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
-          <Accordion asDefinitionList={false}>
-            {buildAccordionSections().map((sec) => (
-              <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
-                <AccordionToggle
-                  id={`acc-${sec.id}`}
-                  onClick={() => toggleAcc(sec.id)}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%' }}>
-                    <span className={styles.cardTitle} style={{ fontSize: 16 }}>{sec.title}</span>
-                    {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
-                    {'hasOverride' in sec && sec.hasOverride && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          sec.onOverrideToggle?.();
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); sec.onOverrideToggle?.(); } }}
-                        style={{ fontSize: '13px', marginLeft: 'auto', padding: '4px 8px', color: 'var(--gc-link)', cursor: 'pointer' }}
-                      >
+            const renderField = (f: any) => {
+              if (f.spacer) return <div key="spacer" />;
+              return (
+              <div key={f.label} className={styles.accField}>
+                <label className={styles.accFieldLabel}>
+                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                </label>
+                {f.readonly ? (
+                  <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
+                ) : f.type === 'select' ? (
+                  <>
+                    <FormSelect
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    >
+                      {(f.options || [f.value]).map((o: any) => {
+                        const optValue = typeof o === 'string' ? o : o.value;
+                        const optLabel = typeof o === 'string' ? o : o.label;
+                        return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
+                      })}
+                    </FormSelect>
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
+                ) : f.type === 'range' ? (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
+                        {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={f.min}
+                      max={f.max}
+                      step={f.step}
+                      value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
+                      onChange={(e) => f.onChange?.(Number(e.target.value))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                ) : f.type === 'number' ? (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    type="number"
+                    validated={f.invalid ? 'error' : 'default'}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                ) : (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                )}
+              </div>
+            );
+            };
+
+            return (
+              <>
+                {/* Always-visible sections */}
+                {openSections.map((sec, idx) => (
+                  <div key={sec.id}>
+                    <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', ...(idx === 0 ? { marginTop: 4 } : {}) }}>
+                      {sec.title}
+                      {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                      {'hasOverride' in sec && sec.hasOverride && (
+                        <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()} style={{ fontSize: '13px' }}>
                         {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
-                      </span>
-                    )}
-                    {!expanded.includes(sec.id) && (
-                      <span className={styles.accSummary}>
-                        {sec.summary.map((p) => (
-                          <span key={p.k}><span className="k">{p.k}</span> {p.v}</span>
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                </AccordionToggle>
-                <AccordionContent>
-                  <div className={styles.accGrid}>
-                    {sec.fields.map((f: any) => (
-                      <div key={f.label} className={styles.accField}>
-                        <label className={styles.accFieldLabel}>
-                          {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
-                        </label>
-                        {f.readonly ? (
-                          <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
-                        ) : f.type === 'select' ? (
-                          <>
-                            <FormSelect
-                              value={String(f.value)}
-                              aria-label={f.label}
-                              onChange={(_, val) => f.onChange?.(val)}
-                            >
-                              {(f.options || [f.value]).map((o: any) => {
-                                const optValue = typeof o === 'string' ? o : o.value;
-                                const optLabel = typeof o === 'string' ? o : o.label;
-                                return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
-                              })}
-                            </FormSelect>
-                            {f.help && (
-                              <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
-                                {f.help}
+                        </Button>
+                      )}
+                    </div>
+                    <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
+                      {sec.fields.map(renderField)}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Collapsible sections */}
+                {accordionSections.length > 0 && (
+                  <Accordion asDefinitionList={false} style={{ marginTop: 16 }}>
+                    {accordionSections.map((sec) => (
+                      <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
+                        <AccordionToggle
+                          id={`acc-${sec.id}`}
+                          onClick={() => toggleAcc(sec.id)}
+                        >
+                          <span style={{ fontWeight: 600 }}>{sec.title}</span>
+                        </AccordionToggle>
+                        <AccordionContent>
+                          <div style={{ paddingTop: 12 }}>
+                            {'hasOverride' in sec && sec.hasOverride && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                                {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                                <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()}>
+                                  {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                                </Button>
                               </div>
                             )}
-                          </>
-                        ) : f.type === 'range' ? (
-                          <div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                              <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
-                                {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
-                              </span>
+                            <div className={styles.accGrid}>
+                              {sec.fields.map(renderField)}
                             </div>
-                            <input
-                              type="range"
-                              min={f.min}
-                              max={f.max}
-                              step={f.step}
-                              value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
-                              onChange={(e) => f.onChange?.(Number(e.target.value))}
-                              style={{ width: '100%' }}
-                            />
                           </div>
-                        ) : f.type === 'number' ? (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            type="number"
-                            validated={f.invalid ? 'error' : 'default'}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        ) : (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        )}
-                      </div>
+                        </AccordionContent>
+                      </AccordionItem>
                     ))}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
+                  </Accordion>
+                )}
+              </>
+            );
+          })()}
+          </div>
         </div>
       </div>
 

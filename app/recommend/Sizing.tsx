@@ -245,7 +245,7 @@ export default function Sizing() {
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
+  const { isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing, reset: resetRecommend } = useRecommend();
   const [debugOpen, setDebugOpen] = React.useState(false);
 
   // Additional constraints accordion
@@ -373,6 +373,7 @@ export default function Sizing() {
   const [activePreset, setActivePreset] = React.useState<string>('default');
 
   const applyPreset = (p: WorkloadPreset) => {
+    resetRecommend();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
     setTtft(p.ttft); setTtftInput(String(p.ttft));
@@ -481,10 +482,10 @@ export default function Sizing() {
       )}
 
       <InfoStrip>
-        Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {(() => {
+        Based on your configuration — ISL: {isl}, OSL: {osl}, Maximum TTFT: {(() => {
           const sec = (ttft / 1000).toFixed(3);
           return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
+        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} Concurrent {targetConcurrency === 1 ? 'User' : 'Users'}.
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
