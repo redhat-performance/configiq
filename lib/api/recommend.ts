@@ -343,7 +343,9 @@ export async function callRecommend(
   // output_throughput_tok_s_per_gpu * used_gpus equals output_throughput_tok_s.
   // Do not multiply them by replicas again. The capacity calculator divides
   // this cluster value by replicas to obtain one scalable replica's capacity.
-  const clusterConcurrency = Math.round((best.concurrency as number) ?? 0)
+  const clusterConcurrency = request.target_concurrency != null
+    ? Math.round(request.target_concurrency)
+    : Math.round((best.concurrency as number) ?? 0)
   const clusterTokensPerSecond = (best.tokens_per_second as number) ?? 0
   const ttftLatencyMs = (best.ttft as number) ?? 0
   const tpotMs = (best.tpot as number) ?? 0

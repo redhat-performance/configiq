@@ -230,7 +230,7 @@ export async function fetchEstimateAsInferenceResult(
   }
   const requestLatency = hasTiming ? ttft + tpot * input.osl : 0
   const throughput = hasTiming && input.osl > 0 && requestLatency > 0 ? (input.osl * 1000) / requestLatency : 0
-  const concurrency = Math.max(0, Math.floor(maxNumSeqs))
+  const concurrency = input.batch_size
 
   const result: InferenceConfigResult = {
     mode: isDisagg ? 'disagg' : 'agg',

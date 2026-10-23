@@ -485,6 +485,30 @@ def _max_candidate_gpus() -> int:
     return value if value > 0 else _DEFAULT_MAX_CANDIDATE_GPUS
 
 
+def _goodput_constraint(req: "RecommendRequest") -> dict[str, float]:
+    """Derive a min_goodput_rps constraint from the request.
+
+    When the user specifies target_request_rate, use it directly.
+    When the user specifies target_concurrency instead, convert to a minimum
+    request rate via Little's law:  rate = concurrency / request_latency.
+    The request latency is bounded by the SLA (request_latency, or TTFT + TPOT × OSL).
+    This ensures the optimizer finds a config with enough throughput to sustain
+    the requested concurrency at the given latency targets.
+    """
+    if req.target_request_rate is not None:
+        return {"min_goodput_rps": req.target_request_rate}
+    if req.target_concurrency is not None and req.target_concurrency > 0:
+        if req.request_latency is not None:
+            latency_s = req.request_latency / 1000.0
+        else:
+            latency_s = (req.ttft + req.tpot * req.osl) / 1000.0
+        if latency_s > 0:
+            min_goodput_rps = req.target_concurrency / latency_s
+            print(min_goodput_rps)
+            return {"min_goodput_rps": min_goodput_rps}
+    return {}
+
+
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
@@ -505,8 +529,12 @@ def _aisimulate_recommendation_config(
     modes = ["aggregated"] if window_max_gpus == 1 else ["aggregated", "disaggregated"]
     max_trials = 1 if window_max_gpus == 1 else 4 if req.max_candidate_gpus is not None else 8
     parallelism = 1 if window_max_gpus == 1 else 2 if req.max_candidate_gpus is not None else 4
-    candidate_timeout_seconds = 15 if req.max_candidate_gpus is not None else 30
     concurrency = int(req.target_concurrency or 1)
+    num_requests = max(concurrency * 4, 4)
+    # Scale the per-candidate timeout with the workload size so high-concurrency
+    # simulations have enough wall-clock time to finish all requests.
+    base_timeout = 15 if req.max_candidate_gpus is not None else 30
+    candidate_timeout_seconds = max(base_timeout, num_requests // 4)
     load = (
         {"type": "constant_rate", "requests_per_second": req.target_request_rate}
         if req.target_request_rate is not None
@@ -535,7 +563,7 @@ def _aisimulate_recommendation_config(
                 "cached_prefix_tokens": req.prefix,
             },
             "load": load,
-            "stop": {"requests": max(4, min(32, concurrency * 4))},
+            "stop": {"requests": num_requests},
         },
         "engine": {
             "model": model_path or req.model_path,
@@ -559,7 +587,7 @@ def _aisimulate_recommendation_config(
             "constraints": {
                 "min_candidate_gpus": req.min_candidate_gpus,
                 "max_candidate_gpus": window_max_gpus,
-                **({"min_goodput_rps": req.target_request_rate} if req.target_request_rate is not None else {}),
+                **(_goodput_constraint(req)),
             },
         },
         "optimizer": {
@@ -668,11 +696,16 @@ def _metric(metrics: dict[str, Any], *names: str) -> float | None:
 
 
 def _recommendation_concurrency(metrics: dict[str, Any], req: RecommendRequest) -> int | None:
-    """Return reported concurrency, or derive it from Little's law.
+    """Return the user's target concurrency when provided, otherwise fall back
+    to the benchmark's reported or derived concurrency.
 
-    The engine runner reports aggregate request throughput and latency, but does
-    not currently publish the legacy ``concurrency`` field used by this API.
+    The user's ``target_concurrency`` takes priority so the recommendation
+    result reflects the load the user asked about, not the load at which the
+    closest benchmark happened to run.
     """
+    if req.target_concurrency is not None:
+        return round(req.target_concurrency)
+
     reported = _coerce_int(metrics.get("concurrency") or metrics.get("concurrent_users"))
     if reported is not None:
         return reported
@@ -682,9 +715,7 @@ def _recommendation_concurrency(metrics: dict[str, Any], req: RecommendRequest) 
     if request_rate is not None and request_latency is not None:
         return max(0, round(request_rate * request_latency / 1000.0))
 
-    # This is only a last-resort compatibility fallback when a runner provides
-    # neither the legacy field nor enough measurements for Little's law.
-    return round(req.target_concurrency) if req.target_concurrency is not None else None
+    return None
 
 
 def _per_gpu_throughput(metrics: dict[str, Any], total_gpus: int | None) -> float | None:
@@ -1168,16 +1199,18 @@ def post_recommend(
                 )
         else:
             if "config" in includes:
+                effective_concurrency = int(req.target_concurrency or cfg.bs or 1)
                 cfg.serving_config = _build_serving_config(
                     req.backend, cfg.tp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, cfg.gemm, req.prefix,
+                    effective_concurrency, cfg.gemm, req.prefix,
                     max_seq_len=req.max_seq_len, backend_version=cfg.backend_version,
                 )
             if "memory" in includes:
+                effective_concurrency = int(req.target_concurrency or cfg.bs or 1)
                 cfg.memory_breakdown = _build_memory_breakdown(
                     req.model_path, req.system, req.backend, cfg.backend_version,
                     cfg.tp or 1, cfg.pp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, max_seq_len=req.max_seq_len,
+                    effective_concurrency, max_seq_len=req.max_seq_len,
                 )
                 if cfg.memory is None:
                     cfg.memory = _memory_breakdown_gb(cfg.memory_breakdown)
