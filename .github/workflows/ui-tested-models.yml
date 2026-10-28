@@ -3,7 +3,8 @@ name: Tested-model UI regression
 on:
   workflow_dispatch:
   schedule:
-    - cron: '23 6 * * *'
+    - cron: '0 0 * * 6'
+      timezone: 'America/New_York'
 
 permissions:
   contents: read
