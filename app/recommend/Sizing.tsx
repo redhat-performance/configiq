@@ -24,6 +24,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -317,6 +318,7 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
+    setActiveConcurrencyPreset('');
   };
 
   const handleLatencyChange = (raw: string) => {
@@ -381,6 +383,7 @@ export default function Sizing() {
     setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
     setPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setActiveConcurrencyPreset('');
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
 
@@ -390,6 +393,17 @@ export default function Sizing() {
     setMaxSeqLen(null); setMaxSeqLenInput('');
     setPrefillMaxSeqLen(null); setPrefillMaxSeqLenInput('');
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
+  };
+
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
   };
 
   const handleCalculate = () => {
@@ -475,6 +489,18 @@ export default function Sizing() {
           <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}

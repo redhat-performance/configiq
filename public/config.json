@@ -30,5 +30,11 @@
     { "key": "agentic-coding", "label": "Agentic / Coding",  "isl": 32768, "osl":  2048, "ttft":  3000, "tpot":  50, "concurrency":  16, "prefix":  8192 },
     { "key": "batch",          "label": "Batch / offline",   "isl": 65536, "osl":  4096, "ttft": 10000, "tpot": 100, "concurrency": 256, "prefix":     0 },
     { "key": "voice",          "label": "Voice / real-time", "isl":   512, "osl":   128, "ttft":   200, "tpot":  15, "concurrency": 128, "prefix":     0 }
+  ],
+  "concurrencyPresets": [
+    { "key": "xsmall",    "label": "X-Small (50)",     "concurrency":    50 },
+    { "key": "small", "label": "Small (100)", "concurrency":   100 },
+    { "key": "medium",    "label": "Medium (500)",   "concurrency":  500 },
+    { "key": "large",   "label": "Large (1000)",  "concurrency":  1000 }
   ]
 }

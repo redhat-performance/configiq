@@ -9,6 +9,7 @@ import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -124,6 +125,7 @@ export default function KvCacheCalc() {
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
     setActivePreset(p.key)
+    setActiveConcurrencyPreset('')
     setResults([])
   }
 
@@ -135,7 +137,19 @@ export default function KvCacheCalc() {
     setMaxNumTokens(8192); setMaxNumTokensInput('8192')
     setMaxBatchSize(128); setMaxBatchSizeInput('128')
     setActivePreset('default')
+    setActiveConcurrencyPreset('')
     setResults([])
+  }
+
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('')
+      return
+    }
+    setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
+    setActiveConcurrencyPreset(p.key)
   }
 
   // Use the selected backend's catalog defaults for the memory controls. The
@@ -180,6 +194,7 @@ export default function KvCacheCalc() {
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
     setActivePreset('');
+    setActiveConcurrencyPreset('');
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -371,6 +386,18 @@ export default function KvCacheCalc() {
           <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}

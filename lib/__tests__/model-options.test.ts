@@ -18,6 +18,7 @@ const BASE: AppConfig = {
   suggestedModelNames: [],
   modelRequestUrl: '',
   workloadPresets: [],
+  concurrencyPresets: [],
 }
 
 const CATALOG_MODELS = ['org-a/catalog-model', 'org-a/tested-in-catalog', 'plain-model']

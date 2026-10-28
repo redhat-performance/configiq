@@ -39,6 +39,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import Link from 'next/link';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
@@ -315,6 +316,7 @@ export default function Performance() {
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestConcurrentUsers(n);
+    setActiveConcurrencyPreset('');
   };
 
   const handleTpSizeChange = (raw: string) => {
@@ -370,11 +372,23 @@ export default function Performance() {
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
     setTestPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setActiveConcurrencyPreset('');
     setTestResult(null);
     setIsCalculating(false);
   };
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
+
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
+  };
 
   const [isCalculating, setIsCalculating] = React.useState(false);
 
@@ -737,6 +751,8 @@ export default function Performance() {
   };
 
   // Build the /api/predict request body from current form state and GPU-specific values
+  const modelNeedsHfConfig = needsHfConfig(model, catalogModels);
+  const currentGpuVramGb = currentCatalogGpu?.vramGb ?? null;
   const buildEstimateRequestBody = React.useCallback(() => {
     const spec = modelSpecs.get(model);
     const isMoe = detectMoe(spec, hfConfig);
@@ -756,7 +772,7 @@ export default function Performance() {
       batch_size: testConcurrentUsers,
       tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
       pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
-      vram_gb: currentCatalogGpu?.vramGb ?? null,
+      vram_gb: currentGpuVramGb,
       ...(testPrefix > 0 && { prefix: testPrefix }),
       ...(backendVersion && { backend_version: backendVersion }),
       ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
@@ -766,7 +782,7 @@ export default function Performance() {
       ...(testWeightPrecision === 'NVFP4' && { gemm_quant_mode: 'nvfp4' }),
       ...(testKVCachePrecision === 'FP8' && { kvcache_quant_mode: 'fp8' }),
       ...(testKVCachePrecision === 'NVFP4' && { kvcache_quant_mode: 'nvfp4' }),
-      hf_model_config: needsHfConfig(model, catalogModels)
+      hf_model_config: modelNeedsHfConfig
         ? (hfConfig as Record<string, unknown> | null)
         : null,
       moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
@@ -784,7 +800,7 @@ export default function Performance() {
         decode_batch_size: parsePerfPhase(decodeCfg).batch,
       })
     };
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize]);
+  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentGpuVramGb, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, modelNeedsHfConfig, testMoeQuantMode, testMoeEpSize, testMoeEtpSize]);
 
   // Copy API request body to clipboard
   const handleCopyAPIRequest = async () => {
@@ -1351,6 +1367,18 @@ export default function Performance() {
           <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}
