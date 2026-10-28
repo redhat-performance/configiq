@@ -1540,7 +1540,7 @@ export default function Performance() {
             front={
               <>
                 <span className={styles.tileLabel}><MemoryIcon /> Weight memory <Term k="weightMemory" /></span>
-                <span className={styles.tileValue}>{Math.round(weight)}<span className={styles.tileUnit}>GB</span></span>
+                <span className={styles.tileValue} data-testid="predict-weight-memory">{Math.round(weight)}<span className={styles.tileUnit}>GB</span></span>
                 <span className={styles.tileSub}>
                   {testResult ? (
                     <>{model.split('/')[1] || model} · {actualWeightPrecision}</>
@@ -1613,7 +1613,7 @@ export default function Performance() {
             front={
               <>
                 <span className={styles.tileLabel}><LayerGroupIcon /> KV cache / req <Term k="kvPerReq" /></span>
-                <span className={styles.tileValue}>{Math.round(kv)}<span className={styles.tileUnit}>MB</span></span>
+                <span className={styles.tileValue} data-testid="predict-kv-per-request">{Math.round(kv)}<span className={styles.tileUnit}>MB</span></span>
                 {testResult ? (
                   <span className={styles.tileSub}>
                     {testKVCachePrecision} · {testISL + testOSL} tokens/req · {testConcurrentUsers} users
@@ -1758,7 +1758,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>TTFT <Term k="ttft" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-ttft" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.ttft_ms.toFixed(1)} ms
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
@@ -1767,7 +1767,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>Throughput <Term k="throughput" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-throughput" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.throughput_tokens_per_sec.toFixed(1)} tok/s
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
@@ -1776,7 +1776,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>TPOT <Term k="tpot" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-tpot" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.tpot_ms.toFixed(1)} ms
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>

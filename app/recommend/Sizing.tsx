@@ -669,7 +669,7 @@ export default function Sizing() {
                       {result.mode === 'disagg' ? 'disagg' : 'agg'}
                     </Label>
                   </span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-gpus">
                     {gpuCount}<span className={styles.tileUnit}>× {currentGpuOption.label}</span>
                   </span>
                   <span className={styles.tileSub}>
@@ -731,7 +731,7 @@ export default function Sizing() {
               front={
                 <>
                   <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-ttft">
                     {ttftMs}<span className={styles.tileUnit}>ms</span>
                   </span>
                   <span className={styles.tileSub}>
@@ -761,7 +761,7 @@ export default function Sizing() {
               front={
                 <>
                   <span className={styles.tileLabel}><TachometerAltIcon /> Throughput</span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-throughput">
                     {tpsVal}<span className={styles.tileUnit}>tok/s</span>
                   </span>
                   <span className={styles.tileSub}>
@@ -787,7 +787,7 @@ export default function Sizing() {
               front={
                 <>
                   <span className={styles.tileLabel}><MemoryIcon /> Peak mem / GPU</span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-peak-memory">
                     {memVal}<span className={styles.tileUnit}>GB</span>
                   </span>
                   <span className={styles.tileSub}>

@@ -739,7 +739,7 @@ interface TileCardProps {
   backContent: React.ReactNode
 }
 
-function TileCard({ dark, label, value, sub, flipped, onFlip, backContent }: TileCardProps) {
+function TileCard({ id, dark, label, value, sub, flipped, onFlip, backContent }: TileCardProps) {
   return (
     <div
       className={`${styles.tileCard} ${dark ? styles.tileDark : ''}`}
@@ -757,7 +757,7 @@ function TileCard({ dark, label, value, sub, flipped, onFlip, backContent }: Til
       {!flipped ? (
         <>
           <div className={styles.tileLabel}>{label}</div>
-          <div className={styles.tileValue}>{value}</div>
+          <div className={styles.tileValue} data-testid={`kv-${id}-value`}>{value}</div>
           <div className={styles.tileSub}>{sub}</div>
           <span className={styles.seeMath}>&#8635; details</span>
         </>
