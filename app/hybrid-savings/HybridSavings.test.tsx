@@ -522,7 +522,7 @@ describe('Hybrid page composition', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies all shared request settings for $label without changing monthly demand or billing', async preset => {
+  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies ISL/OSL for $label without changing monthly demand, billing, or SLA settings', async preset => {
     await render(); await click('Adjust')
     await editNumber('hybrid-active-hours', '200')
     await editNumber('hybrid-peak', '2')
@@ -530,9 +530,12 @@ describe('Hybrid page composition', () => {
     await click(preset.label)
     for (const [id, value] of [
       ['hybrid-average-input', preset.isl], ['hybrid-average-output', preset.osl],
-      ['hybrid-ttft', preset.ttft], ['hybrid-tpot', preset.tpot],
-      ['hybrid-concurrency', preset.concurrency], ['hybrid-prefix', preset.prefix],
     ] as const) expect(host.querySelector<HTMLInputElement>('#' + id)!.value).toBe(String(value))
+    // Preset no longer overrides SLA / concurrency / prefix — they stay at initial defaults
+    expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('1000')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-tpot')!.value).toBe('30')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('1')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe('0')
     expect(host.querySelector<HTMLInputElement>('#hybrid-active-hours')!.value).toBe('200')
     expect(host.querySelector<HTMLInputElement>('#hybrid-peak')!.value).toBe('2')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('always-on')
@@ -540,12 +543,12 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-output-tokens')!.value).toBe('500,000,000')
     await click('Calculate')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({
-      isl: preset.isl, osl: preset.osl, ttft: preset.ttft, tpot: preset.tpot,
-      target_concurrency: preset.concurrency, prefix: preset.prefix,
+      isl: preset.isl, osl: preset.osl, ttft: 1000, tpot: 30,
+      target_concurrency: 1,
     })
     await click('Data and assumptions')
     const reference = [...host.querySelectorAll('dt')].find(term => term.textContent === 'Capacity reference')!
-    expect(reference.nextElementSibling!.textContent).toBe(`${preset.concurrency.toLocaleString('en-US')} concurrent ${preset.concurrency === 1 ? 'request' : 'requests'}`)
+    expect(reference.nextElementSibling!.textContent).toBe('1 concurrent request')
     expect(host.textContent).toContain('Monthly cost breakdown')
   })
 

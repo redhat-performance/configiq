@@ -25,11 +25,14 @@
   ],
   "modelRequestUrl": "https://github.com/redhat-performance/configiq/issues/new?labels=model-request&title=[Model+Request]+",
   "workloadPresets": [
-    { "key": "chat",           "label": "Interactive chat",  "isl":  8192, "osl":   512, "ttft":   800, "tpot":  30, "concurrency":  64, "prefix":  2048 },
-    { "key": "rag",            "label": "RAG / Search",      "isl": 16384, "osl":   512, "ttft":  1500, "tpot":  40, "concurrency":  32, "prefix":  4096 },
-    { "key": "agentic-coding", "label": "Agentic / Coding",  "isl": 32768, "osl":  2048, "ttft":  3000, "tpot":  50, "concurrency":  16, "prefix":  8192 },
-    { "key": "batch",          "label": "Batch / offline",   "isl": 65536, "osl":  4096, "ttft": 10000, "tpot": 100, "concurrency": 256, "prefix":     0 },
-    { "key": "voice",          "label": "Voice / real-time", "isl":   512, "osl":   128, "ttft":   200, "tpot":  15, "concurrency": 128, "prefix":     0 }
+    { "key": "interactive-chat",           "label": "Interactive Chat",  "isl":  4000, "osl":   300},
+    { "key": "rag",            "label": "RAG / Search",      "isl": 16384, "osl":   512},
+    { "key": "code-generation", "label": "Coding Gen Agent",  "isl": 160000, "osl":  425},
+    { "key": "deep-research", "label": "Deep Research Agent",  "isl": 45000, "osl":  300},
+    { "key": "batch-summarization-rag",          "label": "Batch Summarization",   "isl": 15000, "osl":  500},
+    { "key": "batch-synthetic-data-generation",          "label": "Synthetic Data Gen",   "isl": 500, "osl":  4000},
+    { "key": "reasoning",          "label": "Deep Thinking",   "isl": 1000, "osl":  8000},
+    { "key": "voice",          "label": "Voice / Real-time", "isl":   512, "osl":   128}
   ],
   "concurrencyPresets": [
     { "key": "xsmall",    "label": "X-Small (50)",     "concurrency":    50 },

@@ -365,14 +365,11 @@ export default function Performance() {
   const [activePreset, setActivePreset] = React.useState<string>('default');
   const calcGenRef = React.useRef(0);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency' | 'prefix'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
-    setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
-    setTestPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
-    setActiveConcurrencyPreset('');
     setTestResult(null);
     setIsCalculating(false);
   };
@@ -2221,6 +2218,7 @@ export default function Performance() {
             );
           })()}
           </div>
+\2
         </div>
       </div>
 

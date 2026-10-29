@@ -116,16 +116,14 @@ export default function KvCacheCalc() {
 
   const [activePreset, setActivePreset] = React.useState<string>('default')
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     if (calcAbortRef.current) {
       setLoading(false)
       calcAbortRef.current.abort()
     }
     const tokens = p.isl + p.osl
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
-    setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
     setActivePreset(p.key)
-    setActiveConcurrencyPreset('')
     setResults([])
   }
 

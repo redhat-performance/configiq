@@ -374,16 +374,11 @@ export default function Sizing() {
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
 
-  const applyPreset = (p: WorkloadPreset) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     resetRecommend();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
-    setTtft(p.ttft); setTtftInput(String(p.ttft));
-    setTpot(p.tpot); setTpotInput(String(p.tpot));
-    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
-    setActiveConcurrencyPreset('');
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
 
