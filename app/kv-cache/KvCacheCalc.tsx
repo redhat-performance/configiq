@@ -85,7 +85,7 @@ export default function KvCacheCalc() {
   }, [hydrated, settingsDefaultModel, inferenceBackend, settingsBackendVersion])
 
   const [maxNumTokens, setMaxNumTokens] = React.useState(8192)
-  const [maxBatchSize, setMaxBatchSize] = React.useState(128)
+  const [maxBatchSize, setMaxBatchSize] = React.useState(100)
   const [tpSize, setTpSize] = React.useState(1)
   const [ppSize, setPpSize] = React.useState(1)
   const [moeTpSize, setMoeTpSize] = React.useState('')
@@ -109,7 +109,7 @@ export default function KvCacheCalc() {
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null)
 
   const [maxNumTokensInput, setMaxNumTokensInput] = React.useState('8192')
-  const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('128')
+  const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('100')
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
@@ -133,13 +133,13 @@ export default function KvCacheCalc() {
       calcAbortRef.current.abort()
     }
     setMaxNumTokens(8192); setMaxNumTokensInput('8192')
-    setMaxBatchSize(128); setMaxBatchSizeInput('128')
+    setMaxBatchSize(100); setMaxBatchSizeInput('100')
     setActivePreset('default')
-    setActiveConcurrencyPreset('')
+    setActiveConcurrencyPreset('small')
     setResults([])
   }
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('small')
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     if (activeConcurrencyPreset === p.key) {
@@ -367,16 +367,6 @@ export default function KvCacheCalc() {
         </div>
       </div>
 
-      {/* ---------- serving mode (agg / disagg) ---------- */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-        <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
-        <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
-        {servingMode === 'disagg' && (
-          <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
-        )}
-      </div>
-
       {/* ---------- workload presets ---------- */}
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -473,6 +463,17 @@ export default function KvCacheCalc() {
 
             {/* Parallelism */}
             <div className={styles.advancedSectionLabel}>Parallelism</div>
+
+            {/* Serving mode (agg / disagg) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+              <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
+              <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
+              {servingMode === 'disagg' && (
+                <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+              )}
+            </div>
+
             {servingMode === 'agg' ? (
               <div className={styles.advancedRow4}>
                 <div className={styles.field}>

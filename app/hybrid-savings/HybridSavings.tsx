@@ -501,8 +501,8 @@ export default function HybridSavings() {
               <p className={styles.advancedLead}>Change these values only when you have workload measurements or a clear response target.</p>
               <h3 className={styles.advancedSectionLabel}>Request shape and targets</h3>
               <div className={styles.workloadGrid}>
-                <NumberField id="hybrid-average-input" label="Average input tokens per request" value={averageInputTokens} min={1} onChange={setAverageInputTokens} />
-                <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={setAverageOutputTokens} />
+                <NumberField id="hybrid-average-input" label="Average input tokens per request" value={averageInputTokens} min={1} onChange={v => { setAverageInputTokens(v); setProfileId('') }} />
+                <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={v => { setAverageOutputTokens(v); setProfileId('') }} />
                 <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} onChange={setTargetTtftMs} />
                 <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} onChange={setTargetTpotMs} />
                 <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={setTargetConcurrency} />

@@ -238,7 +238,7 @@ export default function Sizing() {
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [ttft, setTtft] = React.useState(1000);
   const [tpot, setTpot] = React.useState(30);
-  const [targetConcurrency, setTargetConcurrency] = React.useState(1);
+  const [targetConcurrency, setTargetConcurrency] = React.useState(100);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
 
@@ -259,7 +259,7 @@ export default function Sizing() {
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [ttftInput, setTtftInput] = React.useState('1000');
   const [tpotInput, setTpotInput] = React.useState('30');
-  const [concurrencyInput, setConcurrencyInput] = React.useState('1');
+  const [concurrencyInput, setConcurrencyInput] = React.useState('100');
   const [latencyInput, setLatencyInput] = React.useState('');
   const [prefixInput, setPrefixInput] = React.useState('0');
 
@@ -290,6 +290,7 @@ export default function Sizing() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setIsl(n);
+    setActivePreset('');
   };
 
   const handleOslChange = (raw: string) => {
@@ -297,6 +298,7 @@ export default function Sizing() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setOsl(n);
+    setActivePreset('');
   };
 
   const handleTtftChange = (raw: string) => {
@@ -390,7 +392,7 @@ export default function Sizing() {
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
   };
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('small');
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     if (activeConcurrencyPreset === p.key) {
