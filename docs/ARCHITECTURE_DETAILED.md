@@ -94,7 +94,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/predict` | POST | AISimulators `/predict` |
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
-| `/api/catalog` | GET | Combined AISimulators systems, models, and backends |
+| `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |
 | `/api/costings/models` | GET | aicostings hosted-model pricing |

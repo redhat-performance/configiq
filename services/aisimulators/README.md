@@ -107,14 +107,15 @@ scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
 disaggregates every request. BLIS `/recommend` always searches aggregate TP
-candidates. When a `fabric` is supplied, it also searches P/D TP and worker-count
-combinations, with one node per pool and DP=PP=1. Without a fabric, the API
-reports that P/D candidates were not searched.
+candidates. It defaults to `roce-200g` when the `fabric` field is omitted and
+also searches bounded P/D TP and worker-count combinations, with one node per
+pool and DP=PP=1. Send `fabric: null` to request aggregate-only candidates; the
+response then warns that P/D candidates were not searched.
 
 BLIS recommendation requires a concurrency workload. Its candidate ceiling is the same
 `AISIMULATORS_MAX_CANDIDATE_GPUS` service setting used by AISimulate, further
-limited by one node without a fabric or two nodes (one per P/D pool) with a
-fabric. A total search budget bounds the individual simulations. The service
+limited by one node for aggregate-only search or two nodes (one per P/D pool)
+when a fabric is active. A total search budget bounds the individual simulations. The service
 caps that budget at 60 seconds; the web
 gateway may lower it further to leave room before its request deadline. The
 response reports the configured, hardware, and effective ceilings plus the

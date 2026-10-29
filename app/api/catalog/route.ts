@@ -1,7 +1,7 @@
 // GET /api/catalog
 // Same-origin proxy for the AISimulators catalog. Fetches /systems, /models,
-// and /backends server-side via AISIMULATORS_GATEWAY_URL and combines their
-// raw shapes for useCatalog.
+// /backends, and /networks server-side via AISIMULATORS_GATEWAY_URL and combines
+// their raw shapes for useCatalog.
 //
 // The browser must call this route rather than AISimulators directly, so the
 // per-host gateway (host.containers.internal on each deployment) is resolved
@@ -88,8 +88,8 @@ export async function GET(request: Request) {
     // A shared ConfigIQ deployment can expose the same AISimulators service
     // through its combined same-origin /api/catalog proxy. This is useful for
     // local consumers when the standalone service hostname is being migrated.
-    // Direct service deployments continue to use /systems, /models, and
-    // /backends below.
+    // Direct service deployments continue to use /systems, /models, /backends,
+    // and /networks below.
     const combinedCatalogUrl = /\/api\/?$/.test(baseUrl)
       ? `${baseUrl.replace(/\/$/, '')}/catalog`
       : null
