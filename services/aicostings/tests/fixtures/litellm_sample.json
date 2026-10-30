@@ -1,0 +1,17 @@
+{
+  "sample_spec": {"mode": "chat", "litellm_provider": "example", "input_cost_per_token": 0, "output_cost_per_token": 0},
+  "llamagate/qwen3-8b": {
+    "mode": "chat", "litellm_provider": "llamagate", "max_input_tokens": 32768,
+    "input_cost_per_token": 0.00000004, "output_cost_per_token": 0.00000014
+  },
+  "azure/eu/model-chat": {
+    "mode": "chat", "litellm_provider": "azure", "max_input_tokens": 128000,
+    "input_cost_per_token": "0.000003", "output_cost_per_token": "0.000015"
+  },
+  "example/completion": {
+    "mode": "completion", "litellm_provider": "example",
+    "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002
+  },
+  "example/image": {"mode": "image_generation", "litellm_provider": "example", "output_cost_per_image": 0.04},
+  "invalid-record": null
+}

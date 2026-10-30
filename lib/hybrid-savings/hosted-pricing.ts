@@ -126,6 +126,11 @@ function normalizedModelName(value: string): string {
  * such as `deepseek-r1-0528-distill-qwen3-8b` as Qwen3-8B offers.
  */
 function isExactCheckpointOffer(aliases: string[], price: FrontierModel): boolean {
+  const checkpoint = price.hugging_face_id?.trim()
+  // Explicit metadata outranks slugs/display names. Never rescue a conflicting
+  // canonical checkpoint with legacy name matching (base, distill, version).
+  if (checkpoint) return hostedPricingAliases(checkpoint).some(alias => aliases.includes(alias))
+
   const candidate = normalizeModelId(price.id)
   const candidateParts = candidate.split('/')
   const candidateName = normalizedModelName(price.name)

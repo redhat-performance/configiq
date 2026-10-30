@@ -17,6 +17,8 @@ export interface FrontierModel {
   updated_at: string | null
   /** Which feed this model's pricing came from (present in ?source=merged). */
   source?: 'openrouter' | 'litellm' | 'override'
+  /** Authoritative checkpoint identity when supplied by the pricing feed. */
+  hugging_face_id?: string | null
 }
 
 export interface CloudRates {
