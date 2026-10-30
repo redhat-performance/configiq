@@ -41,13 +41,18 @@ export async function GET(req: NextRequest) {
     }
 
     const data = await res.json()
+    const systems: Record<string, unknown>[] = Array.isArray(data.systems) ? data.systems : []
+    const extras = include?.split(',') ?? []
+    const cacheable = systems.length > 0 &&
+      (!extras.includes('cloud') || systems.some(system => system.cloud_rates && Object.keys(system.cloud_rates).length > 0)) &&
+      (!extras.includes('hardware') || systems.some(system => system.hardware_cost))
     return NextResponse.json(data, {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        // Mirrors the useCostings client-side cache TTL (1 hour).
-        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=7200',
+        // Base system IDs can be ready before background pricing collection.
+        'Cache-Control': cacheable ? 'public, s-maxage=3600, stale-while-revalidate=7200' : 'no-store',
       },
     })
   } catch (err: unknown) {

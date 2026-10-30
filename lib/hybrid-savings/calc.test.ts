@@ -135,11 +135,11 @@ describe('hybrid savings calculations', () => {
     expect(result.breakdown.every(item => Number.isFinite(item.monthlyCost))).toBe(true)
   })
 
-  it('uses an offer-specific rented infrastructure allowance before the global fallback', () => {
+  it('uses the editable rented infrastructure allowance from Sources', () => {
     const priced = bestRentedAtVolume(
       workload,
-      [{ ...candidate, cloudDirectInfrastructureMonthly: 500 }],
-      { ...assumptions, rentedDirectInfrastructureMonthly: 1_800 },
+      [candidate],
+      { ...assumptions, rentedDirectInfrastructureMonthly: 500 },
       25_000_000,
     )
 
@@ -262,7 +262,6 @@ describe('hybrid savings calculations', () => {
       cloudHourlyCostPerInstance: 2.7,
       cloudRatePerGpuHour: 2.7,
       cloudGpusPerInstance: 1,
-      cloudDirectInfrastructureMonthly: 500,
       purchaseGpusPerServer: 1,
       purchasePricePerReplica: 34_000,
       purchaseInstallationPerReplica: 2_400,
@@ -282,6 +281,7 @@ describe('hybrid savings calculations', () => {
       loadedMonthlyCostPerFte: 18_000,
       hostedOperationsFte: 0.05,
       hostedImplementation: 15_000,
+      rentedDirectInfrastructureMonthly: 500,
       rentedOperationsFte: 0.2,
       rentedImplementation: 40_000,
       ownedOperationsFte: 0.25,
@@ -974,6 +974,11 @@ describe('independent hardware selections', () => {
     const refreshed = { ...expensive, clusterOutputTokensPerSecond: 120, cloudRatePerGpuHour: 5, purchasePricePerReplica: 30_000 }
     expect(infrastructureCandidateKey(refreshed, 'rented')).toBe(rentedKey)
     expect(infrastructureCandidateKey(refreshed, 'owned')).toBe(ownedKey)
+    expect(infrastructureCandidateKey({ ...refreshed, configurationId: 'collected-provider-id', cloudPriceSource: 'Live feed' }, 'rented')).toBe(rentedKey)
+    for (const changed of [{ cloudGpusPerInstance: 8 }, { cloudRateKind: 'capacity_block' as const },
+      { cloudInstanceName: 'different-sku' }, { cloudProviderRegion: 'another-region' }, { cloudInterconnect: 'NVLink' }]) {
+      expect(infrastructureCandidateKey({ ...refreshed, ...changed }, 'rented')).not.toBe(rentedKey)
+    }
     const result = calculateHybridComparison(workload, hostedPrice, [candidate, refreshed], assumptions, {
       rented: rentedKey, owned: ownedKey,
     })

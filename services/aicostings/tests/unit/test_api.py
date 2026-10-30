@@ -25,8 +25,8 @@ def seed_data():
         {"id": "openai/gpt-5.6-terra", "name": "GPT-5.6 Terra", "provider": "OpenAI",
          "tier": "balanced", "price_per_m_input": 2.5, "price_per_m_output": 10.0, "context_window": 128000},
     ])
-    store._mark_scrape("models.openrouter")
-    store._mark_scrape("models.litellm")
+    store.mark_scrape("models.openrouter")
+    store.mark_scrape("models.litellm")
     store.set_cloud_rates("h200_sxm", {
         "cloud_rates": {
             "aws.us-east-1": {"on_demand": 4.50, "spot_median": 1.80},
@@ -92,8 +92,8 @@ class TestGetModels:
              "tier": "balanced", "price_per_m_input": 0.2, "price_per_m_output": 0.3,
              "context_window": 128000, "source": "litellm"},
         ], source="litellm")
-        store._mark_scrape("models.openrouter")
-        store._mark_scrape("models.litellm")
+        store.mark_scrape("models.openrouter")
+        store.mark_scrape("models.litellm")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             or_resp = await client.get("/models?source=openrouter")

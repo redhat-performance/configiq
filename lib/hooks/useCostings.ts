@@ -164,7 +164,12 @@ export function resolveCloudRate(
 }
 
 // ── Module-level cache ─────────────────────────────────────────────────────
-// Survives re-renders and navigation; one-hour TTL.
+// Survives re-renders and navigation. Healthy data lasts one hour; incomplete
+// startup snapshots retry after one minute without requiring a page reload.
+
+export type CostingsScope = 'all' | 'models'
+type CacheKey = `${PricingSource}:${CostingsScope}`
+const RETRY_INTERVAL_MS = 60_000
 
 // The fully-parsed result of one fetch, so a source's data is published as a
 // single unit rather than via several shared mutable globals that could tear.
@@ -177,39 +182,29 @@ interface CostingsResult {
   modelsStale: boolean
 }
 
-// Single cache slot for the source currently in use, tagged with which source
-// it holds so switching the source on the Sources page invalidates it.
-let cached: CostingsResult | null = null
-let cachedSource: PricingSource | null = null
-let cacheTimestamp: number | null = null
+// A models-only consumer must not seed empty infrastructure maps for other
+// pages. Source/scope keys also isolate source changes during in-flight work.
+const cached = new Map<CacheKey, { result: CostingsResult; updatedAt: number }>()
+const inFlight = new Map<CacheKey, Promise<CostingsResult>>()
 
-// In-flight fetches keyed by source. Keying by source (not a single shared
-// promise) means switching the source mid-flight can never reuse another
-// source's promise or publish its data, and each entry is cleared once settled
-// so a later refetch of the same source actually runs.
-const inFlight = new Map<PricingSource, Promise<CostingsResult>>()
-
-function isCacheValid(source: PricingSource): boolean {
-  return (
-    cached !== null &&
-    cachedSource === source &&
-    cacheTimestamp !== null &&
-    Date.now() - cacheTimestamp < CLIENT_CACHE_TTL_MS.costings
-  )
+function cacheTtl(result: CostingsResult, scope: CostingsScope): number {
+  const incomplete = result.modelsStale || result.models.length === 0 ||
+    (scope === 'all' && (result.cloudRates.size === 0 || result.hardwareCosts.size === 0))
+  return incomplete ? RETRY_INTERVAL_MS : CLIENT_CACHE_TTL_MS.costings
 }
 
-async function fetchCostings(source: PricingSource): Promise<CostingsResult> {
+async function fetchCostings(source: PricingSource, scope: CostingsScope): Promise<CostingsResult> {
   const [modelsRes, systemsRes, healthRes] = await Promise.all([
     fetch(`/api/costings/models?source=${source}`),
-    fetch('/api/costings/systems?include=cloud,hardware'),
+    scope === 'all' ? fetch('/api/costings/systems?include=cloud,hardware') : null,
     fetch('/api/costings/health'),
   ])
 
   if (!modelsRes.ok) throw new Error(`/models ${modelsRes.status}`)
-  if (!systemsRes.ok) throw new Error(`/systems ${systemsRes.status}`)
+  if (systemsRes && !systemsRes.ok) throw new Error(`/systems ${systemsRes.status}`)
 
   const modelsData = await modelsRes.json()
-  const systemsData = await systemsRes.json()
+  const systemsData = systemsRes ? await systemsRes.json() : { systems: [] }
   const healthData = healthRes.ok ? await healthRes.json() : null
 
   const systems = (systemsData.systems ?? []) as Record<string, unknown>[]
@@ -224,19 +219,17 @@ async function fetchCostings(source: PricingSource): Promise<CostingsResult> {
   }
 }
 
-// Deduplicate concurrent fetches for the same source; distinct sources fetch
-// independently. The map entry is removed once the fetch settles.
-function getCostingsFetch(source: PricingSource): Promise<CostingsResult> {
-  let p = inFlight.get(source)
-  if (!p) {
-    p = fetchCostings(source)
-    inFlight.set(source, p)
-    p.then(
-      () => inFlight.delete(source),
-      () => inFlight.delete(source),
-    )
+function getCostingsFetch(source: PricingSource, scope: CostingsScope): Promise<CostingsResult> {
+  const key: CacheKey = `${source}:${scope}`
+  let promise = inFlight.get(key)
+  if (!promise) {
+    promise = fetchCostings(source, scope).then(result => {
+      cached.set(key, { result, updatedAt: Date.now() })
+      return result
+    }).finally(() => { inFlight.delete(key) })
+    inFlight.set(key, promise)
   }
-  return p
+  return promise
 }
 
 function resultToData(result: CostingsResult): CostingsData {
@@ -295,14 +288,16 @@ const EMPTY: CostingsData = {
   error: null,
 }
 
-export function useCostings(enabled: boolean, pricingSource: PricingSource = 'merged'): CostingsData {
-  const [data, setData] = useState<CostingsData>(
-    enabled && isCacheValid(pricingSource)
-      ? resultToData(cached!)
-      : enabled
-        ? { ...EMPTY, isLoading: true }
-        : EMPTY,
-  )
+export function useCostings(
+  enabled: boolean,
+  pricingSource: PricingSource = 'merged',
+  scope: CostingsScope = 'all',
+): CostingsData {
+  const key: CacheKey = `${pricingSource}:${scope}`
+  const [data, setData] = useState<CostingsData>(() => {
+    const entry = enabled ? cached.get(key) : undefined
+    return entry ? resultToData(entry.result) : { ...EMPTY, isLoading: enabled }
+  })
 
   useEffect(() => {
     if (!enabled) {
@@ -310,37 +305,41 @@ export function useCostings(enabled: boolean, pricingSource: PricingSource = 'me
       return
     }
 
-    if (isCacheValid(pricingSource)) {
-      setData(resultToData(cached!))
-      return
+    let active = true
+    let lastAttempt = 0
+    const refresh = () => {
+      const entry = cached.get(key)
+      if (entry && Date.now() - entry.updatedAt < cacheTtl(entry.result, scope)) {
+        setData(resultToData(entry.result))
+        return
+      }
+      if (lastAttempt && Date.now() - lastAttempt < RETRY_INTERVAL_MS) return
+      lastAttempt = Date.now()
+      // Keep the last-good result during refresh, but never carry prices from
+      // a different source or scope into the newly selected comparison.
+      setData(entry ? resultToData(entry.result) : { ...EMPTY, isLoading: true })
+      void getCostingsFetch(pricingSource, scope).then(result => {
+        if (active) setData(resultToData(result))
+      }).catch((error: unknown) => {
+        if (active) setData({
+          ...(entry ? resultToData(entry.result) : EMPTY),
+          modelsStale: true,
+          error: error instanceof Error ? error.message : 'Failed to fetch costings data',
+        })
+      })
     }
-
-    // Source changed (or cache stale) — show the loading state while refetching.
-    setData(prev => ({ ...prev, isLoading: true, error: null }))
-
-    let cancelled = false
-    getCostingsFetch(pricingSource)
-      .then(result => {
-        // A superseded (cancelled) effect must not publish its result or clobber
-        // the cache slot now owned by the current source.
-        if (cancelled) return
-        cached = result
-        cachedSource = pricingSource
-        cacheTimestamp = Date.now()
-        setData(resultToData(result))
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setData(prev => ({
-            ...prev,
-            isLoading: false,
-            error: err instanceof Error ? err.message : 'Failed to fetch costings data',
-          }))
-        }
-      })
-
-    return () => { cancelled = true }
-  }, [enabled, pricingSource])
+    const revalidate = () => { if (document.visibilityState !== 'hidden') refresh() }
+    refresh()
+    const timer = setInterval(revalidate, RETRY_INTERVAL_MS)
+    window.addEventListener('focus', revalidate)
+    document.addEventListener('visibilitychange', revalidate)
+    return () => {
+      active = false
+      clearInterval(timer)
+      window.removeEventListener('focus', revalidate)
+      document.removeEventListener('visibilitychange', revalidate)
+    }
+  }, [enabled, pricingSource, scope, key])
 
   return data
 }

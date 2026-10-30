@@ -39,7 +39,7 @@ async function click(text: string) {
 }
 
 describe('Sources shared assumptions', () => {
-  it('keeps the editor available without requesting live pricing when costings is disabled', async () => {
+  it('keeps one assumptions editor accessible without live costings or source requests', async () => {
     await render()
     expect(host.textContent).toContain('Costings features are disabled')
     expect(host.textContent).not.toContain('Pricing data sources')

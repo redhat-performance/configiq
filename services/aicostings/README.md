@@ -14,6 +14,7 @@ results in Valkey, and serves them via a REST API.
 |---|---|
 | `GET /models` | Frontier LLM API pricing ($/M tokens, by provider and tier); `?source=merged\|openrouter\|litellm` selects a feed |
 | `GET /systems` | GPU pricing (cloud $/hr by provider.region, hardware new/used range) |
+| `GET /offers` | Versioned complete rental-instance and purchase-server offers, collection status and provenance |
 | `GET /health` | Service status (last scrape timestamps, staleness flags) |
 | `GET /metrics` | Prometheus / OTLP-JSON metrics (requires the `otel` extra) |
 | `GET /mcp` | MCP over SSE, exposing the API as tools (requires the `mcp` extra) |
@@ -92,10 +93,11 @@ against the live APIs; validate with a real key before trusting output.
 |---|---|---|
 | Azure | Retail Prices API | Implemented (no key) |
 | AWS | Price List bulk JSON (on-demand; spot deferred) | Implemented (no key) |
+| CoreWeave | Public HTML pricing page | Complete offers only; validates the reviewed two-region table layout and inference terms; changes outside these checks still require review |
 | Vast.ai | Public marketplace API (spot-style median) | Implemented (no key) |
 | RunPod | GraphQL API | Key-gated, parsing TODO |
 | Lambda Labs | Cloud API | Key-gated, parsing TODO |
-| GCP | Cloud Billing Catalog API | Key-gated, parsing TODO |
+| GCP | Cloud Billing Catalog API | Key-gated, conservative A2 Ultra component parser; live-key validation still required |
 | Scaleway | Product catalog API | Key-gated, parsing TODO |
 | IBM Cloud | Global Catalog API | Key-gated, parsing TODO |
 
@@ -108,6 +110,69 @@ AWS covers on-demand only; spot pricing needs an AWS account
   quarterly. Flagged as indicative in the API response.
 - `used_usd`: eBay completed listings (to be implemented).
 
+### Complete infrastructure offers
+
+`GET /offers` has `schema_version: 1`, `rented`, `purchased` and per-collector
+`sources`. It is additive: `/models`, `/sources` and the per-GPU meanings in
+`/systems` are unchanged. `/systems?include=hardware` additionally retains
+`new_node_usd` and `install_cost_node` where the original dataset provides them;
+these do not change `new_usd` into a server price.
+
+- Rentals identify an exact provider, region, SKU, GPU system/count, USD
+  **whole-instance-hour** price, rate kind, eligibility and known deployment
+  constraints. Never divide an 8-GPU instance price to create a rentable 1-GPU
+  shape. Spot, Capacity Block and inference-platform-only rates are returned distinctly and
+  excluded from Hybrid Savings' general rental selector.
+- Purchases identify a **complete server**, GPU count, purchase/installation
+  costs and what the estimate includes. Unknown installation costs remain null
+  so the calculator can apply its explicit installation assumption.
+- Each record distinguishes automated collection from curated estimates.
+  Price/effective dates are nullable and separate from retrieval time. Reloading
+  a YAML estimate does not make its price new.
+- AWS/Azure reuse the existing collection requests, retaining exact SKUs and
+  instance totals before the legacy per-GPU aggregation. GPU variants that do
+  not match a supported simulated system are excluded from complete offers,
+  rather than inheriting approximate legacy aliases (for example A100 40 GB
+  versus 80 GB, or H100 NVL versus SXM).
+- CoreWeave prices refresh from the public page. GPU identity mappings and
+  topology constraints still require review; they are not inferred from price.
+  Collection requires a complete document with matching regional product rows
+  and no unhandled pagination. A truncated or inconsistent page retains the
+  last-good snapshot as stale rather than publishing a partial replacement.
+  Simultaneous product removal from both tables is allowed; these checks cannot
+  detect every possible provider-side omission in an otherwise valid page.
+- GCP currently composes only A2 Ultra on-demand GPU, vCPU, RAM and bundled
+  Local SSD charges. Missing, ambiguous or tiered components in any configured
+  region fail the whole collection, retaining the last complete snapshot.
+  Monthly SSD prices use 730 hours/month. No live-key validation was possible
+  during development: validate against real catalogue responses before enabling
+  this collector. Other GCP shapes remain clearly curated, not automatically
+  priced. The collector never accesses billing-account/private contract APIs.
+
+`data/infrastructure-offers.yaml` centralises the former Hybrid Savings
+catalogue (28 rental references and 19 complete-server estimates). It is
+manually maintained, **not** a live quote feed. Its historic server estimates
+are preserved rather than silently replaced by inconsistent figures from the
+older `hardware-costs.yaml` per-GPU dataset (for example H100/H200 nodes).
+Maintainers should reconcile those estimates against commercial quotes.
+Hybrid Savings no longer imports a frontend price snapshot.
+
+Successful collections atomically replace each provider's declared scope.
+Removed offers cannot reappear from curated seed data within that scope.
+Failed refreshes retain the last-good snapshot, explicitly stale, for up to
+seven days. After expiry the provider becomes unavailable; the API does not
+silently resurrect superseded curated prices. Prices older than 25 hours are
+stale even if no error was recorded. `/health` reports collector errors too.
+
+**Rollout:** deploy this service first and verify `/offers`, then deploy the
+frontend. An older service's HTTP 404 produces an actionable upgrade message,
+not a local-data fallback. Hosted pricing and other tools keep their existing
+API paths. Hybrid Savings fetches offers separately and reuses sizing results
+when only prices change. Its former effective $500/month rental supporting-
+infrastructure allowance is now an explicit editable Sources assumption;
+it is not added to the cloud provider's list rate. Cluster Cost defaults and
+Routing Economics are unchanged.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -116,7 +181,8 @@ AWS covers on-demand only; spot pricing needs an AWS account
 | `AWS_PRICING_REGIONS` | `us-east-1,us-west-2` | Comma-separated AWS regions to scrape GPU on-demand prices for |
 | `RUNPOD_API_KEY` | _(unset)_ | Activates the RunPod scraper (parsing TODO) |
 | `LAMBDA_API_KEY` | _(unset)_ | Activates the Lambda Labs scraper (parsing TODO) |
-| `GCP_BILLING_API_KEY` | _(unset)_ | Activates the GCP scraper (parsing TODO) |
+| `GCP_BILLING_API_KEY` | _(unset)_ | Activates public A2 Ultra catalogue collection; requires live validation |
+| `GCP_PRICING_REGIONS` | `us-central1` | Regions for the conservative GCP A2 Ultra component mapping |
 | `SCALEWAY_SECRET_KEY` | _(unset)_ | Activates the Scaleway scraper (parsing TODO) |
 | `IBMCLOUD_API_KEY` | _(unset)_ | Activates the IBM Cloud scraper (parsing TODO) |
 
@@ -149,12 +215,16 @@ read directly from Valkey with no outbound calls at query time.
 | 24 hours | Cloud GPU rates, hosted model pricing (OpenRouter + LiteLLM) |
 | 7 days | Hardware costs (curated YAML) |
 
-Data is also loaded at startup for any dataset that is missing or already
-stale, so a restart self-heals rather than waiting for the next tick.
+Curated datasets load at startup. Provider collections start immediately in the
+background, without blocking API availability on a large AWS catalogue download.
+Existing snapshots remain readable with their own freshness status; on a first
+boot hosted prices may be empty until collection finishes. Shutdown cancels the
+initial refresh before closing its store.
 
 ## API reference
 
-See `docs/api/openapi.yaml` for the full OpenAPI specification.
+The running service publishes its OpenAPI specification at `/openapi.json`
+and interactive API documentation at `/docs`.
 
 ## Project structure
 
@@ -162,21 +232,22 @@ See `docs/api/openapi.yaml` for the full OpenAPI specification.
 data/
   gpu-id-mapping.yaml      # provider GPU name → AIC system ID
   hardware-costs.yaml      # GPU purchase prices (curated)
+  infrastructure-offers.yaml # complete rental/server estimates (curated)
 tools/
   api_service/
     app.py                 # FastAPI application + scheduler
     valkey.py              # Valkey client wrapper
+    offers.py              # complete-offer schemas and snapshot assembly
     scrapers/
       models.py            # OpenRouter + curated overrides
       cloud_rates.py       # per-provider cloud rate scrapers
+      offer_collectors.py  # whole-instance projection, CoreWeave and GCP
       hardware_costs.py    # hardware cost loader
 tests/
   unit/                    # unit + integration tests
   fixtures/                # sample API responses for tests
 Containerfile
 compose.yml
-docs/
-  api/openapi.yaml
 ```
 
 ## License

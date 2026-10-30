@@ -30,8 +30,6 @@ export interface InfrastructureCandidate {
   clusterOutputTokensPerSecond: number
   /** Whole-instance list price. Preferred over the compatibility GPU rate. */
   cloudHourlyCostPerInstance?: number | null
-  /** Offer-specific support allowance; falls back to the global assumption. */
-  cloudDirectInfrastructureMonthly?: number | null
   cloudRatePerGpuHour: number | null
   cloudGpusPerInstance?: number | null
   cloudInstanceName?: string | null
@@ -39,9 +37,13 @@ export interface InfrastructureCandidate {
   cloudProviderRegion?: string | null
   cloudRateKind: 'on_demand' | 'spot' | 'capacity_block' | null
   cloudMaxInstancesPerReplica?: number | null
+  cloudInterconnect?: string | null
   cloudPriceSource?: string | null
   cloudPriceSourceUrl?: string | null
   cloudPriceSourceDate?: string | null
+  cloudPriceCollectionKind?: 'automated' | 'curated'
+  cloudPriceRetrievedAt?: string | null
+  cloudPriceStale?: boolean
   purchaseGpusPerServer?: number | null
   purchasePricePerReplica: number | null
   purchaseInstallationPerReplica: number | null
@@ -49,6 +51,9 @@ export interface InfrastructureCandidate {
   purchasePriceSource: string | null
   purchasePriceSourceUrl: string | null
   purchasePriceSourceDate: string | null
+  purchasePriceCollectionKind?: 'automated' | 'curated'
+  purchasePriceRetrievedAt?: string | null
+  purchasePriceStale?: boolean
   tdpWattsPerGpu: number | null
 }
 
@@ -94,12 +99,13 @@ export type InfrastructurePath = 'rented' | 'owned'
 
 /** Keep provider, instance topology and billing terms distinct in manual selections. */
 export function infrastructureCandidateKey(candidate: InfrastructureCandidate, path: InfrastructurePath): string {
-  return JSON.stringify([path, candidate.systemId, candidate.configurationId ?? (
+  return JSON.stringify([path, candidate.systemId,
     path === 'rented'
       ? [candidate.cloudProvider, candidate.cloudProviderRegion, candidate.cloudInstanceName,
-        candidate.cloudGpusPerInstance, candidate.cloudRateKind, candidate.cloudMaxInstancesPerReplica]
-      : [candidate.purchaseGpusPerServer ?? candidate.gpusPerReplica, candidate.purchasePriceSource]
-  )])
+        candidate.cloudGpusPerInstance, candidate.cloudRateKind, candidate.cloudMaxInstancesPerReplica ?? null,
+        candidate.cloudInterconnect ?? null]
+      : candidate.configurationId ?? [candidate.purchaseGpusPerServer ?? candidate.gpusPerReplica, candidate.purchasePriceSource],
+  ])
 }
 
 export interface HybridComparison {
@@ -417,9 +423,7 @@ function rentedCostForCandidate(
 
   const compute = billableInstanceHours * hourlyInstanceCost
   const fixed = finiteNonNegative(assumptions.rentedFixedMonthly)
-  const directInfrastructure = finiteNonNegative(
-    candidate.cloudDirectInfrastructureMonthly ?? assumptions.rentedDirectInfrastructureMonthly,
-  )
+  const directInfrastructure = finiteNonNegative(assumptions.rentedDirectInfrastructureMonthly)
   const operations =
     finiteNonNegative(assumptions.rentedOperationsFte) *
     finiteNonNegative(assumptions.loadedMonthlyCostPerFte)

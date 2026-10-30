@@ -7,7 +7,9 @@ export const DEFAULT_COST_ASSUMPTIONS = {
   loadedMonthlyCostPerFte: 18_000,
   hostedOperationsFte: 0.05,
   hostedImplementation: 15_000,
-  rentedDirectInfrastructureMonthly: 1_800,
+  // The previous complete-offer catalogue applied $500 to every rental and
+  // overrode the $1,800 fallback. Preserve that effective default explicitly.
+  rentedDirectInfrastructureMonthly: 500,
   rentedOperationsFte: 0.2,
   rentedImplementation: 40_000,
   hardwareLifeYears: 4,
@@ -63,7 +65,7 @@ export const COST_ASSUMPTION_GROUPS: { title: string; description: string; field
     description: 'Cloud compute, supporting infrastructure and model operations.',
     fields: [
       { key: 'cloudRuntimeBufferPct', label: 'Scale-to-zero runtime buffer (%)' },
-      { key: 'rentedDirectInfrastructureMonthly', label: 'Fallback infrastructure per month ($)' },
+      { key: 'rentedDirectInfrastructureMonthly', label: 'Supporting infrastructure per month ($)' },
       { key: 'rentedOperationsFte', label: 'Operations FTE', step: 0.01 },
       { key: 'rentedImplementation', label: 'One-time implementation ($)' },
       { key: 'rentedFixedMonthly', label: 'Other monthly costs ($)' },

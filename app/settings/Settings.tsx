@@ -247,7 +247,7 @@ export function Settings() {
             <div>
               <div className={styles.sectionTitle}>Simulator</div>
               <div className={styles.sectionDesc}>
-                Simulator used by Predict performance and Recommend sizing.
+                Simulator used by Predict performance, Recommend sizing and Hybrid savings.
               </div>
             </div>
             {simulatorSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}
@@ -265,7 +265,7 @@ export function Settings() {
                 <option value="blis" disabled={!isSimulatorBackendCompatible('blis', inferenceBackend)}>BLIS</option>
               </select>
               <div className={styles.helperText}>
-                Predict and Recommend use this simulator. BLIS is available with vLLM; KV cache uses AISimulate.
+                Predict, Recommend and Hybrid savings use this simulator. BLIS is available with vLLM; KV cache uses AISimulate.
               </div>
             </div>
           </div>

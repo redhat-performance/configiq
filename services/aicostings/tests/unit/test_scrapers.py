@@ -12,9 +12,11 @@ import pytest
 from tools.api_service.scrapers.cloud_rates import (
     _aws_gpu_instance_types,
     _aws_scrape_region,
+    _azure_items,
     _merge_records,
     active_scrapers,
     load_gpu_id_mapping,
+    scrape_all_cloud_rates,
     scrape_aws,
     scrape_azure,
     scrape_vastai,
@@ -30,6 +32,28 @@ from tools.api_service.scrapers.models import (
 )
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
+
+
+@pytest.mark.asyncio
+async def test_complete_offers_publish_without_waiting_for_another_provider():
+    import asyncio
+
+    published = asyncio.Event()
+    release = asyncio.Event()
+    async def fast(_session, _mapping):
+        return [{"system_id": "l40s", "provider_region": "azure.eastus", "on_demand": 2}]
+    async def slow(_session, _mapping):
+        await release.wait()
+        return []
+
+    with patch("tools.api_service.scrapers.cloud_rates.active_scrapers", return_value=[("azure", fast), ("aws", slow)]):
+        task = asyncio.create_task(scrape_all_cloud_rates(MagicMock(), publish_offers=lambda *_: published.set()))
+        try:
+            await asyncio.wait_for(published.wait(), timeout=1)
+            assert not task.done()
+        finally:
+            release.set()
+            await task
 
 
 # ── Model scraper tests ───────────────────────────────────────────────────────
@@ -254,6 +278,16 @@ class TestScrapeAllModels:
 
 
 class TestMergeRecords:
+    def test_winning_rate_keeps_its_own_instance_count(self):
+        result = _merge_records([
+            {"system_id": "l40s", "provider_region": "aws.us-east-1", "on_demand": 2,
+             "gpus_per_instance": 8, "rate_basis": "gpu_hour"},
+            {"system_id": "l40s", "provider_region": "aws.us-east-1", "on_demand": 1.5,
+             "gpus_per_instance": 1, "rate_basis": "gpu_hour"},
+        ])["l40s"]["aws.us-east-1"]
+        assert result["on_demand"] == 1.5
+        assert result["gpus_per_instance"] == 1
+
     def test_merges_on_demand_and_spot(self):
         records = [
             {"system_id": "h100_sxm", "provider_region": "aws.us-east-1", "on_demand": 3.89, "spot_median": None},
@@ -294,6 +328,54 @@ class TestGpuIdMapping:
 
 
 class TestScrapeAzure:
+    @pytest.mark.asyncio
+    async def test_pagination_and_expired_meters(self):
+        base = {"armRegionName": "eastus", "retailPrice": 20, "meterName": "A100", "productName": "Linux"}
+        pages = [
+            {"Items": [{**base, "effectiveEndDate": "2020-01-01T00:00:00Z"}],
+             "NextPageLink": "https://prices.azure.com/api/retail/prices?$skip=1000"},
+            {"Items": [base, {**base, "effectiveStartDate": "2100-01-01T00:00:00Z"},
+                       {**base, "isPrimaryMeterRegion": False}]},
+        ]
+        calls = []
+
+        @asynccontextmanager
+        async def get(url, **kwargs):
+            calls.append((url, kwargs.get("params")))
+            response = MagicMock(status=200)
+            response.json = AsyncMock(return_value=pages.pop(0) if pages else {"Items": []})
+            yield response
+
+        session = MagicMock(get=get)
+        records = await scrape_azure(session, {"Standard_ND96asr_v4": "a100_sxm"})
+        assert len(records) == 1
+        assert records[0]["instance_hourly_cost"] == 20
+        assert calls[0][1]["currencyCode"] == "USD"
+        assert calls[1][1] is None
+
+    @pytest.mark.asyncio
+    async def test_pagination_cannot_follow_untrusted_host(self):
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value={"NextPageLink": "https://unexpected.example/prices"})
+
+        @asynccontextmanager
+        async def get(*args, **kwargs):
+            yield response
+
+        with pytest.raises(ValueError, match="pagination"):
+            await _azure_items(MagicMock(get=get), "Standard_ND96asr_v4")
+
+    @pytest.mark.asyncio
+    async def test_partial_collection_does_not_replace_complete_offer_snapshot(self):
+        from tools.api_service.scrapers.offer_collectors import snapshot_from_rates
+
+        item = {"armRegionName": "eastus", "retailPrice": 20, "meterName": "A100", "productName": "Linux"}
+        with patch("tools.api_service.scrapers.cloud_rates._azure_items", side_effect=[[item], RuntimeError(), []]):
+            records = await scrape_azure(MagicMock(), {"Standard_ND96asr_v4": "a100_sxm"})
+        assert records[0]["collection_partial"] is True
+        with pytest.raises(ValueError, match="Incomplete"):
+            snapshot_from_rates("azure", records)
+
     @pytest.mark.asyncio
     async def test_skips_windows_products(self):
         # Azure returns Linux and Windows meters for the same SKU/region; the
@@ -412,14 +494,32 @@ class TestAwsScrapeRegion:
         )
         # Only the Shared+Linux+Used+NA SKU is priced; Windows and Dedicated are
         # filtered out at the product stage, so exactly one on-demand record.
-        assert records == [{
+        expected = {
             "system_id": "a100_sxm",
             "provider_region": "aws.us-east-1",
             "on_demand": 4.096575,
             "spot_median": None,
             "rate_basis": "gpu_hour",
             "gpus_per_instance": 8,
-        }]
+        }
+        assert len(records) == 1
+        assert {key: records[0][key] for key in expected} == expected
+        assert records[0]["instance_name"] == "p4d.24xlarge"
+        assert records[0]["instance_hourly_cost"] == 32.7726
+        assert records[0]["currency"] == "USD"
+        assert records[0]["unit"] == "Hrs"
+
+    @pytest.mark.asyncio
+    async def test_missing_configured_region_marks_collection_partial(self, monkeypatch):
+        from tools.api_service.scrapers.offer_collectors import snapshot_from_rates
+
+        monkeypatch.setattr('tools.api_service.scrapers.cloud_rates.AWS_PRICING_REGIONS', ['us-east-1', 'us-west-2'])
+        monkeypatch.setattr('tools.api_service.scrapers.cloud_rates._aws_region_file_urls',
+                            AsyncMock(return_value={'us-east-1': 'http://x'}))
+        records = await scrape_aws(self._session_for(self._fixture_bytes()), {'p4d.24xlarge': 'a100_sxm'})
+        assert records and all(record['collection_partial'] for record in records)
+        with pytest.raises(ValueError, match='Incomplete provider'):
+            snapshot_from_rates('aws', records)
 
     @pytest.mark.asyncio
     async def test_scrape_aws_raises_when_no_records(self, monkeypatch):

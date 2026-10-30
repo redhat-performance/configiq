@@ -17,7 +17,7 @@ permissions:
 # the Python under the tests.
 jobs:
   check:
-    name: Frontend — type-check, lint, and build
+    name: Frontend — test, type-check, lint, and build
     runs-on: ubuntu-latest
 
     steps:
@@ -36,6 +36,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build

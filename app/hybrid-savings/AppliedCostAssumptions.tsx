@@ -43,13 +43,10 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
   const server = owned?.candidate
   const effectiveMode = cloud?.cloudRateKind === 'capacity_block' ? 'always-on' : assumptions.cloudBillingMode
   const billingLabel = effectiveMode === 'scale-to-zero' ? 'Scale to zero' : effectiveMode === 'active-window' ? 'Active window' : 'Always on'
-  const infrastructure = cloud?.cloudDirectInfrastructureMonthly ?? assumptions.rentedDirectInfrastructureMonthly
   const inputs = (keys: CostAssumptionKey[]) => keys.map(key => <Row key={key} inputKey={key}
     label={shortLabels[key] ?? fields.get(key)!.label.replace(/\s*\([^)]*\)/g, '')}>
-    {inputValue(key, key === 'rentedDirectInfrastructureMonthly' ? infrastructure : assumptions[key])}
-    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>{cloud?.cloudDirectInfrastructureMonthly != null
-      ? 'Catalogue allowance — replaces the Sources fallback.'
-      : cloud ? 'Sources fallback.' : 'Fallback; confirmed after sizing.'}</span>}
+    {inputValue(key, assumptions[key])}
+    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>Planning allowance from Sources; not a provider charge.</span>}
     {key === 'cloudRuntimeBufferPct' && effectiveMode !== 'scale-to-zero' && <span className={styles.appliedValueNote}>Not used in this billing mode.</span>}
   </Row>)
 

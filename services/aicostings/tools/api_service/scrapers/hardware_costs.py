@@ -43,6 +43,8 @@ def load_hardware_costs() -> dict[str, dict[str, Any]]:
             "new_usd": system.get("new_usd"),
             "new_usd_low": system.get("new_usd_low"),
             "new_usd_high": system.get("new_usd_high"),
+            "new_node_usd": system.get("new_node_usd"),
+            "install_cost_node": system.get("install_cost_node"),
             "used_usd": system.get("used_usd"),
             "indicative": True,
             "source_label": system.get("source_label"),

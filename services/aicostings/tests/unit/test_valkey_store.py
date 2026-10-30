@@ -49,9 +49,9 @@ class TestModels:
         assert store.get_models() is None
 
     def test_marks_scrape_time(self, store: ValkeyStore):
-        # Scrape time is recorded by _mark_scrape (called by the scrape jobs
+        # Scrape time is recorded by mark_scrape (called by the scrape jobs
         # after a successful set_*), not by the setters themselves.
-        store._mark_scrape("models")
+        store.mark_scrape("models")
         times = store.get_scrape_times()
         assert "models" in times
 
@@ -104,12 +104,32 @@ class TestGpuIdMapping:
         assert store.get_gpu_id_mapping() is None
 
 
+class TestCompleteOffers:
+    def test_provider_replacement_is_independent_and_expiry_does_not_erase_history(self, store: ValkeyStore):
+        store.set_offer_snapshot("aws", {"offers": [{"id": "removed"}]})
+        store.set_offer_snapshot("coreweave", {"offers": [{"id": "unaffected"}]})
+        store.set_offer_snapshot("aws", {"offers": [{"id": "replacement"}]})
+        assert store.get_offer_snapshots() == {
+            "aws": {"offers": [{"id": "replacement"}]},
+            "coreweave": {"offers": [{"id": "unaffected"}]},
+        }
+        store.mark_scrape("offers.aws")
+        store.client.expire("offers:rented:aws", 0)
+        assert "aws" not in store.get_offer_snapshots()
+        assert "offers.aws" in store.get_scrape_times()
+
+    def test_curated_reload_preserves_price_provenance(self, store: ValkeyStore):
+        data = {"source": {"price_date": "2026-09-01", "retrieved_at": None}}
+        store.set_curated_offers(data)
+        assert store.get_curated_offers() == data
+
+
 class TestStaleness:
     def test_stale_when_never_scraped(self, store: ValkeyStore):
         assert store.is_stale("models", 3600) is True
 
     def test_not_stale_after_scrape(self, store: ValkeyStore):
-        store._mark_scrape("models")
+        store.mark_scrape("models")
         assert store.is_stale("models", 3600) is False
 
     def test_is_empty(self, store: ValkeyStore):

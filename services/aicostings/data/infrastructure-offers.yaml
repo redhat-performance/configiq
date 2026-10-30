@@ -1,0 +1,684 @@
+# Dated planning estimates migrated from Hybrid Savings for calculation parity.
+# These are not automatically collected prices. Provider collectors replace their
+# explicitly managed scope; older estimates never override a collected record.
+# The full-server estimates intentionally retain Hybrid's existing figures;
+# legacy per-GPU ranges in hardware-costs.yaml remain a separate dataset.
+schema_version: 1
+rented:
+  - id: aws-g6e-xlarge
+    system_id: l40s
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: g6e.xlarge
+    gpu_count: 1
+    hourly_cost: 1.861
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/pricing/on-demand/
+      price_date: '2026-08-23'
+  - id: aws-g6e-12xlarge
+    system_id: l40s
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: g6e.12xlarge
+    gpu_count: 4
+    hourly_cost: 10.49264
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/pricing/on-demand/
+      price_date: '2026-08-23'
+  - id: aws-g6e-48xlarge
+    system_id: l40s
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: g6e.48xlarge
+    gpu_count: 8
+    hourly_cost: 30.13118
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/pricing/on-demand/
+      price_date: '2026-08-23'
+  - id: coreweave-l40s-1
+    system_id: l40s
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave Inference 1× L40S
+    gpu_count: 1
+    hourly_cost: 2.25
+    rate_kind: on_demand
+    eligibility: inference_platform
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave Inference On-Demand price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: coreweave-l40s-8
+    system_id: l40s
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× L40S
+    gpu_count: 8
+    hourly_cost: 18
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: aws-p4de-24xlarge
+    system_id: a100_sxm
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: p4de.24xlarge
+    gpu_count: 8
+    hourly_cost: 40.96
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: AWS P4de public On-Demand price
+      url: https://aws.amazon.com/ec2/instance-types/p4/
+      price_date: '2026-08-23'
+  - id: gcp-a2-ultragpu-1g
+    system_id: a100_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a2-ultragpu-1g
+    gpu_count: 1
+    hourly_cost: 5.06879789
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: gcp-a2-ultragpu-2g
+    system_id: a100_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a2-ultragpu-2g
+    gpu_count: 2
+    hourly_cost: 10.137595781
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: gcp-a2-ultragpu-4g
+    system_id: a100_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a2-ultragpu-4g
+    gpu_count: 4
+    hourly_cost: 20.275191562
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: gcp-a2-ultragpu-8g
+    system_id: a100_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a2-ultragpu-8g
+    gpu_count: 8
+    hourly_cost: 40.550383123
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: coreweave-a100-1
+    system_id: a100_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave Inference 1× A100 80 GB
+    gpu_count: 1
+    hourly_cost: 2.7
+    rate_kind: on_demand
+    eligibility: inference_platform
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave Inference On-Demand price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: coreweave-a100-8
+    system_id: a100_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× A100 80 GB
+    gpu_count: 8
+    hourly_cost: 21.6
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: aws-p5-4xlarge
+    system_id: h100_sxm
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: p5.4xlarge
+    gpu_count: 1
+    hourly_cost: 6.88
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/instance-types/p5/
+      price_date: '2026-08-23'
+  - id: aws-p5-48xlarge
+    system_id: h100_sxm
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: p5.48xlarge
+    gpu_count: 8
+    hourly_cost: 55.04
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: 8
+    interconnect: EFA and GPUDirect RDMA capable cluster
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/instance-types/p5/
+      price_date: '2026-08-23'
+  - id: gcp-a3-highgpu-8g
+    system_id: h100_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a3-highgpu-8g
+    gpu_count: 8
+    hourly_cost: 88.490000119
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: coreweave-h100-1
+    system_id: h100_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave Inference 1× H100
+    gpu_count: 1
+    hourly_cost: 6.16
+    rate_kind: on_demand
+    eligibility: inference_platform
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave Inference On-Demand price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: coreweave-h100-8
+    system_id: h100_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× H100
+    gpu_count: 8
+    hourly_cost: 49.24
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: aws-p5en-48xlarge
+    system_id: h200_sxm
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: p5en.48xlarge
+    gpu_count: 8
+    hourly_cost: 63.296
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: 8
+    interconnect: EFA and GPUDirect RDMA capable cluster
+    source:
+      kind: curated
+      label: AWS EC2 Linux On-Demand catalogue
+      url: https://aws.amazon.com/ec2/instance-types/p5/
+      price_date: '2026-08-23'
+  - id: gcp-a3-ultragpu-8g
+    system_id: h200_sxm
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP a3-ultragpu-8g
+    gpu_count: 8
+    hourly_cost: 84.806908493
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-08-23'
+  - id: coreweave-h200-1
+    system_id: h200_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave Inference 1× H200
+    gpu_count: 1
+    hourly_cost: 6.31
+    rate_kind: on_demand
+    eligibility: inference_platform
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave Inference On-Demand price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: coreweave-h200-8
+    system_id: h200_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× H200
+    gpu_count: 8
+    hourly_cost: 50.44
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-08-23'
+  - id: aws-p6-b200-48xlarge
+    system_id: b200_sxm
+    provider: aws
+    provider_region: aws.us-east-1
+    instance_name: p6-b200.48xlarge
+    gpu_count: 8
+    hourly_cost: 98.84
+    rate_kind: capacity_block
+    eligibility: standard
+    max_instances_per_replica: 8
+    interconnect: EFA and GPUDirect RDMA capable cluster
+    source:
+      kind: curated
+      label: AWS EC2 Capacity Blocks effective instance-hour price
+      url: https://aws.amazon.com/ec2/capacityblocks/pricing/
+      price_date: '2026-09-07'
+  - id: coreweave-b200-8
+    system_id: b200_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× HGX B200
+    gpu_count: 8
+    hourly_cost: 68.8
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: 8
+    interconnect: InfiniBand-capable GPU cluster
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-09-07'
+  - id: coreweave-b300-8-spot
+    system_id: b300_sxm
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× HGX B300
+    gpu_count: 8
+    hourly_cost: 35.84
+    rate_kind: spot
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: CoreWeave public spot GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-09-20'
+  - id: aws-p6e-gb200x36
+    system_id: gb200
+    provider: aws
+    provider_region: aws.dallas-local-zone
+    instance_name: u-p6e-gb200x36 UltraServer
+    gpu_count: 36
+    hourly_cost: 380.952
+    rate_kind: capacity_block
+    eligibility: standard
+    max_instances_per_replica: 1
+    interconnect: NVLink and EFAv4 UltraServer fabric
+    source:
+      kind: curated
+      label: AWS EC2 Capacity Blocks effective UltraServer-hour price
+      url: https://aws.amazon.com/ec2/capacityblocks/pricing/
+      price_date: '2026-09-07'
+  - id: coreweave-gb200-4
+    system_id: gb200
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 4× GB200 NVL72
+    gpu_count: 4
+    hourly_cost: 42
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: 18
+    interconnect: NVLink and 400 Gb/s NDR InfiniBand
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-09-07'
+  - id: gcp-g4-standard-48
+    system_id: rtx_pro_6000_server
+    provider: gcp
+    provider_region: gcp.public-reference
+    instance_name: GCP g4-standard-48
+    gpu_count: 1
+    hourly_cost: 4.49993
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: null
+    interconnect: null
+    source:
+      kind: curated
+      label: Google Cloud accelerator-optimized On-Demand price
+      url: https://cloud.google.com/products/compute/pricing/accelerator-optimized
+      price_date: '2026-09-07'
+  - id: coreweave-rtx-pro-6000-8
+    system_id: rtx_pro_6000_server
+    provider: coreweave
+    provider_region: coreweave.north-america
+    instance_name: CoreWeave 8× RTX PRO 6000 Blackwell
+    gpu_count: 8
+    hourly_cost: 20
+    rate_kind: on_demand
+    eligibility: standard
+    max_instances_per_replica: 8
+    interconnect: InfiniBand-capable GPU cluster
+    source:
+      kind: curated
+      label: CoreWeave On-Demand GPU instance price
+      url: https://www.coreweave.com/pricing
+      price_date: '2026-09-07'
+purchased:
+  - id: l40s:server:1
+    system_id: l40s
+    gpu_count: 1
+    purchase_price: 35000
+    installation_cost: 2500
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Thinkmate NVIDIA L40S server catalogue
+      url: https://www.thinkmate.com/systems/servers/gpx/l40s
+      price_date: '2026-08-01'
+  - id: l40s:server:2
+    system_id: l40s
+    gpu_count: 2
+    purchase_price: 56000
+    installation_cost: 3900
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Thinkmate NVIDIA L40S server catalogue
+      url: https://www.thinkmate.com/systems/servers/gpx/l40s
+      price_date: '2026-08-01'
+  - id: l40s:server:4
+    system_id: l40s
+    gpu_count: 4
+    purchase_price: 94000
+    installation_cost: 6600
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Thinkmate NVIDIA L40S server catalogue
+      url: https://www.thinkmate.com/systems/servers/gpx/l40s
+      price_date: '2026-08-01'
+  - id: l40s:server:8
+    system_id: l40s
+    gpu_count: 8
+    purchase_price: 150000
+    installation_cost: 10500
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Thinkmate NVIDIA L40S server catalogue
+      url: https://www.thinkmate.com/systems/servers/gpx/l40s
+      price_date: '2026-08-01'
+  - id: a100_sxm:server:1
+    system_id: a100_sxm
+    gpu_count: 1
+    purchase_price: 34000
+    installation_cost: 2400
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact public-sector server price schedule
+      url: https://www.gsaadvantage.gov/ref_text/GS35F0278Y/0ZQME9.3VGZ8X_GS-35F0278Y_EXXACTPRICELIST2024.PDF
+      price_date: '2026-08-01'
+  - id: a100_sxm:server:2
+    system_id: a100_sxm
+    gpu_count: 2
+    purchase_price: 59000
+    installation_cost: 4100
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact A100 server catalogue and price schedule
+      url: https://configurator.exxactcorp.com/configure/TWS-194019223
+      price_date: '2026-08-01'
+  - id: a100_sxm:server:4
+    system_id: a100_sxm
+    gpu_count: 4
+    purchase_price: 95000
+    installation_cost: 6700
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Public four-GPU A100 80 GB server and component-price range
+      url: https://www.gsaadvantage.gov/ref_text/GS35F0278Y/0ZQME9.3VGZ8X_GS-35F-0278Y_EXXACTPRICELIST2024.PDF
+      price_date: '2026-08-01'
+  - id: a100_sxm:server:8
+    system_id: a100_sxm
+    gpu_count: 8
+    purchase_price: 160000
+    installation_cost: 11200
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Public eight-GPU A100 80 GB server market range
+      url: https://www.qubrid.com/bare-metal-gpu-servers
+      price_date: '2026-08-01'
+  - id: h100_sxm:server:1
+    system_id: h100_sxm
+    gpu_count: 1
+    purchase_price: 48000
+    installation_cost: 3900
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact HGX H100 server catalogue
+      url: https://www.exxactcorp.com/Exxact-TS4-101818584-E101818584
+      price_date: '2026-08-01'
+  - id: h100_sxm:server:2
+    system_id: h100_sxm
+    gpu_count: 2
+    purchase_price: 98000
+    installation_cost: 6900
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact HGX H100 server catalogue
+      url: https://www.exxactcorp.com/Exxact-TS4-101818584-E101818584
+      price_date: '2026-08-01'
+  - id: h100_sxm:server:8
+    system_id: h100_sxm
+    gpu_count: 8
+    purchase_price: 285000
+    installation_cost: 22300
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact eight-GPU HGX H100 configured system price
+      url: https://configurator.exxactcorp.com/configure/TS4-193475697
+      price_date: '2026-08-01'
+  - id: h200_sxm:server:1
+    system_id: h200_sxm
+    gpu_count: 1
+    purchase_price: 65000
+    installation_cost: 6000
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: H200 SXM GPU market price plus single-GPU server chassis
+      url: https://cpq.exxactcorp.com/quote/view_quote_revs.php?qo_id=173436
+      price_date: '2026-04-28'
+  - id: h200_sxm:server:2
+    system_id: h200_sxm
+    gpu_count: 2
+    purchase_price: 110000
+    installation_cost: 7700
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Derived from Exxact one- and four-GPU H200 system prices
+      url: https://www.exxactcorp.com/Exxact-TS4-180208180-E180208180
+      price_date: '2026-08-01'
+  - id: h200_sxm:server:8
+    system_id: h200_sxm
+    gpu_count: 8
+    purchase_price: 370000
+    installation_cost: 18900
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exxact and GSA eight-GPU H200 system prices
+      url: https://www.exxactcorp.com/Exxact-TS4-118380266-E118380266
+      price_date: '2026-08-01'
+  - id: b200_sxm:server:8
+    system_id: b200_sxm
+    gpu_count: 8
+    purchase_price: 404000
+    installation_cost: 28300
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Exeton eight-GPU HGX B200 optimized configuration range
+      url: https://exeton.com/configure/ts4-169219634
+      price_date: '2026-09-09'
+  - id: l4:server:1
+    system_id: l4
+    gpu_count: 1
+    purchase_price: 18000
+    installation_cost: 1300
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: OEM and GPU-server reseller market range
+      url: https://www.thinkmate.com/systems/servers/gpx/a10
+      price_date: '2026-08-01'
+  - id: l4:server:4
+    system_id: l4
+    gpu_count: 4
+    purchase_price: 24000
+    installation_cost: 1700
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Public four-GPU L4 server and OEM chassis market range
+      url: https://jarvislabs.ai/blog/l4-gpu-price
+      price_date: '2026-08-01'
+  - id: rtx_pro_6000_server:server:1
+    system_id: rtx_pro_6000_server
+    gpu_count: 1
+    purchase_price: 34766
+    installation_cost: 2434
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: B3IQ complete one-GPU RTX PRO 6000 Blackwell server configuration
+      url: https://www.b3iq.org/machines/rtx-pro-6000
+      price_date: '2026-09-09'
+  - id: rtx_pro_6000_server:server:8
+    system_id: rtx_pro_6000_server
+    gpu_count: 8
+    purchase_price: 165000
+    installation_cost: 11550
+    includes: Complete-server planning estimate; configuration and commercial quote require validation.
+    indicative: true
+    source:
+      kind: curated
+      label: Blackwell Cloud complete eight-GPU RTX PRO 6000 server configuration
+      url: https://www.blackwellcloud.com/nvidia-rtx-pro-6000-gpu-servers
+      price_date: '2026-09-09'

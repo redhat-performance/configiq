@@ -20,6 +20,7 @@ EXPECTED_MCP_TOOLS = {
     "get_models_models_get",
     "get_systems_systems_get",
     "get_health_health_get",
+    "get_offers_offers_get",
 }
 
 
