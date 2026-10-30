@@ -1,0 +1,75 @@
+name: Prepare and publish performance data
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the prepared data to Hugging Face (main only)
+        required: true
+        type: boolean
+        default: false
+  schedule:
+    - cron: '0 0 * * 1'
+      timezone: America/New_York
+
+concurrency:
+  group: publish-performance-data
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'redhat-performance/configiq'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Assume S3 read-only role
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::194365112018:role/ConfigIQValidationGitHubActionsRole
+          role-session-name: performance-data-${{ github.run_id }}
+          allowed-account-ids: '194365112018'
+
+      - name: Download aggregated CSV
+        run: |
+          aws s3api get-object \
+            --bucket psap-dashboard-data \
+            --key staging/rhaiis-dashboard/consolidated_dashboard.csv \
+            --query ContentLength \
+            --output text \
+            "$RUNNER_TEMP/consolidated_dashboard.csv"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.18'
+          enable-cache: true
+
+      - name: Install dataset dependencies
+        run: uv sync --locked --group tested-models
+
+      - name: Prepare sanitized model data
+        run: |
+          uv run --locked --group tested-models python scripts/tested_models/import_s3_ground_truth.py \
+            --csv "$RUNNER_TEMP/consolidated_dashboard.csv"
+
+      - name: Compare with current Hugging Face dataset
+        run: uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py --check-only
+
+      - name: Publish changed data
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
+           (github.event_name == 'schedule' && vars.PERFORMANCE_DATA_PUBLISH_ENABLED == 'true'))
+        env:
+          HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-data
+        run: |
+          export HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
+          uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py
