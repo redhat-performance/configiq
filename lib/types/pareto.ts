@@ -8,16 +8,27 @@ export type CandidateStatus =
   | 'failed'
   | 'resource_limited'
 
-export type SimulatorId = 'aisimulate' | 'blis'
+export type SimulatorId = 'aisimulate'
 
+/**
+ * Flat topology dict emitted by the aisimulate SDK (CandidateProvenance.topology).
+ * Keys are exactly what the SDK produces: agg uses tp, pp, attention_dp, moe_tp,
+ * moe_ep; disagg uses the prefill_ and decode_ prefixed keys plus replicas.
+ * No nested objects.
+ */
 export interface CandidateTopology {
   deployment_mode?: string
   tp?: number | null
   pp?: number | null
-  dp?: number | null
-  ep?: number | null
-  prefill?: { tp?: number; pp?: number; workers?: number } | null
-  decode?: { tp?: number; pp?: number; workers?: number } | null
+  attention_dp?: number | null
+  moe_tp?: number | null
+  moe_ep?: number | null
+  prefill_tp?: number | null
+  prefill_pp?: number | null
+  prefill_replicas?: number | null
+  decode_tp?: number | null
+  decode_pp?: number | null
+  decode_replicas?: number | null
   [key: string]: unknown
 }
 
@@ -63,7 +74,3 @@ export interface ParetoRequest {
   database_mode: string
 }
 
-export interface ParetoStreamDoneEvent {
-  done: true
-  views: CandidateViews
-}

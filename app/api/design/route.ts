@@ -1,12 +1,14 @@
 import { type NextRequest, NextResponse } from 'next/server'
 
 /**
- * GET /api/design/stream — SSE proxy to the FastAPI /recommend/stream endpoint.
+ * POST /api/design — proxy to the FastAPI /recommend endpoint with
+ * objective=pareto. Returns the full candidate ledger and SDK views.
  *
- * Forwards all query params directly and streams the response body without
- * buffering. nginx must have proxy_buffering off for this path.
+ * The aisimulate sweep is synchronous and bounded (20 trials / 8s per
+ * candidate) to fit the gateway timeout, so a single request returns the
+ * whole frontier. No streaming.
  */
-export async function GET(req: NextRequest): Promise<NextResponse | Response> {
+export async function POST(req: NextRequest): Promise<NextResponse> {
   const baseUrl = process.env.AISIMULATORS_GATEWAY_URL
   if (!baseUrl) {
     return NextResponse.json(
@@ -15,32 +17,27 @@ export async function GET(req: NextRequest): Promise<NextResponse | Response> {
     )
   }
 
-  const upstreamUrl = `${baseUrl}/recommend/stream?${req.nextUrl.searchParams.toString()}`
-
-  let upstream: Response
+  let body: Record<string, unknown>
   try {
-    upstream = await fetch(upstreamUrl, {
-      method: 'GET',
-      headers: { Accept: 'text/event-stream' },
+    body = await req.json()
+  } catch {
+    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
+  }
+
+  try {
+    const res = await fetch(`${baseUrl}/recommend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ ...body, objective: 'pareto', simulator: 'aisimulate' }),
       signal: AbortSignal.any([req.signal, AbortSignal.timeout(90_000)]),
+    })
+    const text = await res.text()
+    return new NextResponse(text, {
+      status: res.status,
+      headers: { 'Content-Type': 'application/json' },
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'upstream fetch failed'
     return NextResponse.json({ error: msg }, { status: 502 })
   }
-
-  if (!upstream.ok || !upstream.body) {
-    const body = await upstream.text().catch(() => '')
-    return NextResponse.json({ error: body || 'upstream error' }, { status: upstream.status })
-  }
-
-  // Stream the response body directly — do not buffer.
-  return new Response(upstream.body, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'X-Accel-Buffering': 'no',
-    },
-  })
 }

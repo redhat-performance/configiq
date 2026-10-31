@@ -39,12 +39,12 @@ import ExclamationTriangleIcon from "@patternfly/react-icons/dist/esm/icons/excl
 
 import type { Candidate, CandidateViews, ParetoRequest } from "@/lib/types/pareto";
 import { computeFrontier, pickRecommendation } from "@/lib/pareto/frontier";
-import { streamCandidates } from "@/lib/api/pareto-stream";
+import { fetchFrontier } from "@/lib/api/pareto";
 import { ARCHETYPES, type Archetype } from "@/lib/pareto/archetypes";
 import { useCatalog, type GpuOption } from "@/lib/hooks/useCatalog";
 import { ModelInput } from "@/components/ui/ModelInput";
 import { GpuSystemInput } from "@/components/ui/GpuSystemInput";
-import { buildRecipe } from "./recipe";
+import { exportTopology, topologySummary } from "./recipe";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -398,14 +398,14 @@ function CandidateDetail({ candidate, recommendation, sla }: DetailProps) {
     candidate?.objectives?.throughput_per_user != null &&
     candidate.objectives.throughput_per_user >= sla;
 
-  function handleExport(format: "vllm" | "llmd") {
+  function handleExport() {
     if (!candidate) return;
-    const yaml = buildRecipe(candidate, format);
-    const blob = new Blob([yaml], { type: "text/yaml" });
+    const json = exportTopology(candidate);
+    const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${candidate.candidate_id}-${format}.yaml`;
+    a.download = `${candidate.candidate_id}-topology.json`;
     a.click();
     URL.revokeObjectURL(url);
     setExportDone(true);
@@ -459,9 +459,15 @@ function CandidateDetail({ candidate, recommendation, sla }: DetailProps) {
         <DescriptionListGroup>
           <DescriptionListTerm>Mode</DescriptionListTerm>
           <DescriptionListDescription>
-            <Label color={candidate.mode === "disagg" || candidate.mode === "disaggregated" ? "blue" : "grey"} isCompact>
+            <Label color={candidate.mode === "disagg" ? "blue" : "grey"} isCompact>
               {candidate.mode}
             </Label>
+          </DescriptionListDescription>
+        </DescriptionListGroup>
+        <DescriptionListGroup>
+          <DescriptionListTerm>Topology</DescriptionListTerm>
+          <DescriptionListDescription>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12.5 }}>{topologySummary(candidate)}</span>
           </DescriptionListDescription>
         </DescriptionListGroup>
         <DescriptionListGroup>
@@ -506,16 +512,15 @@ function CandidateDetail({ candidate, recommendation, sla }: DetailProps) {
 
       <ActionList>
         <ActionListItem>
-          <Button variant="secondary" icon={<DownloadIcon />} onClick={() => handleExport("vllm")} size="sm">
-            {exportDone ? "Downloaded" : "Export vLLM recipe"}
-          </Button>
-        </ActionListItem>
-        <ActionListItem>
-          <Button variant="secondary" icon={<DownloadIcon />} onClick={() => handleExport("llmd")} size="sm">
-            Export llm-d recipe
+          <Button variant="secondary" icon={<DownloadIcon />} onClick={handleExport} size="sm">
+            {exportDone ? "Downloaded" : "Export deploy topology (JSON)"}
           </Button>
         </ActionListItem>
       </ActionList>
+      <p style={{ fontSize: 11.5, color: "#54585c", marginTop: 8, fontFamily: "var(--font-mono)" }}>
+        Exports the exact topology AISimulate computed. A deployable vLLM / llm-d
+        manifest comes from the SDK generator (generate_backend_artifacts), wired server-side.
+      </p>
     </div>
   );
 }
@@ -526,33 +531,40 @@ export function DesignTool() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [views, setViews] = useState<CandidateViews | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<Candidate | null>(null);
   const [sla, setSla] = useState(20);
-  const cleanupRef = useRef<(() => void) | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const frontier = computeFrontier(candidates);
+  // Prefer the SDK's authoritative pareto_front; fall back to a client-side
+  // non-dominated sort only if the view is missing.
+  const frontier = views?.pareto_front?.length
+    ? candidates.filter((c) => views.pareto_front.includes(c.candidate_id))
+    : computeFrontier(candidates);
   const frontierIds = new Set(frontier.map((c) => c.candidate_id));
   const recommendation = pickRecommendation(frontier, sla);
 
-  const handleSubmit = useCallback((req: ParetoRequest, slaTok: number) => {
-    // Cancel any in-flight sweep
-    cleanupRef.current?.();
+  const handleSubmit = useCallback(async (req: ParetoRequest, slaTok: number) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setCandidates([]);
     setViews(null);
     setSelected(null);
+    setError(null);
     setSla(slaTok);
     setLoading(true);
-
-    const cleanup = streamCandidates(
-      req,
-      (c) => setCandidates((prev) => [...prev, c]),
-      (v) => {
-        setViews(v);
-        setLoading(false);
-      },
-      () => setLoading(false)
-    );
-    cleanupRef.current = cleanup;
+    try {
+      const { candidates: cs, views: vs } = await fetchFrontier(req, controller.signal);
+      setCandidates(cs);
+      setViews(vs);
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setError(e instanceof Error ? e.message : "sweep failed");
+      }
+    } finally {
+      if (!controller.signal.aborted) setLoading(false);
+    }
   }, []);
 
   return (
@@ -573,6 +585,11 @@ export function DesignTool() {
           )}
         </CardTitle>
         <CardBody>
+          {error && (
+            <div style={{ padding: "10px 16px", marginBottom: 12, borderRadius: 4, background: "#faeae8", border: "1px solid #c9190b", fontSize: 13 }}>
+              Sweep failed: {error}
+            </div>
+          )}
           <FrontierChart
             candidates={candidates}
             frontierIds={frontierIds}

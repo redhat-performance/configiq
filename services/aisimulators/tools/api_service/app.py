@@ -9,13 +9,11 @@ See docs/api/openapi.yaml for the full spec.
 """
 
 import argparse
-import asyncio
 import hashlib
 import json
 import logging
 import math
 import os
-import queue as _queue
 import re
 import sys
 import tempfile
@@ -23,14 +21,14 @@ import threading
 from collections import Counter, OrderedDict
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, AsyncGenerator, Literal
+from typing import Any, Literal
 
 import pandas as pd
 import uvicorn
 from configiq.systems import load_device_names_from_perf_data, supported_systems
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, StreamingResponse
+from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from aisimulate_core.sdk.backends.factory import get_backend
@@ -302,7 +300,12 @@ class SimulatorProvenance(BaseModel):
 
 
 class CandidateResponse(BaseModel):
-    """One candidate from a sweep — from aisimulate CandidateRecord or a BLIS RecommendConfig."""
+    """One candidate from an aisimulate pareto sweep — a subset of the SDK CandidateRecord.
+
+    Every field is copied verbatim from the SDK record; nothing is synthesized.
+    `topology` carries the SDK's flat parallelism keys (deployment_mode, tp, pp,
+    prefill_tp, decode_tp, prefill_replicas, …) exactly as emitted.
+    """
     candidate_id: str
     status: Literal["feasible", "infeasible", "unsupported", "timed_out", "failed", "resource_limited"]
     reason_category: str | None = None
@@ -313,7 +316,7 @@ class CandidateResponse(BaseModel):
     objectives: dict[str, float] | None = None
     transfer_delay_modeled: bool = False
     provenance_sources: list[str] = Field(default_factory=list)
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: Literal["aisimulate"] = "aisimulate"
 
 
 class CandidateViews(BaseModel):
@@ -1017,38 +1020,6 @@ def _candidate_record_to_response(record: Any, *, transfer_delay_modeled: bool) 
     )
 
 
-def _blis_config_to_candidate_response(cfg: RecommendConfig, idx: int, *, fabric: str | None) -> CandidateResponse:
-    """Adapt a BLIS RecommendConfig into the shared CandidateResponse shape."""
-    is_disagg = cfg.mode == "disagg"
-    topology: dict[str, Any] = {"deployment_mode": cfg.mode}
-    if is_disagg:
-        if cfg.prefill_config:
-            topology["prefill"] = {"tp": cfg.prefill_config.tp, "pp": cfg.prefill_config.pp, "workers": cfg.prefill_config.num_workers}
-        if cfg.decode_config:
-            topology["decode"] = {"tp": cfg.decode_config.tp, "pp": cfg.decode_config.pp, "workers": cfg.decode_config.num_workers}
-    else:
-        topology.update({"tp": cfg.tp, "pp": cfg.pp, "dp": cfg.dp})
-    metrics: dict[str, float | None] = {
-        "ttft_ms": cfg.ttft,
-        "tpot_ms": cfg.tpot,
-        "tokens_per_second": cfg.tokens_per_second,
-        "tokens_per_second_per_gpu": cfg.tokens_per_second_per_gpu,
-        "tokens_per_second_per_user": cfg.tokens_per_second_per_user,
-    }
-    return CandidateResponse(
-        candidate_id=f"blis-{idx}",
-        status="feasible",
-        mode=cfg.mode,
-        topology=topology,
-        used_gpus=cfg.total_gpus_needed or cfg.num_total_gpus,
-        metrics=metrics,
-        objectives=None,
-        transfer_delay_modeled=is_disagg and fabric is not None,
-        provenance_sources=["blis"],
-        simulator="blis",
-    )
-
-
 def _run_aisimulate_recommendation(req: RecommendRequest):
     from aisimulate.recommend import run_recommendation
 
@@ -1737,17 +1708,11 @@ def post_recommend(
             _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
         if not outcome.configs:
             raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
-        blis_configs = [RecommendConfig.model_validate(config) for config in outcome.configs]
-        blis_candidates = [
-            _blis_config_to_candidate_response(cfg, i, fabric=req.fabric)
-            for i, cfg in enumerate(blis_configs)
-        ]
         return RecommendResponse(
-            configs=blis_configs,
+            configs=[RecommendConfig.model_validate(config) for config in outcome.configs],
             chosen_mode=str(outcome.configs[0].get("mode", "agg")),
             simulator="blis",
             search_summary=outcome.search_summary,
-            candidates=blis_candidates,
         )
 
     try:
@@ -1758,17 +1723,11 @@ def post_recommend(
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
 
     candidates = result.selected_candidates[: req.top_n]
-    # For pareto sweeps the full ledger lives in result.candidates, not selected_candidates.
-    # Only raise 422 if there's genuinely nothing to return for the chosen objective.
+    # Pareto returns the frontier via selected_candidates; the full ledger is in
+    # result.candidates. Fail only when the sweep found nothing at all.
     if req.objective == "pareto":
-        all_candidates = getattr(result, "candidates", [])
-        if not all_candidates:
+        if not result.candidates:
             raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
-        # configs is built from selected_candidates; for pareto those are the feasible top-N
-        # by GPU count — populate an empty list if none are selected, the /candidates field
-        # carries the full ledger.
-        if not candidates:
-            candidates = []
     elif not candidates:
         raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
 
@@ -1824,146 +1783,24 @@ def post_recommend(
     chosen_mode = "disagg" if configs and configs[0].prefill_config is not None else "agg"
     candidate_responses: list[CandidateResponse] = []
     pareto_views: CandidateViews | None = None
-    if req.objective == "pareto" and hasattr(result, "candidates"):
+    if req.objective == "pareto":
         for record in result.candidates:
-            record_topology = dict(record.provenance.topology) if record.provenance and record.provenance.topology else {}
-            is_disagg = record_topology.get("deployment_mode") in ("disagg", "disaggregated")
+            topology = dict(record.provenance.topology) if record.provenance else {}
+            is_disagg = topology.get("deployment_mode") == "disagg"
             candidate_responses.append(
                 _candidate_record_to_response(record, transfer_delay_modeled=is_disagg)
             )
-        views_obj = getattr(result, "views", None)
-        pareto_front_ids: list[str] = []
-        top_n_ids: list[str] = []
-        if views_obj is not None:
-            pf = getattr(views_obj, "pareto_front", None)
-            if pf is not None:
-                pareto_front_ids = [str(c.candidate_id) for c in pf] if pf and hasattr(pf[0], "candidate_id") else [str(x) for x in pf]
-            tn = getattr(views_obj, "top_n", None)
-            if tn is not None:
-                top_n_ids = [str(c.candidate_id) for c in tn] if tn and hasattr(tn[0], "candidate_id") else [str(x) for x in tn]
-        pareto_views = CandidateViews(pareto_front=pareto_front_ids, top_n=top_n_ids)
+        # ResultViews.pareto_front / top_n are plain candidate-ID string lists.
+        pareto_views = CandidateViews(
+            pareto_front=list(result.views.pareto_front),
+            top_n=list(result.views.top_n),
+        )
     return RecommendResponse(
         configs=configs,
         chosen_mode=chosen_mode,
         simulator="aisimulate",
         candidates=candidate_responses,
         views=pareto_views,
-    )
-
-
-# ─── SSE streaming endpoint ──────────────────────────────────────────────────
-
-_SENTINEL = object()
-
-
-def _run_recommendation_with_callback(
-    config: Any,
-    runner_factory: Any,
-    q: "_queue.Queue[Any]",
-) -> Any:
-    """Run the synchronous aisimulate sweep, feeding each candidate into q.
-
-    Called in a thread via asyncio.to_thread. Returns the final SweepResult.
-    """
-    from aisimulate.recommend import run_recommendation
-
-    def on_candidate(record: Any) -> None:
-        q.put(record)
-
-    result = run_recommendation(
-        config,
-        stack="engine",
-        runner_factory=runner_factory,
-        show_progress=False,
-        on_candidate=on_candidate,
-    )
-    q.put(_SENTINEL)
-    return result
-
-
-async def _pareto_sse_generator(req: RecommendRequest) -> AsyncGenerator[str, None]:
-    """Yield SSE events for each candidate, then a final done event with views."""
-    from aisimulate.recommend import run_recommendation  # noqa: F401 — presence check
-
-    q: "_queue.Queue[Any]" = _queue.Queue()
-    loop = asyncio.get_event_loop()
-
-    with _with_model_config(req.model_path, req.model_config_data) as effective_path:
-        config = _aisimulate_recommendation_config(req, model_path=effective_path)
-        runner_factory = _aisimulate_runner_factory()
-
-        sweep_task = asyncio.create_task(
-            asyncio.to_thread(_run_recommendation_with_callback, config, runner_factory, q)
-        )
-
-        while True:
-            item = await loop.run_in_executor(None, q.get)
-            if item is _SENTINEL:
-                break
-            record_topology = (
-                dict(item.provenance.topology)
-                if item.provenance and item.provenance.topology
-                else {}
-            )
-            is_disagg = record_topology.get("deployment_mode") in ("disagg", "disaggregated")
-            candidate = _candidate_record_to_response(item, transfer_delay_modeled=is_disagg)
-            yield f"data: {candidate.model_dump_json()}\n\n"
-
-        result = await sweep_task
-
-    views_obj = getattr(result, "views", None)
-    pareto_front_ids: list[str] = []
-    top_n_ids: list[str] = []
-    if views_obj is not None:
-        pf = getattr(views_obj, "pareto_front", None)
-        if pf:
-            pareto_front_ids = [str(c.candidate_id) for c in pf] if hasattr(pf[0], "candidate_id") else [str(x) for x in pf]
-        tn = getattr(views_obj, "top_n", None)
-        if tn:
-            top_n_ids = [str(c.candidate_id) for c in tn] if hasattr(tn[0], "candidate_id") else [str(x) for x in tn]
-    views = CandidateViews(pareto_front=pareto_front_ids, top_n=top_n_ids)
-    done_payload = json.dumps({"done": True, "views": views.model_dump()})
-    yield f"data: {done_payload}\n\n"
-
-
-@app.get("/recommend/stream")
-async def get_recommend_stream(
-    model_path: str = Query(..., description="HuggingFace model path or SDK model key."),
-    system: str = Query(..., description="GPU system identifier."),
-    isl: int = Query(default=4000, description="Input sequence length."),
-    osl: int = Query(default=1000, description="Output sequence length."),
-    ttft: float = Query(default=2000.0, description="TTFT SLA (ms)."),
-    tpot: float = Query(default=30.0, description="TPOT SLA (ms)."),
-    backend: str = Query(default="vllm", description="Inference backend."),
-    kv_transfer_bandwidth_gb_per_second: float = Query(default=25.0, gt=0, description="P/D transfer bandwidth (GB/s)."),
-    min_candidate_gpus: int | None = Query(default=None, gt=0),
-    max_candidate_gpus: int | None = Query(default=None, gt=0),
-    database_mode: str = Query(default="HYBRID"),
-):
-    """Stream pareto sweep candidates as SSE events.
-
-    Yields one ``data: <CandidateResponse JSON>`` per candidate as it lands,
-    then a final ``data: {"done": true, "views": {...}}`` event.
-    """
-    req = RecommendRequest(
-        model_path=model_path,
-        system=system,
-        isl=isl,
-        osl=osl,
-        ttft=ttft,
-        tpot=tpot,
-        backend=backend,
-        objective="pareto",
-        kv_transfer_bandwidth_gb_per_second=kv_transfer_bandwidth_gb_per_second,
-        min_candidate_gpus=min_candidate_gpus,
-        max_candidate_gpus=max_candidate_gpus,
-        database_mode=database_mode,
-        simulator="aisimulate",
-    )
-    return StreamingResponse(
-        _pareto_sse_generator(req),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
