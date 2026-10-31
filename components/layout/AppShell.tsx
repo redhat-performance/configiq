@@ -193,6 +193,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/gpu-explorer"
               isActive={pathname === "/gpu-explorer"}
             />
+            <NavItemWithIcon
+              icon={RouteIcon}
+              label="Topology design"
+              href="/design"
+              isActive={pathname.startsWith("/design")}
+            />
             {false && <NavItemWithIcon
               icon={ListIcon}
               label="Compare"
