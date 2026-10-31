@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActionList,
   ActionListItem,
@@ -253,19 +253,60 @@ interface ChartPaneProps {
   loading: boolean;
 }
 
+// Validated categorical palette (dataviz skill, light surface):
+// frontier/feasible pair passes all six checks (CVD ΔE 17.4, contrast ≥3:1).
+const C_FRONTIER = "#0066cc";   // primary — on the frontier
+const C_FEASIBLE = "#009596";   // feasible, not on frontier
+const C_INFEASIBLE = "#b8bbbe"; // muted — infeasible/unsupported (a state, not a series)
+const C_SELECTED = "#f0ab00";   // transient highlight (with white ring)
+const C_SLA = "#c9190b";        // SLA threshold reference line
+const INK_2 = "#3c3f42";
+const INK_CAP = "#54585c";
+
+function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(640);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width;
+      if (w && w > 0) setWidth(Math.floor(w));
+    });
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
+
+function fmtThousands(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${Math.round(n)}`;
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginRight: 16 }}>
+      <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
+      <span style={{ fontSize: 12, color: INK_2 }}>{label}</span>
+    </span>
+  );
+}
+
 function FrontierChart({ candidates, frontierIds, sla, selected, onSelect, loading }: ChartPaneProps) {
+  const [wrapRef, width] = useContainerWidth();
+
   const feasible = candidates.filter((c) => c.status === "feasible" && c.objectives);
-  const infeasible = candidates.filter((c) => c.status !== "feasible" || !c.objectives);
+  const infeasible = candidates.filter((c) => (c.status !== "feasible") && c.objectives);
 
   const frontierPoints = feasible
     .filter((c) => frontierIds.has(c.candidate_id))
-    .sort((a, b) => (a.objectives!.throughput_per_user - b.objectives!.throughput_per_user));
+    .sort((a, b) => a.objectives!.throughput_per_user - b.objectives!.throughput_per_user);
+  const feasibleOff = feasible.filter((c) => !frontierIds.has(c.candidate_id));
 
   const toPoint = (c: Candidate) => ({
     x: c.objectives!.throughput_per_user,
     y: c.objectives!.throughput_per_gpu,
     candidate: c,
-    name: `${c.candidate_id} (${c.mode}, ${c.used_gpus ?? "?"}× GPU)`,
+    name: `${c.mode} · ${c.used_gpus ?? "?"} GPU · ${Math.round(c.objectives!.throughput_per_user)} tok/s/user · ${fmtThousands(c.objectives!.throughput_per_gpu)} tok/s/GPU`,
   });
 
   if (candidates.length === 0 && !loading) {
@@ -276,131 +317,118 @@ function FrontierChart({ candidates, frontierIds, sla, selected, onSelect, loadi
     );
   }
 
+  // Explicit, data-fit domain with padding. This is the fix for the collapsed
+  // y-axis: never feed Infinity to the scale. The SLA line spans the real range.
+  const withObj = candidates.filter((c) => c.objectives);
+  const xs = withObj.map((c) => c.objectives!.throughput_per_user);
+  const ys = withObj.map((c) => c.objectives!.throughput_per_gpu);
+  const xMin = Math.min(sla, ...(xs.length ? xs : [0]));
+  const xMax = Math.max(sla, ...(xs.length ? xs : [1]));
+  const yMin = Math.min(...(ys.length ? ys : [0]));
+  const yMax = Math.max(...(ys.length ? ys : [1]));
+  const xPad = Math.max((xMax - xMin) * 0.08, 1);
+  const yPad = Math.max((yMax - yMin) * 0.1, 1);
+  const domain = {
+    x: [Math.max(0, xMin - xPad), xMax + xPad] as [number, number],
+    y: [Math.max(0, yMin - yPad), yMax + yPad] as [number, number],
+  };
+
   return (
-    <div style={{ position: "relative" }}>
+    <div ref={wrapRef} style={{ position: "relative", minHeight: 380 }}>
       {loading && (
-        <div style={{ position: "absolute", top: 12, right: 16, display: "flex", alignItems: "center", gap: 8, zIndex: 10 }}>
+        <div style={{ position: "absolute", top: 8, right: 8, display: "flex", alignItems: "center", gap: 8, zIndex: 10 }}>
           <Spinner size="sm" />
-          <span style={{ fontSize: 13, color: "#54585c" }}>Streaming candidates…</span>
+          <span style={{ fontSize: 13, color: INK_CAP }}>Running sweep…</span>
         </div>
       )}
       <Chart
         containerComponent={
-          <ChartVoronoiContainer
-            labels={({ datum }) => datum.name ?? ""}
-            constrainToVisibleArea
-          />
+          <ChartVoronoiContainer labels={({ datum }) => (datum as { name?: string }).name ?? ""} constrainToVisibleArea />
         }
-        height={340}
-        padding={{ top: 24, bottom: 56, left: 72, right: 24 }}
-        width={520}
+        domain={domain}
+        height={360}
+        padding={{ top: 20, bottom: 56, left: 76, right: 24 }}
+        width={width}
       >
         <ChartAxis
           label="Throughput per user (tok/s/user)"
-          style={{ axisLabel: { fontSize: 11, padding: 36 } }}
+          style={{
+            axisLabel: { fontSize: 12, padding: 38, fill: INK_2 },
+            tickLabels: { fontSize: 11, fill: INK_CAP },
+            grid: { stroke: "#f0f0f0" },
+          }}
         />
         <ChartAxis
           dependentAxis
           label="Throughput per GPU (tok/s/GPU)"
-          style={{ axisLabel: { fontSize: 11, padding: 52 } }}
+          tickFormat={(t: number) => fmtThousands(t)}
+          style={{
+            axisLabel: { fontSize: 12, padding: 56, fill: INK_2 },
+            tickLabels: { fontSize: 11, fill: INK_CAP },
+            grid: { stroke: "#f0f0f0" },
+          }}
         />
 
-        {/* SLA guide line */}
+        {/* SLA threshold — vertical reference line across the real y-domain */}
         {sla > 0 && (
           <ChartLine
             data={[
-              { x: sla, y: 0 },
-              { x: sla, y: Infinity },
+              { x: sla, y: domain.y[0] },
+              { x: sla, y: domain.y[1] },
             ]}
-            style={{ data: { stroke: "#c9190b", strokeDasharray: "4 3", strokeWidth: 1.5 } }}
+            style={{ data: { stroke: C_SLA, strokeDasharray: "5 4", strokeWidth: 1.5 } }}
           />
         )}
 
-        {/* Infeasible / other candidates */}
-        {infeasible.length > 0 && (
-          <ChartScatter
-            data={infeasible
-              .filter((c) => c.objectives)
-              .map(toPoint)}
-            style={{ data: { fill: "#d2d2d2", opacity: 0.6 } }}
-            size={4}
-          />
-        )}
-
-        {/* Feasible non-frontier candidates */}
-        {feasible.filter((c) => !frontierIds.has(c.candidate_id)).length > 0 && (
-          <ChartScatter
-            data={feasible
-              .filter((c) => !frontierIds.has(c.candidate_id))
-              .map(toPoint)}
-            style={{ data: { fill: "#73c5c5", opacity: 0.7 } }}
-            size={5}
-            events={[
-              {
-                target: "data",
-                eventHandlers: {
-                  onClick: (_, props) => {
-                    onSelect((props.datum as { candidate: Candidate }).candidate);
-                    return [];
-                  },
-                },
-              },
-            ]}
-          />
-        )}
-
-        {/* Pareto frontier points */}
-        {frontierPoints.length > 0 && (
-          <ChartScatter
-            data={frontierPoints.map(toPoint)}
-            style={{
-              data: {
-                fill: ({ datum }) =>
-                  selected?.candidate_id === (datum as { candidate: Candidate }).candidate.candidate_id
-                    ? "#f0ab00"
-                    : "#0066cc",
-                stroke: "#fff",
-                strokeWidth: 1.5,
-              },
-            }}
-            size={7}
-            events={[
-              {
-                target: "data",
-                eventHandlers: {
-                  onClick: (_, props) => {
-                    onSelect((props.datum as { candidate: Candidate }).candidate);
-                    return [];
-                  },
-                },
-              },
-            ]}
-          />
-        )}
-
-        {/* Step line connecting frontier */}
+        {/* Frontier connector (drawn under the points) */}
         {frontierPoints.length > 1 && (
           <ChartLine
             data={frontierPoints.map(toPoint)}
-            style={{ data: { stroke: "#0066cc", strokeWidth: 1.5, opacity: 0.5 } }}
+            interpolation="stepAfter"
+            style={{ data: { stroke: C_FRONTIER, strokeWidth: 2, opacity: 0.35 } }}
+          />
+        )}
+
+        {/* Infeasible — muted, non-interactive context */}
+        {infeasible.length > 0 && (
+          <ChartScatter data={infeasible.map(toPoint)} size={4} style={{ data: { fill: C_INFEASIBLE, opacity: 0.7 } }} />
+        )}
+
+        {/* Feasible, off-frontier */}
+        {feasibleOff.length > 0 && (
+          <ChartScatter
+            data={feasibleOff.map(toPoint)}
+            size={6}
+            style={{ data: { fill: C_FEASIBLE, stroke: "#fff", strokeWidth: 1 } }}
+            events={[{ target: "data", eventHandlers: { onClick: (_: unknown, p: { datum?: { candidate: Candidate } }) => { if (p.datum) onSelect(p.datum.candidate); return []; } } }]}
+          />
+        )}
+
+        {/* Pareto frontier — primary */}
+        {frontierPoints.length > 0 && (
+          <ChartScatter
+            data={frontierPoints.map(toPoint)}
+            size={(args: { datum?: { candidate: Candidate } }) => (selected?.candidate_id === args.datum?.candidate.candidate_id ? 10 : 8)}
+            style={{
+              data: {
+                fill: (args: { datum?: { candidate: Candidate } }) => (selected?.candidate_id === args.datum?.candidate.candidate_id ? C_SELECTED : C_FRONTIER),
+                stroke: "#fff",
+                strokeWidth: 2,
+              },
+            }}
+            events={[{ target: "data", eventHandlers: { onClick: (_: unknown, p: { datum?: { candidate: Candidate } }) => { if (p.datum) onSelect(p.datum.candidate); return []; } } }]}
           />
         )}
       </Chart>
 
-      <div style={{ fontSize: 11, color: "#54585c", marginTop: 4, paddingLeft: 8 }}>
-        <span style={{ marginRight: 12 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#0066cc", marginRight: 4 }} />
-          Pareto frontier
+      <div style={{ marginTop: 4, paddingLeft: 12, display: "flex", flexWrap: "wrap", alignItems: "center" }}>
+        <LegendDot color={C_FRONTIER} label="Pareto frontier" />
+        <LegendDot color={C_FEASIBLE} label="Feasible" />
+        <LegendDot color={C_INFEASIBLE} label="Infeasible" />
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 16, height: 0, borderTop: `2px dashed ${C_SLA}`, display: "inline-block" }} />
+          <span style={{ fontSize: 12, color: INK_2 }}>SLA threshold</span>
         </span>
-        <span style={{ marginRight: 12 }}>
-          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#73c5c5", marginRight: 4 }} />
-          Feasible
-        </span>
-        <span>
-          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: "#d2d2d2", marginRight: 4 }} />
-          Infeasible
-        </span>
-        <span style={{ marginLeft: 12, color: "#c9190b" }}>— SLA threshold</span>
       </div>
     </div>
   );
