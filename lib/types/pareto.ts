@@ -18,17 +18,30 @@ export type SimulatorId = 'aisimulate'
  */
 export interface CandidateTopology {
   deployment_mode?: string
+  // agg
   tp?: number | null
   pp?: number | null
   attention_dp?: number | null
   moe_tp?: number | null
   moe_ep?: number | null
+  replicas?: number | null
+  strategy?: string | null
+  // disagg — prefill role
   prefill_tp?: number | null
   prefill_pp?: number | null
+  prefill_attention_dp?: number | null
+  prefill_moe_tp?: number | null
+  prefill_moe_ep?: number | null
   prefill_replicas?: number | null
+  prefill_strategy?: string | null
+  // disagg — decode role
   decode_tp?: number | null
   decode_pp?: number | null
+  decode_attention_dp?: number | null
+  decode_moe_tp?: number | null
+  decode_moe_ep?: number | null
   decode_replicas?: number | null
+  decode_strategy?: string | null
   [key: string]: unknown
 }
 

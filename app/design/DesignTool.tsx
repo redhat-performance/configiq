@@ -44,7 +44,7 @@ import { ARCHETYPES, type Archetype } from "@/lib/pareto/archetypes";
 import { useCatalog, type GpuOption } from "@/lib/hooks/useCatalog";
 import { ModelInput } from "@/components/ui/ModelInput";
 import { GpuSystemInput } from "@/components/ui/GpuSystemInput";
-import { exportTopology, topologySummary } from "./recipe";
+import { exportTopology, topologySummary, xpydLabel } from "./recipe";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -306,7 +306,7 @@ function FrontierChart({ candidates, frontierIds, sla, selected, onSelect, loadi
     x: c.objectives!.throughput_per_user,
     y: c.objectives!.throughput_per_gpu,
     candidate: c,
-    name: `${c.mode} · ${c.used_gpus ?? "?"} GPU · ${Math.round(c.objectives!.throughput_per_user)} tok/s/user · ${fmtThousands(c.objectives!.throughput_per_gpu)} tok/s/GPU`,
+    name: `${xpydLabel(c) ?? c.mode} · ${c.used_gpus ?? "?"} GPU · ${Math.round(c.objectives!.throughput_per_user)} tok/s/user · ${fmtThousands(c.objectives!.throughput_per_gpu)} tok/s/GPU`,
   });
 
   if (candidates.length === 0 && !loading) {
@@ -511,7 +511,7 @@ function CandidateDetail({ candidate, recommendation, sla }: DetailProps) {
           <DescriptionListTerm>Mode</DescriptionListTerm>
           <DescriptionListDescription>
             <Label color={candidate.mode === "disagg" ? "blue" : "grey"} isCompact>
-              {candidate.mode}
+              {candidate.mode === "disagg" ? `disagg · ${xpydLabel(candidate)}` : candidate.mode}
             </Label>
           </DescriptionListDescription>
         </DescriptionListGroup>
