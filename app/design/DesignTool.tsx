@@ -67,6 +67,7 @@ function IntakePane({ onSubmit, loading }: IntakeProps) {
   const [ttft, setTtft] = useState(2000);
   const [tpot, setTpot] = useState(30);
   const [sla, setSla] = useState(ARCHETYPES[0].sla_tok_per_sec);
+  const [maxGpus, setMaxGpus] = useState(8);
 
   function selectArchetype(a: Archetype) {
     setArchetype(a);
@@ -88,6 +89,7 @@ function IntakePane({ onSubmit, loading }: IntakeProps) {
         backend: "vllm",
         kv_transfer_bandwidth_gb_per_second: DEFAULT_KV_BW,
         database_mode: "HYBRID",
+        max_candidate_gpus: maxGpus,
       },
       sla
     );
@@ -190,21 +192,42 @@ function IntakePane({ onSubmit, loading }: IntakeProps) {
           </SplitItem>
         </Split>
 
-        <FormGroup label="Min throughput (tok/s/user)" fieldId="design-sla" style={{ marginBottom: 24 }}>
-          <NumberInput
-            id="design-sla"
-            value={sla}
-            min={1}
-            onMinus={() => setSla(Math.max(1, sla - 5))}
-            onPlus={() => setSla(sla + 5)}
-            onChange={(e) => setSla(Number((e.target as HTMLInputElement).value))}
-          />
-          <FormHelperText>
-            <HelperText>
-              <HelperTextItem>Frontier filter — only candidates meeting this threshold are highlighted.</HelperTextItem>
-            </HelperText>
-          </FormHelperText>
-        </FormGroup>
+        <Split hasGutter style={{ marginBottom: 24 }}>
+          <SplitItem isFilled>
+            <FormGroup label="Min throughput (tok/s/user)" fieldId="design-sla">
+              <NumberInput
+                id="design-sla"
+                value={sla}
+                min={1}
+                onMinus={() => setSla(Math.max(1, sla - 5))}
+                onPlus={() => setSla(sla + 5)}
+                onChange={(e) => setSla(Number((e.target as HTMLInputElement).value))}
+              />
+              <FormHelperText>
+                <HelperText>
+                  <HelperTextItem>Frontier filter — only candidates meeting this threshold are highlighted.</HelperTextItem>
+                </HelperText>
+              </FormHelperText>
+            </FormGroup>
+          </SplitItem>
+          <SplitItem>
+            <FormGroup label="Max GPUs" fieldId="design-maxgpus">
+              <NumberInput
+                id="design-maxgpus"
+                value={maxGpus}
+                min={1}
+                onMinus={() => setMaxGpus(Math.max(1, maxGpus - 1))}
+                onPlus={() => setMaxGpus(maxGpus + 1)}
+                onChange={(e) => setMaxGpus(Math.max(1, Number((e.target as HTMLInputElement).value)))}
+              />
+              <FormHelperText>
+                <HelperText>
+                  <HelperTextItem>Caps the topology search space.</HelperTextItem>
+                </HelperText>
+              </FormHelperText>
+            </FormGroup>
+          </SplitItem>
+        </Split>
 
         <Button
           variant="primary"
