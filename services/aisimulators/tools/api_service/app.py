@@ -680,9 +680,11 @@ def _aisimulate_recommendation_config(
     is_pareto = req.objective == "pareto"
     modes = ["aggregated"] if window_max_gpus == 1 else ["aggregated", "disaggregated"]
     if is_pareto:
-        max_trials = 20
+        max_trials = int(os.environ.get("PARETO_MAX_TRIALS", "20"))
         parallelism = 8
-        candidate_timeout_seconds = 8
+        # Per-candidate wall budget. Default 8s fits the prod gateway; raise via
+        # env for slower (e.g. emulated) hosts so heavy candidates still complete.
+        candidate_timeout_seconds = int(os.environ.get("PARETO_CANDIDATE_TIMEOUT_S", "8"))
     else:
         max_trials = 1 if window_max_gpus == 1 else 4 if req.max_candidate_gpus is not None else 8
         parallelism = 1 if window_max_gpus == 1 else 2 if req.max_candidate_gpus is not None else 4
