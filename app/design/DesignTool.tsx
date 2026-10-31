@@ -500,7 +500,7 @@ function CandidateDetail({ candidate, recommendation, sla }: DetailProps) {
         </span>
       </div>
 
-      <DescriptionList isHorizontal style={{ marginBottom: 16 }}>
+      <DescriptionList isHorizontal columnModifier={{ default: "2Col" }} style={{ marginBottom: 16 }}>
         <DescriptionListGroup>
           <DescriptionListTerm>Candidate</DescriptionListTerm>
           <DescriptionListDescription>
@@ -619,52 +619,51 @@ export function DesignTool() {
   }, []);
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "320px 1fr 320px", gap: 16, padding: 16, minHeight: "calc(100vh - 64px)", alignItems: "start" }}>
-      {/* Left: Intake */}
+    <div style={{ display: "grid", gridTemplateColumns: "420px minmax(0, 1fr)", gap: 16, padding: 16, minHeight: "calc(100vh - 64px)", alignItems: "start" }}>
+      {/* Left: Intake (wider) */}
       <div>
         <IntakePane onSubmit={handleSubmit} loading={loading} />
       </div>
 
-      {/* Center: Chart */}
-      <Card>
-        <CardTitle>
-          Pareto frontier
-          {candidates.length > 0 && (
-            <span style={{ fontSize: 12, fontWeight: 400, color: "#54585c", marginLeft: 12 }}>
-              {candidates.length} candidates · {frontier.length} on frontier
-            </span>
-          )}
-        </CardTitle>
-        <CardBody>
-          {error && (
-            <div style={{ padding: "10px 16px", marginBottom: 12, borderRadius: 4, background: "#faeae8", border: "1px solid #c9190b", fontSize: 13 }}>
-              Sweep failed: {error}
-            </div>
-          )}
-          <FrontierChart
-            candidates={candidates}
-            frontierIds={frontierIds}
-            sla={sla}
-            selected={selected}
-            onSelect={setSelected}
-            loading={loading}
-          />
-        </CardBody>
-      </Card>
+      {/* Right: chart on top, candidate detail below */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+        <Card>
+          <CardTitle>
+            Pareto frontier
+            {candidates.length > 0 && (
+              <span style={{ fontSize: 12, fontWeight: 400, color: "#54585c", marginLeft: 12 }}>
+                {candidates.length} candidates · {frontier.length} on frontier
+              </span>
+            )}
+          </CardTitle>
+          <CardBody>
+            {error && (
+              <div style={{ padding: "10px 16px", marginBottom: 12, borderRadius: 4, background: "#faeae8", border: "1px solid #c9190b", fontSize: 13 }}>
+                Sweep failed: {error}
+              </div>
+            )}
+            <FrontierChart
+              candidates={candidates}
+              frontierIds={frontierIds}
+              sla={sla}
+              selected={selected}
+              onSelect={setSelected}
+              loading={loading}
+            />
+          </CardBody>
+        </Card>
 
-      {/* Right: Detail */}
-      <Card>
-        <CardTitle>
-          {selected ? "Selected candidate" : "Candidate detail"}
-        </CardTitle>
-        <CardBody>
-          <CandidateDetail
-            candidate={selected ?? recommendation}
-            recommendation={recommendation}
-            sla={sla}
-          />
-        </CardBody>
-      </Card>
+        <Card>
+          <CardTitle>{selected ? "Selected candidate" : "Candidate detail"}</CardTitle>
+          <CardBody>
+            <CandidateDetail
+              candidate={selected ?? recommendation}
+              recommendation={recommendation}
+              sla={sla}
+            />
+          </CardBody>
+        </Card>
+      </div>
     </div>
   );
 }
