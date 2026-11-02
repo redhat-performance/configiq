@@ -198,7 +198,9 @@ export default function GroundTruthComparisonPage() {
   const currentBackend = predictionBackendOptions.find(backend => backend.id === activePredictionBackend)
   const backendVersions = currentBackend?.versions ?? []
   const availableBackendVersions = supportedBackendVersions(currentBackend, currentGpu?.systemId ?? null)
-  const predictionRuntimeMismatch = Boolean(selectedConfiguration && !predictionControlsLocked)
+  const disaggregatedMeasurement = selectedConfiguration?.values.measurement_source === 'InferenceX'
+    && Boolean(selectedConfiguration.values.inferencex_topology?.startsWith('disaggregated'))
+  const predictionRuntimeMismatch = Boolean(selectedConfiguration && (!predictionControlsLocked || disaggregatedMeasurement))
   const modelItems = React.useMemo<ComboBoxItem[]>(() => filterOptions.model.map(model => ({
     value: model,
     label: model,
@@ -400,6 +402,15 @@ export default function GroundTruthComparisonPage() {
       setGroundTruth(internalPoints)
       setInferenceX(inferencexPoints)
       setGroundTruthState('loaded')
+
+      if (disaggregatedMeasurement) {
+        setNotice({
+          variant: 'warning',
+          title: 'Measurements loaded; prediction is not comparable',
+          message: 'This InferenceX configuration uses a disaggregated prefill/decode topology. AISimulators predicts an aggregated deployment for this selection, so no prediction is overlaid and no percentage difference is shown.',
+        })
+        return
+      }
 
       if (!currentGpu || !currentBackend || !activePredictionVersion
         || !availableBackendVersions.includes(activePredictionVersion)
