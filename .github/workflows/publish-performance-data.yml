@@ -73,5 +73,7 @@ jobs:
         env:
           HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-upstream-data
         run: |
-          export HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
+          HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
+          echo "::add-mask::${HF_TOKEN}"
+          export HF_TOKEN
           uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py
