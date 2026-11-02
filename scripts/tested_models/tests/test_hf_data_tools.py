@@ -35,6 +35,56 @@ def test_download_rejects_unsafe_pair_id(tmp_path, monkeypatch) -> None:
         download_ground_truth.main()
 
 
+def test_resolve_repo_id_prefers_explicit_flag(monkeypatch) -> None:
+    monkeypatch.setenv(download_ground_truth.DATASET_REPO_ENV, "org/from-environment")
+
+    assert download_ground_truth.resolve_repo_id("org/from-flag") == "org/from-flag"
+
+
+def test_resolve_repo_id_falls_back_to_environment(monkeypatch) -> None:
+    monkeypatch.setenv(download_ground_truth.DATASET_REPO_ENV, "org/from-environment")
+
+    assert download_ground_truth.resolve_repo_id(None) == "org/from-environment"
+
+
+def test_resolve_repo_id_ignores_blank_configuration(monkeypatch) -> None:
+    # GitHub renders an unset repository variable as an empty string.
+    monkeypatch.setenv(download_ground_truth.DATASET_REPO_ENV, "")
+
+    assert download_ground_truth.resolve_repo_id(None) == download_ground_truth.DEFAULT_DATASET_REPO
+    assert download_ground_truth.resolve_repo_id("   ") == download_ground_truth.DEFAULT_DATASET_REPO
+
+
+def test_resolve_repo_id_defaults_to_upstream_dataset(monkeypatch) -> None:
+    monkeypatch.delenv(download_ground_truth.DATASET_REPO_ENV, raising=False)
+
+    assert download_ground_truth.resolve_repo_id(None) == "redhat-performance/configiq-performance-upstream-data"
+
+
+def test_main_downloads_from_resolved_repo_id(tmp_path, monkeypatch) -> None:
+    """A stale hardcoded repository ID broke every scheduled build for weeks."""
+    captured: dict[str, object] = {}
+
+    class _StopDownload(Exception):
+        pass
+
+    def fake_download(**kwargs: object) -> str:
+        captured.update(kwargs)
+        raise _StopDownload
+
+    monkeypatch.setenv(download_ground_truth.DATASET_REPO_ENV, "org/from-environment")
+    monkeypatch.setattr(download_ground_truth, "snapshot_download", fake_download)
+    monkeypatch.setattr(download_ground_truth, "parse_args", lambda: type("Args", (), {
+        "repo_id": None, "revision": "a" * 40, "output_dir": tmp_path / "output"
+    })())
+
+    with pytest.raises(_StopDownload):
+        download_ground_truth.main()
+
+    assert captured["repo_id"] == "org/from-environment"
+    assert captured["token"] is False
+
+
 def test_publish_rejects_output_input_overlap(tmp_path) -> None:
     manifest = tmp_path / "manifest.json"
     datasets = tmp_path / "datasets"

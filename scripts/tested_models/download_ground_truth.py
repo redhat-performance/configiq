@@ -15,11 +15,31 @@ from dataset_common import file_sha256, validate_public_frame
 from huggingface_hub import snapshot_download
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
+DATASET_REPO_ENV = "TESTED_DATASET_REPO"
+
+
+def resolve_repo_id(cli_value: str | None) -> str:
+    """Resolve the dataset repository: explicit flag, then environment, then default.
+
+    A repository rename previously left a stale hardcoded ID here and broke the
+    scheduled build. The environment override keeps the next rename a repository
+    variable change, and blank values fall through because GitHub renders an
+    unset variable as an empty string.
+    """
+    for candidate in (cli_value, os.environ.get(DATASET_REPO_ENV)):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return DEFAULT_DATASET_REPO
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-id", default="redhat-performance/configiq-performance-data")
+    parser.add_argument(
+        "--repo-id",
+        default=None,
+        help=f"Dataset repository; defaults to ${DATASET_REPO_ENV}, then {DEFAULT_DATASET_REPO}.",
+    )
     parser.add_argument("--revision", required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("data/tested-models"))
     return parser.parse_args()
@@ -78,6 +98,7 @@ def _commit_dataset(
 def main() -> int:
     args = parse_args()
     args.output_dir = args.output_dir.resolve()
+    args.repo_id = resolve_repo_id(args.repo_id)
     if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
         raise SystemExit("--revision must be a full 40-character lowercase Hugging Face commit SHA")
     snapshot = Path(snapshot_download(
