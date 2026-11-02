@@ -85,6 +85,41 @@ def test_main_downloads_from_resolved_repo_id(tmp_path, monkeypatch) -> None:
     assert captured["token"] is False
 
 
+def test_publish_uploads_to_resolved_repo_id(monkeypatch) -> None:
+    """A stale hardcoded repository ID would publish revisions the downloader cannot find."""
+    captured: dict[str, object] = {}
+
+    class _StopPublish(Exception):
+        pass
+
+    class _FakeApi:
+        def create_repo(self, repo_id: str, **_: object) -> None:
+            captured["repo_id"] = repo_id
+            raise _StopPublish
+
+    monkeypatch.setenv(publish_ground_truth.DATASET_REPO_ENV, "org/from-environment")
+    monkeypatch.setattr(publish_ground_truth, "HfApi", _FakeApi)
+    monkeypatch.setattr(publish_ground_truth, "prepare", lambda *_: {"pairs": [{"records": 1}]})
+    monkeypatch.setattr(publish_ground_truth, "parse_args", lambda: type("Args", (), {
+        "manifest": Path("manifest.json"),
+        "datasets_dir": Path("datasets"),
+        "output_dir": Path("output"),
+        "repo_id": None,
+        "revision": None,
+    })())
+
+    with pytest.raises(_StopPublish):
+        publish_ground_truth.main()
+
+    assert captured["repo_id"] == "org/from-environment"
+
+
+def test_publish_defaults_to_upstream_dataset(monkeypatch) -> None:
+    monkeypatch.delenv(publish_ground_truth.DATASET_REPO_ENV, raising=False)
+
+    assert publish_ground_truth.resolve_dataset_repo_id(None) == "redhat-performance/configiq-performance-upstream-data"
+
+
 def test_publish_rejects_output_input_overlap(tmp_path) -> None:
     manifest = tmp_path / "manifest.json"
     datasets = tmp_path / "datasets"

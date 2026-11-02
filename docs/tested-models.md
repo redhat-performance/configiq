@@ -46,7 +46,13 @@ is a plain upstream vLLM release and excludes productized Red Hat AI Inference
 Server builds. At the current pinned revision it holds 13 model/hardware pairs
 and 1,556 aggregate rows, so a model can be approved for testing without having
 a trained performance envelope yet. Do not read absence from this dataset as
-"not tested"; `registry.json` is the source of truth for that.
+"not tested".
+
+`registry.json` lists only the pairs that trained successfully in this build, so
+it is a catalog of the available performance envelopes rather than a complete
+list of tested models. Tested-model status currently comes from the
+`testedModels` array in `public/config.json`; the registry is being extended to
+carry measured-without-envelope and approved-without-data states as well.
 
 The workflow reads the repository variable `TESTED_DATASET_REPO` when it is set,
 and otherwise falls back to the dataset above. Set it to move the pipeline to a

@@ -11,26 +11,21 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from dataset_common import file_sha256, validate_public_frame
+from dataset_common import (
+    DATASET_REPO_ENV,
+    DEFAULT_DATASET_REPO,
+    file_sha256,
+    resolve_dataset_repo_id,
+    validate_public_frame,
+)
 from huggingface_hub import snapshot_download
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
-DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
-DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 
 
 def resolve_repo_id(cli_value: str | None) -> str:
-    """Resolve the dataset repository: explicit flag, then environment, then default.
-
-    A repository rename previously left a stale hardcoded ID here and broke the
-    scheduled build. The environment override keeps the next rename a repository
-    variable change, and blank values fall through because GitHub renders an
-    unset variable as an empty string.
-    """
-    for candidate in (cli_value, os.environ.get(DATASET_REPO_ENV)):
-        if candidate and candidate.strip():
-            return candidate.strip()
-    return DEFAULT_DATASET_REPO
+    """Backwards-compatible alias for the resolver shared with the publisher."""
+    return resolve_dataset_repo_id(cli_value)
 
 
 def parse_args() -> argparse.Namespace:
