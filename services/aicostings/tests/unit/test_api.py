@@ -72,7 +72,7 @@ class TestGetModels:
     async def test_failed_collection_keeps_last_good_source_and_records_error(self):
         previous = [{"id": "provider/model", "price_per_m_input": 1}]
         store.set_models(previous, source="litellm")
-        store._mark_scrape("models.litellm")
+        store.mark_scrape("models.litellm")
         last_success = store.get_scrape_times()["models.litellm"]
         with (
             patch("tools.api_service.scrapers.models.fetch_litellm_models", side_effect=RuntimeError("bad feed")),
