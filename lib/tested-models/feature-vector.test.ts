@@ -81,6 +81,18 @@ describe('buildFeatureVector', () => {
     expect(vector).toEqual([1, 0, 0])
   })
 
+  it('keeps the exact legacy category when the request names it explicitly', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, kvcache_quant_mode: 'fp8_e4m3' },
+    }, {
+      feature_names: ['kv_quantization=fp8', 'kv_quantization=fp8_e4m3', 'kv_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 1, 0])
+  })
+
   it('matches a canonical value to a legacy alias-only category', () => {
     const vector = buildFeatureVector({
       ...input,

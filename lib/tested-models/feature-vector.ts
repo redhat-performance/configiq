@@ -91,9 +91,13 @@ export function buildFeatureValues(input: CanonicalClassifierInput): Record<stri
 
 export function buildFeatureVector(input: CanonicalClassifierInput, schema: FeatureSchema): number[] {
   const values = buildFeatureValues(input)
+  const originalQuantization: Record<QuantizationField, string> = {
+    weight_quantization: input.effective.gemm_quant_mode ?? '',
+    kv_quantization: input.effective.kvcache_quant_mode ?? '',
+  }
   const selected = new Map<string, string | null>()
   for (const field of ['weight_quantization', 'kv_quantization'] as const) {
-    selected.set(field, selectQuantizationCategory(field, String(values[field] ?? ''), schema.feature_names))
+    selected.set(field, selectQuantizationCategory(field, originalQuantization[field], schema.feature_names))
   }
   return schema.feature_names.map((name) => {
     const separator = name.indexOf('=')
