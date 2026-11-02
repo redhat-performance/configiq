@@ -23,6 +23,7 @@ from tools.api_service.scrapers.hardware_costs import load_hardware_costs
 from tools.api_service.scrapers.models import (
     _classify_tier,
     _infer_provider,
+    _parse_litellm_model,
     _parse_openrouter_model,
     fetch_litellm_models,
     fetch_openrouter_models,
@@ -65,6 +66,15 @@ class TestInferProvider:
 
 
 class TestParseOpenRouterModel:
+    def test_preserves_checkpoint_identity_without_replacing_offer_id(self):
+        result = _parse_openrouter_model({
+            "id": "qwen/qwen3-coder", "name": "Qwen3 Coder",
+            "hugging_face_id": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+        })
+        assert result["id"] == "qwen/qwen3-coder"
+        assert result["hugging_face_id"] == "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+
     def test_valid_model(self):
         m = {
             "id": "anthropic/claude-sonnet-5",
@@ -99,6 +109,17 @@ class TestParseOpenRouterModel:
 
 
 class TestFetchOpenRouterModels:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [None, [], {"data": {}}, {"data": []}, {"data": [None, "bad"]}])
+    async def test_rejects_malformed_or_empty_refresh(self, payload):
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value=payload)
+        session = MagicMock()
+        session.get.return_value.__aenter__ = AsyncMock(return_value=response)
+        session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.raises((TypeError, RuntimeError)):
+            await fetch_openrouter_models(session)
+
     @pytest.mark.asyncio
     async def test_with_fixture_data(self):
         fixture_path = FIXTURES_DIR / "openrouter_sample.json"
@@ -143,6 +164,50 @@ class TestFetchOpenRouterModels:
 
 class TestFetchLiteLLMModels:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [TimeoutError(), ValueError("invalid JSON")])
+    async def test_propagates_timeout_and_invalid_json(self, error):
+        response = MagicMock(status=200)
+        response.json = AsyncMock(side_effect=error)
+        session = MagicMock()
+        session.get.return_value.__aenter__ = AsyncMock(return_value=response)
+        session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.raises(type(error)):
+            await fetch_litellm_models(session)
+
+    @pytest.mark.asyncio
+    async def test_reads_official_cost_map_without_pagination(self):
+        data = json.loads((FIXTURES_DIR / "litellm_sample.json").read_text())
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value=data)
+        session = MagicMock()
+        session.get.return_value.__aenter__ = AsyncMock(return_value=response)
+        session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        models = await fetch_litellm_models(session)
+
+        assert [m["id"] for m in models] == ["llamagate/qwen3-8b", "azure/eu/model-chat"]
+        assert models[0]["provider"] == "Llamagate"
+        assert models[0]["price_per_m_input"] == 0.04
+        assert models[0]["price_per_m_output"] == 0.14
+        assert models[1]["price_per_m_input"] == 3
+        assert models[1]["price_per_m_output"] == 15
+        assert models[1]["context_window"] == 128000
+        assert all(m["source"] == "litellm" for m in models)
+        session.get.assert_called_once()
+        assert "params" not in session.get.call_args.kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [[], None, {}, {"example/image": {"mode": "image_generation"}}])
+    async def test_rejects_invalid_or_empty_usable_catalogue(self, payload):
+        response = MagicMock(status=200)
+        response.json = AsyncMock(return_value=payload)
+        session = MagicMock()
+        session.get.return_value.__aenter__ = AsyncMock(return_value=response)
+        session.get.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.raises((TypeError, RuntimeError)):
+            await fetch_litellm_models(session)
+
+    @pytest.mark.asyncio
     async def test_raises_on_api_error(self):
         # A non-200 must propagate so scrape_all_models records the source as
         # errored rather than persisting a partial page set as a fresh scrape.
@@ -158,6 +223,38 @@ class TestFetchLiteLLMModels:
 
         with pytest.raises(RuntimeError):
             await fetch_litellm_models(mock_session)
+
+
+class TestTokenPriceValidation:
+    @pytest.mark.parametrize("invalid", [None, True, False, -1, "NaN", "Infinity", float("inf"), "bad", {}, 1e308])
+    def test_both_collectors_reject_invalid_rates(self, invalid):
+        assert _parse_openrouter_model({
+            "id": "owner/model", "name": "Model",
+            "pricing": {"prompt": invalid, "completion": "0.000001"},
+        }) is None
+        assert _parse_litellm_model("provider/model", {
+            "mode": "chat", "litellm_provider": "provider",
+            "input_cost_per_token": "0.000001", "output_cost_per_token": invalid,
+        }) is None
+
+    @pytest.mark.parametrize("changes", [
+        {"litellm_provider": ""}, {"litellm_provider": None}, {"litellm_provider": 3},
+        {"mode": "embedding"}, {"mode": "completion"}, {"mode": None},
+        {"input_cost_per_token": 0, "output_cost_per_token": 0},
+    ])
+    def test_litellm_requires_priced_chat_offer_and_provider(self, changes):
+        assert _parse_litellm_model("provider/model", {
+            "mode": "chat", "litellm_provider": "provider",
+            "input_cost_per_token": 1e-6, "output_cost_per_token": 2e-6, **changes,
+        }) is None
+
+    def test_zero_input_rate_is_valid_when_output_is_priced(self):
+        result = _parse_litellm_model("provider/model", {
+            "mode": "chat", "litellm_provider": "provider",
+            "input_cost_per_token": 0, "output_cost_per_token": 2e-6,
+        })
+        assert result["price_per_m_input"] == 0
+        assert result["price_per_m_output"] == 2
 
 
 class TestScrapeAllModels:
