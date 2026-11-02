@@ -62,6 +62,7 @@ function normalizeValue(value: unknown): string | null {
   if (value == null) return null
   if (typeof value === 'string') return value.trim() ? value.trim() : null
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null
+  if (typeof value === 'bigint') return value.toString()
   if (typeof value === 'boolean') return String(value)
   return null
 }
@@ -262,6 +263,10 @@ export function parseConfiguration(value: string): DatasetConfiguration | null {
 function numericField(row: DatasetRow, key: string): number | null {
   const value = row[key]
   if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'bigint') {
+    const converted = Number(value)
+    return Number.isSafeInteger(converted) ? converted : null
+  }
   if (typeof value === 'string' && value.trim()) {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : null
