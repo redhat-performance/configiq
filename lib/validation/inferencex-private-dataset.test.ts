@@ -60,6 +60,28 @@ describe('private InferenceX dataset', () => {
     }
   })
 
+  it('forces a refresh after the minimum interval when requested', async () => {
+    const now = Date.parse('2026-10-29T16:24:02.331Z')
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 200 }))
+      .mockResolvedValue(new Response(JSON.stringify({ ...snapshot, retrievedAt: '2026-10-29T16:30:00.000Z' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+
+    try {
+      const first = await getInferenceXDataset()
+      nowSpy.mockReturnValue(now + 31_000)
+      const refreshed = await getInferenceXDataset(true)
+
+      expect(refreshed).not.toBe(first)
+      expect(refreshed.source.retrievedAt).toBe('2026-10-29T16:30:00.000Z')
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
   it('rejects a non-https source URL', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, sourceUrl: 'javascript:alert(1)',

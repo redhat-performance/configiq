@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
     let inferencex: Awaited<ReturnType<typeof getInferenceXDataset>> | null = null
     let inferencexError: string | null = null
     try {
-      inferencex = await getInferenceXDataset()
+      inferencex = await getInferenceXDataset(searchParams.get('refresh') === 'true')
     } catch (error) {
       inferencexError = error instanceof Error ? error.message : 'Private InferenceX dataset is unavailable'
     }

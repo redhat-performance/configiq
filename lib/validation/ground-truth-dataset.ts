@@ -84,8 +84,10 @@ async function loadInferenceXDataset(): Promise<InferenceXCache> {
   }
 }
 
-export async function getInferenceXDataset(): Promise<InferenceXCache> {
-  if (cachedInferenceX && cachedInferenceX.expiresAt > Date.now()) return cachedInferenceX
+export async function getInferenceXDataset(refresh = false): Promise<InferenceXCache> {
+  const cacheAgeMs = cachedInferenceX ? Date.now() - (cachedInferenceX.expiresAt - CACHE_TTL_MS) : Infinity
+  const forceRefresh = refresh && cacheAgeMs > MIN_REFRESH_INTERVAL_MS
+  if (!forceRefresh && cachedInferenceX && cachedInferenceX.expiresAt > Date.now()) return cachedInferenceX
   if (inFlightInferenceX) return inFlightInferenceX
 
   // The fallback lives inside the shared promise so every concurrent caller
