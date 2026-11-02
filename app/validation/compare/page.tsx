@@ -727,7 +727,7 @@ export default function GroundTruthComparisonPage() {
             </Alert>
           )}
           <p className={styles.methodNote}>
-            SemiAnalysis InferenceX is shown as a separate measured source. This snapshot includes 8k/1k single-turn runs for ConfigIQ tested models.
+            SemiAnalysis InferenceX is shown as a separate measured source. This snapshot includes 8k/1k single-turn runs for ConfigIQ approved models.
             {safeInferenceXRuns.length > 0 ? (
               <>
                 {' '}

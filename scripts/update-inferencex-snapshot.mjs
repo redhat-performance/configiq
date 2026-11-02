@@ -8,7 +8,7 @@ const optionsUrl = `${apiBase}/views/options`
 const appConfigPath = resolve('public/config.json')
 const inputDirectory = process.argv[2] === '--from-dir' ? process.argv[3] : null
 
-// Only verified InferenceX IDs can be matched against ConfigIQ's tested models.
+// Only verified InferenceX IDs can be matched against ConfigIQ's approved models.
 const modelIds = {
   dsv4: 'deepseek-ai/DeepSeek-V4-Pro',
   gptoss120b: 'openai/gpt-oss-120b',

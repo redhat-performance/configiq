@@ -1,4 +1,4 @@
-"""Fetch tested-model InferenceX results and publish a private HF snapshot."""
+"""Fetch approved-model InferenceX results and publish a private HF snapshot."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def main() -> int:
         path_in_repo=FILENAME,
         repo_id=REPO_ID,
         repo_type="dataset",
-        commit_message=f"Refresh tested-model InferenceX snapshot ({len(rows)} rows)",
+        commit_message=f"Refresh approved-model InferenceX snapshot ({len(rows)} rows)",
     )
     published_path = hf_hub_download(repo_id=REPO_ID, repo_type="dataset", filename=FILENAME, revision=commit.oid)
     if Path(published_path).read_bytes() != result.stdout:
