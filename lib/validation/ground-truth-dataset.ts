@@ -21,6 +21,17 @@ const MIN_REFRESH_INTERVAL_MS = 30 * 1000
 const INFERENCEX_DATASET_ID = 'redhat-performance/configiq-inferencex-comparison'
 const INFERENCEX_FILE_URL = `https://huggingface.co/datasets/${INFERENCEX_DATASET_ID}/resolve/main/inferencex-8k1k.json`
 
+/** External links are rendered in anchors, so only https URLs are accepted. */
+function httpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
 interface InferenceXCache {
   rows: DatasetRow[]
   source: { url: string; retrievedAt: string; rowCount: number }
@@ -50,16 +61,18 @@ async function loadInferenceXDataset(): Promise<InferenceXCache> {
     !row || typeof row !== 'object' || Array.isArray(row)
     || !testedModels.has((row as DatasetRow).model as string)
     || (row as DatasetRow).benchmark_source !== 'inferencex'
-    || (row as DatasetRow).isl !== 8192 || (row as DatasetRow).osl !== 1024)) {
+    || (row as DatasetRow).isl !== 8192 || (row as DatasetRow).osl !== 1024
+    || ((row as DatasetRow).source_run_url != null && httpsUrl((row as DatasetRow).source_run_url) === null))) {
     throw new Error('Private InferenceX dataset contains invalid or untested benchmark rows')
   }
-  if (typeof snapshot.sourceUrl !== 'string' || typeof snapshot.retrievedAt !== 'string'
+  const sourceUrl = httpsUrl(snapshot.sourceUrl)
+  if (!sourceUrl || typeof snapshot.retrievedAt !== 'string'
     || !Number.isFinite(Date.parse(snapshot.retrievedAt))) {
-    throw new Error('Private InferenceX dataset is missing source metadata')
+    throw new Error('Private InferenceX dataset has an invalid source URL or timestamp')
   }
   return {
     rows: rows as DatasetRow[],
-    source: { url: snapshot.sourceUrl, retrievedAt: snapshot.retrievedAt, rowCount: rows.length },
+    source: { url: sourceUrl, retrievedAt: snapshot.retrievedAt, rowCount: rows.length },
     expiresAt: Date.now() + CACHE_TTL_MS,
   }
 }

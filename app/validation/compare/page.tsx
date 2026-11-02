@@ -89,6 +89,15 @@ function optionLabel(key: GroundTruthFilterKey, value: string): string {
   return value
 }
 
+function isHttpsUrl(value: string | null | undefined): value is string {
+  if (!value) return false
+  try {
+    return new URL(value).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function findCatalogGpu(accelerator: string, gpus: GpuOption[]): GpuOption | null {
   const normalized = accelerator.trim().toLocaleLowerCase()
   if (!normalized) return null
@@ -535,7 +544,9 @@ export default function GroundTruthComparisonPage() {
               <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
             </div>}
             {inferencexSource && <div className={styles.sourceBadge}>
-              <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
+              {isHttpsUrl(inferencexSource.url)
+                ? <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
+                : <span>Benchmark data from SemiAnalysis InferenceX</span>}
               <span>{inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows · snapshot {new Date(inferencexSource.retrievedAt).toLocaleDateString()}</span>
             </div>}
           </div>
@@ -706,7 +717,7 @@ export default function GroundTruthComparisonPage() {
           <p className={styles.methodNote}>
             SemiAnalysis InferenceX is shown as a separate measured source. This snapshot includes 8k/1k single-turn runs for ConfigIQ tested models.
             {inferencexDate && <> Selected run: {inferencexDate}.</>}
-            {inferencexRunUrl && <> <a href={inferencexRunUrl} target="_blank" rel="noreferrer">View the InferenceX run</a>.</>}
+            {isHttpsUrl(inferencexRunUrl) && <> <a href={inferencexRunUrl} target="_blank" rel="noreferrer">View the InferenceX run</a>.</>}
           </p>
         </div>
 

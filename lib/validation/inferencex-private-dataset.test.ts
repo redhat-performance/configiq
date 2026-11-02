@@ -60,6 +60,24 @@ describe('private InferenceX dataset', () => {
     }
   })
 
+  it('rejects a non-https source URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...snapshot, sourceUrl: 'javascript:alert(1)',
+    }), { status: 200 })))
+    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+
+    await expect(getInferenceXDataset()).rejects.toThrow('invalid source URL')
+  })
+
+  it('rejects a non-https run URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...snapshot, rows: [{ ...snapshot.rows[0], source_run_url: 'javascript:alert(1)' }],
+    }), { status: 200 })))
+    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+
+    await expect(getInferenceXDataset()).rejects.toThrow('invalid or untested benchmark rows')
+  })
+
   it('rejects models outside ConfigIQ tested models', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, rows: [{ ...snapshot.rows[0], model: 'InferenceX/unverified-model' }],
