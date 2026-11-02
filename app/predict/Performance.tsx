@@ -60,6 +60,44 @@ function detectMoe(spec: ModelSpec | undefined, hfConfig: HFModelConfig | null):
   return catalogExperts > 1 || hfExperts > 1;
 }
 
+type WeightPrecision = 'FP16' | 'FP8' | 'INT8' | 'INT4' | 'MXFP4' | 'NVFP4'
+
+/** Map an HF quantization config to the precision label used by the classifier. */
+function resolveActualWeightPrecision(hfConfig: HFModelConfig | null, fallback: WeightPrecision): WeightPrecision {
+  const qconfig = hfConfig?.quantization_config as Record<string, unknown> | undefined;
+  if (!hfConfig || !qconfig) return fallback;
+  const rawMethod = qconfig.quant_method ?? qconfig.quant_type ?? qconfig.quantization_algo;
+  const quantMethod = typeof rawMethod === 'string' ? rawMethod : null;
+  if (!quantMethod || quantMethod === 'none') return fallback;
+
+  const method = quantMethod.toLowerCase();
+  if (method.includes('fp8') || method === 'fp8') return 'FP8';
+  if (method.includes('int8') || method === 'int8') return 'INT8';
+  if (method.includes('int4') || method === 'int4') return 'INT4';
+  if (method.includes('mxfp4') || method === 'mxfp4') return 'MXFP4';
+  if (method === 'gptq' || method === 'awq') {
+    const bits = typeof qconfig.bits === 'number'
+      ? qconfig.bits
+      : typeof qconfig.num_bits === 'number' ? qconfig.num_bits : 4;
+    return bits === 8 ? 'INT8' : 'INT4';
+  }
+  if (method === 'bnb' || method.includes('bitsandbytes')) return 'INT4';
+  return fallback;
+}
+
+function classifierPhase(value: EstimatePhase | undefined, moeTp: number, moeEp: number): ClassifierPhaseInput | null {
+  return value ? {
+    tp_size: value.tp_size,
+    pp_size: value.pp_size,
+    dp_size: 1,
+    cp_size: 1,
+    moe_tp_size: moeTp,
+    moe_ep_size: moeEp,
+    workers: value.workers,
+    batch_size: value.batch_size,
+  } : null;
+}
+
 /** String-backed parallelism inputs for one disagg pool (prefill/decode). */
 interface PerfPhaseInput {
   tp: string
@@ -212,6 +250,7 @@ export default function Performance() {
 
   // 🧪 TEST: Inference config engine integration
   const [testResult, setTestResult] = React.useState<InferenceConfigResult | null>(null);
+  const [testClassifierInput, setTestClassifierInput] = React.useState<CanonicalClassifierInput | null>(null);
   const [testError, setTestError] = React.useState<string | null>(null);
   const [testErrorCode, setTestErrorCode] = React.useState<string | null>(null);
 
@@ -302,7 +341,7 @@ export default function Performance() {
   React.useEffect(() => {
     if (servingMode === 'disagg' && !disaggSupported) {
       setServingMode('agg');
-      setTestResult(null);
+      setTestResult(null); setTestClassifierInput(null);
     }
   }, [servingMode, disaggSupported]);
 
@@ -528,8 +567,53 @@ export default function Performance() {
         const response = await fetchEstimateAsInferenceResult(estimateInput, true);
 
         const result = 'result' in response ? response.result : response;
+        const submittedClassifierInput: CanonicalClassifierInput = {
+          effective: {
+            model_id: estimateInput.model_path,
+            system_id: estimateInput.system,
+            backend: estimateInput.backend ?? inferenceBackend,
+            backend_version: estimateInput.backend_version ?? null,
+            isl: estimateInput.isl,
+            osl: estimateInput.osl,
+            max_seq_len: estimateInput.max_seq_len ?? null,
+            prefill_max_seq_len: estimateInput.prefill_max_seq_len ?? null,
+            decode_max_seq_len: estimateInput.decode_max_seq_len ?? null,
+            concurrency: estimateInput.batch_size,
+            tp_size: result.memory_analysis.tp_size,
+            pp_size: result.parallelism_strategy.pp_size || 1,
+            dp_size: 1,
+            cp_size: 1,
+            moe_tp_size: testMoeEtpSize,
+            moe_ep_size: testMoeEpSize,
+            shared_prefix_tokens: estimateInput.prefix ?? 0,
+            prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
+            weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
+            kv_cache_precision: testKVCachePrecision,
+            moe_quant_mode: isMoe ? testMoeQuantMode : null,
+            gpu_memory_utilization: estimateInput.gpu_memory_utilization ?? null,
+            max_num_seqs: result.vllm_config.max_num_seqs,
+            chunked_prefill_enabled: result.vllm_config.enable_chunked_prefill,
+            serving_mode: result.mode === 'disagg' ? 'disagg' : 'agg',
+            replicas: result.memory_analysis.replicas,
+            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, testMoeEtpSize, testMoeEpSize),
+            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, testMoeEtpSize, testMoeEpSize),
+            encode: null,
+          },
+          request: {
+            request_kind: 'predict',
+            target_request_rate: null,
+            target_concurrency: null,
+            target_latency_ms: null,
+            target_ttft_ms: null,
+            target_tpot_ms: null,
+            database_mode: null,
+            top_n: null,
+          },
+          model_config: estimateInput.hf_model_config ?? null,
+        };
         if (!cancelled) {
           setTestResult(result);
+          setTestClassifierInput(submittedClassifierInput);
           setTestError(null);
           setTestErrorCode(null);
           if ('debugRequest' in response) {
@@ -647,35 +731,10 @@ export default function Performance() {
     0;
 
   // Get actual weight precision being used (detected from HF config or user-selected)
-  const actualWeightPrecision = React.useMemo(() => {
-    if (!hfConfig || !hfConfig.quantization_config) {
-      return testWeightPrecision; // No HF config, use user selection
-    }
-
-    const qconfig = hfConfig.quantization_config as any;
-    const quantMethod = qconfig.quant_method || qconfig.quant_type || qconfig.quantization_algo;
-
-    if (!quantMethod || quantMethod === 'none') {
-      return testWeightPrecision; // No quantization, use user selection
-    }
-
-    // Map quantization method to display format
-    const method = quantMethod.toLowerCase();
-    if (method.includes('fp8') || method === 'fp8') return 'FP8';
-    if (method.includes('int8') || method === 'int8') return 'INT8';
-    if (method.includes('int4') || method === 'int4') return 'INT4';
-    if (method.includes('mxfp4') || method === 'mxfp4') return 'MXFP4';
-    if (method === 'gptq' || method === 'awq') {
-      // Check bits field for GPTQ/AWQ
-      const bits = qconfig.bits || qconfig.num_bits || 4;
-      if (bits === 8) return 'INT8';
-      if (bits === 4) return 'INT4';
-      return 'INT4'; // Default to INT4 for GPTQ/AWQ
-    }
-    if (method === 'bnb' || method.includes('bitsandbytes')) return 'INT4';
-
-    return testWeightPrecision; // Unknown, fall back to user selection
-  }, [hfConfig, testWeightPrecision]);
+  const actualWeightPrecision = React.useMemo(
+    () => resolveActualWeightPrecision(hfConfig, testWeightPrecision),
+    [hfConfig, testWeightPrecision],
+  );
 
   const realKVPerReqMB = testResult && testResult.memory_analysis.kv_cache_used_gb ?
     (testResult.memory_analysis.kv_cache_used_gb / testConcurrentUsers) * 1000 : // Convert GB to MB
@@ -687,64 +746,7 @@ export default function Performance() {
 
   // Use live pricing if available, fallback to estimated pricing from hardware cost
   const currentCatalogGpu = selectableGpus.find(g => g.systemId === gpu);
-  const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
-    if (!testResult) return null;
-    const phase = (value: EstimatePhase | undefined): ClassifierPhaseInput | null => value ? {
-      tp_size: value.tp_size,
-      pp_size: value.pp_size,
-      dp_size: 1,
-      cp_size: 1,
-      moe_tp_size: testMoeEtpSize,
-      moe_ep_size: testMoeEpSize,
-      workers: value.workers,
-      batch_size: value.batch_size,
-    } : null;
-    return {
-      effective: {
-        model_id: model,
-        system_id: gpu,
-        backend: inferenceBackend,
-        backend_version: backendVersion || null,
-        isl: testISL,
-        osl: testOSL,
-        max_seq_len: effectiveContextLimit,
-        prefill_max_seq_len: prefillMaxSeqLen,
-        decode_max_seq_len: decodeMaxSeqLen,
-        concurrency: testConcurrentUsers,
-        tp_size: testResult.memory_analysis.tp_size,
-        pp_size: testResult.parallelism_strategy.pp_size || 1,
-        dp_size: 1,
-        cp_size: 1,
-        moe_tp_size: testMoeEtpSize,
-        moe_ep_size: testMoeEpSize,
-        shared_prefix_tokens: testPrefix,
-        prefix_caching_enabled: testResult.vllm_config.enable_prefix_caching,
-        weight_precision: actualWeightPrecision,
-        kv_cache_precision: testKVCachePrecision,
-        moe_quant_mode: isMoe ? testMoeQuantMode : null,
-        gpu_memory_utilization: effectiveGpuMemoryUtilization,
-        max_num_seqs: testResult.vllm_config.max_num_seqs,
-        chunked_prefill_enabled: testResult.vllm_config.enable_chunked_prefill,
-        serving_mode: servingMode,
-        replicas: testResult.memory_analysis.replicas,
-        prefill: phase(disagg?.prefill),
-        decode: phase(disagg?.decode),
-        encode: null,
-      },
-      request: {
-        request_kind: 'predict',
-        target_request_rate: null,
-        target_concurrency: null,
-        target_latency_ms: null,
-        target_ttft_ms: null,
-        target_tpot_ms: null,
-        database_mode: null,
-        top_n: null,
-      },
-      model_config: hfConfig as Record<string, unknown> | null,
-    };
-  }, [actualWeightPrecision, backendVersion, decodeMaxSeqLen, disagg, effectiveContextLimit, effectiveGpuMemoryUtilization, gpu, hfConfig, inferenceBackend, isMoe, model, prefillMaxSeqLen, servingMode, testKVCachePrecision, testMoeEpSize, testMoeEtpSize, testMoeQuantMode, testPrefix, testResult, testConcurrentUsers, testISL, testOSL]);
-  const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
+  const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(testClassifierInput);
   const hwCostEntry = costings.gpuHardwareCosts.get(gpu)
   const catalogGpuForPricing = hwCostEntry?.new_usd != null
     ? { hardware_cost_usd: hwCostEntry.new_usd, name: currentCatalogGpu?.label ?? gpu }
@@ -1411,7 +1413,7 @@ export default function Performance() {
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <Button
             variant="primary"
-            onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
+            onClick={() => { setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
             isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
@@ -1424,12 +1426,12 @@ export default function Performance() {
       <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
+          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); }}>Aggregated</Button>
           <Button
             variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
             size="sm"
             isDisabled={!disaggSupported}
-            onClick={() => { setServingMode('disagg'); setTestResult(null); }}
+            onClick={() => { setServingMode('disagg'); setTestResult(null); setTestClassifierInput(null); }}
           >
             Disaggregated
           </Button>
@@ -1452,7 +1454,7 @@ export default function Performance() {
                   value={selectedNetworkFabric}
                   aria-label="Inter-node fabric"
                   isDisabled={(networkOptions ?? []).length === 0}
-                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); }}
+                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); }}
                 >
                   <FormSelectOption value="" label="Select a fabric" isDisabled />
                   {(networkOptions ?? []).map(network => (
@@ -1620,7 +1622,7 @@ export default function Performance() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={model} systemId={gpu} />
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={testClassifierInput?.effective.model_id ?? model} systemId={testClassifierInput?.effective.system_id ?? gpu} />
 
       {/* ---------- result tiles ---------- */}
       {!testResult && !isCalculating && !testError}
