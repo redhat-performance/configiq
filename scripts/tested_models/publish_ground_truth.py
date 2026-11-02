@@ -18,6 +18,7 @@ from dataset_common import (
     validate_public_frame,
 )
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -182,14 +183,18 @@ def main() -> int:
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
     parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision, token=False).sha
-    remote_manifest_path = hf_hub_download(
-        repo_id=args.repo_id,
-        repo_type="dataset",
-        filename="manifest.json",
-        revision=parent_commit,
-        token=False,
-    )
-    remote_manifest = json.loads(Path(remote_manifest_path).read_text())
+    try:
+        remote_manifest_path = hf_hub_download(
+            repo_id=args.repo_id,
+            repo_type="dataset",
+            filename="manifest.json",
+            revision=parent_commit,
+            token=False,
+        )
+        remote_manifest = json.loads(Path(remote_manifest_path).read_text())
+    except EntryNotFoundError:
+        # First publish to an empty dataset repository: nothing to compare.
+        remote_manifest = {"pairs": []}
     if _content_signature(manifest) == _content_signature(remote_manifest):
         print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
         return 0

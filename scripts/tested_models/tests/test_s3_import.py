@@ -138,3 +138,59 @@ def test_publish_allows_an_explicit_removal(tmp_path, monkeypatch) -> None:
 
     assert publish_ground_truth.main() == 0
     assert uploaded["repo_id"] == "org/data"
+
+
+def test_publish_bootstraps_a_dataset_without_a_remote_manifest(tmp_path, monkeypatch) -> None:
+    uploaded: dict[str, object] = {}
+
+    class _FakeApi:
+        def repo_info(self, *_: object, **__: object) -> object:
+            return type("Info", (), {"sha": "a" * 40})()
+
+        def upload_folder(self, **kwargs: object) -> object:
+            uploaded.update(kwargs)
+            return type("Commit", (), {"oid": "b" * 40})()
+
+    def _missing_manifest(**_: object) -> str:
+        raise publish_ground_truth.EntryNotFoundError("manifest.json does not exist")
+
+    monkeypatch.setattr(publish_ground_truth, "prepare", lambda *_: {"pairs": [_pair("keep__h200")]})
+    monkeypatch.setattr(publish_ground_truth, "HfApi", _FakeApi)
+    monkeypatch.setattr(publish_ground_truth, "hf_hub_download", _missing_manifest)
+    monkeypatch.setattr(publish_ground_truth, "parse_args", lambda: type("Args", (), {
+        "manifest": Path("manifest.json"),
+        "datasets_dir": Path("datasets"),
+        "output_dir": Path("output"),
+        "repo_id": "org/data",
+        "revision": None,
+        "check_only": False,
+        "allow_removal": False,
+    })())
+
+    assert publish_ground_truth.main() == 0
+    assert uploaded["parent_commit"] == "a" * 40
+
+
+def test_publish_propagates_unrelated_manifest_errors(monkeypatch) -> None:
+    class _FakeApi:
+        def repo_info(self, *_: object, **__: object) -> object:
+            return type("Info", (), {"sha": "a" * 40})()
+
+    def _broken_download(**_: object) -> str:
+        raise RuntimeError("network exploded")
+
+    monkeypatch.setattr(publish_ground_truth, "prepare", lambda *_: {"pairs": []})
+    monkeypatch.setattr(publish_ground_truth, "HfApi", _FakeApi)
+    monkeypatch.setattr(publish_ground_truth, "hf_hub_download", _broken_download)
+    monkeypatch.setattr(publish_ground_truth, "parse_args", lambda: type("Args", (), {
+        "manifest": Path("manifest.json"),
+        "datasets_dir": Path("datasets"),
+        "output_dir": Path("output"),
+        "repo_id": "org/data",
+        "revision": None,
+        "check_only": True,
+        "allow_removal": False,
+    })())
+
+    with pytest.raises(RuntimeError, match="network exploded"):
+        publish_ground_truth.main()
