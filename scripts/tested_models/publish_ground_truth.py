@@ -77,6 +77,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--revision", default=None, help="Optional branch or tag to update; defaults to the repository default branch.")
     parser.add_argument("--check-only", action="store_true", help="Compare prepared data with Hugging Face without uploading.")
+    parser.add_argument(
+        "--allow-removal",
+        action="store_true",
+        help="Allow an upload to delete pairs that exist only in the remote dataset.",
+    )
     return parser.parse_args()
 
 
@@ -164,6 +169,13 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
     return manifest
 
 
+def _missing_remote_pairs(local_manifest: dict, remote_manifest: dict) -> list[str]:
+    """Pairs in the remote dataset that this upload would delete."""
+    local_ids = {pair["id"] for pair in local_manifest.get("pairs", [])}
+    remote_ids = {pair["id"] for pair in remote_manifest.get("pairs", [])}
+    return sorted(remote_ids - local_ids)
+
+
 def main() -> int:
     args = parse_args()
     args.repo_id = resolve_dataset_repo_id(args.repo_id)
@@ -181,9 +193,18 @@ def main() -> int:
     if _content_signature(manifest) == _content_signature(remote_manifest):
         print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
         return 0
+    missing = _missing_remote_pairs(manifest, remote_manifest)
+    if missing and args.check_only:
+        print(f"prepared data would remove remote pairs: {', '.join(missing)}")
     if args.check_only:
         print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
         return 0
+    if missing and not args.allow_removal:
+        raise SystemExit(
+            "prepared data would remove pairs present in the remote dataset: "
+            f"{', '.join(missing)}. Run the complete extraction, or pass --allow-removal "
+            "to remove them intentionally."
+        )
     commit = api.upload_folder(
         repo_id=args.repo_id,
         repo_type="dataset",

@@ -35,8 +35,10 @@ publisher reads the approved S3 aggregate with an OIDC read-only role. Neither
 source location is written to published artifacts. Extraction removes run IDs,
 UUIDs, MLflow identifiers, timestamps, raw runtime arguments, and other
 administrative fields before publication. The S3 importer includes only models
-in `public/config.json`'s `testedModels` list and retains all source version
-labels. Consumers can select versions for a particular comparison later.
+in `public/config.json`'s `testedModels` list, and only rows whose version is a
+plain upstream vLLM release (`vLLM-<major>.<minor>.<patch>`). Productized Red
+Hat AI Inference Server builds and pre-release labels are dropped, and the
+import manifest records the kept and dropped counts.
 
 The scheduled GitHub Actions workflow consumes a pinned revision of the public
 `redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.
@@ -73,6 +75,11 @@ with the public Hugging Face dataset. It runs at 00:00 Monday in
 variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
 only prepare and compare. A manual run on `main` publishes only when its
 `publish` input is selected. Unchanged content is never uploaded.
+
+Preparation applies the upstream-only version filter and refuses to publish when
+the prepared set would delete pairs that exist only in the remote dataset. Run
+the complete extraction if pairs are missing; pass `--allow-removal` only when
+removing pairs is intentional.
 
 Hugging Face publishing uses a Trusted Publisher on the dataset repository,
 restricted to `redhat-performance/configiq`, branch `main`, and workflow

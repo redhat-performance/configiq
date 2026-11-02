@@ -93,7 +93,7 @@ def test_publish_uploads_to_resolved_repo_id(monkeypatch) -> None:
         pass
 
     class _FakeApi:
-        def create_repo(self, repo_id: str, **_: object) -> None:
+        def repo_info(self, repo_id: str, **_: object) -> None:
             captured["repo_id"] = repo_id
             raise _StopPublish
 

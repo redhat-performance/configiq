@@ -7,15 +7,18 @@ import argparse
 import csv
 import hashlib
 import json
-from collections import defaultdict
+import re
+from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-
 from dataset_common import dataframe_sha256, load_required_models, normalize_rows, pair_id, write_parquet
 
 REQUIRED_COLUMNS = {"model", "accelerator", "version"}
+# The public dataset is the upstream-only subset: plain upstream vLLM releases.
+UPSTREAM_VERSION_PATTERN = re.compile(r"^vLLM-\d+\.\d+\.\d+$")
+
 NUMERIC_COLUMNS = {
     "isl", "osl", "tp", "concurrency", "measured concurrency", "measured rps",
     "output_tok/sec", "total_tok/sec", "prompt_token_count_mean", "prompt_token_count_p99",
@@ -60,6 +63,8 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
     groups: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     source_rows = 0
     approved_rows = 0
+    upstream_rows = 0
+    dropped_versions: Counter[str] = Counter()
 
     with csv_path.open(newline="", encoding="utf-8-sig") as source:
         reader = csv.DictReader(source)
@@ -77,8 +82,15 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
             accelerator = (row["accelerator"] or "").strip()
             if not accelerator:
                 raise ValueError(f"approved model has a missing accelerator on CSV row {source_rows + 1}")
-            groups[(model_id, accelerator)].append(row)
             approved_rows += 1
+            version = (row["version"] or "").strip()
+            if not UPSTREAM_VERSION_PATTERN.fullmatch(version):
+                # Productized RHAIIS builds and non-release labels must never
+                # widen the public upstream-only dataset.
+                dropped_versions[version or "<blank>"] += 1
+                continue
+            groups[(model_id, accelerator)].append(row)
+            upstream_rows += 1
 
     if not groups:
         raise ValueError("source CSV contains no approved model and accelerator pairs")
@@ -111,12 +123,20 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
         "source_sha256": _sha256(csv_path),
         "source_rows": source_rows,
         "approved_rows": approved_rows,
+        "upstream_rows": upstream_rows,
+        "dropped_version_rows": approved_rows - upstream_rows,
+        "dropped_versions": dict(sorted(dropped_versions.items())),
         "pairs": pairs,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
-    print(f"Prepared {approved_rows} approved rows in {len(pairs)} model/accelerator pairs from {source_rows} CSV rows")
-    print("All source version labels were retained; no backend version filter was applied")
+    print(
+        f"Prepared {upstream_rows} upstream rows in {len(pairs)} model/accelerator pairs "
+        f"from {source_rows} CSV rows ({approved_rows} approved rows before the version filter)"
+    )
+    if dropped_versions:
+        dropped_summary = ", ".join(f"{version}={count}" for version, count in sorted(dropped_versions.items()))
+        print(f"Dropped {approved_rows - upstream_rows} approved rows with non-upstream version labels: {dropped_summary}")
     return manifest
 
 

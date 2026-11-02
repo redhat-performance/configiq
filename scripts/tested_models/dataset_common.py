@@ -62,7 +62,9 @@ def _runtime_value(text: str, *names: str) -> str | None:
 
 def _backend_name(version: Any) -> str:
     text = str(version or "").lower()
-    for name in ("vllm", "sglang", "trt-llm", "rhaiis", "nim", "aic"):
+    # Productized builds sometimes embed "vllm" in their version string, so
+    # check the more specific stacks first.
+    for name in ("rhaiis", "sglang", "trt-llm", "nim", "aic", "vllm"):
         if name in text:
             return name
     return "unknown"

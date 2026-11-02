@@ -69,7 +69,7 @@ jobs:
           ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
            (github.event_name == 'schedule' && vars.PERFORMANCE_DATA_PUBLISH_ENABLED == 'true'))
         env:
-          HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-data
+          HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-performance-upstream-data
         run: |
           export HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
           uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py
