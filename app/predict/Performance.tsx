@@ -589,6 +589,8 @@ export default function Performance() {
             prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
             weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
             kv_cache_precision: testKVCachePrecision,
+            gemm_quant_mode: estimateInput.gemm_quant_mode ?? null,
+            kvcache_quant_mode: estimateInput.kvcache_quant_mode ?? null,
             moe_quant_mode: isMoe ? testMoeQuantMode : null,
             gpu_memory_utilization: estimateInput.gpu_memory_utilization ?? null,
             max_num_seqs: result.vllm_config.max_num_seqs,
