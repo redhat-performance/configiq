@@ -10,6 +10,8 @@ import {
   Spinner,
 } from '@patternfly/react-core'
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox'
+import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
+import { useSettings, type Simulator } from '@/contexts/SettingsContext'
 import { useCatalog, type BackendOption, type GpuOption } from '@/lib/hooks/useCatalog'
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import {
@@ -45,6 +47,7 @@ interface GroundTruthResponse {
 
 interface EstimateAttempt {
   point: EstimatePoint | null
+  simulator: Simulator | null
   error: string | null
 }
 
@@ -115,7 +118,13 @@ async function mapWithLimit<T, R>(
 }
 
 export default function GroundTruthComparisonPage() {
-  const { gpuOptions, modelOptions, modelSpecs, backendOptions, isLoading: catalogLoading } = useCatalog()
+  const { simulator } = useSettings()
+  const { gpuOptions, modelOptions, modelSpecs, backendOptions, simulatorSupport, isLoading: catalogLoading } = useCatalog()
+  const support = simulatorSupport[simulator]
+  const predictionBackendOptions = support?.backends ?? backendOptions
+  const predictionModelIds = support?.models ?? modelOptions
+  const predictionSystemIds = support?.systems ?? gpuOptions.map(gpu => gpu.systemId)
+  const simulatorLabel = simulator === 'blis' ? 'BLIS' : 'AISimulate'
   const [filters, setFilters] = React.useState<GroundTruthFilters>(EMPTY_FILTERS)
   const [filterOptions, setFilterOptions] = React.useState<Record<GroundTruthFilterKey, string[]>>({
     accelerator: [], model: [], version: [], isl: [], osl: [], tp: [],
@@ -125,6 +134,8 @@ export default function GroundTruthComparisonPage() {
   const [source, setSource] = React.useState<DatasetSource | null>(null)
   const [groundTruth, setGroundTruth] = React.useState<GroundTruthPoint[]>([])
   const [estimates, setEstimates] = React.useState<EstimatePoint[]>([])
+  const [predictedBy, setPredictedBy] = React.useState<Simulator | null>(null)
+  const [groundTruthState, setGroundTruthState] = React.useState<'idle' | 'loaded' | 'empty' | 'unavailable'>('idle')
   const [isLoadingDataset, setIsLoadingDataset] = React.useState(true)
   const [isComparing, setIsComparing] = React.useState(false)
   const [notice, setNotice] = React.useState<Notice | null>(null)
@@ -138,9 +149,11 @@ export default function GroundTruthComparisonPage() {
     () => findCatalogGpu(filters.accelerator, gpuOptions),
     [filters.accelerator, gpuOptions],
   )
-  const currentBackend = backendOptions.find(backend => backend.id === predictionBackend)
+  const currentBackend = predictionBackendOptions.find(backend => backend.id === predictionBackend)
   const backendVersions = currentBackend?.versions ?? []
   const availableBackendVersions = supportedBackendVersions(currentBackend, currentGpu?.systemId ?? null)
+  const predictionGpuSupported = Boolean(currentGpu && predictionSystemIds.includes(currentGpu.systemId))
+  const predictionModelSupported = predictionModelIds.includes(filters.model)
   const selectedConfiguration = configurations.find(option => option.key === configurationKey)
   const modelItems = React.useMemo<ComboBoxItem[]>(() => filterOptions.model.map(model => ({
     value: model,
@@ -184,6 +197,7 @@ export default function GroundTruthComparisonPage() {
       setFilterOptions(options)
       setConfigurations(data.configurations ?? [])
       setSource(data.source)
+      setGroundTruthState(previous => previous === 'unavailable' ? 'idle' : previous)
       setConfigurationKey(previous => {
         if ((data.configurations ?? []).some(option => option.key === previous)) return previous
         return data.configurations?.length === 1 ? data.configurations[0].key : ''
@@ -195,6 +209,7 @@ export default function GroundTruthComparisonPage() {
       } : null)
     } catch (error) {
       if (requestId === filterRequestId.current) {
+        setGroundTruthState(previous => previous === 'loaded' ? previous : 'unavailable')
         setNotice({
           variant: 'danger',
           title: 'Ground truth data unavailable',
@@ -211,11 +226,21 @@ export default function GroundTruthComparisonPage() {
   }, [loadFilters])
 
   React.useEffect(() => {
-    if (!predictionBackend && backendOptions.length > 0) {
-      const preferred = backendOptions.find(option => option.id === 'vllm') ?? backendOptions[0]
+    if (!predictionBackend && predictionBackendOptions.length > 0) {
+      const preferred = predictionBackendOptions.find(option => option.id === 'vllm') ?? predictionBackendOptions[0]
       setPredictionBackend(preferred.id)
     }
-  }, [backendOptions, predictionBackend])
+  }, [predictionBackendOptions, predictionBackend])
+
+  // A simulator change invalidates the backend/version choice and any estimates
+  // produced by the previous simulator.
+  React.useEffect(() => {
+    setEstimates([])
+    setPredictedBy(null)
+    setPredictionBackendVersion('')
+    setPredictionBackend(current =>
+      predictionBackendOptions.some(option => option.id === current) ? current : '')
+  }, [simulator, predictionBackendOptions])
 
   React.useEffect(() => {
     if (!currentBackend) return
@@ -254,8 +279,10 @@ export default function GroundTruthComparisonPage() {
     setConfigurationKey('')
     setGroundTruth([])
     setEstimates([])
+    setPredictedBy(null)
+    setGroundTruthState('idle')
     setNotice(null)
-    const defaultBackend = backendOptions.find(option => option.id === 'vllm') ?? backendOptions[0]
+    const defaultBackend = predictionBackendOptions.find(option => option.id === 'vllm') ?? predictionBackendOptions[0]
     setPredictionBackend(defaultBackend?.id ?? '')
     setPredictionBackendVersion('')
   }
@@ -271,6 +298,7 @@ export default function GroundTruthComparisonPage() {
     }
 
     setIsComparing(true)
+    setPredictedBy(null)
     setNotice({ variant: 'info', title: 'Loading comparison', message: 'Fetching the selected measured benchmark rows.' })
     setGroundTruth([])
     setEstimates([])
@@ -284,25 +312,34 @@ export default function GroundTruthComparisonPage() {
         throw new Error(data.error ?? `Comparison request failed (${response.status})`)
       }
       if (data.points.length === 0) {
+        setGroundTruthState('empty')
         setNotice({ variant: 'warning', title: 'No matching benchmark rows', message: 'Try another benchmark configuration or adjust the filters.' })
         return
       }
 
       setSource(data.source)
       setGroundTruth(data.points)
+      setGroundTruthState('loaded')
 
-      if (!currentGpu || !currentBackend || !predictionBackendVersion || !availableBackendVersions.includes(predictionBackendVersion)) {
+      if (
+        !currentGpu
+        || !currentBackend
+        || !predictionBackendVersion
+        || !availableBackendVersions.includes(predictionBackendVersion)
+        || !predictionGpuSupported
+        || !predictionModelSupported
+      ) {
         setNotice({
           variant: 'warning',
-          title: 'Ground truth loaded; prediction is unavailable for this selection',
-          message: 'The selected accelerator or serving backend is not supported by the AISimulators catalog. Measured results remain available below.',
+          title: `Ground truth loaded; ${simulatorLabel} cannot predict this selection`,
+          message: `The selected model, accelerator, or serving backend is not supported by ${simulatorLabel}. Measured results remain available below.`,
         })
         return
       }
 
       setNotice({
         variant: 'info',
-        title: 'Running AISimulators predictions',
+        title: `Running ${simulatorLabel} predictions`,
         message: `Predicting ${Math.min(data.points.length, 24)} measured concurrency levels. Measured data stays visible while predictions run.`,
       })
 
@@ -330,40 +367,47 @@ export default function GroundTruthComparisonPage() {
             tp_size: Number(filters.tp),
             backend: predictionBackend,
             backend_version: predictionBackendVersion,
+            simulator,
             moe_ep_size: (catalogModelSpec?.num_experts ?? 0) > 1
               ? Number(filters.tp) : undefined,
             hf_model_config: modelConfig,
           })
           const performance = result.performance
-          if (!performance) throw new Error('AISimulators did not return performance metrics.')
+          if (!performance) throw new Error(`${simulatorLabel} did not return performance metrics.`)
           const concurrency = measured.concurrency
-          const outputTokensPerSecondPerUser = performance.throughput_tokens_per_sec
+          const outputTokensPerSecond = performance.throughput_tokens_per_sec
+          const outputTokensPerSecondPerUser = performance.throughput_tokens_per_sec_per_user
+            ?? (concurrency > 0 ? outputTokensPerSecond / concurrency : null)
           return {
+            simulator: result.simulator,
             error: null,
             point: {
               concurrency,
               ttftSeconds: performance.ttft_ms / 1000,
               tpotSeconds: performance.tpot_ms / 1000,
-              outputTokensPerSecond: outputTokensPerSecondPerUser * concurrency,
+              outputTokensPerSecond,
               outputTokensPerSecondPerUser,
               requestLatencySeconds: performance.request_latency_ms / 1000,
             },
           }
         } catch (error) {
           return {
+            simulator: null,
             point: null,
-            error: error instanceof Error ? error.message : 'AISimulators prediction failed',
+            error: error instanceof Error ? error.message : `${simulatorLabel} prediction failed`,
           }
         }
       })
       const successfulEstimates = attempts.flatMap(attempt => attempt.point ? [attempt.point] : [])
       const failures = attempts.flatMap(attempt => attempt.error ? [attempt.error] : [])
+      const actualSimulators = new Set(attempts.flatMap(attempt => attempt.simulator ? [attempt.simulator] : []))
+      setPredictedBy(actualSimulators.size === 1 ? [...actualSimulators][0] : null)
       setEstimates(successfulEstimates)
       if (failures.length > 0) {
         const firstError = failures[0]
         setNotice({
           variant: successfulEstimates.length > 0 ? 'warning' : 'danger',
-          title: successfulEstimates.length > 0 ? 'Some predictions could not be calculated' : 'AISimulators could not predict this configuration',
+          title: successfulEstimates.length > 0 ? 'Some predictions could not be calculated' : `${simulatorLabel} could not predict this configuration`,
           message: `${successfulEstimates.length} of ${predictionLevels.length} predictions completed.${firstError ? ` ${firstError}` : ''}`,
         })
       } else {
@@ -374,6 +418,7 @@ export default function GroundTruthComparisonPage() {
         })
       }
     } catch (error) {
+      setGroundTruthState(previous => previous === 'loaded' ? previous : 'unavailable')
       setNotice({
         variant: 'danger',
         title: 'Comparison failed',
@@ -495,7 +540,10 @@ export default function GroundTruthComparisonPage() {
 
         <div className={styles.predictSettings}>
           <div>
-            <h3>AISimulators prediction</h3>
+            <div className={styles.predictHeading}>
+              <h3>{simulatorLabel} prediction</h3>
+              <SimulatorBadge simulator={simulator} />
+            </div>
             <p>Choose the serving backend used to generate the comparison series.</p>
           </div>
           <div className={styles.predictGrid}>
@@ -504,22 +552,22 @@ export default function GroundTruthComparisonPage() {
               <FormSelect
                 id="validation-prediction-backend"
                 value={predictionBackend}
-                isDisabled={catalogLoading || backendOptions.length === 0 || isComparing}
+                isDisabled={catalogLoading || predictionBackendOptions.length === 0 || isComparing}
                 onChange={(_event, value) => {
                   setPredictionBackend(value)
                   setPredictionBackendVersion('')
                   setEstimates([])
                 }}
               >
-                {backendOptions.map(backend => <FormSelectOption key={backend.id} value={backend.id} label={backend.id} />)}
+                {predictionBackendOptions.map(backend => <FormSelectOption key={backend.id} value={backend.id} label={backend.id} />)}
               </FormSelect>
             </div>
             <div className={styles.field}>
-              <label htmlFor="validation-prediction-version">AISimulators backend version</label>
+              <label htmlFor="validation-prediction-version">{simulatorLabel} backend version</label>
               <FormSelect
                 id="validation-prediction-version"
                 value={predictionBackendVersion}
-                isDisabled={catalogLoading || !currentGpu || availableBackendVersions.length === 0 || isComparing}
+                isDisabled={catalogLoading || !predictionGpuSupported || availableBackendVersions.length === 0 || isComparing}
                 onChange={(_event, value) => {
                   setPredictionBackendVersion(value)
                   setEstimates([])
@@ -530,10 +578,12 @@ export default function GroundTruthComparisonPage() {
                   label={!filters.accelerator
                     ? 'Select a GPU accelerator first'
                     : !currentGpu
-                      ? 'GPU unavailable in AISimulators'
-                      : availableBackendVersions.length === 0
-                        ? 'No backend versions for this GPU'
-                        : 'Select a backend version'}
+                      ? 'GPU unavailable in the catalog'
+                      : !predictionGpuSupported
+                        ? `GPU unavailable in ${simulatorLabel}`
+                        : availableBackendVersions.length === 0
+                          ? 'No backend versions for this GPU'
+                          : 'Select a backend version'}
                   isDisabled
                 />
                 {backendVersions.map(version => (
@@ -545,11 +595,11 @@ export default function GroundTruthComparisonPage() {
                   />
                 ))}
               </FormSelect>
-              <p className={styles.helperText}>Version used for the AISimulators prediction. All reported versions are listed after choosing a GPU; versions without prediction data for it are disabled.</p>
+              <p className={styles.helperText}>Version used for the {simulatorLabel} prediction. All reported versions are listed after choosing a GPU; versions without prediction data for it are disabled.</p>
             </div>
           </div>
           <p className={styles.methodNote}>
-            Ground-truth TTFT and TPOT are converted from milliseconds; request latency is already in seconds. Predicted TPOT uses AISimulators&apos; reported TPOT, which excludes TTFT. Predictions use the selected model, accelerator, token lengths, TP, concurrency, and prediction backend, with 10 simulated requests per concurrency slot. Aggregate predicted throughput is the per-user rate multiplied by concurrency; other measured runtime settings are not inferred by AISimulators.
+            Ground-truth TTFT and TPOT are converted from milliseconds; request latency is already in seconds. Predicted TPOT uses {simulatorLabel}&apos;s reported TPOT, which excludes TTFT. Predictions use the selected model, accelerator, token lengths, TP, concurrency, and prediction backend, with {PREDICTION_REQUESTS_PER_LOAD_UNIT} simulated requests per concurrency slot. Aggregate predicted throughput is the simulator&apos;s cluster-wide rate; per-user throughput is used when reported, otherwise it is derived from the aggregate rate and concurrency. Other measured runtime settings are not inferred.
           </p>
         </div>
 
@@ -570,11 +620,26 @@ export default function GroundTruthComparisonPage() {
           </div>
           <div className={styles.legend} aria-label="Chart series">
             <span><i className={styles.groundTruthSwatch} />Ground truth</span>
-            <span><i className={styles.aisimSwatch} />AISimulators</span>
+            <span><i className={styles.aisimSwatch} />{predictedBy === 'blis' ? 'BLIS' : predictedBy === 'aisimulate' ? 'AISimulate' : simulatorLabel}</span>
           </div>
         </div>
         {groundTruth.length > 0 ? (
-          <ComparisonPreview groundTruth={groundTruth} estimates={estimates} />
+          <ComparisonPreview
+            groundTruth={groundTruth}
+            estimates={estimates}
+            predictionLabel={predictedBy === 'blis' ? 'BLIS' : predictedBy === 'aisimulate' ? 'AISimulate' : simulatorLabel}
+          />
+        ) : groundTruthState === 'unavailable' ? (
+          <div className={styles.emptyResults}>
+            <h3>Ground truth is unavailable</h3>
+            <p>The live benchmark dataset could not be loaded. This is not an empty result set.</p>
+            <Button variant="link" onClick={() => void loadFilters(filters, true)}>Retry dataset load</Button>
+          </div>
+        ) : groundTruthState === 'empty' ? (
+          <div className={styles.emptyResults}>
+            <h3>No matching benchmark rows</h3>
+            <p>No measured rows match this configuration. Adjust the filters and try again.</p>
+          </div>
         ) : (
           <div className={styles.emptyResults}>
             <h3>Choose benchmark inputs to begin</h3>

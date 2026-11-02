@@ -594,6 +594,30 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result.performance?.concurrency).toBe(32)
   })
 
+  it('keeps aggregate and per-user throughput distinct', async () => {
+    const mockFetch = mockFetchOk({
+      ...VALID_RESPONSE,
+      tokens_per_second: 1000,
+      tokens_per_second_per_user: 31.25,
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.performance?.throughput_tokens_per_sec).toBe(1000)
+    expect(result.performance?.throughput_tokens_per_sec_per_user).toBe(31.25)
+  })
+
+  it('leaves per-user throughput null when the simulator omits it', async () => {
+    const mockFetch = mockFetchOk({ ...VALID_RESPONSE, tokens_per_second: 1000 })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.performance?.throughput_tokens_per_sec).toBe(1000)
+    expect(result.performance?.throughput_tokens_per_sec_per_user).toBeNull()
+  })
+
   it('handles zero output sequence length gracefully', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)

@@ -62,11 +62,13 @@ function ChartCard({
   groundTruth,
   estimates,
   mounted,
+  predictionLabel,
 }: {
   metric: MetricDefinition
   groundTruth: GroundTruthPoint[]
   estimates: EstimatePoint[]
   mounted: boolean
+  predictionLabel: string
 }) {
   const values = [
     ...groundTruth.map(point => numberValue(point, metric.key)),
@@ -81,8 +83,8 @@ function ChartCard({
     .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'Ground truth' }))
     .filter((point): point is { x: number; y: number; series: 'Ground truth' } => point.y !== null)
   const estimateData = estimates
-    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'AISimulators' }))
-    .filter((point): point is { x: number; y: number; series: 'AISimulators' } => point.y !== null)
+    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: predictionLabel }))
+    .filter((point): point is { x: number; y: number; series: string } => point.y !== null)
 
   return (
     <article className={styles.chartCard}>
@@ -97,7 +99,7 @@ function ChartCard({
         {mounted && groundTruth.length > 0 ? (
           <Chart
             ariaTitle={`${metric.title} by concurrency`}
-            ariaDesc={`Ground truth and AISimulators ${metric.title.toLowerCase()} compared at measured concurrency levels`}
+            ariaDesc={`Ground truth and ${predictionLabel} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
             domain={{ x: [0, Math.max(...concurrencyValues) * 1.04], y: [0, max * 1.14] }}
             height={278}
             width={600}
@@ -173,9 +175,11 @@ function ChartCard({
 export default function ComparisonPreview({
   groundTruth,
   estimates,
+  predictionLabel,
 }: {
   groundTruth: GroundTruthPoint[]
   estimates: EstimatePoint[]
+  predictionLabel: string
 }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
@@ -191,6 +195,7 @@ export default function ComparisonPreview({
             groundTruth={groundTruth}
             estimates={estimates}
             mounted={mounted}
+            predictionLabel={predictionLabel}
           />
         ))}
       </div>
@@ -198,7 +203,7 @@ export default function ComparisonPreview({
         <section className={styles.details} aria-labelledby="comparison-details-heading">
           <div className={styles.detailsHead}>
             <h3 id="comparison-details-heading">Results by concurrency</h3>
-            <p>Each cell shows ground truth → AISimulators and the relative difference.</p>
+            <p>Each cell shows ground truth → {predictionLabel} and the relative difference.</p>
           </div>
           <div className={styles.tableScroll}>
             <table className={styles.detailsTable}>
