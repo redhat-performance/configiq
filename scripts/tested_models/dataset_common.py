@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from quantization import canonical_quantization
 
 DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
@@ -150,6 +151,11 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     for column, names in runtime_aliases.items():
         if column not in frame:
             frame[column] = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+    for column in ("weight_quantization", "kv_quantization"):
+        if column in frame:
+            frame[column] = frame[column].map(
+                lambda value, name=column: canonical_quantization(name, value)
+            )
     frame = frame[[column for column in frame.columns if column in CLASSIFICATION_COLUMNS]]
 
     frame["model_id"] = model_id
