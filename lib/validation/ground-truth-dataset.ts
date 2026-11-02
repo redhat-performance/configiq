@@ -15,6 +15,8 @@ const DATASET_URL = `https://huggingface.co/datasets/${DATASET_ID}`
 const VIEWER_API = 'https://datasets-server.huggingface.co'
 const PARQUET_CONCURRENCY = 4
 const CACHE_TTL_MS = 5 * 60 * 1000
+/** Explicit refreshes are ignored until the cache is at least this old. */
+const MIN_REFRESH_INTERVAL_MS = 30 * 1000
 
 const CONFIGURATION_FIELDS = [
   'backend',
@@ -190,14 +192,19 @@ async function loadDataset(refresh: boolean): Promise<DatasetCache> {
 }
 
 export async function getGroundTruthDataset(refresh = false): Promise<DatasetCache> {
-  if (!refresh && cachedDataset && cachedDataset.expiresAt > Date.now()) return cachedDataset
+  const cacheAgeMs = cachedDataset ? Date.now() - (cachedDataset.expiresAt - CACHE_TTL_MS) : Infinity
+  const forceRefresh = refresh && cacheAgeMs > MIN_REFRESH_INTERVAL_MS
+  if (!forceRefresh && cachedDataset && cachedDataset.expiresAt > Date.now()) return cachedDataset
   if (inFlightDataset) return inFlightDataset
-  if (refresh) cachedDataset = null
 
-  inFlightDataset = loadDataset(refresh)
+  inFlightDataset = loadDataset(forceRefresh)
   try {
     cachedDataset = await inFlightDataset
     return cachedDataset
+  } catch (error) {
+    // A failed reload must not turn a working dataset into an outage.
+    if (cachedDataset) return cachedDataset
+    throw error
   } finally {
     inFlightDataset = null
   }
