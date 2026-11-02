@@ -27,7 +27,7 @@ dependencies = [
     # vendored), referenced by exact download URL so pip installs that exact
     # artifact. Keep this URL identical to the aisimulators service and bump both
     # together; see docs/RELEASE_PROCESS.md.
-    "aisimulate @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.13.0%2B7f1efbc1/aisimulate-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "aisimulate @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.13.0%2Bdd7494b9/aisimulate-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl",
     "pyarrow",
 ]
 

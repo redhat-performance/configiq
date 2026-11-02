@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from configiq.systems import load_device_names_from_perf_data, supported_systems
@@ -651,6 +651,130 @@ class TestModels:
         assert isinstance(resp.json()["models"][0], str)
 
 
+# ─── /backends tests ─────────────────────────────────────────────────────────
+
+
+class FakeBackend:
+    """Stand-in for an SDK backend: fraction keyed by version, no SDK import."""
+
+    def __init__(self, fractions: dict[str | None, float]):
+        self.fractions = fractions
+
+    def get_default_free_gpu_memory_fraction(self, backend_version: str | None = None) -> float:
+        return self.fractions[backend_version]
+
+    def memory_fraction_of_free(self) -> bool:
+        return False
+
+
+class TestBackends:
+
+    def _patch_backends(self, monkeypatch, supported, slots, fractions):
+        monkeypatch.setattr(app_module, "get_supported_databases", lambda: supported)
+        monkeypatch.setattr(
+            app_module, "get_version_slots",
+            lambda system, backend: slots.get((system, backend)),
+        )
+        monkeypatch.setattr(app_module, "get_backend", lambda backend_id: FakeBackend(fractions))
+
+    def test_default_version_is_the_resolvable_alias_not_the_newest_declared(self, monkeypatch):
+        """A literal default is only ever correct on the systems that declare it."""
+        self._patch_backends(
+            monkeypatch,
+            supported={
+                "h200_sxm": {"vllm": ["0.24.0", "0.31.0"]},
+                "a100_sxm": {"vllm": ["0.14.0"]},
+                "b60": {"vllm": ["0.26.0", "0.28.0"]},
+            },
+            slots={
+                ("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"},
+                ("a100_sxm", "vllm"): {"current": "0.14.0"},
+                ("b60", "vllm"): {"current": "0.28.0", "previous": "0.26.0"},
+            },
+            fractions={"0.24.0": 0.92, "0.14.0": 0.9, "0.28.0": 0.92, None: 0.92},
+        )
+
+        backend = client.get("/backends").json()["backends"][0]
+
+        assert backend["default_version"] == "current"
+        # The union still advertises every version; only the default namespace moved.
+        assert backend["versions"] == ["0.14.0", "0.24.0", "0.26.0", "0.28.0", "0.31.0"]
+        # AISimulate's P/D search takes no fabric, so it must not ask for one.
+        assert backend["disaggregation_requires_fabric"] is False
+
+    def test_system_defaults_follow_each_systems_current_slot(self, monkeypatch):
+        """The per-system default and its memory fraction must come from the same version."""
+        self._patch_backends(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.24.0", "0.31.0"]}, "a100_sxm": {"vllm": ["0.14.0"]}},
+            slots={
+                ("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"},
+                ("a100_sxm", "vllm"): {"current": "0.14.0"},
+            },
+            fractions={"0.24.0": 0.92, "0.14.0": 0.9, None: 0.92},
+        )
+
+        backend = client.get("/backends").json()["backends"][0]
+
+        assert backend["system_defaults"] == {
+            "a100_sxm": {"version": "0.14.0", "memory_fraction": 0.9},
+            "h200_sxm": {"version": "0.24.0", "memory_fraction": 0.92},
+        }
+        # Fleet figure follows the majority current version, not the newest declared.
+        assert backend["memory_fraction"] == 0.92
+
+    def test_numeric_version_order_is_used_when_slots_are_absent(self, monkeypatch):
+        self._patch_backends(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.9.0", "0.10.0"]}},
+            slots={},
+            fractions={"0.9.0": 0.9, "0.10.0": 0.92, None: 0.92},
+        )
+
+        backend = client.get("/backends").json()["backends"][0]
+
+        assert backend["default_version"] == "0.10.0"
+        assert backend["system_defaults"]["h200_sxm"] == {
+            "version": "0.10.0", "memory_fraction": 0.92,
+        }
+
+    def test_without_any_version_gate_default_is_newest_not_majority(self, monkeypatch):
+        """The no-gate default is newest declared; fleet fraction remains majority-based."""
+        self._patch_backends(
+            monkeypatch,
+            supported={
+                "h200_sxm": {"vllm": ["0.14.0"]},
+                "h100_sxm": {"vllm": ["0.14.0"]},
+                "b60": {"vllm": ["0.31.0"]},
+            },
+            slots={},
+            fractions={"0.14.0": 0.9, "0.31.0": 0.92, None: 0.92},
+        )
+
+        backend = client.get("/backends").json()["backends"][0]
+
+        assert backend["default_version"] == "0.31.0"
+        assert backend["memory_fraction"] == 0.9
+
+    def test_current_alias_requires_slots_for_every_system(self, monkeypatch):
+        """A mixed gated/ungated fleet must not advertise an alias the latter rejects."""
+        self._patch_backends(
+            monkeypatch,
+            supported={
+                "h200_sxm": {"vllm": ["0.24.0", "0.31.0"]},
+                "ungated_gpu": {"vllm": ["0.26.0"]},
+            },
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+            fractions={"0.24.0": 0.92, "0.26.0": 0.9, None: 0.92},
+        )
+
+        backend = client.get("/backends").json()["backends"][0]
+
+        assert backend["default_version"] == "0.26.0"
+        assert backend["system_defaults"]["h200_sxm"]["version"] == "0.24.0"
+        assert backend["system_defaults"]["ungated_gpu"]["version"] == "0.26.0"
+
+
 # ─── /systems tests ──────────────────────────────────────────────────────────
 
 
@@ -1001,6 +1125,20 @@ class TestEstimate:
 
         assert resp.status_code == 200
         assert resp.json()["ttft"] == pytest.approx(471.378)
+        assert resp.json()["provenance"]["simulator"] == "aisimulate"
+        assert resp.json()["provenance"]["requested_model"] == VALID_ESTIMATE_BODY["model_path"]
+
+    @patch("tools.api_service.app._blis_estimate")
+    def test_predict_provenance_fallback_matches_requested_simulator(self, mock_estimate):
+        mock_estimate.return_value = make_mock_estimate_result()
+        body = {**VALID_ESTIMATE_BODY, "simulator": "blis"}
+
+        resp = client.post("/predict", json=body)
+
+        assert resp.status_code == 200
+        assert resp.json()["simulator"] == "blis"
+        assert resp.json()["provenance"]["simulator"] == "blis"
+        assert resp.json()["provenance"]["requested_model"] == body["model_path"]
 
     @patch("tools.api_service.app._run_aisimulate_prediction")
     def test_predict_derives_per_gpu_throughput_from_requested_topology(self, mock_estimate):
@@ -1017,6 +1155,42 @@ class TestEstimate:
     def test_estimate_is_marked_deprecated(self):
         schema = client.get("/openapi.json").json()
         assert schema["paths"]["/estimate"]["post"]["deprecated"] is True
+
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_unqueryable_version_is_a_client_error(self, mock_estimate):
+        """A version the system does not offer is the caller's to fix, not a 500."""
+        mock_estimate.side_effect = RuntimeError(
+            "ValueError: no timing data for vllm 0.31.0 on a100_sxm; "
+            "available: 0.14.0 (current)"
+        )
+
+        resp = client.post("/predict", json={**VALID_ESTIMATE_BODY, "backend_version": "0.31.0"})
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == (
+            "no timing data for vllm 0.31.0 on a100_sxm; available: 0.14.0 (current)"
+        )
+
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_unqueryable_version_keeps_the_sdk_guidance(self, mock_estimate):
+        mock_estimate.side_effect = ValueError(
+            "vllm version '0.31.0' is not a queryable version on a100_sxm. "
+            "Accepted versions for a100_sxm/vllm: current = 0.14.0."
+        )
+
+        resp = client.post("/predict", json={**VALID_ESTIMATE_BODY, "backend_version": "0.31.0"})
+
+        assert resp.status_code == 422
+        assert "Accepted versions for a100_sxm/vllm" in resp.json()["detail"]
+
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_unexpected_failure_is_still_a_server_error(self, mock_estimate):
+        mock_estimate.side_effect = RuntimeError("disk on fire")
+
+        resp = client.post("/predict", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 500
+        assert resp.json()["detail"] == "disk on fire"
 
     def test_gpu_memory_default_matches_backend(self):
         assert app_module._backend_memory_fraction("vllm") == pytest.approx(0.92)
@@ -1062,6 +1236,7 @@ class TestEstimate:
             "tensor_parallel_size": 2,
             "max_model_len": 5000,
             "max_num_seqs": 64,
+            "max_num_batched_tokens": None,
             "gpu_memory_utilization": 0.97,
             "enable_chunked_prefill": True,
             "enable_prefix_caching": True,
@@ -1200,14 +1375,25 @@ class TestEstimate:
         resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
         assert resp.status_code == 500
 
-    @patch("aisimulate.predict.run_prediction")
     @patch("tools.api_service.app._aisimulate_runner_factory")
-    def test_model_config_is_forwarded_to_prediction(self, mock_factory, mock_run):
-        def check(config, **_kwargs):
-            assert Path(config.engine.model, "config.json").is_file()
-            return make_mock_estimate_result()
+    @patch("aisimulate.compiler.prediction_to_replay_spec")
+    def test_model_config_is_forwarded_to_prediction(self, mock_compile, mock_factory):
+        mock_report = MagicMock()
+        mock_report.metrics = {
+            "ttft_ms": 471.378, "tpot_ms": 28.118,
+            "e2e_latency_ms": 28589.5, "output_throughput_tok_s": 4479.8,
+            "num_total_gpus": 1.0, "power_w": None,
+        }
+        mock_report.metadata = {}
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = mock_report
+        mock_factory.return_value.create.return_value = mock_runner
 
-        mock_run.side_effect = check
+        def check_config(config):
+            assert Path(config.engine.model, "config.json").is_file()
+            return MagicMock()
+
+        mock_compile.side_effect = check_config
         body = {**VALID_ESTIMATE_BODY, "model_config": {"hidden_size": 8192, "architectures": ["LlamaForCausalLM"]}}
         request = app_module.EstimateRequest.model_validate(body)
         app_module._run_aisimulate_prediction(request, set())

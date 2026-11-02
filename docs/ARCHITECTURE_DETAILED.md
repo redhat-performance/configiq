@@ -40,6 +40,7 @@ services, typically behind nginx. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
 | App shell | `components/layout/AppShell.tsx` | PatternFly page, masthead, and sidebar |
 | Predict workflow | `app/predict/` | Explicit `/api/predict` performance requests and result display |
 | Recommend workflow | `app/recommend/` | GPU sizing requests, including streamed progress |
+| Simulator setting | `contexts/SettingsContext.tsx`, `app/settings/` | Persisted global simulator selection for Predict and Recommend |
 | KV cache calculator | `app/kv-cache/` | `/api/memory` requests and memory breakdown display |
 | Catalog hook | `lib/hooks/useCatalog.ts` | Same-origin GPU, model, and backend catalog |
 | Costings hook | `lib/hooks/useCostings.ts` | Same-origin pricing and health data |
@@ -54,7 +55,9 @@ GPU sizing formulas or call external service URLs directly from the browser.
 ### Predict performance
 
 1. `app/predict/Performance.tsx` builds an explicit model, system, workload,
-   backend, and parallelism request.
+   backend, simulator, and parallelism request. The simulator comes from the
+   global Settings selection. BLIS P/D predictions also include the chosen
+   network fabric and per-pool settings.
 2. `lib/api/estimate-adapter.ts` posts it to `/api/predict?include=config,memory`.
 3. The Next.js route delegates to `lib/api/predict-proxy.ts`, which calls the
    AISimulators `/predict` endpoint server-side.
@@ -65,15 +68,19 @@ GPU sizing formulas or call external service URLs directly from the browser.
 
 1. The recommend page sends a validated request to `/api/recommend`.
 2. `lib/api/recommend.ts` calls AISimulators `/recommend` and normalizes the
-   selected configuration, topology, phases, throughput, and memory.
-3. Streaming clients request `text/event-stream`; the route emits search-window
-   progress while `incrementalRecommend` searches and refines GPU bounds.
+   selected configuration, simulator provenance, topology, phases, throughput,
+   and any memory data the selected simulator provides.
+3. Streaming clients request `text/event-stream`; AISimulate emits search-window
+   progress while `incrementalRecommend` searches and refines GPU bounds. BLIS
+   performs one bounded aggregate TP search, plus a bounded P/D grid when a
+   fabric is selected, and returns the actual search summary.
 
 ### Catalog and pricing
 
 1. `useCatalog` calls `/api/catalog`.
-2. The catalog route fetches `/systems`, `/models`, and `/backends` from
-   AISimulators and combines them into one browser response.
+2. The catalog route fetches `/systems`, `/models`, `/backends`, and `/networks`
+   from AISimulators and combines them into one browser response. The network
+   list supplies fabrics for BLIS P/D predictions; AISimulate does not consume it.
 3. When costings are enabled, `useCostings` calls `/api/costings/models`,
    `/api/costings/systems`, and `/api/costings/health`.
 4. Those routes proxy the aicostings service; pricing data is not part of the
@@ -87,7 +94,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/predict` | POST | AISimulators `/predict` |
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
-| `/api/catalog` | GET | Combined AISimulators systems, models, and backends |
+| `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |
 | `/api/costings/models` | GET | aicostings hosted-model pricing |

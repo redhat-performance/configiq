@@ -12,6 +12,9 @@ permissions:
 
 # No path filters on any job: every push/PR checks all four components, matching
 # the "release in unison" model of the build workflow.
+#
+# Service jobs pin one interpreter (3.12) so a runner-image bump cannot change
+# the Python under the tests.
 jobs:
   check:
     name: Frontend — type-check, lint, and build
@@ -48,6 +51,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.12"
 
       - name: Sync dependencies
         working-directory: services/aisimulators
@@ -87,6 +91,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.12"
 
       - name: Sync dependencies
         working-directory: services/aicostings
@@ -111,6 +116,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          python-version: "3.12"
 
       - name: Sync dependencies
         working-directory: services/mcp-gateway

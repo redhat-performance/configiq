@@ -33,7 +33,8 @@ import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
-import { useCatalog, type ModelSpec } from '@/lib/hooks/useCatalog';
+import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
+import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
@@ -128,9 +129,29 @@ const QUICK_ESTIMATE_TOUR: TourStep[] = [
 
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { gpuOptions: catalogGpus, modelOptions: catalogModels, modelSpecs, backendOptions, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+
+  // A simulator may price only a subset of the catalog. Its override narrows
+  // the pickers; no override means the top-level catalog is its support.
+  const support = simulatorSupport[simulator];
+  const catalogModels = support?.models ?? allCatalogModels;
+  const catalogGpus = React.useMemo(
+    () => (support
+      ? allCatalogGpus.filter(option => support.systems.includes(option.systemId))
+      : allCatalogGpus),
+    [support, allCatalogGpus],
+  );
+  const engineBackend = support?.backends.find(backend => backend.id === inferenceBackend)
+    ?? support?.backends[0];
+  const engineSupport = engineVersionSupport(engineBackend, backendVersion || engineBackend?.defaultVersion);
+  // Fail open when the service reports no per-version support: the API still
+  // refuses an unmodeled topology with a 422 that names the alternatives.
+  const disaggSupported = engineSupport?.disaggregated ?? true;
+  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
+  // search takes none, so the fabric control stays hidden there.
+  const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
 
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
@@ -224,7 +245,7 @@ export default function Performance() {
 
   const effectiveGpuMemoryUtilization = gpuMemoryUtilization
     ?? testResult?.vllm_config.gpu_memory_utilization
-    ?? backendOptions?.find(backend => backend.id === inferenceBackend)?.memoryFraction
+    ?? systemMemoryFraction(backendOptions?.find(backend => backend.id === inferenceBackend), gpu)
     ?? null;
 
   // Save estimate modal
@@ -256,8 +277,20 @@ export default function Performance() {
 
   // Disagg: prefill and decode pools with independent parallelism / batch.
   const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg');
+  const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
+  const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
+  const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
   const [prefillCfg, setPrefillCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '1' });
   const [decodeCfg, setDecodeCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '64' });
+
+  // A release without P/D modelling cannot run the selected topology; fall back
+  // to aggregated rather than letting the request fail.
+  React.useEffect(() => {
+    if (servingMode === 'disagg' && !disaggSupported) {
+      setServingMode('agg');
+      setTestResult(null);
+    }
+  }, [servingMode, disaggSupported]);
 
   const [islInput, setIslInput] = React.useState('2048');
   const [oslInput, setOslInput] = React.useState('128');
@@ -443,6 +476,8 @@ export default function Performance() {
           osl: testOSL,
           batch_size: testConcurrentUsers,
           tp_size: testTpSize,
+          simulator,
+          ...(servingMode === 'disagg' && fabricRequired && selectedNetworkFabric ? { fabric: selectedNetworkFabric } : {}),
           ...(effectiveContextLimit != null ? { max_seq_len: effectiveContextLimit } : {}),
           ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
           ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
@@ -463,8 +498,7 @@ export default function Performance() {
                           testWeightPrecision === 'MXFP4' ? 'mxfp4' :
                           testWeightPrecision === 'NVFP4' ? 'nvfp4' : null,
           moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
-          moe_ep_size: testMoeEpSize,
-          moe_tp_size: testMoeEtpSize,
+          ...(isMoe && { moe_ep_size: testMoeEpSize, moe_tp_size: testMoeEtpSize }),
           ...(servingMode === 'disagg' && {
             mode: 'disagg' as const,
             prefill: parsePerfPhase(prefillCfg),
@@ -734,6 +768,8 @@ export default function Performance() {
       model_path: model || '(select model)',
       system: gpu || '(select GPU)',
       backend: inferenceBackend,
+      simulator,
+       ...(servingMode === 'disagg' && fabricRequired && selectedNetworkFabric && { fabric: selectedNetworkFabric }),
       isl: testISL,
       osl: testOSL,
       ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
@@ -759,8 +795,7 @@ export default function Performance() {
         ? (hfConfig as Record<string, unknown> | null)
         : null,
       moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
-      moe_ep_size: testMoeEpSize,
-      moe_tp_size: testMoeEtpSize,
+      ...(isMoe && { moe_ep_size: testMoeEpSize, moe_tp_size: testMoeEtpSize }),
       ...(servingMode === 'disagg' && {
         mode: 'disagg',
         prefill_tp_size: parsePerfPhase(prefillCfg).tp,
@@ -773,7 +808,7 @@ export default function Performance() {
         decode_batch_size: parsePerfPhase(decodeCfg).batch,
       })
     };
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize]);
+  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize, simulator, selectedNetworkFabric, fabricRequired]);
 
   // Copy API request body to clipboard
   const handleCopyAPIRequest = async () => {
@@ -1208,7 +1243,11 @@ export default function Performance() {
       },
       summary: [
         { k: 'max_num_seqs', v: vllmOverride && vllmManualMaxNumSeqs !== null ? `${vllmManualMaxNumSeqs}` : testResult ? `${testResult.vllm_config.max_num_seqs}` : '—' },
-        { k: 'chunked', v: vllmOverride && vllmManualChunkedPrefill !== null ? (vllmManualChunkedPrefill ? 'on' : 'off') : testResult ? (testResult.vllm_config.enable_chunked_prefill ? 'on' : 'off') : '—' }
+        { k: 'chunked', v: vllmOverride && vllmManualChunkedPrefill !== null
+          ? (vllmManualChunkedPrefill ? 'on' : 'off')
+          : testResult?.vllm_config.enable_chunked_prefill === true ? 'on'
+          : testResult?.vllm_config.enable_chunked_prefill === false ? 'off'
+          : testResult ? 'auto' : '—' }
       ],
       fields: [
         {
@@ -1221,7 +1260,11 @@ export default function Performance() {
         },
         {
           label: 'enable_chunked_prefill',
-          value: vllmOverride && vllmManualChunkedPrefill !== null ? (vllmManualChunkedPrefill ? 'Yes' : 'No') : testResult ? (testResult.vllm_config.enable_chunked_prefill ? 'Yes' : 'No') : '—',
+          value: vllmOverride && vllmManualChunkedPrefill !== null
+            ? (vllmManualChunkedPrefill ? 'Yes' : 'No')
+            : testResult?.vllm_config.enable_chunked_prefill === true ? 'Yes'
+            : testResult?.vllm_config.enable_chunked_prefill === false ? 'No'
+            : testResult ? 'Auto' : '—',
           term: 'chunkedPrefill',
           readonly: !vllmOverride,
           type: vllmOverride ? 'select' as const : undefined,
@@ -1297,7 +1340,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
+            isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -1305,21 +1348,59 @@ export default function Performance() {
 
       </div>
 
-      {/* ---------- serving mode (agg / disagg) ---------- */}
+      {/* ---------- serving mode ---------- */}
       <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
           <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
-          <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('disagg'); setTestResult(null); }}>Disaggregated</Button>
+          <Button
+            variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+            size="sm"
+            isDisabled={!disaggSupported}
+            onClick={() => { setServingMode('disagg'); setTestResult(null); }}
+          >
+            Disaggregated
+          </Button>
           {servingMode === 'disagg' && (
             <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
           )}
         </div>
-        {servingMode === 'disagg' && (
-          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-            <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
-            <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
+        {!disaggSupported && (
+          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 8 }}>
+            The selected simulator does not model prefill/decode disaggregation for vLLM {backendVersion || engineBackend?.defaultVersion}. Choose another version, or use aggregated serving.
           </div>
+        )}
+        {servingMode === 'disagg' && (
+          <>
+            {fabricRequired && (
+              <div style={{ marginTop: 14, maxWidth: 360 }}>
+                <label className={styles.accFieldLabel} htmlFor="predict-network-fabric">Inter-node fabric</label>
+                <FormSelect
+                  id="predict-network-fabric"
+                  value={selectedNetworkFabric}
+                  aria-label="Inter-node fabric"
+                  isDisabled={(networkOptions ?? []).length === 0}
+                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); }}
+                >
+                  <FormSelectOption value="" label="Select a fabric" isDisabled />
+                  {(networkOptions ?? []).map(network => (
+                    <FormSelectOption key={network} value={network} label={network} />
+                  ))}
+                </FormSelect>
+                <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                  {networkOptions.length === 0
+                    ? 'No network fabrics were returned by the simulator catalog.'
+                    : selectedNetworkFabric === 'roce-200g' && networkFabric === null
+                      ? 'RoCE 200G is preselected; change it if your cluster uses another fabric.'
+                      : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+              <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
+              <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
+            </div>
+          </>
         )}
       </div>
 
@@ -1417,10 +1498,12 @@ export default function Performance() {
           <span style={{ fontSize: '24px', flexShrink: 0 }}>⚠️</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: '600', color: '#856404', marginBottom: '8px', fontSize: '16px' }}>
-              {testErrorCode === 'OOM' ? 'Not enough GPU memory'
-                : testErrorCode === 'AUTH_REQUIRED' ? 'Authentication required'
-                : testErrorCode === 'MODEL_NOT_FOUND' ? 'Model not found'
-                : testErrorCode === 'AISIM_TIMEOUT' ? 'Request timed out'
+               {testErrorCode === 'OOM' ? 'Not enough GPU memory'
+                 : testErrorCode === 'AUTH_REQUIRED' ? 'Authentication required'
+                 : testErrorCode === 'MODEL_NOT_FOUND' ? 'Model not found'
+                 : testErrorCode === 'SIMULATOR_MISMATCH' ? 'Simulator mismatch'
+                  : testErrorCode === 'AISIM_NO_CONFIGURATION' ? 'No valid configuration found'
+                  : testErrorCode === 'AISIM_TIMEOUT' ? 'Request timed out'
                 : testErrorCode === 'AISIM_UNAVAILABLE' ? 'Sizing service unavailable'
                 : 'Estimate failed'}
             </div>
@@ -1472,6 +1555,20 @@ export default function Performance() {
           <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} />
         </div>
       )}
+      {testResult && (
+        <div className={styles.card} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px' }}>
+          <SimulatorBadge simulator={testResult.simulator} />
+          <span style={{ fontSize: 13, color: '#3c3f42' }}>Performance prediction</span>
+          {testResult.warnings.length > 0 && (
+            <span style={{ fontSize: 13, color: '#3c3f42' }}>{testResult.warnings.join(' ')}</span>
+          )}
+          {!testResult.memory_available && testResult.warnings.length === 0 && (
+            <span style={{ fontSize: 13, color: '#3c3f42' }}>
+              Memory estimates are unavailable for this result; memory tiles are hidden.
+            </span>
+          )}
+        </div>
+      )}
       {(testResult || isCalculating) && (
       <div className={styles.tilesGrid} style={{ opacity: isCalculating ? 0.5 : 1, transition: 'opacity 0.2s' }}>
         <div data-tour="result-tile-gpus">
@@ -1509,6 +1606,9 @@ export default function Performance() {
                     decode = <span className={styles.em}>{disagg.decode.workers} × {disagg.decode.gpusPerWorker} = {disagg.decode.workers * disagg.decode.gpusPerWorker}</span> GPUs<br />
                     total = <span className={styles.em}>{disagg.prefill.workers * disagg.prefill.gpusPerWorker} + {disagg.decode.workers * disagg.decode.gpusPerWorker} = {Math.round(gpus)} GPUs</span>
                   </>
+                ) : testResult && !testResult.memory_available ? (
+                  <>requested parallelism = <span className={styles.em}>TP {testResult.memory_analysis.tp_size} × PP {testResult.parallelism_strategy.pp_size}</span><br />
+                    GPUs = <span className={styles.em}>{Math.round(gpus)}</span></>
                 ) : testResult ? (
                   <>
                     weight memory = <span className={styles.em}>{testResult.memory_analysis.weight_gb.toFixed(1)} GB</span><br />
@@ -1534,7 +1634,7 @@ export default function Performance() {
         />
         </div>
 
-        {!isDisagg && (
+        {!isDisagg && (!testResult || testResult.memory_available) && (
         <div>
           <FlipTile
             front={
@@ -1607,7 +1707,7 @@ export default function Performance() {
           </div>
         ))}
 
-        {!isDisagg && (
+        {!isDisagg && (!testResult || testResult.memory_available) && (
         <div>
           <FlipTile
             front={
@@ -1836,7 +1936,7 @@ export default function Performance() {
       )}
 
       {/* ---------- Why this GPU count (agg only) ---------- */}
-      {testResult && !isDisagg && (
+      {testResult && testResult.memory_available && !isDisagg && (
         <div className={styles.card} style={{ marginBottom: 20 }}>
           <div
             className={styles.cardHead}
@@ -1933,7 +2033,7 @@ export default function Performance() {
       )}
 
       {/* ---------- Memory Layout (agg only) ---------- */}
-      {testResult && !isDisagg && (
+      {testResult && testResult.memory_available && !isDisagg && (
         <div className={styles.card} style={{ marginBottom: 20 }}>
           <div className={styles.cardHead}>
             <span className={styles.cardTitle}>Memory layout per GPU</span>
@@ -2098,6 +2198,7 @@ export default function Performance() {
                             <FormSelect
                               value={String(f.value)}
                               aria-label={f.label}
+                              isDisabled={f.disabled}
                               onChange={(_, val) => f.onChange?.(val)}
                             >
                               {(f.options || [f.value]).map((o: any) => {
@@ -2125,6 +2226,7 @@ export default function Performance() {
                               max={f.max}
                               step={f.step}
                               value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
+                              disabled={f.disabled}
                               onChange={(e) => f.onChange?.(Number(e.target.value))}
                               style={{ width: '100%' }}
                             />
@@ -2135,12 +2237,14 @@ export default function Performance() {
                             aria-label={f.label}
                             type="number"
                             validated={f.invalid ? 'error' : 'default'}
+                            isDisabled={f.disabled}
                             onChange={(_, val) => f.onChange?.(val)}
                           />
                         ) : (
                           <TextInput
                             value={String(f.value)}
                             aria-label={f.label}
+                            isDisabled={f.disabled}
                             onChange={(_, val) => f.onChange?.(val)}
                           />
                         )}
@@ -2159,14 +2263,19 @@ export default function Performance() {
         <Button variant="secondary" onClick={handleCopyAPIRequest} isDisabled={!testResult}>
           Copy API request
         </Button>
-        <Button variant="secondary" onClick={handleCopyCLICommand} isDisabled={!testResult}>
+        <Button
+          variant="secondary"
+          onClick={handleCopyCLICommand}
+          isDisabled={!testResult || (!testResult.memory_available && !isDisagg)}
+          title={!testResult?.memory_available && !isDisagg ? 'The CLI configuration export requires a memory estimate.' : undefined}
+        >
           Copy CLI command
         </Button>
         <Button
           variant="secondary"
           onClick={handleExportToSheets}
-          isDisabled={!testResult || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Export currently supports aggregated results only' : undefined}
+          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
+          title={isDisagg ? 'Export currently supports aggregated results only' : !testResult?.memory_available ? 'Export requires a memory estimate.' : undefined}
         >
           Export to Sheets
         </Button>
@@ -2174,8 +2283,8 @@ export default function Performance() {
         <Button
           variant="primary"
           onClick={() => setShowSaveModal(true)}
-          isDisabled={!testResult || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Saving currently supports aggregated results only' : undefined}
+          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
+          title={isDisagg ? 'Saving currently supports aggregated results only' : !testResult?.memory_available ? 'Saving requires a memory estimate.' : undefined}
         >
           Save estimate{savedCount > 0 && ` (${savedCount})`}
         </Button>

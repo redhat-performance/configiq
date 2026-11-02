@@ -54,7 +54,7 @@ export interface VLLMConfig {
   max_num_seqs: number
   gpu_memory_utilization: number
   max_num_batched_tokens: number
-  enable_chunked_prefill: boolean
+  enable_chunked_prefill: boolean | null
   enable_prefix_caching: boolean
   quantization: string
 }
@@ -116,6 +116,8 @@ export interface PerformanceMetrics {
 }
 
 export interface InferenceConfigResult {
+  simulator: 'aisimulate' | 'blis'
+  memory_available: boolean
   memory_analysis: MemoryAnalysis
   vllm_config: VLLMConfig
   parallelism_strategy: ParallelismStrategy

@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { Button, Label, Switch } from '@patternfly/react-core';
 import { EyeIcon, EyeSlashIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
-import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext';
+import { isSimulatorBackendCompatible, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
@@ -22,9 +22,15 @@ export function Settings() {
   const {
     hydrated, defaultModel, setDefaultModel, hfToken, setHfToken,
     inferenceBackend, setInferenceBackend, backendVersion, setBackendVersion,
+    simulator, setSimulator,
     costingsEnabled, setCostingsEnabled,
   } = useSettings();
-  const { modelOptions, backendOptions, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions, backendOptions, simulatorSupport, isLoading: catalogLoading } = useCatalog();
+  const support = simulatorSupport[simulator];
+  const selectedBackend = support
+    ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
+    : backendOptions.find(b => b.id === inferenceBackend);
+  const modelChoices = support?.models ?? modelOptions;
 
   const [localModel, setLocalModel] = React.useState('');
   const [modelStatus, setModelStatus] = React.useState<ModelStatus>('idle');
@@ -32,10 +38,10 @@ export function Settings() {
   const [modelSaved, setModelSaved] = React.useState(false);
   const [tokenSaved, setTokenSaved] = React.useState(false);
   const [backendSaved, setBackendSaved] = React.useState(false);
+  const [simulatorSaved, setSimulatorSaved] = React.useState(false);
   const [costingsSaved, setCostingsSaved] = React.useState(false);
   const [costingsOpen, setCostingsOpen] = React.useState(false);
   const [validatedOpen, setValidatedOpen] = React.useState(false);
-  const backendDefaultAttempted = React.useRef(false);
 
   // Sync local model input once context has loaded from localStorage
   const modelSynced = React.useRef(false);
@@ -63,7 +69,7 @@ export function Settings() {
     if (!localModel || !localModel.includes('/')) { setModelStatus('idle'); return; }
     const timer = setTimeout(() => {
       if (getAppConfig().testedModels.includes(localModel)) { setModelStatus('supported'); return; }
-      const inCatalog = modelOptions.includes(localModel);
+      const inCatalog = modelChoices.includes(localModel);
       if (inCatalog) { setModelStatus('catalog'); return; }
       setModelStatus('fetching');
       fetchModelConfig(localModel, hfToken).then(r => {
@@ -71,15 +77,7 @@ export function Settings() {
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelOptions, catalogLoading, hydrated]);
-
-  React.useEffect(() => {
-    if (hydrated && backendOptions.length > 0 && !backendDefaultAttempted.current) {
-      backendDefaultAttempted.current = true;
-      const defaultVersion = backendOptions.find(b => b.id === inferenceBackend)?.defaultVersion;
-      if (!backendVersion && defaultVersion) setBackendVersion(defaultVersion);
-    }
-  }, [hydrated, backendOptions, inferenceBackend, backendVersion, setBackendVersion]);
+  }, [localModel, hfToken, modelChoices, catalogLoading, hydrated]);
 
   const handleTokenChange = (v: string) => {
     setHfToken(v);
@@ -90,11 +88,15 @@ export function Settings() {
   };
 
   const handleBackendChange = (v: InferenceBackend) => {
-    setInferenceBackend(v); // also resets backendVersion to the default for v
-    const defaultVersion = backendOptions.find(b => b.id === v)?.defaultVersion;
-    setBackendVersion(defaultVersion ?? '');
+    setInferenceBackend(v); // also clears backendVersion
     setBackendSaved(true);
     setTimeout(() => setBackendSaved(false), 3000);
+  };
+
+  const handleSimulatorChange = (v: Simulator) => {
+    setSimulator(v);
+    setSimulatorSaved(true);
+    setTimeout(() => setSimulatorSaved(false), 3000);
   };
 
   const handleVersionChange = (v: string) => {
@@ -102,8 +104,6 @@ export function Settings() {
     setBackendSaved(true);
     setTimeout(() => setBackendSaved(false), 3000);
   };
-
-  const selectedBackend = backendOptions.find(b => b.id === inferenceBackend);
 
   return (
     <div className={styles.page}>
@@ -241,6 +241,36 @@ export function Settings() {
           </div>
         </div>
 
+        {/* ── Simulator ── */}
+        <div className={styles.section}>
+          <div className={styles.sectionHead}>
+            <div>
+              <div className={styles.sectionTitle}>Simulator</div>
+              <div className={styles.sectionDesc}>
+                Simulator used by Predict performance and Recommend sizing.
+              </div>
+            </div>
+            {simulatorSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}
+          </div>
+          <div className={styles.fieldWrap}>
+            <div className={styles.backendField}>
+              <label className={styles.fieldLabel} htmlFor="settings-simulator">Simulator</label>
+              <select
+                id="settings-simulator"
+                value={simulator}
+                onChange={e => handleSimulatorChange(e.target.value as Simulator)}
+                className={styles.selectInput}
+              >
+                <option value="aisimulate">AISimulate</option>
+                <option value="blis" disabled={!isSimulatorBackendCompatible('blis', inferenceBackend)}>BLIS</option>
+              </select>
+              <div className={styles.helperText}>
+                Predict and Recommend use this simulator. BLIS is available with vLLM; KV cache uses AISimulate.
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* ── Inference backend ── */}
         <div className={styles.section}>
           <div className={styles.sectionHead}>
@@ -265,7 +295,13 @@ export function Settings() {
                   className={styles.selectInput}
                 >
                   {backendOptions.map(b => (
-                    <option key={b.id} value={b.id}>{BACKEND_LABELS[b.id] ?? b.id}</option>
+                    <option
+                      key={b.id}
+                      value={b.id}
+                      disabled={!isSimulatorBackendCompatible(simulator, b.id as InferenceBackend)}
+                    >
+                      {BACKEND_LABELS[b.id] ?? b.id}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -283,13 +319,19 @@ export function Settings() {
                 />
               </div>
             </div>
-            {selectedBackend && (
+            {selectedBackend ? (
               <div className={styles.helperText}>
                 {selectedBackend.versions.length > 0
-                  ? `Supported versions: ${selectedBackend.versions.join(', ')}`
-                  : 'No versions reported by AISimulators'}
+                  ? support
+                    ? `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use the simulator's default (${selectedBackend.defaultVersion ?? 'its own default'}).`
+                    : `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use each system's default.`
+                  : 'No versions reported by the server'}
               </div>
-            )}
+            ) : support && !catalogLoading ? (
+              <div className={styles.helperText}>
+                The server did not report backend support for this simulator. Predictions will be rejected.
+              </div>
+            ) : null}
           </div>
         </div>
         {/* ── Costings features ── */}

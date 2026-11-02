@@ -39,10 +39,27 @@ in `public/config.json`'s `testedModels` list and retains all source version
 labels. Consumers can select versions for a particular comparison later.
 
 The scheduled GitHub Actions workflow consumes a pinned revision of the public
-`redhat-performance/configiq-performance-data` Hugging Face dataset. It uploads
-only the sanitized registry/Triton/dashboard bundle as a workflow artifact.
-Raw parquet files, source identifiers, and training work files are not
-published by that workflow.
+`redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.
+It uploads only the sanitized registry/Triton/dashboard bundle as a workflow
+artifact. Raw parquet files, source identifiers, and training work files are
+not published by that workflow.
+
+That dataset is the upstream-only subset: it retains rows whose serving stack
+is a plain upstream vLLM release and excludes productized Red Hat AI Inference
+Server builds. At the current pinned revision it holds 13 model/hardware pairs
+and 1,556 aggregate rows, so a model can be approved for testing without having
+a trained performance envelope yet. Do not read absence from this dataset as
+"not tested".
+
+`registry.json` lists only the pairs that trained successfully in this build, so
+it is a catalog of the available performance envelopes rather than a complete
+list of tested models. Tested-model status currently comes from the
+`testedModels` array in `public/config.json`; the registry is being extended to
+carry measured-without-envelope and approved-without-data states as well.
+
+The workflow reads the repository variable `TESTED_DATASET_REPO` when it is set,
+and otherwise falls back to the dataset above. Set it to move the pipeline to a
+renamed or republished dataset without a code change.
 
 ## Production workflow
 
@@ -77,7 +94,9 @@ uv run --group tested-models python scripts/tested_models/publish_ground_truth.p
 ```
 
 Set the resulting Hugging Face revision as the GitHub repository variable
-`TESTED_DATASET_REVISION`. Do not commit the dataset or its source credentials.
+`TESTED_DATASET_REVISION`. If the data is published to a repository other than
+the default one above, set `TESTED_DATASET_REPO` as well. Do not commit the
+dataset or its source credentials.
 
 ### 2. Build and validate the bundle
 

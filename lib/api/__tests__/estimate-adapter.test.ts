@@ -85,6 +85,58 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     expect(body).toHaveProperty('backend_version', '0.24.0')
   })
 
+  it('forwards the global simulator selection', async () => {
+    const mockFetch = mockFetchOk({ ...VALID_RESPONSE, simulator: 'blis' })
+    vi.stubGlobal('fetch', mockFetch)
+
+    await fetchEstimateAsInferenceResult({ ...VALID_INPUT, simulator: 'blis' })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body.simulator).toBe('blis')
+  })
+
+  it('forwards the selected fabric and per-pool settings for BLIS P/D', async () => {
+    const mockFetch = mockFetchOk({
+      ...VALID_RESPONSE,
+      simulator: 'blis',
+      mode: 'disagg',
+      memory_breakdown: null,
+      memory_unavailable_reason: 'No memory breakdown.',
+      prefill_config: { tp: 4, pp: 1, num_workers: 2, batch_size: 8 },
+      decode_config: { tp: 2, pp: 1, num_workers: 1, batch_size: 8 },
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      simulator: 'blis',
+      mode: 'disagg',
+      fabric: 'ib-400g',
+      prefill: { tp: 4, pp: 1, workers: 2, batch: 8 },
+      decode: { tp: 2, pp: 1, workers: 1, batch: 8 },
+    })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body).toMatchObject({
+      simulator: 'blis',
+      mode: 'disagg',
+      fabric: 'ib-400g',
+      prefill_tp_size: 4,
+      prefill_num_workers: 2,
+      decode_tp_size: 2,
+      decode_num_workers: 1,
+    })
+    expect(result.mode).toBe('disagg')
+    expect(result.disagg?.prefill.workers).toBe(2)
+  })
+
+  it('rejects a BLIS request when the API does not confirm BLIS provenance', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(VALID_RESPONSE))
+
+    await expect(fetchEstimateAsInferenceResult({ ...VALID_INPUT, simulator: 'blis' }))
+      .rejects.toMatchObject({ code: 'SIMULATOR_MISMATCH' })
+  })
+
   it('includes context window limits when provided', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
@@ -127,6 +179,50 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
     expect(body.max_num_seqs).toBe(64)
     expect(body.enable_chunked_prefill).toBe(true)
+  })
+
+  it('keeps BLIS provenance and does not invent memory estimates', async () => {
+    const mockFetch = mockFetchOk({
+      simulator: 'blis',
+      ttft: 80,
+      tpot: 20,
+      request_latency: 2640,
+      tokens_per_second: 500,
+      serving_config: {
+        backend: 'vllm',
+        tensor_parallel_size: 2,
+        max_model_len: 2176,
+        max_num_seqs: 32,
+        max_num_batched_tokens: 8192,
+        gpu_memory_utilization: 0.92,
+        enable_chunked_prefill: null,
+        enable_prefix_caching: true,
+        quantization: 'model default',
+      },
+      memory_breakdown: null,
+      memory_unavailable_reason: 'The selected simulator does not provide a KV-cache memory breakdown.',
+      provenance: {
+        simulator: 'blis',
+        requested_model: 'meta-llama/Llama-3.1-8B-Instruct',
+        resolved_model: 'llama-3.1-8b-instruct',
+        model_source: 'upstream',
+        system: 'h200_sxm',
+        hardware: 'h200',
+        model_config_relation: 'different_quantization',
+        engine_version: '0.31.0',
+      },
+      warnings: ['The selected simulator uses a model configuration marked different_quantization.'],
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, simulator: 'blis' })
+
+    expect(result.simulator).toBe('blis')
+    expect(result.memory_available).toBe(false)
+    expect(result.memory_analysis.weight_gb).toBe(0)
+    expect(result.performance?.throughput_tokens_per_sec).toBe(500)
+    expect(result.warnings).toContain('The selected simulator does not provide a KV-cache memory breakdown.')
+    expect(result.warnings).toContain('The selected simulator uses a model configuration marked different_quantization.')
   })
 
   it('omits backend_version when not provided', async () => {

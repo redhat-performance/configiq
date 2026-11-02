@@ -5,7 +5,7 @@
 Two peer pricing sources, plus a curated override layer. Every model carries a
 `source` field so consumers can trace where a price came from and filter by it:
   - OpenRouter API      (https://openrouter.ai/api/v1/models)  source="openrouter"
-  - LiteLLM Catalog API (https://api.litellm.ai/model_catalog) source="litellm"
+  - LiteLLM public cost map                                source="litellm"
   - Curated YAML overrides                                     source="override"
 
 scrape_all_models() returns each source's catalog separately alongside a
@@ -20,6 +20,7 @@ the live feeds), and an override for an id neither feed has is a full add. The
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -29,8 +30,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
-LITELLM_URL = "https://api.litellm.ai/model_catalog"
-LITELLM_PAGE_SIZE = 500  # max page size the API accepts; pagination continues until a short page
+LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 CURATED_OVERRIDES_PATH = Path(__file__).parent.parent.parent.parent / "data" / "model-overrides.yaml"
 
 TIER_KEYWORDS = {
@@ -62,34 +62,48 @@ def _infer_provider(model_id: str) -> str:
     return mapping.get(prefix, prefix.title())
 
 
+def _per_million(value: Any) -> float | None:
+    """Normalize a token rate once; reject booleans, negatives and overflow."""
+    if isinstance(value, bool):
+        return None
+    try:
+        rate = float(value) * 1_000_000
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return round(rate, 4) if math.isfinite(rate) and rate >= 0 else None
+
+
+def _context_window(value: Any) -> int | None:
+    return value if type(value) is int and value > 0 else None
+
+
 def _parse_openrouter_model(m: dict[str, Any]) -> dict[str, Any] | None:
     pricing = m.get("pricing", {})
-    prompt_price = pricing.get("prompt")
-    completion_price = pricing.get("completion")
-    if prompt_price is None or completion_price is None:
+    model_id = m.get("id")
+    model_name = m.get("name")
+    if not isinstance(pricing, dict) or not isinstance(model_id, str) or not model_id.strip():
+        return None
+    if not isinstance(model_name, str) or not model_name.strip():
+        return None
+    price_per_m_input = _per_million(pricing.get("prompt"))
+    price_per_m_output = _per_million(pricing.get("completion"))
+    if price_per_m_input is None or price_per_m_output is None or not (price_per_m_input or price_per_m_output):
         return None
 
-    try:
-        price_per_m_input = float(prompt_price) * 1_000_000
-        price_per_m_output = float(completion_price) * 1_000_000
-    except (ValueError, TypeError):
+    checkpoint = m.get("hugging_face_id")
+    if checkpoint is not None and not isinstance(checkpoint, str):
         return None
-
-    if price_per_m_input == 0 and price_per_m_output == 0:
-        return None
-
-    model_id = m.get("id", "")
-    model_name = m.get("name", "")
 
     return {
         "id": model_id,
         "name": model_name,
         "provider": _infer_provider(model_id),
         "tier": _classify_tier(model_id, model_name),
-        "price_per_m_input": round(price_per_m_input, 4),
-        "price_per_m_output": round(price_per_m_output, 4),
-        "context_window": m.get("context_length"),
+        "price_per_m_input": price_per_m_input,
+        "price_per_m_output": price_per_m_output,
+        "context_window": _context_window(m.get("context_length")),
         "source": "openrouter",
+        **({"hugging_face_id": checkpoint.strip()} if checkpoint and checkpoint.strip() else {}),
     }
 
 
@@ -107,12 +121,12 @@ async def fetch_openrouter_models(session: aiohttp.ClientSession) -> list[dict[s
         logger.error("OpenRouter fetch failed: %s", e)
         raise
 
-    raw_models = data.get("data", [])
-    parsed = []
-    for m in raw_models:
-        result = _parse_openrouter_model(m)
-        if result:
-            parsed.append(result)
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        raise TypeError("OpenRouter returned an invalid model catalogue")
+    raw_models = data["data"]
+    parsed = [result for m in raw_models if isinstance(m, dict) and (result := _parse_openrouter_model(m))]
+    if not parsed:
+        raise RuntimeError("OpenRouter returned no usable token-priced models")
 
     logger.info("OpenRouter: parsed %d models from %d total", len(parsed), len(raw_models))
     return parsed
@@ -130,62 +144,50 @@ def load_curated_overrides() -> list[dict[str, Any]]:
         return []
 
 
-def _parse_litellm_model(m: dict[str, Any]) -> dict[str, Any] | None:
-    input_cost = m.get("input_cost_per_token")
-    output_cost = m.get("output_cost_per_token")
-    if input_cost is None or output_cost is None:
+def _parse_litellm_model(model_id: str, m: dict[str, Any]) -> dict[str, Any] | None:
+    provider = m.get("litellm_provider")
+    if model_id == "sample_spec" or not model_id.strip() or m.get("mode") != "chat":
         return None
-    try:
-        price_per_m_input = float(input_cost) * 1_000_000
-        price_per_m_output = float(output_cost) * 1_000_000
-    except (ValueError, TypeError):
+    if not isinstance(provider, str) or not provider.strip():
         return None
-    if price_per_m_input == 0 and price_per_m_output == 0:
+    price_per_m_input = _per_million(m.get("input_cost_per_token"))
+    price_per_m_output = _per_million(m.get("output_cost_per_token"))
+    if price_per_m_input is None or price_per_m_output is None or not (price_per_m_input or price_per_m_output):
         return None
-
-    model_id = m.get("id", "")
-    provider = (m.get("provider") or "").title()
 
     return {
         "id": model_id,
         "name": model_id.split("/")[-1] if "/" in model_id else model_id,
-        "provider": provider,
+        "provider": provider.strip().title(),
         "tier": _classify_tier(model_id, model_id),
-        "price_per_m_input": round(price_per_m_input, 4),
-        "price_per_m_output": round(price_per_m_output, 4),
-        "context_window": m.get("max_input_tokens"),
+        "price_per_m_input": price_per_m_input,
+        "price_per_m_output": price_per_m_output,
+        "context_window": _context_window(m.get("max_input_tokens")),
         "source": "litellm",
     }
 
 
 async def fetch_litellm_models(session: aiohttp.ClientSession) -> list[dict[str, Any]]:
-    """Fetch all chat models from the LiteLLM Catalog API with pagination."""
+    """Fetch standard chat token rates from LiteLLM's public, keyed cost map."""
+    try:
+        async with session.get(LITELLM_URL, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"LiteLLM returned {resp.status}")
+            # raw.githubusercontent.com serves JSON files as text/plain.
+            data = await resp.json(content_type=None)
+    except Exception as e:
+        logger.error("LiteLLM fetch failed: %s", e)
+        raise
+    if not isinstance(data, dict):
+        raise TypeError("LiteLLM returned an invalid cost map")
+
     parsed: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        try:
-            params = {"mode": "chat", "page_size": LITELLM_PAGE_SIZE, "page": page}
-            async with session.get(LITELLM_URL, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status != 200:
-                    # Propagate so scrape_all_models records the source as errored
-                    # rather than persisting a partial page set as a fresh scrape.
-                    raise RuntimeError(f"LiteLLM returned {resp.status} on page {page}")
-                data = await resp.json()
-        except Exception as e:
-            logger.error("LiteLLM fetch failed on page %d: %s", page, e)
-            raise
-
-        items = data.get("data", [])
-        for m in items:
-            result = _parse_litellm_model(m)
-            if result:
-                parsed.append(result)
-
-        if len(items) < LITELLM_PAGE_SIZE:
-            break
-        page += 1
-
-    logger.info("LiteLLM: parsed %d models across %d page(s)", len(parsed), page)
+    for model_id, m in data.items():
+        if isinstance(m, dict) and (result := _parse_litellm_model(model_id, m)):
+            parsed.append(result)
+    if not parsed:
+        raise RuntimeError("LiteLLM returned no usable token-priced chat models")
+    logger.info("LiteLLM: parsed %d models from %d entries", len(parsed), len(data))
     return parsed
 
 

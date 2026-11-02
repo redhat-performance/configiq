@@ -38,19 +38,115 @@ export interface ModelSpec {
   architecture: string | null
 }
 
+/** The version a single system completed, with the memory fraction it implies. */
+export interface SystemDefault {
+  version: string | null
+  memoryFraction: number | null
+}
+
 export interface BackendOption {
   id: string
   aisimulateId: string
   versions: string[]
+  /** Version namespace the API resolves per system (`current`), or a literal for BLIS. */
   defaultVersion: string | null
   memoryFraction: number | null
   memoryFractionKind: 'of_total' | 'of_free'
   runtimeField: string | null
   systems: Record<string, string[]>
+  /** Per-system defaults — the only safe source for a system-specific fraction. */
+  systemDefaults: Record<string, SystemDefault>
+  /**
+   * What each engine version can express, when the simulator reports it. BLIS
+   * models disaggregation and `max_model_len: auto` per vLLM release, so a
+   * client must not offer a topology the selected release cannot run.
+   */
+  versionSupport: Record<string, EngineVersionSupport>
+  /**
+   * Whether a P/D topology needs an inter-node fabric selected first. The
+   * simulator reports this so the client does not infer it from its ID.
+   */
+  disaggregationRequiresFabric: boolean
+}
+
+/** Per-version capabilities reported by a simulator that models them itself. */
+export interface EngineVersionSupport {
+  disaggregated: boolean
+  maxModelLenAuto: boolean
+}
+
+/** Simulator-specific overrides of the top-level catalog support. */
+export interface SimulatorSupport {
+  /** Build/release identifier for the simulator, when it has one. */
+  version: string | null
+  /** Model IDs this simulator can price. */
+  models: string[]
+  /** GPU system IDs this simulator can price. */
+  systems: string[]
+  backends: BackendOption[]
+}
+
+/** Capabilities for one engine version, if the simulator scopes support that way. */
+export function engineVersionSupport(
+  backend: BackendOption | null | undefined,
+  version: string | null | undefined,
+): EngineVersionSupport | null {
+  if (!backend || !version) return null
+  return backend.versionSupport[version] ?? null
+}
+
+export interface Catalog {
+  gpuOptions: GpuOption[]
+  modelOptions: string[]
+  modelSpecs: Map<string, ModelSpec>
+  backendOptions: BackendOption[]
+  networkOptions: string[]
+  /**
+   * Per-simulator overrides keyed by the simulator ID the API uses. A missing
+   * entry means the top-level catalog is that simulator's support; a present
+   * entry narrows the models, systems, and versions it can price.
+   */
+  simulatorSupport: Record<string, SimulatorSupport>
+  /** Effective AISimulators request timeout (seconds) reported by the server; falls back
+   *  to DEFAULT_GATEWAY_TIMEOUT_SECONDS until the catalog resolves. */
+  timeoutSeconds: number
+  isLoading: boolean
+  error: string | null
+}
+
+function mapSystemDefault(raw: unknown): SystemDefault | null {
+  if (!raw || typeof raw !== 'object') return null
+  const entry = raw as Record<string, unknown>
+  return {
+    version: typeof entry.version === 'string' ? entry.version : null,
+    memoryFraction: typeof entry.memory_fraction === 'number' ? entry.memory_fraction : null,
+  }
+}
+
+function mapVersionSupport(raw: unknown): Record<string, EngineVersionSupport> {
+  if (!raw || typeof raw !== 'object') return {}
+  const support: Record<string, EngineVersionSupport> = {}
+  for (const [version, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue
+    const entry = value as Record<string, unknown>
+    support[version] = {
+      disaggregated: entry.disaggregated === true,
+      maxModelLenAuto: entry.max_model_len_auto === true,
+    }
+  }
+  return support
 }
 
 export function mapBackendOption(backend: Record<string, unknown>): BackendOption | null {
   if (typeof backend.id !== 'string' || !Array.isArray(backend.versions)) return null
+  const rawSystemDefaults = backend.system_defaults && typeof backend.system_defaults === 'object'
+    ? backend.system_defaults as Record<string, unknown>
+    : {}
+  const systemDefaults: Record<string, SystemDefault> = {}
+  for (const [system, raw] of Object.entries(rawSystemDefaults)) {
+    const mapped = mapSystemDefault(raw)
+    if (mapped) systemDefaults[system] = mapped
+  }
   return {
     id: backend.id,
     aisimulateId: typeof backend.aisimulate_id === 'string' ? backend.aisimulate_id : backend.id,
@@ -62,19 +158,72 @@ export function mapBackendOption(backend: Record<string, unknown>): BackendOptio
     systems: backend.systems && typeof backend.systems === 'object'
       ? backend.systems as Record<string, string[]>
       : {},
+    systemDefaults,
+    versionSupport: mapVersionSupport(backend.version_support),
+    disaggregationRequiresFabric: backend.disaggregation_requires_fabric === true,
   }
 }
 
-export interface Catalog {
-  gpuOptions: GpuOption[]
-  modelOptions: string[]
-  modelSpecs: Map<string, ModelSpec>
-  backendOptions: BackendOption[]
-  /** Effective AISimulators request timeout (seconds) reported by the server; falls back
-   *  to DEFAULT_GATEWAY_TIMEOUT_SECONDS until the catalog resolves. */
-  timeoutSeconds: number
-  isLoading: boolean
-  error: string | null
+/**
+ * The memory fraction to seed a system's controls with.
+ *
+ * Fractions are version-keyed, so the system's own default wins; the
+ * backend-level figure only describes the fleet's majority version.
+ */
+export function systemMemoryFraction(backend: BackendOption | undefined, system: string): number | null {
+  if (!backend) return null
+  return backend.systemDefaults[system]?.memoryFraction ?? backend.memoryFraction
+}
+
+/** Whether the catalog's system default fraction is known to match a version pin. */
+export function hasDefaultMemoryFractionForVersion(
+  backend: BackendOption | undefined,
+  system: string,
+  backendVersion: string,
+): boolean {
+  const version = backendVersion.trim()
+  if (!version) return true
+  if (!backend) return false
+
+  const systemDefault = backend.systemDefaults[system]
+  if (!systemDefault?.version || systemDefault.memoryFraction == null) return false
+  if (version === 'current') return backend.defaultVersion === 'current'
+  return version === systemDefault.version
+}
+
+function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
+  if (!raw || typeof raw !== 'object') return {}
+  const support: Record<string, SimulatorSupport> = {}
+  for (const [simulator, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue
+    const entry = value as Record<string, unknown>
+    const backends = (Array.isArray(entry.backends) ? entry.backends : [])
+      .filter((candidate): candidate is Record<string, unknown> => !!candidate && typeof candidate === 'object')
+      .map(mapBackendOption)
+      .filter((candidate): candidate is BackendOption => candidate !== null)
+    const models = Array.isArray(entry.models)
+      ? entry.models
+        .map(model => typeof model === 'string' ? model : (model && typeof model === 'object'
+          ? (model as Record<string, unknown>).id
+          : null))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : []
+    const systems = Array.isArray(entry.systems)
+      ? entry.systems
+        .map(system => system && typeof system === 'object'
+          ? (system as Record<string, unknown>).id
+          : system)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : []
+    if (backends.length === 0 && models.length === 0 && systems.length === 0) continue
+    support[simulator] = {
+      version: typeof entry.version === 'string' ? entry.version : null,
+      models,
+      systems,
+      backends,
+    }
+  }
+  return support
 }
 
 const GB = 1_073_741_824
@@ -101,12 +250,14 @@ let cachedGpus: GpuOption[] | null = null
 let cachedModels: string[] | null = null
 let cachedModelSpecs: Map<string, ModelSpec> | null = null
 let cachedBackends: BackendOption[] | null = null
+let cachedNetworks: string[] | null = null
+let cachedSimulatorSupport: Record<string, SimulatorSupport> = {}
 let cachedTimeoutSeconds: number = DEFAULT_GATEWAY_TIMEOUT_SECONDS
 let cacheTimestamp: number | null = null
 let fetchPromise: Promise<void> | null = null
 
 function isCacheValid(): boolean {
-  return cachedGpus !== null && cachedModels !== null && cachedModelSpecs !== null && cachedBackends !== null &&
+  return cachedGpus !== null && cachedModels !== null && cachedModelSpecs !== null && cachedBackends !== null && cachedNetworks !== null &&
     cacheTimestamp !== null && Date.now() - cacheTimestamp < CLIENT_CACHE_TTL_MS.catalog
 }
 
@@ -115,6 +266,10 @@ export function useCatalog(): Catalog {
   const [modelOptions, setModelOptions] = useState<string[]>(isCacheValid() ? cachedModels! : [])
   const [modelSpecs, setModelSpecs] = useState<Map<string, ModelSpec>>(isCacheValid() ? cachedModelSpecs! : new Map())
   const [backendOptions, setBackendOptions] = useState<BackendOption[]>(isCacheValid() ? cachedBackends! : [])
+  const [networkOptions, setNetworkOptions] = useState<string[]>(isCacheValid() ? cachedNetworks! : [])
+  const [simulatorSupport, setSimulatorSupport] = useState<Record<string, SimulatorSupport>>(
+    isCacheValid() ? cachedSimulatorSupport : {},
+  )
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(cachedTimeoutSeconds)
   const [isLoading, setIsLoading] = useState(!isCacheValid())
   const [error, setError] = useState<string | null>(null)
@@ -125,6 +280,8 @@ export function useCatalog(): Catalog {
       setModelOptions(cachedModels!)
       setModelSpecs(cachedModelSpecs!)
       setBackendOptions(cachedBackends!)
+      setNetworkOptions(cachedNetworks!)
+      setSimulatorSupport(cachedSimulatorSupport)
       setTimeoutSeconds(cachedTimeoutSeconds)
       setIsLoading(false)
       return
@@ -149,6 +306,9 @@ export function useCatalog(): Catalog {
 
           const rawModels = (data.models ?? []) as unknown[]
           const backendList = (data.backends ?? []) as Record<string, unknown>[]
+          const networks = Array.isArray(data.networks)
+            ? data.networks.filter((network: unknown): network is string => typeof network === 'string' && network.trim().length > 0)
+            : []
           const backends: BackendOption[] = backendList.flatMap(backend => {
             const option = mapBackendOption(backend)
             return option ? [option] : []
@@ -173,6 +333,8 @@ export function useCatalog(): Catalog {
           cachedModels = modelList
           cachedModelSpecs = specsMap
           cachedBackends = backends
+          cachedNetworks = networks
+          cachedSimulatorSupport = mapSimulatorSupport(data.simulatorSupport)
           if (typeof data.timeoutSeconds === 'number' && data.timeoutSeconds > 0) {
             cachedTimeoutSeconds = data.timeoutSeconds
           }
@@ -187,6 +349,8 @@ export function useCatalog(): Catalog {
           setModelOptions(cachedModels!)
           setModelSpecs(cachedModelSpecs!)
           setBackendOptions(cachedBackends!)
+          setNetworkOptions(cachedNetworks!)
+          setSimulatorSupport(cachedSimulatorSupport)
           setTimeoutSeconds(cachedTimeoutSeconds)
         }
       } catch (err) {
@@ -203,5 +367,5 @@ export function useCatalog(): Catalog {
     return () => { cancelled = true }
   }, [])
 
-  return { gpuOptions, modelOptions, modelSpecs, backendOptions, timeoutSeconds, isLoading, error }
+  return { gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds, isLoading, error }
 }

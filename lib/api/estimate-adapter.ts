@@ -28,6 +28,7 @@ export interface EstimateAdapterInput {
   prefill_max_seq_len?: number
   decode_max_seq_len?: number
   batch_size: number
+  requests_per_load_unit?: number
   tp_size: number
   pp_size?: number
   gpu_memory_utilization?: number
@@ -43,8 +44,10 @@ export interface EstimateAdapterInput {
   prefix?: number
   kvcache_quant_mode?: string | null
   gemm_quant_mode?: string | null
+  simulator?: 'aisimulate' | 'blis'
   // Disagg: when mode='disagg', prefill/decode drive separate pools.
   mode?: 'agg' | 'disagg'
+  fabric?: string
   prefill?: EstimatePhaseInput
   decode?: EstimatePhaseInput
 }
@@ -116,9 +119,11 @@ export async function fetchEstimateAsInferenceResult(
   }
 
   if (input.max_seq_len != null) body.max_seq_len = input.max_seq_len
+  if (input.requests_per_load_unit != null) body.requests_per_load_unit = input.requests_per_load_unit
   if (input.prefill_max_seq_len != null) body.prefill_max_seq_len = input.prefill_max_seq_len
   if (input.decode_max_seq_len != null) body.decode_max_seq_len = input.decode_max_seq_len
 
+  if (input.simulator) body.simulator = input.simulator
   if (input.pp_size != null && input.pp_size > 1) body.pp_size = input.pp_size
   if (input.gpu_memory_utilization != null) body.gpu_memory_utilization = input.gpu_memory_utilization
   if (input.max_num_seqs != null) body.max_num_seqs = input.max_num_seqs
@@ -137,6 +142,7 @@ export async function fetchEstimateAsInferenceResult(
   // mode='disagg' and returns prefill_config / decode_config.
   if (input.mode === 'disagg' && input.prefill && input.decode) {
     body.mode = 'disagg'
+    if (input.fabric) body.fabric = input.fabric
     body.prefill_tp_size = input.prefill.tp
     body.prefill_pp_size = input.prefill.pp
     body.prefill_num_workers = input.prefill.workers
@@ -173,6 +179,19 @@ export async function fetchEstimateAsInferenceResult(
     throw new EstimateError(code, message)
   }
 
+  const requestedSimulator = input.simulator ?? 'aisimulate'
+  const responseSimulator = data?.simulator === 'aisimulate' || data?.simulator === 'blis'
+    ? data.simulator
+    : null
+  if (data?.simulator != null && responseSimulator == null) {
+    throw new EstimateError('AISIM_INVALID_RESPONSE', 'The API returned an unknown simulator identifier.')
+  }
+  if (requestedSimulator !== responseSimulator && (requestedSimulator === 'blis' || responseSimulator === 'blis')) {
+    throw new EstimateError(
+      'SIMULATOR_MISMATCH',
+      `Requested ${requestedSimulator}, but the API confirmed ${responseSimulator ?? 'no simulator'}. No fallback was accepted.`,
+    )
+  }
   const tp = data.tp ?? input.tp_size
   const pp = data.pp ?? input.pp_size ?? 1
 
@@ -183,11 +202,14 @@ export async function fetchEstimateAsInferenceResult(
 
   const sc = data.serving_config
   const mb = data.memory_breakdown
+  const simulator: 'aisimulate' | 'blis' = responseSimulator ?? 'aisimulate'
+  const memoryAvailable = !!mb || typeof data.memory === 'number'
   const totalVramGb = input.vram_gb ?? null
   const gmu = sc?.gpu_memory_utilization ?? input.gpu_memory_utilization ?? 0.9
-  const hasBreakdown = !!mb
-  const weightGb = hasBreakdown ? mb.weights_bytes / GB : (data.memory ?? 0) * 0.5
-  const kvCacheGb = hasBreakdown && typeof mb.kv_cache_bytes === 'number'
+  const weightGb = memoryAvailable
+    ? mb ? mb.weights_bytes / GB : (data.memory ?? 0) * 0.5
+    : 0
+  const kvCacheGb = memoryAvailable && mb && typeof mb.kv_cache_bytes === 'number'
     ? mb.kv_cache_bytes / GB
     : 0
   const usablePerGpu = totalVramGb != null ? totalVramGb * gmu : null
@@ -219,18 +241,34 @@ export async function fetchEstimateAsInferenceResult(
   const tpot = data.tpot ?? 0
   const hasTiming = Number.isFinite(ttft) && Number.isFinite(tpot)
 
-  const warnings: string[] = hasBreakdown ? [] : ['Memory breakdown estimated (no backend_version specified).']
+  const warnings: string[] = memoryAvailable
+    ? []
+    : [typeof data.memory_unavailable_reason === 'string'
+      ? data.memory_unavailable_reason
+      : 'The selected simulator did not return a memory breakdown.']
+  const rawWarnings: unknown = data.warnings
+  if (Array.isArray(rawWarnings)) {
+    warnings.push(...rawWarnings.filter((warning: unknown): warning is string => typeof warning === 'string'))
+  }
   if (input.mode === 'disagg' && !isDisagg) {
     warnings.push('Disaggregated mode was requested but the backend returned an aggregated estimate.')
   }
   if (!hasTiming) {
     warnings.push('Timing metrics (TTFT, TPOT) missing or non-finite; performance prediction unavailable.')
   }
-  const requestLatency = hasTiming ? ttft + tpot * input.osl : 0
-  const throughput = hasTiming && input.osl > 0 && requestLatency > 0 ? (input.osl * 1000) / requestLatency : 0
+  const requestLatency = hasTiming
+    ? typeof data.request_latency === 'number'
+      ? data.request_latency
+      : ttft + tpot * input.osl
+    : 0
+  const throughput = typeof data.tokens_per_second === 'number'
+    ? data.tokens_per_second
+    : hasTiming && input.osl > 0 && requestLatency > 0 ? (input.osl * 1000) / requestLatency : 0
   const concurrency = Math.max(0, Math.floor(maxNumSeqs))
 
   const result: InferenceConfigResult = {
+    simulator,
+    memory_available: memoryAvailable,
     mode: isDisagg ? 'disagg' : 'agg',
     disagg,
     memory_analysis: {
@@ -243,16 +281,18 @@ export async function fetchEstimateAsInferenceResult(
       kv_cache_budget_gb: usablePerGpu != null ? usablePerGpu - weightGb / shardCount : null,
       kv_cache_used_gb: kvCacheGb,
       max_sequences_from_memory: maxNumSeqs,
-      kv_category: 'AISimulators',
-      kv_category_label: 'AISimulators prediction',
+      kv_category: memoryAvailable ? simulator : 'unavailable',
+      kv_category_label: memoryAvailable ? `${simulator} prediction` : 'Memory unavailable',
     },
     vllm_config: {
       tensor_parallel_size: sc?.tensor_parallel_size ?? tp,
       max_model_len: maxModelLen,
       max_num_seqs: maxNumSeqs,
       gpu_memory_utilization: gmu,
-      max_num_batched_tokens: Math.min(maxModelLen * maxNumSeqs, 32768),
-      enable_chunked_prefill: sc?.enable_chunked_prefill ?? false,
+      max_num_batched_tokens: sc?.max_num_batched_tokens ?? Math.min(maxModelLen * maxNumSeqs, 32768),
+      enable_chunked_prefill: typeof sc?.enable_chunked_prefill === 'boolean'
+        ? sc.enable_chunked_prefill
+        : input.enable_chunked_prefill ?? null,
       enable_prefix_caching: sc?.enable_prefix_caching ?? false,
       quantization: sc?.quantization ?? 'auto',
     },

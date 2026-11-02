@@ -5,7 +5,7 @@ import { Alert, Label, Spinner } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import { formatBytes } from '@/lib/utils/format'
 import { useCountUp } from '@/app/predict/performanceHelpers'
-import { useCatalog } from '@/lib/hooks/useCatalog'
+import { hasDefaultMemoryFractionForVersion, systemMemoryFraction, useCatalog } from '@/lib/hooks/useCatalog'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
@@ -112,28 +112,37 @@ export default function KvCacheCalc() {
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
+  // The fraction is version-keyed, so prefer the selected system's own default;
+  // the backend-level figure only describes the fleet's majority version.
   React.useEffect(() => {
     if (!hydrated || catalogLoading) return
     const selectedBackend = backendOptions.find(option => option.id === backend)
     if (!selectedBackend) return
 
-    if (selectedBackend.memoryFraction != null) {
+    const fraction = systemMemoryFraction(selectedBackend, system)
+    if (fraction != null) {
       if (!memFractionValueUserEdited.current) {
-        setMemFractionValue(selectedBackend.memoryFraction)
-        setMemFractionValueInput(String(selectedBackend.memoryFraction))
+        setMemFractionValue(fraction)
+        setMemFractionValueInput(String(fraction))
       }
     } else if (!memFractionValueUserEdited.current) {
       setMemFractionValue(1.0)
       setMemFractionValueInput('1.0')
     }
     setMemFractionKind(selectedBackend.memoryFractionKind)
-  }, [backend, backendOptions, catalogLoading, hydrated])
+  }, [backend, backendOptions, catalogLoading, hydrated, system])
 
   const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
   const invalidMaxBatchSize = maxBatchSizeInput === '' || parseInt(maxBatchSizeInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
-  const invalidMemFractionValue = memFractionValueInput === '' || !Number.isFinite(Number(memFractionValueInput)) || Number(memFractionValueInput) < 0 || Number(memFractionValueInput) > 1;
+  const selectedBackend = backendOptions.find(option => option.id === backend)
+  const needsExplicitMemFraction = Boolean(
+    backendVersion.trim() &&
+    !memFractionValueUserEdited.current &&
+    !hasDefaultMemoryFractionForVersion(selectedBackend, system, backendVersion),
+  )
+  const invalidMemFractionValue = needsExplicitMemFraction || memFractionValueInput === '' || !Number.isFinite(Number(memFractionValueInput)) || Number(memFractionValueInput) < 0 || Number(memFractionValueInput) > 1;
   const invalidParallelism = servingMode === 'disagg'
     ? invalidPhaseParallel(prefillPar) || invalidPhaseParallel(decodePar)
     : invalidTpSize || invalidPpSize;
@@ -284,6 +293,9 @@ export default function KvCacheCalc() {
         <p className={styles.subtitle}>
           Calculate KV cache memory requirements for any model on supported GPU systems
         </p>
+        <div className={styles.helperText}>
+          Memory estimates use AISimulate, independent of the global Simulator setting.
+        </div>
       </div>
 
       {/* Input card */}
@@ -314,6 +326,11 @@ export default function KvCacheCalc() {
             {loading ? 'Calculating…' : 'Calculate'}
           </button>
         </div>
+        {needsExplicitMemFraction && (
+          <div className={styles.helperText} role="status" aria-live="polite">
+            This version differs from the system default. Enter a memory fraction for the pinned version.
+          </div>
+        )}
 
         {/* Advanced settings accordion */}
         <button
@@ -345,7 +362,7 @@ export default function KvCacheCalc() {
                   value={backend}
                   onChange={e => {
                     const nextBackend = e.target.value
-                    if (backendOptions.find(option => option.id === nextBackend)?.memoryFraction != null) {
+                    if (systemMemoryFraction(backendOptions.find(option => option.id === nextBackend), system) != null) {
                       memFractionValueUserEdited.current = false
                     }
                     setBackend(nextBackend)

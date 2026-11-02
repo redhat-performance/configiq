@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
+
+DATASET_REPO_ENV = "TESTED_DATASET_REPO"
+DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
 
 SENSITIVE_COLUMN_PATTERN = re.compile(
     r"(?:email|e-mail|auth[_ -]?token|access[_ -]?token|secret|password|authorization|cookie|ip[_ -]?address|user[_ -]?id|hostname|host[_ -]?name)",
@@ -33,6 +37,19 @@ CLASSIFICATION_COLUMNS = {
     "request_type", "spec_decoding", "precision", "weight_quantization", "kv_quantization",
     "moe_num_experts", "moe_top_k", "max_seq_len",
 }
+
+
+def resolve_dataset_repo_id(cli_value: str | None) -> str:
+    """Resolve the dataset repository: explicit flag, then environment, then default.
+
+    Publishing and downloading share this resolution so a published revision
+    stays discoverable. Blank values fall through because GitHub renders an
+    unset repository variable as an empty string.
+    """
+    for candidate in (cli_value, os.environ.get(DATASET_REPO_ENV)):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return DEFAULT_DATASET_REPO
 
 
 def _runtime_value(text: str, *names: str) -> str | None:
