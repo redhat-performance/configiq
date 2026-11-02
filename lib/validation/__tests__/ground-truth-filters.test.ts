@@ -4,8 +4,8 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   normalizeBackendVersion,
-} from './ground-truth-dataset'
-import type { DatasetRow, GroundTruthFilters } from './ground-truth-types'
+} from '../ground-truth-dataset'
+import type { DatasetRow, GroundTruthFilters } from '../ground-truth-types'
 
 const filters: GroundTruthFilters = {
   accelerator: 'H200',
