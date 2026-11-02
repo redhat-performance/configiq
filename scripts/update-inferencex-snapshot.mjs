@@ -94,19 +94,22 @@ const rows = responses.flat().flatMap(result => {
     || !availableKeys.has(result.model) || !positiveInteger(result.conc)
     || !['model', 'hardware', 'framework', 'precision', 'date', 'run_url'].every(key => typeof result[key] === 'string' && result[key])
     || !positiveInteger(result.decode_tp) || !positiveInteger(result.num_decode_gpu)
+    || (result.disagg && (!positiveInteger(result.prefill_tp) || !positiveInteger(result.num_prefill_gpu)))
     || !['median_ttft', 'median_tpot', 'median_e2el', 'output_tput_per_gpu'].every(key => finite(metrics[key]))) return []
 
   const model = modelIds[result.model]
   const accelerator = hardwareNames[result.hardware] ?? String(result.hardware).toUpperCase()
   const physicalGpus = result.disagg
-    ? (result.num_prefill_gpu ?? 0) + result.num_decode_gpu
+    ? result.num_prefill_gpu + result.num_decode_gpu
     : Math.max(result.num_prefill_gpu ?? 0, result.num_decode_gpu)
   if (!positiveInteger(physicalGpus)) return []
+  const prefillTp = result.disagg ? result.prefill_tp : (result.prefill_tp ?? result.decode_tp)
+  const prefillEp = result.disagg ? result.prefill_ep : (result.prefill_ep ?? result.decode_ep)
   const topology = [
     result.disagg ? 'disaggregated' : 'aggregated',
     result.is_multinode ? 'multi-node' : 'single-node',
-    `P TP${result.prefill_tp}/EP${result.prefill_ep}`,
-    `D TP${result.decode_tp}/EP${result.decode_ep}`,
+    `P TP${prefillTp}${positiveInteger(prefillEp) ? `/EP${prefillEp}` : ''}`,
+    `D TP${result.decode_tp}${positiveInteger(result.decode_ep) ? `/EP${result.decode_ep}` : ''}`,
     `${physicalGpus} GPUs`,
     result.disagg ? `workers P${result.prefill_num_workers}/D${result.decode_num_workers}` : null,
     result.prefill_dp_attention || result.decode_dp_attention
@@ -134,6 +137,8 @@ const rows = responses.flat().flatMap(result => {
     isl: result.isl,
     osl: result.osl,
     tp: result.decode_tp,
+    tp_prefill: prefillTp,
+    tp_decode: result.decode_tp,
     concurrency: result.conc,
     ttft_median: metrics.median_ttft * 1000,
     tpot_median: metrics.median_tpot * 1000,
