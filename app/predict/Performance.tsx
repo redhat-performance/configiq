@@ -85,7 +85,7 @@ function resolveActualWeightPrecision(hfConfig: HFModelConfig | null, fallback: 
   return fallback;
 }
 
-function classifierPhase(value: EstimatePhase | undefined, moeTp: number, moeEp: number): ClassifierPhaseInput | null {
+function classifierPhase(value: EstimatePhase | undefined, moeTp: number | null, moeEp: number | null): ClassifierPhaseInput | null {
   return value ? {
     tp_size: value.tp_size,
     pp_size: value.pp_size,
@@ -583,8 +583,8 @@ export default function Performance() {
             pp_size: result.parallelism_strategy.pp_size || 1,
             dp_size: 1,
             cp_size: 1,
-            moe_tp_size: testMoeEtpSize,
-            moe_ep_size: testMoeEpSize,
+            moe_tp_size: isMoe ? testMoeEtpSize : null,
+            moe_ep_size: isMoe ? testMoeEpSize : null,
             shared_prefix_tokens: estimateInput.prefix ?? 0,
             prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
             weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
@@ -595,8 +595,8 @@ export default function Performance() {
             chunked_prefill_enabled: result.vllm_config.enable_chunked_prefill,
             serving_mode: result.mode === 'disagg' ? 'disagg' : 'agg',
             replicas: result.memory_analysis.replicas,
-            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, testMoeEtpSize, testMoeEpSize),
-            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, testMoeEtpSize, testMoeEpSize),
+            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, isMoe ? testMoeEtpSize : null, isMoe ? testMoeEpSize : null),
+            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, isMoe ? testMoeEtpSize : null, isMoe ? testMoeEpSize : null),
             encode: null,
           },
           request: {
