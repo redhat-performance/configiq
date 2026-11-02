@@ -8,6 +8,7 @@ from io import BytesIO
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO_ID = "redhat-performance/configiq-inferencex-comparison"
@@ -40,11 +41,22 @@ def main() -> int:
         raise ValueError("InferenceX snapshot is empty or contains untested benchmark rows")
 
     api = HfApi()
-    if not api.repo_info(REPO_ID, repo_type="dataset").private:
+    try:
+        repo = api.repo_info(REPO_ID, repo_type="dataset")
+    except RepositoryNotFoundError as error:
+        raise ValueError(
+            f"Private InferenceX dataset {REPO_ID} does not exist; create it before publishing"
+        ) from error
+    if not repo.private:
         raise ValueError("Refusing to publish to a non-private InferenceX dataset")
-    current_path = hf_hub_download(repo_id=REPO_ID, repo_type="dataset", filename=FILENAME)
-    current = json.loads(Path(current_path).read_text())
-    if snapshot_content(current) == snapshot_content(snapshot):
+    try:
+        current_path = hf_hub_download(repo_id=REPO_ID, repo_type="dataset", filename=FILENAME)
+    except EntryNotFoundError:
+        # The first publish has no previous snapshot to compare against.
+        current = None
+    else:
+        current = json.loads(Path(current_path).read_text())
+    if current is not None and snapshot_content(current) == snapshot_content(snapshot):
         print(f"InferenceX measurements are unchanged ({len(rows)} rows); private HF dataset is current")
         return 0
 
