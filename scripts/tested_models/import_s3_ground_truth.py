@@ -13,7 +13,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from dataset_common import dataframe_sha256, load_required_models, normalize_rows, pair_id, write_parquet
+from dataset_common import (
+    dataframe_sha256,
+    is_upstream_vllm_version,
+    load_required_models,
+    normalize_rows,
+    pair_id,
+    write_parquet,
+)
 
 REQUIRED_COLUMNS = {"model", "accelerator", "version"}
 NUMERIC_COLUMNS = {
@@ -60,6 +67,7 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
     groups: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
     source_rows = 0
     approved_rows = 0
+    excluded_version_rows = 0
 
     with csv_path.open(newline="", encoding="utf-8-sig") as source:
         reader = csv.DictReader(source)
@@ -74,6 +82,9 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
             model_id = (row["model"] or "").strip()
             if model_id not in approved_models:
                 continue
+            if not is_upstream_vllm_version(row["version"]):
+                excluded_version_rows += 1
+                continue
             accelerator = (row["accelerator"] or "").strip()
             if not accelerator:
                 raise ValueError(f"approved model has a missing accelerator on CSV row {source_rows + 1}")
@@ -81,7 +92,18 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
             approved_rows += 1
 
     if not groups:
-        raise ValueError("source CSV contains no approved model and accelerator pairs")
+        raise ValueError("source CSV contains no approved model and accelerator pairs with upstream vLLM versions")
+
+    ids: dict[str, tuple[str, str]] = {}
+    for model_id, accelerator in groups:
+        item_id = pair_id(model_id, accelerator)
+        previous = ids.get(item_id)
+        if previous is not None and previous != (model_id, accelerator):
+            raise ValueError(
+                f"distinct model/accelerator pairs map to the same ID {item_id}: "
+                f"{previous!r} and {(model_id, accelerator)!r}"
+            )
+        ids[item_id] = (model_id, accelerator)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     pairs = []
@@ -111,12 +133,13 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
         "source_sha256": _sha256(csv_path),
         "source_rows": source_rows,
         "approved_rows": approved_rows,
+        "excluded_version_rows": excluded_version_rows,
         "pairs": pairs,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"Prepared {approved_rows} approved rows in {len(pairs)} model/accelerator pairs from {source_rows} CSV rows")
-    print("All source version labels were retained; no backend version filter was applied")
+    print(f"Excluded {excluded_version_rows} approved-model rows without an upstream vLLM release version")
     return manifest
 
 

@@ -63,7 +63,7 @@ consumes the resulting pinned public Hugging Face dataset revision.
 
 The repeatable GitHub workflow is `.github/workflows/tested-models.yml`. It
 downloads a pinned revision of the public
-`redhat-performance/configiq-performance-data` Hugging Face dataset, generates
+`redhat-performance/configiq-performance-upstream-data` Hugging Face dataset, generates
 all artifacts, and uploads only the sanitized registry/Triton/dashboard bundle.
 Raw parquet, split data, source identifiers, and training work files are not
 uploaded by the workflow.
