@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import { readTestedModelsRegistry } from '@/lib/tested-models/registry'
-import type { RegistryPair, ValidationGateThresholds } from '@/lib/tested-models/registry-types'
+import type { PublicRegistryPair, RegistryPair, ValidationGateThresholds } from '@/lib/tested-models/registry-types'
 import { TestedModelPair } from './TestedModelPair'
 
 export const dynamic = 'force-dynamic'
@@ -22,5 +22,15 @@ export default async function TestedModelPairPage({ params }: TestedModelPairPag
   }
   if (!pair) notFound()
 
-  return <TestedModelPair pair={pair} gate={gate} />
+  const publicPair: PublicRegistryPair = {
+    id: pair.id,
+    modelId: pair.modelId,
+    systemId: pair.systemId,
+    status: pair.status,
+    coverage: pair.coverage,
+    diagnostics: pair.diagnostics,
+    metrics: pair.metrics,
+  }
+
+  return <TestedModelPair pair={publicPair} gate={gate} />
 }

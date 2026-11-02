@@ -3,7 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { Alert, Label, Spinner } from '@patternfly/react-core'
-import type { RegistryPair, ValidationGateThresholds } from '@/lib/tested-models/registry-types'
+import type { PublicRegistryPair, ValidationGateThresholds } from '@/lib/tested-models/registry-types'
 import { testedModelsFilterHref } from '@/lib/tested-models/links'
 import styles from '../TestedModels.module.css'
 
@@ -22,7 +22,7 @@ interface Dashboard {
 }
 
 interface TestedModelPairProps {
-  pair: RegistryPair
+  pair: PublicRegistryPair
   gate: ValidationGateThresholds | null
 }
 

@@ -65,6 +65,16 @@ export interface TestedModelsRegistry {
   pairs: RegistryPair[]
 }
 
+/**
+ * Fields the pair graph page is allowed to send to the browser. Classifier
+ * implementation details (Triton model name, feature schema, thresholds) stay
+ * server-side, matching the public registry API.
+ */
+export type PublicRegistryPair = Pick<
+  RegistryPair,
+  'id' | 'modelId' | 'systemId' | 'status' | 'coverage' | 'diagnostics' | 'metrics'
+>
+
 export const DEFAULT_GATE: ValidationGateThresholds = {
   minRecords: 100,
   minTestAuc: 0.7,
