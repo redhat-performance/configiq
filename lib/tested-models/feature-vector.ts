@@ -129,5 +129,6 @@ function selectQuantizationCategory(field: QuantizationField, actual: string, fe
   if (categories.length === 0) return null
   if (categories.includes(actual)) return actual
   const canonical = canonicalQuantization(field, actual)
+  if (categories.includes(canonical)) return canonical
   return categories.find(category => canonicalQuantization(field, category) === canonical) ?? null
 }

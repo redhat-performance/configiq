@@ -93,6 +93,18 @@ describe('buildFeatureVector', () => {
     expect(vector).toEqual([0, 1, 0])
   })
 
+  it('prefers the canonical spelling before another alias', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, gemm_quant_mode: 'int4_wo' },
+    }, {
+      feature_names: ['weight_quantization=awq', 'weight_quantization=int4', 'weight_quantization=fp8'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 1, 0])
+  })
+
   it('matches a canonical value to a legacy alias-only category', () => {
     const vector = buildFeatureVector({
       ...input,
