@@ -37,6 +37,29 @@ describe('private InferenceX dataset', () => {
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-read-token')
   })
 
+  it('serves the last good snapshot to concurrent callers when a refresh fails', async () => {
+    const now = Date.parse('2026-10-29T16:24:02.331Z')
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 200 }))
+      .mockRejectedValue(new Error('Hugging Face is unreachable'))
+    vi.stubGlobal('fetch', fetchMock)
+    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+
+    try {
+      const first = await getInferenceXDataset()
+      nowSpy.mockReturnValue(now + 6 * 60 * 1000)
+
+      const [left, right] = await Promise.all([getInferenceXDataset(), getInferenceXDataset()])
+
+      expect(left).toBe(first)
+      expect(right).toBe(first)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
   it('rejects models outside ConfigIQ tested models', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, rows: [{ ...snapshot.rows[0], model: 'InferenceX/unverified-model' }],

@@ -67,15 +67,25 @@ async function loadInferenceXDataset(): Promise<InferenceXCache> {
 export async function getInferenceXDataset(): Promise<InferenceXCache> {
   if (cachedInferenceX && cachedInferenceX.expiresAt > Date.now()) return cachedInferenceX
   if (inFlightInferenceX) return inFlightInferenceX
-  inFlightInferenceX = loadInferenceXDataset()
+
+  // The fallback lives inside the shared promise so every concurrent caller
+  // receives the last successful snapshot, not just the caller that started it.
+  const pending = loadInferenceXDataset().then(
+    loaded => {
+      cachedInferenceX = loaded
+      return loaded
+    },
+    (error: unknown) => {
+      // A failed refresh must not turn a working snapshot into an outage.
+      if (cachedInferenceX) return cachedInferenceX
+      throw error
+    },
+  )
+  inFlightInferenceX = pending
   try {
-    cachedInferenceX = await inFlightInferenceX
-    return cachedInferenceX
-  } catch (error) {
-    if (cachedInferenceX) return cachedInferenceX
-    throw error
+    return await pending
   } finally {
-    inFlightInferenceX = null
+    if (inFlightInferenceX === pending) inFlightInferenceX = null
   }
 }
 
