@@ -21,6 +21,7 @@ import type { RecommendProgressEvent } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
+import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
@@ -266,7 +267,7 @@ export default function Sizing() {
     [testedPairs, model],
   );
   const selectableGpus = React.useMemo(
-    () => testedSystemsForModel.size > 0 ? catalogGpus.filter(gpu => testedSystemsForModel.has(gpu.systemId)) : catalogGpus,
+    () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
     [catalogGpus, testedSystemsForModel],
   );
   const [isl, setIsl] = React.useState(2048);
@@ -561,7 +562,7 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
         {fabricRequired && (

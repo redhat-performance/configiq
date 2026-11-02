@@ -290,6 +290,20 @@ export function validatedModelIds(registry: Pick<TestedModelsRegistry, 'pairs'>)
   return [...new Set(registry.pairs.filter(pair => pair.status === 'validated').map(pair => pair.modelId))]
 }
 
+/**
+ * Keep every catalog option selectable but list options with tested
+ * measurements first. Tested hardware is an annotation, never a filter.
+ */
+export function testedSystemsFirst<T extends { systemId: string }>(
+  options: T[],
+  testedSystemIds: ReadonlySet<string>,
+): T[] {
+  if (testedSystemIds.size === 0) return options
+  return [...options].sort(
+    (a, b) => Number(testedSystemIds.has(b.systemId)) - Number(testedSystemIds.has(a.systemId)),
+  )
+}
+
 export function modelNamesForStatus(registry: TestedModelsRegistry, status: TestedModelStatus): string[] {
   if (status === 'approved_no_data') return registry.approvedModels.filter(model => modelStatus(model, registry) === status)
   return [...new Set(registry.pairs.filter(pair => pair.status === status).map(pair => pair.modelId))]

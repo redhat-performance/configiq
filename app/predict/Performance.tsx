@@ -37,6 +37,7 @@ import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
+import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
@@ -165,7 +166,7 @@ export default function Performance() {
     [testedPairs, model],
   );
   const selectableGpus = React.useMemo(
-    () => testedSystemsForModel.size > 0 ? catalogGpus.filter(option => testedSystemsForModel.has(option.systemId)) : catalogGpus,
+    () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
     [catalogGpus, testedSystemsForModel],
   );
   const [prefillChecked, setPrefillChecked] = React.useState(false);
@@ -1403,7 +1404,7 @@ export default function Performance() {
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={selectableGpus} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
         

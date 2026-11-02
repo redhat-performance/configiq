@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { modelStatus, parseRegistry, systemStatus, validatedModelIds } from '../tested-models/registry-types'
+import { modelStatus, parseRegistry, systemStatus, testedSystemsFirst, validatedModelIds } from '../tested-models/registry-types'
 import { testedModelsFilterHref, testedPairHref } from '../tested-models/links'
 
 const gate = { minRecords: 100, minTestAuc: 0.7, minTestF1: 0.3, minConcurrencyLevels: 5 }
@@ -102,6 +102,17 @@ describe('registry status helpers', () => {
     expect(systemStatus('h200_sxm', registry.pairs, 'org/model')).toBe('validated')
     expect(systemStatus('b200_sxm', registry.pairs, 'org/model')).toBe('measured_no_envelope')
     expect(systemStatus('mi355x', registry.pairs, 'org/model')).toBe('untested')
+  })
+
+  it('keeps untested systems selectable and sorts tested ones first', () => {
+    const options = [
+      { systemId: 'mi300x', label: 'MI300X' },
+      { systemId: 'h200_sxm', label: 'H200' },
+      { systemId: 'b200_sxm', label: 'B200' },
+    ]
+    const ordered = testedSystemsFirst(options, new Set(['b200_sxm']))
+    expect(ordered.map(option => option.systemId)).toEqual(['b200_sxm', 'mi300x', 'h200_sxm'])
+    expect(ordered).toHaveLength(options.length)
   })
 })
 
