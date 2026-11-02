@@ -10,7 +10,13 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from dataset_common import file_sha256, validate_public_frame
+from dataset_common import (
+    DATASET_REPO_ENV,
+    DEFAULT_DATASET_REPO,
+    file_sha256,
+    resolve_dataset_repo_id,
+    validate_public_frame,
+)
 from huggingface_hub import HfApi
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
@@ -64,7 +70,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=Path("data/tested-models/dataset-manifest.json"))
     parser.add_argument("--datasets-dir", type=Path, default=Path("data/tested-models/datasets"))
     parser.add_argument("--output-dir", type=Path, default=Path("data/tested-models/hf-ground-truth"))
-    parser.add_argument("--repo-id", default="redhat-performance/configiq-performance-data")
+    parser.add_argument(
+        "--repo-id",
+        default=None,
+        help=f"Dataset repository; defaults to ${DATASET_REPO_ENV}, then {DEFAULT_DATASET_REPO}.",
+    )
     parser.add_argument("--revision", default=None, help="Optional branch or tag to update; defaults to the repository default branch.")
     return parser.parse_args()
 
@@ -145,6 +155,7 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
 
 def main() -> int:
     args = parse_args()
+    args.repo_id = resolve_dataset_repo_id(args.repo_id)
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
     api.create_repo(args.repo_id, repo_type="dataset", private=False, exist_ok=True)
