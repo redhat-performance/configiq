@@ -28,17 +28,26 @@ def main() -> int:
         check=True,
     )
     snapshot = json.loads(result.stdout)
-    tested_models = set(json.loads((ROOT / "public/config.json").read_text())["testedModels"])
+    config = json.loads((ROOT / "public/config.json").read_text())
+    # `approvedModels` is the durable name; `testedModels` is the transition key.
+    approved_models = config.get("approvedModels", config.get("testedModels"))
+    if (
+        not isinstance(approved_models, list)
+        or not approved_models
+        or not all(isinstance(model, str) for model in approved_models)
+    ):
+        raise ValueError("public/config.json must contain a non-empty approved model list")
+    approved_model_set = set(approved_models)
     rows = snapshot.get("rows")
     if not isinstance(rows, list) or not rows or any(
         not isinstance(row, dict)
-        or row.get("model") not in tested_models
+        or row.get("model") not in approved_model_set
         or row.get("benchmark_source") != "inferencex"
         or row.get("isl") != 8192
         or row.get("osl") != 1024
         for row in rows
     ):
-        raise ValueError("InferenceX snapshot is empty or contains untested benchmark rows")
+        raise ValueError("InferenceX snapshot is empty or contains unapproved benchmark rows")
 
     api = HfApi()
     try:

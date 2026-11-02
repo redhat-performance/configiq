@@ -56,14 +56,21 @@ async function loadInferenceXDataset(): Promise<InferenceXCache> {
   }
   const snapshot = payload as Record<string, unknown>
   const rows = snapshot.rows
-  const testedModels = new Set(appConfig.testedModels)
+  // `approvedModels` is the durable name; `testedModels` is the transition key.
+  const config = appConfig as { approvedModels?: string[]; testedModels?: string[] }
+  const approvedModelIds = config.approvedModels ?? config.testedModels
+  if (!Array.isArray(approvedModelIds) || approvedModelIds.length === 0
+    || !approvedModelIds.every(model => typeof model === 'string')) {
+    throw new Error('ConfigIQ approved model list is missing or invalid')
+  }
+  const approvedModels = new Set(approvedModelIds)
   if (!Array.isArray(rows) || rows.length === 0 || rows.some(row =>
     !row || typeof row !== 'object' || Array.isArray(row)
-    || !testedModels.has((row as DatasetRow).model as string)
+    || !approvedModels.has((row as DatasetRow).model as string)
     || (row as DatasetRow).benchmark_source !== 'inferencex'
     || (row as DatasetRow).isl !== 8192 || (row as DatasetRow).osl !== 1024
     || ((row as DatasetRow).source_run_url != null && httpsUrl((row as DatasetRow).source_run_url) === null))) {
-    throw new Error('Private InferenceX dataset contains invalid or untested benchmark rows')
+    throw new Error('Private InferenceX dataset contains invalid or unapproved benchmark rows')
   }
   const sourceUrl = httpsUrl(snapshot.sourceUrl)
   if (!sourceUrl || typeof snapshot.retrievedAt !== 'string'

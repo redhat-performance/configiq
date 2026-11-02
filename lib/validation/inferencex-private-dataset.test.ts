@@ -75,15 +75,15 @@ describe('private InferenceX dataset', () => {
     }), { status: 200 })))
     const { getInferenceXDataset } = await import('./ground-truth-dataset')
 
-    await expect(getInferenceXDataset()).rejects.toThrow('invalid or untested benchmark rows')
+    await expect(getInferenceXDataset()).rejects.toThrow('invalid or unapproved benchmark rows')
   })
 
-  it('rejects models outside ConfigIQ tested models', async () => {
+  it('rejects models outside ConfigIQ approved models', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, rows: [{ ...snapshot.rows[0], model: 'InferenceX/unverified-model' }],
     }), { status: 200 })))
     const { getInferenceXDataset } = await import('./ground-truth-dataset')
 
-    await expect(getInferenceXDataset()).rejects.toThrow('untested benchmark rows')
+    await expect(getInferenceXDataset()).rejects.toThrow('unapproved benchmark rows')
   })
 })

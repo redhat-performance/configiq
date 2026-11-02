@@ -45,17 +45,26 @@ const appConfig = JSON.parse(await readFile(appConfigPath, 'utf8'))
 if (!Array.isArray(availability) || !Array.isArray(options.models)) {
   throw new Error('InferenceX discovery response changed')
 }
-if (!Array.isArray(appConfig.testedModels) || !appConfig.testedModels.every(model => typeof model === 'string')) {
-  throw new Error('ConfigIQ tested model list is missing or invalid')
+// `approvedModels` is the durable name; `testedModels` is the transition key.
+const approvedModelIds = appConfig.approvedModels ?? appConfig.testedModels
+if (!Array.isArray(approvedModelIds) || approvedModelIds.length === 0
+  || !approvedModelIds.every(model => typeof model === 'string')) {
+  throw new Error('ConfigIQ approved model list is missing or invalid')
 }
 
-const testedModels = new Set(appConfig.testedModels)
-const testedSourceModels = new Set(Object.entries(modelIds)
-  .filter(([, modelId]) => testedModels.has(modelId))
+const approvedModels = new Set(approvedModelIds)
+const skippedMappings = Object.entries(modelIds)
+  .filter(([, modelId]) => !approvedModels.has(modelId))
+  .map(([sourceModel]) => sourceModel)
+if (skippedMappings.length > 0) {
+  console.warn(`InferenceX mappings skipped because the model is not approved: ${skippedMappings.join(', ')}`)
+}
+const approvedSourceModels = new Set(Object.entries(modelIds)
+  .filter(([, modelId]) => approvedModels.has(modelId))
   .map(([sourceModel]) => sourceModel))
 const availableKeys = new Set(availability
   .filter(row => row.benchmark_type === 'single_turn' && row.isl === 8192 && row.osl === 1024
-    && testedSourceModels.has(row.model))
+    && approvedSourceModels.has(row.model))
   .map(row => row.model))
 const models = options.models.filter(model => model.dbKeys.some(key => availableKeys.has(key)))
 const benchmarkUrls = models.map(model => ({
@@ -140,7 +149,7 @@ process.stdout.write(`${JSON.stringify({
   sourceUrl: 'https://inferencex.semianalysis.com/api',
   availabilityUrl,
   benchmarkUrls: benchmarkUrls.map(model => model.url),
-  modelFilter: 'public/config.json#testedModels',
+  modelFilter: 'public/config.json#approvedModels',
   retrievedAt: new Date().toISOString(),
   workload: { isl: 8192, osl: 1024, benchmarkType: 'single_turn' },
   rows,
