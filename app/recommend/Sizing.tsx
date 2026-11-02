@@ -240,14 +240,14 @@ export default function Sizing() {
   // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
   // search takes none, so the fabric control stays hidden there.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
-  const { pairs: testedPairs, modelIds: testedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
+  const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
   const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
   const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs), [catalogModels, modelSpecs, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
 
   // Input state
   const [model, setModel] = React.useState('');
@@ -381,7 +381,7 @@ export default function Sizing() {
     let cancelled = false;
     const timer = setTimeout(() => {
       if (!model.includes('/')) { setModelStatus('idle'); return; }
-      const isTested = testedModelIds.includes(model);
+      const isTested = validatedModelIds.includes(model);
       if (!needsHfConfig(model, MODEL_OPTIONS)) {
         setModelStatus(isTested ? 'supported' : 'catalog');
         return;
@@ -403,7 +403,7 @@ export default function Sizing() {
       });
     }, 500);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [model, hfToken, MODEL_OPTIONS, catalogLoading, hydrated, testedModelIds]);
+  }, [model, hfToken, MODEL_OPTIONS, catalogLoading, hydrated, validatedModelIds]);
 
   // Fetch live pricing
 
@@ -556,7 +556,7 @@ export default function Sizing() {
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
-                supportedModels={testedModelsAvailable ? testedModelIds : undefined}
+                supportedModels={testedModelsAvailable ? validatedModelIds : undefined}
               hfToken={hfToken}
             />
           </div>
@@ -791,7 +791,7 @@ export default function Sizing() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} />
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={model} systemId={gpuSystem} />
 
       {/* ─── Result tiles ─── */}
       {result && (

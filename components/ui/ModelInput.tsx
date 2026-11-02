@@ -8,7 +8,15 @@ import { getAppConfig } from '@/lib/app-config'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import styles from './ModelInput.module.css'
 
-export type ModelStatus = 'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'
+export type ModelStatus =
+  | 'idle'
+  | 'supported'
+  | 'measured'
+  | 'approved'
+  | 'catalog'
+  | 'fetching'
+  | 'fetched'
+  | 'error'
 
 interface ModelInputProps {
   id: string
@@ -91,6 +99,8 @@ export function ModelInput({
         </datalist>
         <div className={styles.badge}>
           {status === 'supported' && <Label color="blue" isCompact icon={<CheckCircleIcon />}>Tested</Label>}
+          {status === 'measured' && <Label color="grey" isCompact>Measured, no validated envelope</Label>}
+          {status === 'approved' && <Label color="grey" isCompact>Approved, no measurements</Label>}
           {status === 'catalog' && <Label color="green" isCompact icon={<CheckCircleIcon />}>In catalog</Label>}
           {status === 'fetching' && <Label color="grey" isCompact>Checking...</Label>}
           {status === 'fetched' && <Label color="yellow" isCompact icon={<CheckCircleIcon />}>From HuggingFace</Label>}

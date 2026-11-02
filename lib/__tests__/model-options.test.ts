@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { buildModelItems, needsHfConfig } from '../model-options'
 import type { AppConfig } from '../app-config'
 
-// buildModelItems reads testedModels + huggingFaceModels from getAppConfig().
+// buildModelItems reads the approved list + huggingFaceModels from config, and
+// takes the validated (registry) list explicitly.
 vi.mock('../app-config', () => ({ getAppConfig: vi.fn() }))
 import { getAppConfig } from '../app-config'
 const mockGetAppConfig = vi.mocked(getAppConfig)
@@ -21,54 +22,64 @@ const BASE: AppConfig = {
 }
 
 const CATALOG_MODELS = ['org-a/catalog-model', 'org-a/tested-in-catalog', 'plain-model']
+const VALIDATED_MODELS = ['org-a/tested-in-catalog', 'org-b/tested-only']
+const APPROVED_MODELS = ['org-b/tested-only', 'org-d/approved-only']
 
 beforeEach(() => {
   mockGetAppConfig.mockReturnValue({
     ...BASE,
-    testedModels: ['org-a/tested-in-catalog', 'org-b/tested-only'],
+    // The config field remains the approved-for-measurement list during the
+    // transition to approvedModels.
+    testedModels: APPROVED_MODELS,
     huggingFaceModels: ['org-c/hf-only', 'org-a/tested-in-catalog'],
   })
 })
 
 describe('buildModelItems', () => {
   it('flags a catalog-only model as inCatalog', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-a/catalog-model')!
+    const item = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).find(i => i.value === 'org-a/catalog-model')!
     expect(item).toMatchObject({ inCatalog: true, isTested: false, isHuggingFace: false })
   })
 
-  it('flags a tested model that is also in the catalog', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-a/tested-in-catalog')!
+  it('flags a registry-validated model that is also in the catalog', () => {
+    const item = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).find(i => i.value === 'org-a/tested-in-catalog')!
     // Present in all three sources → all flags set, but appears exactly once.
     expect(item).toMatchObject({ inCatalog: true, isTested: true, isHuggingFace: true })
   })
 
-  it('includes a tested model that is NOT in the catalog', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-b/tested-only')
+  it('includes a validated model that is NOT in the catalog', () => {
+    const item = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).find(i => i.value === 'org-b/tested-only')
     expect(item).toBeDefined()
     expect(item).toMatchObject({ inCatalog: false, isTested: true, isHuggingFace: false })
   })
 
+  it('includes an approved model without calling it tested', () => {
+    const item = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).find(i => i.value === 'org-d/approved-only')
+    expect(item).toBeDefined()
+    expect(item).toMatchObject({ inCatalog: false, isTested: false, isHuggingFace: false })
+  })
+
   it('flags a hugging-face-only model', () => {
-    const item = buildModelItems(CATALOG_MODELS).find(i => i.value === 'org-c/hf-only')!
+    const item = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).find(i => i.value === 'org-c/hf-only')!
     expect(item).toMatchObject({ inCatalog: false, isTested: false, isHuggingFace: true })
   })
 
   it('dedupes models present in multiple sources', () => {
-    const items = buildModelItems(CATALOG_MODELS)
+    const items = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS)
     const dupes = items.filter(i => i.value === 'org-a/tested-in-catalog')
     expect(dupes).toHaveLength(1)
   })
 
   it('derives group from the org prefix, empty when no slash', () => {
-    const items = buildModelItems(CATALOG_MODELS)
+    const items = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS)
     expect(items.find(i => i.value === 'org-a/catalog-model')!.group).toBe('org-a')
     expect(items.find(i => i.value === 'plain-model')!.group).toBe('')
   })
 
-  it('lists catalog models before tested-only and hf-only models', () => {
-    const values = buildModelItems(CATALOG_MODELS).map(i => i.value)
+  it('lists catalog models before validated and approved-only models', () => {
+    const values = buildModelItems(CATALOG_MODELS, undefined, VALIDATED_MODELS).map(i => i.value)
     expect(values.indexOf('org-a/catalog-model')).toBeLessThan(values.indexOf('org-b/tested-only'))
-    expect(values.indexOf('org-b/tested-only')).toBeLessThan(values.indexOf('org-c/hf-only'))
+    expect(values.indexOf('org-b/tested-only')).toBeLessThan(values.indexOf('org-d/approved-only'))
   })
 })
 

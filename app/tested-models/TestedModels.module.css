@@ -21,3 +21,30 @@
 .bar { height: 100%; background: #0066cc; }
 .kneeRow { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid #ededed; font: 12px var(--mono); }
 @media (max-width: 760px) { .page { padding: 24px 16px 48px; } .header { display: block; } .backLink { display: inline-block; margin-top: 16px; } .summaryGrid { grid-template-columns: repeat(2, 1fr); } .twoColumn { grid-template-columns: 1fr; } .barRow { grid-template-columns: 130px 1fr; } }
+.notice { border: 1px solid #d2d2d2; border-left: 4px solid #0066cc; background: #fff; padding: 12px 16px; margin-bottom: 18px; color: #3c3f42; font-size: 14px; }
+.gate { margin-bottom: 18px; }
+.gate p { margin: 0; color: #3c3f42; font-size: 14px; }
+.filterGrid { display: grid; grid-template-columns: 1fr 260px; gap: 16px; }
+.filterGrid .selector { margin-bottom: 0; max-width: none; }
+.resultCount { margin: 14px 0 0; color: #3c3f42; font: 13px var(--mono); }
+.empty { border: 1px dashed #8a8d90; padding: 24px; margin-bottom: 18px; }
+.empty h2 { margin: 0 0 8px; font-size: 17px; font-weight: 600; }
+.empty p { margin: 0; color: #3c3f42; font-size: 14px; }
+.pairList { display: grid; gap: 10px; margin-bottom: 22px; }
+.pairRow { display: flex; justify-content: space-between; gap: 18px; align-items: center; border: 1px solid #d2d2d2; background: #fff; padding: 14px 18px; text-decoration: none; color: inherit; }
+.pairRow:hover { border-color: #0066cc; }
+.pairTitle { font: 600 15px var(--display); color: #151515; }
+.pairMeta { margin-top: 4px; color: #3c3f42; font: 12.5px var(--mono); }
+.pairStatus { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.openLink { color: #0066cc; font-size: 13px; white-space: nowrap; }
+.approvedList { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.approvedLink { color: #0066cc; font-size: 13px; }
+.panelNote { margin: 0 0 8px; color: #3c3f42; font-size: 13.5px; }
+.headerActions { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.pairAlert { margin-bottom: 18px; }
+.reasonList { margin: 8px 0 0; padding-left: 18px; color: #3c3f42; font-size: 13px; }
+.metricList { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 0; }
+.metricList div { border-top: 1px solid #ededed; padding-top: 10px; }
+.metricList dt { color: #3c3f42; font: 500 12px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.metricList dd { margin: 6px 0 0; font: 600 20px var(--display); }
+@media (max-width: 760px) { .filterGrid { grid-template-columns: 1fr; } .pairRow { display: block; } .pairStatus { justify-content: flex-start; margin-top: 10px; } .headerActions { align-items: flex-start; margin-top: 16px; } .metricList { grid-template-columns: repeat(2, 1fr); } }

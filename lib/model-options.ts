@@ -22,21 +22,26 @@ import { modelFacets } from '@/lib/model-metadata'
 export function buildModelItems(
   catalogModels: string[],
   specs?: Map<string, ModelSpec>,
+  validatedModels: string[] = [],
 ): ComboBoxItem[] {
   const config = getAppConfig()
   const catalog = new Set(catalogModels)
-  const testedValues = config.testedModels
+  // `testedModels` in config is the approved-for-measurement list, not the
+  // registry's validated list. Keep those concepts separate: only registry
+  // IDs earn the "tested" badge, while approved models stay selectable.
+  const approvedValues = config.testedModels
+  const testedValues = validatedModels
 
   const seen = new Set<string>()
   const items: ComboBoxItem[] = []
-  for (const m of [...catalogModels, ...testedValues, ...config.huggingFaceModels]) {
+  for (const m of [...catalogModels, ...testedValues, ...approvedValues, ...config.huggingFaceModels]) {
     if (seen.has(m)) continue
     seen.add(m)
     const slash = m.indexOf('/')
     items.push({
       ...modelFacets(m, {
         spec: specs?.get(m),
-        testedModels: config.testedModels,
+        testedModels: testedValues,
         catalogModels: catalog,
         huggingFaceModels: config.huggingFaceModels,
       }),

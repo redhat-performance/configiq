@@ -65,7 +65,7 @@ function invalidPhaseParallel(p: PhaseParallelInput): boolean {
 export default function KvCacheCalc() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion: settingsBackendVersion } = useSettings()
   const { modelOptions: catalogModels, gpuOptions: catalogGpus, modelSpecs, backendOptions, isLoading: catalogLoading } = useCatalog()
-  const { modelIds: testedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
+  const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
   const MODEL_OPTIONS = catalogModels
 
   const [model, setModel] = React.useState('')
@@ -164,7 +164,7 @@ export default function KvCacheCalc() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs), [catalogModels, modelSpecs, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
 
   // HF config for models AISimulators can't resolve from its catalog (incl. tested models
   // outside the catalog). Fetched on model change, sent to /api/memory on calc.
@@ -206,7 +206,7 @@ export default function KvCacheCalc() {
   };
 
   const catalogMatch = MODEL_OPTIONS.includes(model)
-  const kvModelStatus: ModelStatus = testedModelIds.includes(model)
+  const kvModelStatus: ModelStatus = validatedModelIds.includes(model)
     ? 'supported'
     : catalogMatch ? 'catalog'
     : catalogLoading ? 'fetching'
@@ -311,7 +311,7 @@ export default function KvCacheCalc() {
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
-              supportedModels={testedModelsAvailable ? testedModelIds : undefined}
+              supportedModels={testedModelsAvailable ? validatedModelIds : undefined}
             />
           </div>
 

@@ -156,7 +156,7 @@ export default function Performance() {
   // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
   // search takes none, so the fabric control stays hidden there.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
-  const { pairs: testedPairs, modelIds: testedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
+  const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
@@ -180,7 +180,7 @@ export default function Performance() {
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs), [catalogModels, modelSpecs, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
 
   // Set model from settings after context has loaded from localStorage
   const modelFromSettings = React.useRef(false);
@@ -227,7 +227,7 @@ export default function Performance() {
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
 
-  const modelStatus: ModelStatus = testedModelIds.includes(model)
+  const modelStatus: ModelStatus = validatedModelIds.includes(model)
     ? 'supported'
     : catalogModels.includes(model)
     ? 'catalog'
@@ -1397,7 +1397,7 @@ export default function Performance() {
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
-               supportedModels={testedModelsAvailable ? testedModelIds : undefined}
+               supportedModels={testedModelsAvailable ? validatedModelIds : undefined}
               hfToken={hfToken}
             />
           </div>
@@ -1619,7 +1619,7 @@ export default function Performance() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} />
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={model} systemId={gpu} />
 
       {/* ---------- result tiles ---------- */}
       {!testResult && !isCalculating && !testError}
