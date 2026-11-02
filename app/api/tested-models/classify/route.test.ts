@@ -111,4 +111,15 @@ describe('POST /api/tested-models/classify', () => {
     expect(body.status).toBe('validation_unavailable')
     expect(body.reasons[0]).toContain('unknown, not untested')
   })
+
+  it('treats a null JSON body as an incomplete request, not a server error', async () => {
+    mockReadFile.mockResolvedValue(registryWith([]) as never)
+    const response = await POST(new Request('http://localhost/api/tested-models/classify', { method: 'POST', body: 'null' }))
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      status: 'validation_unavailable',
+      pair_id: null,
+      reasons: ['The request did not include a model and GPU system.'],
+    })
+  })
 })

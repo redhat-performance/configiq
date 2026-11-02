@@ -43,8 +43,8 @@ export async function POST(request: Request) {
     return unavailable(['The tested-model registry is unavailable. Tested status is unknown, not untested.'])
   }
 
-  const modelId = input.effective?.model_id
-  const systemId = input.effective?.system_id
+  const modelId = input?.effective?.model_id
+  const systemId = input?.effective?.system_id
   if (!modelId || !systemId) {
     return unavailable(['The request did not include a model and GPU system.'])
   }
