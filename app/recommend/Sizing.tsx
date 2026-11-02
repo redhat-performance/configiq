@@ -417,7 +417,7 @@ export default function Sizing() {
   }, [catalogLoading, gpuSystem, selectableGpus]);
 
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
-    if (!result) return null;
+    if (!result || !params) return null;
     const phase = (value: PhaseConfig | null): ClassifierPhaseInput | null => value ? {
       tp_size: value.tensorParallelSize,
       pp_size: value.pipelineParallelSize,
@@ -430,15 +430,15 @@ export default function Sizing() {
     } : null;
     return {
       effective: {
-        model_id: model,
-        system_id: gpuSystem,
-        backend: inferenceBackend,
-        backend_version: backendVersion || null,
-        isl,
-        osl,
-        max_seq_len: maxSeqLen,
-        prefill_max_seq_len: prefillMaxSeqLen,
-        decode_max_seq_len: decodeMaxSeqLen,
+        model_id: params.model_path,
+        system_id: params.system,
+        backend: params.backend ?? inferenceBackend,
+        backend_version: params.backend_version ?? null,
+        isl: params.isl,
+        osl: params.osl,
+        max_seq_len: params.max_seq_len ?? null,
+        prefill_max_seq_len: params.prefill_max_seq_len ?? null,
+        decode_max_seq_len: params.decode_max_seq_len ?? null,
         concurrency: result.performance.concurrency,
         tp_size: result.recommendation.tensorParallelSize,
         pp_size: result.recommendation.pipelineParallelSize,
@@ -446,8 +446,8 @@ export default function Sizing() {
         cp_size: result.recommendation.contextParallelSize,
         moe_tp_size: result.recommendation.moeTensorParallelSize,
         moe_ep_size: result.recommendation.moeExpertParallelSize,
-        shared_prefix_tokens: prefix,
-        prefix_caching_enabled: prefix > 0 ? true : null,
+        shared_prefix_tokens: params.prefix ?? 0,
+        prefix_caching_enabled: (params.prefix ?? 0) > 0 ? true : null,
         weight_precision: null,
         kv_cache_precision: null,
         moe_quant_mode: null,
@@ -462,17 +462,17 @@ export default function Sizing() {
       },
       request: {
         request_kind: 'recommend',
-        target_request_rate: params?.target_request_rate ?? null,
-        target_concurrency: params?.target_concurrency ?? null,
-        target_latency_ms: params?.request_latency ?? null,
-        target_ttft_ms: params?.ttft ?? null,
-        target_tpot_ms: params?.tpot ?? null,
+        target_request_rate: params.target_request_rate ?? null,
+        target_concurrency: params.target_concurrency ?? null,
+        target_latency_ms: params.request_latency ?? null,
+        target_ttft_ms: params.ttft ?? null,
+        target_tpot_ms: params.tpot ?? null,
         database_mode: null,
         top_n: null,
       },
-      model_config: hfConfig,
+      model_config: params.model_config ?? null,
     };
-  }, [backendVersion, decodeMaxSeqLen, gpuSystem, hfConfig, inferenceBackend, isl, maxSeqLen, model, osl, params, prefillMaxSeqLen, prefix, result]);
+  }, [inferenceBackend, params, result]);
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
@@ -792,7 +792,7 @@ export default function Sizing() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={model} systemId={gpuSystem} />
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={params?.model_path ?? model} systemId={params?.system ?? gpuSystem} />
 
       {/* ─── Result tiles ─── */}
       {result && (
