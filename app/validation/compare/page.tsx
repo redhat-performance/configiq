@@ -262,6 +262,7 @@ export default function GroundTruthComparisonPage() {
     for (const downstreamKey of GROUND_TRUTH_FILTER_KEYS.slice(changedIndex + 1)) next[downstreamKey] = ''
     setFilters(next)
     setGroundTruth([])
+    setGroundTruthState('idle')
     setEstimates([])
     setConfigurationKey('')
     setNotice(null)
@@ -299,6 +300,7 @@ export default function GroundTruthComparisonPage() {
 
     setIsComparing(true)
     setPredictedBy(null)
+    setGroundTruthState('idle')
     setNotice({ variant: 'info', title: 'Loading comparison', message: 'Fetching the selected measured benchmark rows.' })
     setGroundTruth([])
     setEstimates([])
@@ -522,6 +524,7 @@ export default function GroundTruthComparisonPage() {
                 onChange={(_event, value) => {
                   setConfigurationKey(value)
                   setGroundTruth([])
+                  setGroundTruthState('idle')
                   setEstimates([])
                   setNotice(null)
                 }}
