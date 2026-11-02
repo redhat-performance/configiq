@@ -72,10 +72,20 @@ export async function GET(request: NextRequest) {
     const selectedInferenceXRows = configuration.measurement_source === 'InferenceX'
       ? filterRows(inferencexRows, filters).filter(row => rowMatchesConfiguration(row, configuration))
       : []
+    const inferencexRuns: Array<{ url: string; date: string | null }> = []
+    const seenRunUrls = new Set<string>()
+    for (const row of selectedInferenceXRows) {
+      if (typeof row.source_run_url !== 'string' || !row.source_run_url || seenRunUrls.has(row.source_run_url)) continue
+      seenRunUrls.add(row.source_run_url)
+      inferencexRuns.push({
+        url: row.source_run_url,
+        date: typeof row.measurement_date === 'string' ? row.measurement_date : null,
+      })
+    }
     if (internalRows.length === 0 && selectedInferenceXRows.length === 0) {
       return NextResponse.json(
         { status: 'ok', source: groundTruth?.source ?? null, inferencexSource: inferencex?.source ?? null,
-          matchedRows: 0, groundTruthPoints: [], inferencexPoints: [], inferencexRunUrl: null },
+          matchedRows: 0, groundTruthPoints: [], inferencexPoints: [], inferencexRunUrl: null, inferencexRuns: [] },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
@@ -90,8 +100,9 @@ export async function GET(request: NextRequest) {
         matchedRows: internalRows.length + selectedInferenceXRows.length,
         groundTruthPoints: aggregateGroundTruthRows(internalRows),
         inferencexPoints: aggregateGroundTruthRows(selectedInferenceXRows),
-        inferencexRunUrl: selectedInferenceXRows[0]?.source_run_url ?? null,
-        inferencexDate: selectedInferenceXRows[0]?.measurement_date ?? null,
+        inferencexRunUrl: inferencexRuns[0]?.url ?? null,
+        inferencexDate: inferencexRuns[0]?.date ?? null,
+        inferencexRuns,
       },
       { headers: { 'Cache-Control': 'no-store' } },
     )

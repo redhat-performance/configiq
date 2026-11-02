@@ -28,6 +28,7 @@ import styles from './validation-compare.module.css'
 
 type Notice = { variant: 'info' | 'warning' | 'success' | 'danger'; title: string; message: string }
 type InferenceXSource = { url: string; retrievedAt: string; rowCount: number }
+type InferenceXRun = { url: string; date: string | null }
 
 interface FilterResponse {
   status: 'ok' | 'failed'
@@ -52,6 +53,7 @@ interface GroundTruthResponse {
   inferencexPoints?: GroundTruthPoint[]
   inferencexRunUrl?: string | null
   inferencexDate?: string | null
+  inferencexRuns?: InferenceXRun[]
 }
 
 interface EstimateAttempt {
@@ -162,6 +164,7 @@ export default function GroundTruthComparisonPage() {
   const [inferencexSource, setInferenceXSource] = React.useState<InferenceXSource | null>(null)
   const [inferencexRunUrl, setInferenceXRunUrl] = React.useState<string | null>(null)
   const [inferencexDate, setInferenceXDate] = React.useState<string | null>(null)
+  const [inferencexRuns, setInferenceXRuns] = React.useState<InferenceXRun[]>([])
   const [groundTruth, setGroundTruth] = React.useState<GroundTruthPoint[]>([])
   const [inferencex, setInferenceX] = React.useState<GroundTruthPoint[]>([])
   const [estimates, setEstimates] = React.useState<EstimatePoint[]>([])
@@ -329,6 +332,7 @@ export default function GroundTruthComparisonPage() {
     setInferenceX([])
     setInferenceXRunUrl(null)
     setInferenceXDate(null)
+    setInferenceXRuns([])
     setEstimates([])
     setConfigurationKey('')
     setNotice(null)
@@ -348,6 +352,7 @@ export default function GroundTruthComparisonPage() {
     setInferenceX([])
     setInferenceXRunUrl(null)
     setInferenceXDate(null)
+    setInferenceXRuns([])
     setEstimates([])
     setPredictedBy(null)
     setGroundTruthState('idle')
@@ -375,6 +380,7 @@ export default function GroundTruthComparisonPage() {
     setInferenceX([])
     setInferenceXRunUrl(null)
     setInferenceXDate(null)
+    setInferenceXRuns([])
     setEstimates([])
 
     try {
@@ -399,6 +405,7 @@ export default function GroundTruthComparisonPage() {
       setInferenceXSource(data.inferencexSource ?? null)
       setInferenceXRunUrl(data.inferencexRunUrl ?? null)
       setInferenceXDate(data.inferencexDate ?? null)
+      setInferenceXRuns(data.inferencexRuns ?? [])
       setGroundTruth(internalPoints)
       setInferenceX(inferencexPoints)
       setGroundTruthState('loaded')
@@ -536,6 +543,7 @@ export default function GroundTruthComparisonPage() {
   const canCompare = modelSelected && Boolean(selectedConfiguration) && !isLoadingDataset && !isComparing
   const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
   const measuredCount = new Set([...groundTruth, ...inferencex].map(point => point.concurrency)).size
+  const safeInferenceXRuns = inferencexRuns.filter(run => isHttpsUrl(run.url))
   const predictionLabel = predictedBy === 'blis' ? 'BLIS' : predictedBy === 'aisimulate' ? 'AISimulate' : simulatorLabel
 
   return (
@@ -639,6 +647,7 @@ export default function GroundTruthComparisonPage() {
                   setInferenceX([])
                   setInferenceXRunUrl(null)
                   setInferenceXDate(null)
+                  setInferenceXRuns([])
                   setEstimates([])
                   setNotice(null)
                 }}
@@ -727,8 +736,21 @@ export default function GroundTruthComparisonPage() {
           )}
           <p className={styles.methodNote}>
             SemiAnalysis InferenceX is shown as a separate measured source. This snapshot includes 8k/1k single-turn runs for ConfigIQ tested models.
-            {inferencexDate && <> Selected run: {inferencexDate}.</>}
-            {isHttpsUrl(inferencexRunUrl) && <> <a href={inferencexRunUrl} target="_blank" rel="noreferrer">View the InferenceX run</a>.</>}
+            {safeInferenceXRuns.length > 0 ? (
+              <>
+                {' '}
+                {safeInferenceXRuns.length === 1 ? 'Selected run' : `${safeInferenceXRuns.length} averaged runs`}
+                {safeInferenceXRuns.some(run => run.date) && ` (${safeInferenceXRuns.map(run => run.date).filter(Boolean).join(', ')})`}:{' '}
+                {safeInferenceXRuns.map((run, index) => (
+                  <React.Fragment key={run.url}>
+                    {index > 0 && ', '}
+                    <a href={run.url} target="_blank" rel="noreferrer">Run {index + 1}</a>
+                  </React.Fragment>
+                ))}
+                .
+              </>
+            ) : inferencexDate ? <> Selected run: {inferencexDate}.</> : null}
+            {safeInferenceXRuns.length === 0 && isHttpsUrl(inferencexRunUrl) && <> <a href={inferencexRunUrl} target="_blank" rel="noreferrer">View the InferenceX run</a>.</>}
           </p>
         </div>
 

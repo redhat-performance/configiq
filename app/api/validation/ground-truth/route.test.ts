@@ -81,6 +81,37 @@ describe('GET /api/validation/ground-truth', () => {
     expect(body.groundTruthPoints).toEqual([])
     expect(body.inferencexPoints).toHaveLength(1)
     expect(body.inferencexRunUrl).toBe('https://example.com/inferencex-run')
+    expect(body.inferencexRuns).toEqual([
+      { url: 'https://example.com/inferencex-run', date: '2026-10-20' },
+    ])
+  })
+
+  it('lists every distinct InferenceX run behind an averaged point', async () => {
+    const secondRun: DatasetRow = {
+      ...inferencex,
+      concurrency: 16,
+      source_run_url: 'https://example.com/inferencex-run-2',
+      measurement_date: '2026-10-21',
+    }
+    const repeatedFirstRun: DatasetRow = {
+      ...inferencex,
+      concurrency: 32,
+    }
+    vi.mocked(dataset.getInferenceXDataset).mockResolvedValueOnce({
+      rows: [inferencex, secondRun, repeatedFirstRun],
+      source: { url: 'https://inferencex.semianalysis.com/api', retrievedAt: '2026-10-20', rowCount: 3 },
+      expiresAt: Infinity,
+    })
+
+    const response = await GET(requestFor(inferencex))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.inferencexPoints).toHaveLength(3)
+    expect(body.inferencexRuns).toEqual([
+      { url: 'https://example.com/inferencex-run', date: '2026-10-20' },
+      { url: 'https://example.com/inferencex-run-2', date: '2026-10-21' },
+    ])
   })
 
   it('keeps internal GT available when the private InferenceX dataset cannot be read', async () => {
