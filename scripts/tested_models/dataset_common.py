@@ -70,15 +70,24 @@ def _backend_name(version: Any) -> str:
     return "unknown"
 
 
-def load_required_models(config_path: Path) -> list[str]:
-    """Load the required tested-model IDs from ConfigIQ's public config."""
+def load_approved_models(config_path: Path) -> list[str]:
+    """Load models approved for measurement from ConfigIQ's public config.
+
+    ``approvedModels`` is the durable name. ``testedModels`` is accepted during
+    the transition because the approved list must never be mistaken for the
+    registry's classifier-validated list.
+    """
     data = json.loads(config_path.read_text())
-    models = data.get("testedModels")
+    models = data.get("approvedModels", data.get("testedModels"))
     if not isinstance(models, list) or not models or not all(isinstance(model, str) for model in models):
-        raise ValueError(f"{config_path} must contain a non-empty testedModels string array")
+        raise ValueError(f"{config_path} must contain a non-empty approvedModels string array")
     if len(models) != len(set(models)):
-        raise ValueError(f"{config_path} contains duplicate tested model IDs")
+        raise ValueError(f"{config_path} contains duplicate approved model IDs")
     return models
+
+
+# Kept for callers that predate the approved/validated distinction.
+load_required_models = load_approved_models
 
 
 def pair_id(model_id: str, accelerator: str) -> str:

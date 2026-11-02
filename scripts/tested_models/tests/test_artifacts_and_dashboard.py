@@ -10,53 +10,162 @@ import pytest
 import validate_artifacts
 
 
-def test_registry_build_and_artifact_validation_require_complete_bundle(tmp_path, monkeypatch) -> None:
+def _write_labeled_pair(labeled_dir, pair: str, *, records: int = 600) -> None:
+    labeled_dir.mkdir(parents=True, exist_ok=True)
+    levels = (1, 2, 4, 8, 16)
+    frame = pd.DataFrame(
+        {
+            "concurrency": [levels[index % len(levels)] for index in range(records)],
+            "output_tok/sec": [float(index % 100) for index in range(records)],
+            "request_latency_median": [float(index % 50) for index in range(records)],
+            "label_knee": [index % 10 == 0 for index in range(records)],
+            "within_tested_region": [index % 3 != 0 for index in range(records)],
+            "backend_version": ["vLLM-0.10.2" for _ in range(records)],
+        }
+    )
+    for split, part in (("train", frame.iloc[:400]), ("validation", frame.iloc[400:500]), ("test", frame.iloc[500:])):
+        part.to_parquet(labeled_dir / f"{pair}.{split}.parquet", index=False)
+
+
+def _write_artifacts(model_dir, triton_dir, dashboard_dir, pair: str, report_entry: dict) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    report_path = model_dir / "training-report.json"
+    report = json.loads(report_path.read_text()) if report_path.exists() else {"pairs": {}}
+    report["pairs"][pair] = report_entry
+    report_path.write_text(json.dumps(report))
+    (model_dir / f"{pair}.json").write_text("{}")
+    (model_dir / f"{pair}.metadata.json").write_text("{}")
+    (triton_dir / pair / "1").mkdir(parents=True, exist_ok=True)
+    (triton_dir / pair / "1" / "xgboost.json").write_text("{}")
+    (triton_dir / pair / "config.pbtxt").write_text(
+        'backend: "fil"\ninput [ { dims: [ 1 ] } ]\nparameters: { key: "is_classifier" value: { string_value: "true" } }'
+    )
+    dashboard_dir.mkdir(parents=True, exist_ok=True)
+    (dashboard_dir / f"{pair}.json").write_text("{}")
+
+
+def _run_validator(registry_dir) -> int:
+    sys.argv = [
+        "validate_artifacts.py",
+        "--registry",
+        str(registry_dir / "registry.json"),
+        "--triton-dir",
+        str(registry_dir / "triton"),
+    ]
+    return validate_artifacts.main()
+
+
+def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp_path) -> None:
+    validated_pair = "model__h200"
+    weak_pair = "model__b200"
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"pairs": [{"id": "model__h200", "model_id": "model", "accelerator": "H200"}]}))
+    manifest.write_text(json.dumps({"pairs": [
+        {"id": validated_pair, "model_id": "model", "accelerator": "H200", "records": 600},
+        {"id": weak_pair, "model_id": "model", "accelerator": "B200", "records": 600},
+    ]}))
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"approvedModels": ["model", "approved-only"]}))
+    labeled_dir = tmp_path / "labeled"
+    _write_labeled_pair(labeled_dir, validated_pair)
+    _write_labeled_pair(labeled_dir, weak_pair)
     model_dir = tmp_path / "models"
     triton_dir = tmp_path / "triton"
     dashboard_dir = tmp_path / "dashboard"
-    model_dir.mkdir()
-    (model_dir / "training-report.json").write_text(
-        json.dumps(
-            {
-                "pairs": {
-                    "model__h200": {
-                        "status": "trained",
-                        "model_format": "xgboost-json",
-                        "feature_schema": {"feature_names": ["tp"]},
-                    }
-                }
-            }
-        )
-    )
-    (model_dir / "model__h200.json").write_text("{}")
-    (model_dir / "model__h200.metadata.json").write_text("{}")
-    (triton_dir / "model__h200" / "1").mkdir(parents=True)
-    (triton_dir / "model__h200" / "1" / "xgboost.json").write_text("{}")
-    (triton_dir / "model__h200" / "config.pbtxt").write_text('backend: "fil"\ninput [ { dims: [ 1 ] } ]\nparameters: { key: "is_classifier" value: { string_value: "true" } }')
-    dashboard_dir.mkdir()
-    (dashboard_dir / "model__h200.json").write_text("{}")
+    _write_artifacts(model_dir, triton_dir, dashboard_dir, validated_pair, {
+        "status": "trained",
+        "model_format": "xgboost-json",
+        "feature_schema": {"feature_names": ["tp"]},
+        "validation": {"roc_auc": 0.91, "f1": 0.72},
+        "test": {"roc_auc": 0.88, "f1": 0.66},
+    })
+    _write_artifacts(model_dir, triton_dir, dashboard_dir, weak_pair, {
+        "status": "trained",
+        "model_format": "xgboost-json",
+        "feature_schema": {"feature_names": ["tp"]},
+        "test": {"roc_auc": 0.27, "f1": 0.0},
+    })
 
     registry_dir = tmp_path / "registry"
-    registry = build_registry.build_registry(manifest, model_dir, triton_dir, registry_dir, dashboard_dir)
-    assert registry["pairs"][0]["systemId"] == "h200_sxm"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "validate_artifacts.py",
-            "--registry",
-            str(registry_dir / "registry.json"),
-            "--triton-dir",
-            str(registry_dir / "triton"),
-        ],
+    registry = build_registry.build_registry(
+        manifest, model_dir, triton_dir, registry_dir, dashboard_dir,
+        labeled_dir=labeled_dir, config_path=config,
     )
-    assert validate_artifacts.main() == 0
 
-    (registry_dir / "triton" / "model__h200" / "config.pbtxt").unlink()
+    assert registry["schemaVersion"] == 2
+    assert registry["gate"] == {
+        "minRecords": 100,
+        "minTestAuc": 0.70,
+        "minTestF1": 0.30,
+        "minConcurrencyLevels": 5,
+    }
+    assert registry["approvedModels"] == ["model", "approved-only"]
+    by_id = {pair["id"]: pair for pair in registry["pairs"]}
+    assert by_id[validated_pair]["status"] == "validated"
+    assert by_id[validated_pair]["coverage"]["records"] == 600
+    assert by_id[validated_pair]["coverage"]["concurrencyLevelCount"] == 5
+    assert by_id[validated_pair]["coverage"]["backendVersions"] == ["vLLM-0.10.2"]
+    assert by_id[weak_pair]["status"] == "measured_no_envelope"
+    assert by_id[weak_pair]["diagnostics"]["reasons"] == ["test_auc_below_minimum", "test_f1_below_minimum"]
+    assert "classifier" not in by_id[weak_pair]
+    assert (registry_dir / "triton" / validated_pair).is_dir()
+    assert not (registry_dir / "triton" / weak_pair).exists()
+
+    assert _run_validator(registry_dir) == 0
+
+    # A validated pair stays strict about its Triton artifact.
+    (registry_dir / "triton" / validated_pair / "config.pbtxt").unlink()
     with pytest.raises(FileNotFoundError):
-        validate_artifacts.main()
+        _run_validator(registry_dir)
+
+
+def test_registry_keeps_pairs_that_were_never_trained(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200", "records": 20}]}))
+    labeled_dir = tmp_path / "labeled"
+    _write_labeled_pair(labeled_dir, pair, records=20)
+    model_dir = tmp_path / "models"
+    triton_dir = tmp_path / "triton"
+    dashboard_dir = tmp_path / "dashboard"
+    _write_artifacts(model_dir, triton_dir, dashboard_dir, pair, {"status": "skipped_insufficient_groups"})
+
+    registry_dir = tmp_path / "registry"
+    registry = build_registry.build_registry(
+        manifest, model_dir, triton_dir, registry_dir, dashboard_dir, labeled_dir=labeled_dir,
+    )
+
+    entry = registry["pairs"][0]
+    assert entry["status"] == "measured_no_envelope"
+    assert entry["diagnostics"]["trainingStatus"] == "skipped_insufficient_groups"
+    assert entry["diagnostics"]["reasons"] == [
+        "classifier_not_trained",
+        "records_below_minimum",
+        "test_auc_unavailable",
+        "test_f1_unavailable",
+    ]
+    assert _run_validator(registry_dir) == 0
+
+
+def test_validator_rejects_measured_pairs_that_expose_a_classifier(tmp_path) -> None:
+    pair = "model__h200"
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    (registry_dir / "registry.json").write_text(json.dumps({
+        "schemaVersion": 2,
+        "gate": {"minRecords": 100, "minTestAuc": 0.7, "minTestF1": 0.3, "minConcurrencyLevels": 5},
+        "approvedModels": ["model"],
+        "pairs": [{
+            "id": pair,
+            "modelId": "model",
+            "systemId": "h200_sxm",
+            "status": "measured_no_envelope",
+            "coverage": {"records": 10, "concurrencyLevelCount": 1},
+            "classifier": "xgboost",
+        }],
+    }))
+
+    with pytest.raises(ValueError, match="exposes classifier artifacts"):
+        _run_validator(registry_dir)
 
 
 def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkeypatch) -> None:
@@ -98,4 +207,29 @@ def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkey
     assert "runtime_args" not in serialized
     assert "secret.invalid" not in serialized
     assert payload["records"] == 6
+    assert payload["hasEnvelope"] is True
     assert payload["labelDistribution"] == {"within": 3, "outside": 3}
+    assert payload["featureImportance"] == [{"feature": "tp", "importance": 1.0}]
+
+
+def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200"}]}))
+    labeled_dir = tmp_path / "labeled"
+    model_dir = tmp_path / "models"
+    labeled_dir.mkdir()
+    model_dir.mkdir()
+    frame = pd.DataFrame([{"concurrency": 1, "within_tested_region": 1}])
+    for split in ("train", "validation", "test"):
+        frame.to_parquet(labeled_dir / f"{pair}.{split}.parquet", index=False)
+    (model_dir / f"{pair}.metadata.json").write_text(json.dumps({"status": "skipped_single_class_train"}))
+
+    output_dir = tmp_path / "dashboard"
+    assert build_dashboard.build_dashboard(manifest, labeled_dir, model_dir, output_dir) == 1
+
+    payload = json.loads((output_dir / f"{pair}.json").read_text())
+    assert payload["hasEnvelope"] is False
+    assert payload["trainingStatus"] == "skipped_single_class_train"
+    assert payload["featureImportance"] == []
+    assert payload["records"] == 3
