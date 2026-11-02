@@ -176,16 +176,28 @@ def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkey
     model_dir = tmp_path / "models"
     labeled_dir.mkdir()
     model_dir.mkdir()
-    frame = pd.DataFrame(
-        [
-            {"concurrency": 1, "output_tok/sec": 10, "request_latency_median": 2, "label_knee": 0, "within_tested_region": 1, "runtime_args": "https://secret.invalid"},
-            {"concurrency": 2, "output_tok/sec": 20, "request_latency_median": 3, "label_knee": 1, "within_tested_region": 0, "runtime_args": "secret"},
-        ]
-    )
+    levels = (1, 2, 4, 8, 16)
+    rows = [
+        {
+            "concurrency": levels[index % len(levels)],
+            "output_tok/sec": float(index % 100),
+            "request_latency_median": float(index % 50),
+            "label_knee": index % 10 == 0,
+            "within_tested_region": index % 3 != 0,
+            "runtime_args": "https://secret.invalid",
+        }
+        for index in range(120)
+    ]
+    frame = pd.DataFrame(rows)
     for split in ("train", "validation", "test"):
         frame.to_parquet(labeled_dir / f"{pair}.{split}.parquet", index=False)
     (model_dir / f"{pair}.metadata.json").write_text(
-        json.dumps({"status": "trained", "feature_schema": {"feature_names": ["tp"]}, "validation": {}, "test": {}})
+        json.dumps({
+            "status": "trained",
+            "feature_schema": {"feature_names": ["tp"]},
+            "validation": {"roc_auc": 0.9, "f1": 0.75},
+            "test": {"roc_auc": 0.88, "f1": 0.7},
+        })
     )
     (model_dir / f"{pair}.json").write_text("{}")
 
@@ -206,10 +218,45 @@ def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkey
     serialized = json.dumps(payload)
     assert "runtime_args" not in serialized
     assert "secret.invalid" not in serialized
-    assert payload["records"] == 6
+    assert payload["records"] == 360
     assert payload["hasEnvelope"] is True
-    assert payload["labelDistribution"] == {"within": 3, "outside": 3}
+    assert payload["labelDistribution"] == {"within": 240, "outside": 120}
     assert payload["featureImportance"] == [{"feature": "tp", "importance": 1.0}]
+    assert payload["test"] == {"roc_auc": 0.88, "f1": 0.7}
+
+
+def test_dashboard_hides_classifier_evidence_for_gate_failing_pairs(tmp_path, monkeypatch) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200", "records": 600}]}))
+    labeled_dir = tmp_path / "labeled"
+    model_dir = tmp_path / "models"
+    _write_labeled_pair(labeled_dir, pair)
+    model_dir.mkdir(parents=True)
+    (model_dir / f"{pair}.metadata.json").write_text(
+        json.dumps({
+            "status": "trained",
+            "feature_schema": {"feature_names": ["tp"]},
+            "validation": {"roc_auc": 0.55, "f1": 0.2},
+            "test": {"roc_auc": 0.52, "f1": 0.18},
+        })
+    )
+    (model_dir / f"{pair}.json").write_text("{}")
+
+    class _UnexpectedModel:
+        def __init__(self) -> None:
+            raise AssertionError("a gate-failing pair must not load its classifier")
+
+    monkeypatch.setattr(build_dashboard, "XGBClassifier", _UnexpectedModel)
+    output_dir = tmp_path / "dashboard"
+    assert build_dashboard.build_dashboard(manifest, labeled_dir, model_dir, output_dir) == 1
+
+    payload = json.loads((output_dir / f"{pair}.json").read_text())
+    assert payload["hasEnvelope"] is False
+    assert "validation" not in payload
+    assert "test" not in payload
+    assert payload["featureImportance"] == []
+    assert payload["throughputLatencyByConcurrency"]
 
 
 def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -> None:

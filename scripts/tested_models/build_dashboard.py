@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-from build_registry import system_id
+from build_registry import coverage_for, evaluate_gate, system_id
 from xgboost import XGBClassifier
 
 
@@ -62,7 +62,8 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
         metadata_path = model_dir / f"{pair_id}.metadata.json"
         model_path = model_dir / f"{pair_id}.json"
         metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
-        has_envelope = metadata.get("status") == "trained" and model_path.exists()
+        coverage = coverage_for(pair_id, labeled_dir, int(pair.get("records", len(frame))))
+        validated = evaluate_gate(metadata, coverage)["passed"]
 
         throughput = pd.to_numeric(frame.get("output_tok/sec"), errors="coerce")
         latency = pd.to_numeric(frame.get("request_latency_median"), errors="coerce")
@@ -88,18 +89,19 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
             "modelId": pair["model_id"],
             "systemId": system_id(pair["accelerator"]),
             "records": len(frame),
-            "hasEnvelope": has_envelope,
+            "hasEnvelope": validated,
             "trainingStatus": metadata.get("status", "not_trained"),
             "labelDistribution": {
                 "within": within,
                 "outside": len(frame) - within,
             },
-            "validation": metadata.get("validation"),
-            "test": metadata.get("test"),
             "throughputLatencyByConcurrency": sorted(curves, key=lambda item: item["concurrency"]),
             "kneePoints": knees[:100],
-            "featureImportance": _feature_importance(metadata, model_path) if has_envelope else [],
+            "featureImportance": _feature_importance(metadata, model_path) if validated else [],
         }
+        if validated:
+            payload["validation"] = metadata.get("validation")
+            payload["test"] = metadata.get("test")
         (output_dir / f"{pair_id}.json").write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n")
         generated += 1
     print(f"wrote {generated} dashboard payloads to {output_dir}")
