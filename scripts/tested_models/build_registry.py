@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,11 +103,11 @@ def evaluate_gate(report_entry: dict, coverage: dict) -> dict:
 
     if coverage["records"] < GATE_MIN_RECORDS:
         reasons.append("records_below_minimum")
-    if auc is None:
+    if auc is None or not math.isfinite(auc):
         reasons.append("test_auc_unavailable")
     elif auc < GATE_MIN_TEST_AUC:
         reasons.append("test_auc_below_minimum")
-    if f1 is None:
+    if f1 is None or not math.isfinite(f1):
         reasons.append("test_f1_unavailable")
     elif f1 < GATE_MIN_TEST_F1:
         reasons.append("test_f1_below_minimum")
@@ -195,7 +196,9 @@ def build_registry(
         "pairs": registry_pairs,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "registry.json").write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n")
+    (output_dir / "registry.json").write_text(
+        json.dumps(registry, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    )
     return registry
 
 

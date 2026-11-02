@@ -280,3 +280,26 @@ def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -
     assert payload["trainingStatus"] == "skipped_single_class_train"
     assert payload["featureImportance"] == []
     assert payload["records"] == 3
+
+
+def test_gate_rejects_non_finite_metrics() -> None:
+    coverage = {
+        "records": 600,
+        "concurrencyLevels": [1, 2, 4, 8, 16],
+        "concurrencyLevelCount": 5,
+        "backendVersions": ["vLLM-0.10.2"],
+    }
+    for non_finite in (float("nan"), float("inf"), float("-inf")):
+        gate = build_registry.evaluate_gate(
+            {"status": "trained", "test": {"roc_auc": non_finite, "f1": 0.9}},
+            coverage,
+        )
+        assert gate["passed"] is False
+        assert "test_auc_unavailable" in gate["reasons"]
+
+        gate = build_registry.evaluate_gate(
+            {"status": "trained", "test": {"roc_auc": 0.9, "f1": non_finite}},
+            coverage,
+        )
+        assert gate["passed"] is False
+        assert "test_f1_unavailable" in gate["reasons"]
