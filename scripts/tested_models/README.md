@@ -63,10 +63,10 @@ consumes the resulting pinned public Hugging Face dataset revision.
 
 The repeatable GitHub workflow is `.github/workflows/tested-models.yml`. It
 downloads a pinned revision of the public
-`redhat-performance/configiq-performance-data` Hugging Face dataset, generates
-all artifacts, and uploads only the sanitized registry/Triton/dashboard bundle.
-Raw parquet, split data, source identifiers, and training work files are not
-uploaded by the workflow.
+`redhat-performance/configiq-performance-upstream-data` Hugging Face dataset,
+generates all artifacts, and uploads only the sanitized registry/Triton/dashboard
+bundle. Raw parquet, split data, source identifiers, and training work files are
+not uploaded by the workflow.
 
 To publish a new sanitized ground-truth revision after running extraction from
 the approved source environment:
@@ -101,6 +101,14 @@ groups are assigned as a unit, so repeated measurements cannot cross splits.
 Label thresholds and statistics are fitted from training rows only. Model
 selection uses validation rows; the test metrics are computed once after
 selection. Pairs with a single training class are reported and skipped.
+
+`build_registry.py` emits schema v2 with an explicit validation gate: at least
+100 records, five concurrency levels, test ROC-AUC >= 0.70, and test F1 >= 0.30.
+A passing pair is `validated` and gets its Triton artifacts copied into the
+bundle. A failing or untrained pair is `measured_no_envelope`: it keeps its
+dashboard payload and coverage metadata but exposes no classifier artifacts and
+must never emit a verdict. `validate_artifacts.py` enforces both contracts and
+also accepts legacy schema-v1 registries during rollout.
 
 The feature schema is recorded in each metadata file, including categorical
 vocabularies, numeric medians, feature order, and the 0.50/0.85 decision
