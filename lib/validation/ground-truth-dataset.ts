@@ -197,16 +197,24 @@ export async function getGroundTruthDataset(refresh = false): Promise<DatasetCac
   if (!forceRefresh && cachedDataset && cachedDataset.expiresAt > Date.now()) return cachedDataset
   if (inFlightDataset) return inFlightDataset
 
-  inFlightDataset = loadDataset(forceRefresh)
+  // The fallback lives inside the shared promise so concurrent callers receive
+  // it too, rather than only the caller that started the load.
+  const pending = loadDataset(forceRefresh).then(
+    loaded => {
+      cachedDataset = loaded
+      return loaded
+    },
+    (error: unknown) => {
+      // A failed reload must not turn a working dataset into an outage.
+      if (cachedDataset) return cachedDataset
+      throw error
+    },
+  )
+  inFlightDataset = pending
   try {
-    cachedDataset = await inFlightDataset
-    return cachedDataset
-  } catch (error) {
-    // A failed reload must not turn a working dataset into an outage.
-    if (cachedDataset) return cachedDataset
-    throw error
+    return await pending
   } finally {
-    inFlightDataset = null
+    if (inFlightDataset === pending) inFlightDataset = null
   }
 }
 
