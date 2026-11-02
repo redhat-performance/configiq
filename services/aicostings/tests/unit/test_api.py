@@ -2,10 +2,13 @@
 
 """Tests for the FastAPI endpoints."""
 
+from unittest.mock import patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from tools.api_service.app import app, store
+from tools.api_service.app import app, job_scrape_models, store
+from tools.api_service.scrapers.models import LITELLM_URL, _parse_openrouter_model
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +46,44 @@ def seed_data():
 
 
 class TestGetModels:
+    @pytest.mark.asyncio
+    async def test_checkpoint_metadata_survives_collection_storage_and_source_selection(self):
+        offer = _parse_openrouter_model({
+            "id": "qwen/qwen3-coder", "name": "Qwen3 Coder",
+            "hugging_face_id": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+            "pricing": {"prompt": "0.000003", "completion": "0.000015"},
+        })
+        with (
+            patch("tools.api_service.scrapers.models.fetch_openrouter_models", return_value=[offer]),
+            patch("tools.api_service.scrapers.models.fetch_litellm_models", return_value=[]),
+            patch("tools.api_service.scrapers.models.load_curated_overrides", return_value=[{
+                "id": offer["id"], "price_per_m_input": 2,
+            }]),
+        ):
+            await job_scrape_models()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for source, input_rate in [("openrouter", 3), ("merged", 2)]:
+                result = (await client.get(f"/models?source={source}")).json()["models"][0]
+                assert result["hugging_face_id"] == offer["hugging_face_id"]
+                assert result["id"] == offer["id"]
+                assert result["price_per_m_input"] == input_rate
+
+    @pytest.mark.asyncio
+    async def test_failed_collection_keeps_last_good_source_and_records_error(self):
+        previous = [{"id": "provider/model", "price_per_m_input": 1}]
+        store.set_models(previous, source="litellm")
+        store._mark_scrape("models.litellm")
+        last_success = store.get_scrape_times()["models.litellm"]
+        with (
+            patch("tools.api_service.scrapers.models.fetch_litellm_models", side_effect=RuntimeError("bad feed")),
+            patch("tools.api_service.scrapers.models.fetch_openrouter_models", return_value=[]),
+            patch("tools.api_service.scrapers.models.load_curated_overrides", return_value=[]),
+        ):
+            await job_scrape_models()
+        assert store.get_models("litellm") == previous
+        assert store.get_scrape_times()["models.litellm"] == last_success
+        assert store.get_scrape_errors()["models.litellm"]["message"] == "bad feed"
+
     @pytest.mark.asyncio
     async def test_returns_models(self, seed_data):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -129,7 +170,8 @@ class TestGetSources:
         by_id = {s["id"]: s for s in sources}
         assert by_id["merged"]["url"] is None
         assert by_id["openrouter"]["url"]  # real feeds carry their scrape URL
-        assert by_id["litellm"]["url"]
+        assert by_id["litellm"]["url"] == LITELLM_URL
+        assert "raw.githubusercontent.com/BerriAI/litellm/" in LITELLM_URL
 
     @pytest.mark.asyncio
     async def test_ids_match_accepted_model_sources(self):
