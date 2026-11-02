@@ -441,14 +441,6 @@ export default function GroundTruthComparisonPage() {
       const catalogModelSpec = modelSpecs.get(filters.model)
       let modelConfig: Record<string, unknown> | null = null
       if (!modelOptions.includes(filters.model) || !catalogModelSpec) {
-        if (filters.model.startsWith('InferenceX/')) {
-          setNotice({
-            variant: 'warning',
-            title: 'InferenceX measurements loaded',
-            message: 'This InferenceX model has no verified AISimulators model mapping yet. Its measured results are available below.',
-          })
-          return
-        }
         try {
           const configResponse = await fetch(`/api/hf-config?model=${encodeURIComponent(filters.model)}`)
           const configData = await configResponse.json() as { config?: Record<string, unknown>; message?: string }
