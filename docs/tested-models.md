@@ -29,11 +29,16 @@ The deployment-owned `qwen3_8b` model is a fallback and is normally unloaded.
 
 ## Data boundary
 
-Ground-truth extraction runs only from an approved environment. The source
-endpoint is supplied through `PERF_DATA_API_URL` and is never written to the
-published artifacts. Extraction removes run IDs, UUIDs, MLflow identifiers,
-timestamps, raw runtime arguments, and other administrative fields before
-publication.
+Ground-truth extraction runs only from an approved environment. The legacy API
+extractor receives its source endpoint through `PERF_DATA_API_URL`; the GitHub
+publisher reads the approved S3 aggregate with an OIDC read-only role. Neither
+source location is written to published artifacts. Extraction removes run IDs,
+UUIDs, MLflow identifiers, timestamps, raw runtime arguments, and other
+administrative fields before publication. The S3 importer includes only models
+in `public/config.json`'s `testedModels` list and rows whose `version` is a
+plain upstream vLLM release label such as `vLLM-0.24.0`. Other labels,
+including RHAIIS releases, stay out of the public dataset. The publisher
+checks this rule again before uploading any Parquet files.
 
 The scheduled GitHub Actions workflow consumes a pinned revision of the public
 `redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.
@@ -54,13 +59,39 @@ list of tested models. Tested-model status currently comes from the
 `testedModels` array in `public/config.json`; the registry is being extended to
 carry measured-without-envelope and approved-without-data states as well.
 
-The workflow reads the repository variable `TESTED_DATASET_REPO` when it is set,
+The bundle-building workflow reads the repository variable `TESTED_DATASET_REPO` when it is set,
 and otherwise falls back to the dataset above. Set it to move the pipeline to a
 renamed or republished dataset without a code change.
+
+It uses the pinned GitHub variable `TESTED_DATASET_REVISION`; publishing a new
+Hugging Face revision does not advance that training input automatically.
 
 ## Production workflow
 
 ### 1. Publish ground truth
+
+The GitHub workflow `.github/workflows/publish-performance-data.yml` downloads
+the aggregate, prepares sanitized Parquet pairs, and compares their content
+with the Hugging Face dataset on `main`. The comparison uses the same
+short-lived, repository-scoped Hugging Face credentials as publishing. It runs at 00:00 Monday in
+`America/New_York` on the default branch, or manually through
+`workflow_dispatch`. Scheduled publishing requires the GitHub repository
+variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
+only prepare and compare. A manual run on `main` publishes only when its
+`publish` input is selected. Unchanged content is never uploaded.
+If the aggregate omits a pair already on Hugging Face, the publish step stops
+instead of deleting it. Intentional pair removal requires a reviewed run of
+the publisher with the `--allow-removal` option.
+
+Hugging Face publishing requires a Trusted Publisher on
+`redhat-performance/configiq-performance-upstream-data`,
+restricted to `redhat-performance/configiq`, branch `main`, and workflow
+`publish-performance-data.yml`. No persistent Hugging Face token is stored in
+GitHub. The AWS read-only role must trust the repository's OIDC subject for
+`main`.
+
+The earlier API extraction path remains available from an approved data
+environment:
 
 From the approved data environment, extract and publish a sanitized dataset:
 
@@ -76,6 +107,29 @@ Set the resulting Hugging Face revision as the GitHub repository variable
 `TESTED_DATASET_REVISION`. If the data is published to a repository other than
 the default one above, set `TESTED_DATASET_REPO` as well. Do not commit the
 dataset or its source credentials.
+
+### Refresh the private InferenceX comparison snapshot
+
+The same Monday 00:00 `America/New_York` workflow has an independent job that
+collects published InferenceX single-turn 8k/1k measurements for verified
+models in `public/config.json`'s `testedModels` list. It updates
+`redhat-performance/configiq-inferencex-comparison` only when the normalized
+measurements change. The publisher refuses to upload if the dataset is not
+private. The S3 and InferenceX jobs can succeed or fail independently.
+
+Scheduled InferenceX publishing requires the GitHub repository variable
+`INFERENCEX_PUBLISH_ENABLED=true`. A manual run on `main` refreshes this dataset
+only when the separate `publish_inferencex` input is selected. Configure a
+write-enabled Hugging Face Trusted Publisher on the private dataset for
+`redhat-performance/configiq`, `refs/heads/main`, and
+`.github/workflows/publish-performance-data.yml`. Its OIDC token is scoped to
+that dataset; the InferenceX API's published read endpoints need no API key.
+When deployed, the comparison application uses a separate server-side read
+token to load the private dataset.
+
+SemiAnalysis InferenceX approved the proposed private storage, public display,
+and weekly refresh with attribution in
+[issue #4655](https://github.com/SemiAnalysisAI/InferenceX/issues/4655#issuecomment-6507892332).
 
 ### 2. Build and validate the bundle
 

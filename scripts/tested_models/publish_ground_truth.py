@@ -14,10 +14,11 @@ from dataset_common import (
     DATASET_REPO_ENV,
     DEFAULT_DATASET_REPO,
     file_sha256,
+    is_upstream_vllm_version,
     resolve_dataset_repo_id,
     validate_public_frame,
 )
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, hf_hub_download
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -38,6 +39,7 @@ pretty_name: ConfigIQ tested-model performance data
 
 Sanitized aggregate GuideLLM measurements used to train and assess ConfigIQ's
 model/hardware performance-envelope classifiers.
+Only rows labeled with plain upstream vLLM release versions are included.
 
 - Model/hardware pairs: {pair_count}
 - Aggregate benchmark rows: {row_count}
@@ -76,7 +78,23 @@ def parse_args() -> argparse.Namespace:
         help=f"Dataset repository; defaults to ${DATASET_REPO_ENV}, then {DEFAULT_DATASET_REPO}.",
     )
     parser.add_argument("--revision", default=None, help="Optional branch or tag to update; defaults to the repository default branch.")
+    parser.add_argument("--check-only", action="store_true", help="Compare prepared data with Hugging Face without uploading.")
+    parser.add_argument(
+        "--allow-removal",
+        action="store_true",
+        help="Allow an upload to remove model/hardware pairs absent from the prepared data.",
+    )
     return parser.parse_args()
+
+
+def _content_signature(manifest: dict) -> list[tuple[str, int, tuple[str, ...], str | None]]:
+    return sorted(
+        (
+            pair["id"], pair["records"], tuple(pair["columns"]),
+            pair.get("data_sha256"),
+        )
+        for pair in manifest["pairs"]
+    )
 
 
 def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
@@ -112,6 +130,12 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
             raise FileNotFoundError(source_path)
         frame = pd.read_parquet(source_path)
         validate_public_frame(frame)
+        if "version" not in frame or not frame["version"].map(is_upstream_vllm_version).all():
+            raise ValueError(f"pair {pair_id} contains a non-upstream vLLM version")
+        if "backend" not in frame or not frame["backend"].eq("vllm").fillna(False).all():
+            raise ValueError(f"pair {pair_id} contains a non-vLLM backend")
+        if "backend_version" not in frame or not frame["backend_version"].eq(frame["version"]).fillna(False).all():
+            raise ValueError(f"pair {pair_id} has a backend version that differs from its version")
         expected_records = pair.get("records")
         if expected_records is not None and expected_records != len(frame):
             raise ValueError(f"pair {pair_id} row count does not match its manifest")
@@ -153,13 +177,41 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
     return manifest
 
 
+def _missing_remote_pairs(local_manifest: dict, remote_manifest: dict) -> list[str]:
+    """List pairs that would be deleted by replacing the remote dataset."""
+    local_ids = {pair["id"] for pair in local_manifest["pairs"]}
+    remote_ids = {pair["id"] for pair in remote_manifest["pairs"]}
+    return sorted(remote_ids - local_ids)
+
+
 def main() -> int:
     args = parse_args()
     args.repo_id = resolve_dataset_repo_id(args.repo_id)
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
-    api.create_repo(args.repo_id, repo_type="dataset", private=False, exist_ok=True)
     parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision).sha
+    remote_manifest_path = hf_hub_download(
+        repo_id=args.repo_id,
+        repo_type="dataset",
+        filename="manifest.json",
+        revision=parent_commit,
+    )
+    remote_manifest = json.loads(Path(remote_manifest_path).read_text())
+    if _content_signature(manifest) == _content_signature(remote_manifest):
+        print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
+        return 0
+    missing = _missing_remote_pairs(manifest, remote_manifest)
+    if args.check_only:
+        if missing:
+            print(f"prepared data would remove remote pairs: {', '.join(missing)}")
+        print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
+        return 0
+    if missing and not args.allow_removal:
+        raise SystemExit(
+            "prepared data would remove pairs present in the remote dataset: "
+            f"{', '.join(missing)}. Restore the complete aggregate or pass --allow-removal "
+            "for an intentional removal."
+        )
     commit = api.upload_folder(
         repo_id=args.repo_id,
         repo_type="dataset",

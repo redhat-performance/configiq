@@ -37,6 +37,12 @@ CLASSIFICATION_COLUMNS = {
     "request_type", "spec_decoding", "precision", "weight_quantization", "kv_quantization",
     "moe_num_experts", "moe_top_k", "max_seq_len",
 }
+UPSTREAM_VLLM_VERSION_PATTERN = re.compile(r"vllm-\d+\.\d+\.\d+", re.IGNORECASE)
+
+
+def is_upstream_vllm_version(value: Any) -> bool:
+    """Only plain upstream vLLM release labels are safe for the public dataset."""
+    return isinstance(value, str) and bool(UPSTREAM_VLLM_VERSION_PATTERN.fullmatch(value.strip()))
 
 
 def resolve_dataset_repo_id(cli_value: str | None) -> str:

@@ -85,7 +85,7 @@ def test_main_downloads_from_resolved_repo_id(tmp_path, monkeypatch) -> None:
     assert captured["token"] is False
 
 
-def test_publish_uploads_to_resolved_repo_id(monkeypatch) -> None:
+def test_publish_uses_resolved_repo_id(monkeypatch) -> None:
     """A stale hardcoded repository ID would publish revisions the downloader cannot find."""
     captured: dict[str, object] = {}
 
@@ -93,7 +93,7 @@ def test_publish_uploads_to_resolved_repo_id(monkeypatch) -> None:
         pass
 
     class _FakeApi:
-        def create_repo(self, repo_id: str, **_: object) -> None:
+        def repo_info(self, repo_id: str, **_: object) -> None:
             captured["repo_id"] = repo_id
             raise _StopPublish
 
@@ -149,7 +149,10 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path) -> None:
     datasets = tmp_path / "datasets"
     output = tmp_path / "output"
     datasets.mkdir()
-    frame = pd.DataFrame([{"model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200"}])
+    frame = pd.DataFrame([{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
+    }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
     manifest.write_text(json.dumps({
         "schema_version": 1,
@@ -235,7 +238,10 @@ def test_publish_validates_all_pairs_before_replacing_output(tmp_path) -> None:
     output.mkdir()
     marker = output / "must-survive"
     marker.write_text("keep")
-    frame = pd.DataFrame([{"model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200"}])
+    frame = pd.DataFrame([{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
+    }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
     manifest.write_text(json.dumps({
         "schema_version": 1,
