@@ -5,6 +5,7 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   getGroundTruthDataset,
+  getInferenceXDataset,
   parseGroundTruthFilters,
   parseConfiguration,
   rowMatchesConfiguration,
@@ -25,16 +26,35 @@ export async function GET(request: NextRequest) {
   if (mode !== 'filters' && mode !== 'data') return failure('Unknown ground truth request mode', 400)
 
   try {
-    const dataset = await getGroundTruthDataset(searchParams.get('refresh') === 'true')
+    let groundTruth: Awaited<ReturnType<typeof getGroundTruthDataset>> | null = null
+    let groundTruthError: string | null = null
+    try {
+      groundTruth = await getGroundTruthDataset(searchParams.get('refresh') === 'true')
+    } catch (error) {
+      groundTruthError = error instanceof Error ? error.message : 'Hugging Face ground truth is unavailable'
+    }
+    let inferencex: Awaited<ReturnType<typeof getInferenceXDataset>> | null = null
+    let inferencexError: string | null = null
+    try {
+      inferencex = await getInferenceXDataset()
+    } catch (error) {
+      inferencexError = error instanceof Error ? error.message : 'Private InferenceX dataset is unavailable'
+    }
+    const inferencexRows = inferencex?.rows ?? []
+    if (!groundTruth && !inferencex) return failure(groundTruthError ?? inferencexError ?? 'No measured data is available', 502)
+    const combinedRows = [...(groundTruth?.rows ?? []), ...inferencexRows]
     const filters = parseGroundTruthFilters(searchParams)
 
     if (mode === 'filters') {
-      const matchingRows = filterRows(dataset.rows, filters)
+      const matchingRows = filterRows(combinedRows, filters)
       return NextResponse.json(
         {
           status: 'ok',
-          source: dataset.source,
-          options: getFilterOptions(dataset.rows, filters),
+          source: groundTruth?.source ?? null,
+          inferencexSource: inferencex?.source ?? null,
+          groundTruthError,
+          inferencexError,
+          options: getFilterOptions(combinedRows, filters),
           configurations: Object.values(filters).every(Boolean) ? getConfigurationOptions(matchingRows) : [],
         },
         { headers: { 'Cache-Control': 'no-store' } },
@@ -42,16 +62,20 @@ export async function GET(request: NextRequest) {
     }
 
     if (Object.values(filters).some(value => !value)) {
-      return failure('Choose an accelerator, model, version, input and output length, and tensor parallel size.', 400)
+      return failure('Choose an accelerator, model, serving backend and version, input and output length, and tensor parallel size.', 400)
     }
     const configuration = parseConfiguration(searchParams.get('configuration') ?? '')
     if (!configuration) return failure('Choose a benchmark runtime configuration before comparing.', 400)
 
-    const selectedRows = filterRows(dataset.rows, filters)
+    const internalRows = filterRows(groundTruth?.rows ?? [], filters)
       .filter(row => rowMatchesConfiguration(row, configuration))
-    if (selectedRows.length === 0) {
+    const selectedInferenceXRows = configuration.measurement_source === 'InferenceX'
+      ? filterRows(inferencexRows, filters).filter(row => rowMatchesConfiguration(row, configuration))
+      : []
+    if (internalRows.length === 0 && selectedInferenceXRows.length === 0) {
       return NextResponse.json(
-        { status: 'ok', source: dataset.source, matchedRows: 0, points: [] },
+        { status: 'ok', source: groundTruth?.source ?? null, inferencexSource: inferencex?.source ?? null,
+          matchedRows: 0, groundTruthPoints: [], inferencexPoints: [], inferencexRunUrl: null },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
@@ -59,9 +83,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         status: 'ok',
-        source: dataset.source,
-        matchedRows: selectedRows.length,
-        points: aggregateGroundTruthRows(selectedRows),
+        source: groundTruth?.source ?? null,
+        inferencexSource: inferencex?.source ?? null,
+        groundTruthError,
+        inferencexError,
+        matchedRows: internalRows.length + selectedInferenceXRows.length,
+        groundTruthPoints: aggregateGroundTruthRows(internalRows),
+        inferencexPoints: aggregateGroundTruthRows(selectedInferenceXRows),
+        inferencexRunUrl: selectedInferenceXRows[0]?.source_run_url ?? null,
+        inferencexDate: selectedInferenceXRows[0]?.measurement_date ?? null,
       },
       { headers: { 'Cache-Control': 'no-store' } },
     )

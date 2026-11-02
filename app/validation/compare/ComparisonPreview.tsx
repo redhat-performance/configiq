@@ -39,7 +39,7 @@ const metrics: MetricDefinition[] = [
   { key: 'requestLatencySeconds', title: 'Request latency', unit: 's', description: 'Measured median vs. predicted request latency', digits: 2 },
 ]
 
-const chartColors = { groundTruth: '#0066cc', estimate: '#009596' }
+const chartColors = { groundTruth: '#0066cc', inferencex: '#ec7a08', estimate: '#009596' }
 
 function numberValue(point: GroundTruthPoint | EstimatePoint, key: MetricKey): number | null {
   return point[key]
@@ -49,39 +49,51 @@ function formatValue(value: number | null, digits: number): string {
   return value === null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits })
 }
 
-function formatComparison(measured: number | null, estimate: number | null, digits: number): string {
-  if (measured === null) return '—'
-  if (estimate === null) return `${formatValue(measured, digits)} · no estimate`
-  const difference = measured === 0 ? null : ((estimate - measured) / Math.abs(measured)) * 100
-  const delta = difference === null ? '' : ` · ${difference >= 0 ? '+' : ''}${difference.toFixed(1)}%`
-  return `${formatValue(measured, digits)} → ${formatValue(estimate, digits)}${delta}`
+function formatComparison(internal: number | null, inferencex: number | null, estimate: number | null, digits: number, showDifference: boolean, predictionLabel: string): string {
+  const values = [
+    internal === null ? null : `GT ${formatValue(internal, digits)}`,
+    inferencex === null ? null : `InferenceX ${formatValue(inferencex, digits)}`,
+    estimate === null ? null : `${predictionLabel} ${formatValue(estimate, digits)}`,
+  ].filter((value): value is string => value !== null)
+  const baseline = internal ?? inferencex
+  if (showDifference && baseline !== null && baseline !== 0 && estimate !== null) {
+    const difference = ((estimate - baseline) / Math.abs(baseline)) * 100
+    values.push(`Δ vs ${internal === null ? 'InferenceX' : 'GT'} ${difference >= 0 ? '+' : ''}${difference.toFixed(1)}%`)
+  }
+  return values.join(' · ') || '—'
 }
 
 function ChartCard({
   metric,
   groundTruth,
+  inferencex,
   estimates,
   mounted,
   predictionLabel,
 }: {
   metric: MetricDefinition
   groundTruth: GroundTruthPoint[]
+  inferencex: GroundTruthPoint[]
   estimates: EstimatePoint[]
   mounted: boolean
   predictionLabel: string
 }) {
   const values = [
     ...groundTruth.map(point => numberValue(point, metric.key)),
+    ...inferencex.map(point => numberValue(point, metric.key)),
     ...estimates.map(point => numberValue(point, metric.key)),
   ].filter((value): value is number => value !== null && Number.isFinite(value))
   const max = values.length ? Math.max(...values) : 1
-  const concurrencyValues = [...new Set(groundTruth.map(point => point.concurrency))]
+  const concurrencyValues = [...new Set([...groundTruth, ...inferencex].map(point => point.concurrency))].sort((left, right) => left - right)
   const tickValues = concurrencyValues.length > 10
     ? concurrencyValues.filter((_, index) => index === 0 || index === concurrencyValues.length - 1 || index % Math.ceil(concurrencyValues.length / 8) === 0)
     : concurrencyValues
   const groundTruthData = groundTruth
-    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'Ground truth' }))
-    .filter((point): point is { x: number; y: number; series: 'Ground truth' } => point.y !== null)
+    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'Internal GT' }))
+    .filter((point): point is { x: number; y: number; series: string } => point.y !== null)
+  const inferencexData = inferencex
+    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'InferenceX' }))
+    .filter((point): point is { x: number; y: number; series: string } => point.y !== null)
   const estimateData = estimates
     .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: predictionLabel }))
     .filter((point): point is { x: number; y: number; series: string } => point.y !== null)
@@ -96,10 +108,10 @@ function ChartCard({
         <span className={styles.unit}>{metric.unit}</span>
       </div>
       <div className={styles.chartCanvas}>
-        {mounted && groundTruth.length > 0 ? (
+        {mounted && concurrencyValues.length > 0 ? (
           <Chart
             ariaTitle={`${metric.title} by concurrency`}
-            ariaDesc={`Ground truth and ${predictionLabel} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
+            ariaDesc={`Internal GT, InferenceX, and ${predictionLabel} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
             domain={{ x: [0, Math.max(...concurrencyValues) * 1.04], y: [0, max * 1.14] }}
             height={278}
             width={600}
@@ -108,7 +120,7 @@ function ChartCard({
               <ChartVoronoiContainer
                 radius={28}
                 mouseFollowTooltips={false}
-                voronoiBlacklist={['ground-truth-line', 'aisimulators-line']}
+                voronoiBlacklist={['ground-truth-line', 'inferencex-line', 'aisimulators-line']}
                 labels={({ datum }: { datum: { series: string; x: number; y: number | null } }) =>
                   `${datum.series} · concurrency ${datum.x}: ${formatValue(Number(datum.y), metric.digits)} ${metric.unit}`}
                 constrainToVisibleArea
@@ -139,51 +151,69 @@ function ChartCard({
               }}
             />
             <ChartGroup>
-              <ChartLine
+              {groundTruthData.length > 0 && <ChartLine
                 data={groundTruthData}
                 name="ground-truth-line"
                 style={{ data: { stroke: chartColors.groundTruth, strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' } }}
-              />
-              <ChartLine
+              />}
+              {inferencexData.length > 0 && <ChartLine
+                data={inferencexData}
+                name="inferencex-line"
+                style={{ data: { stroke: chartColors.inferencex, strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' } }}
+              />}
+              {estimateData.length > 0 && <ChartLine
                 data={estimateData}
                 name="aisimulators-line"
                 style={{ data: { stroke: chartColors.estimate, strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' } }}
-              />
+              />}
             </ChartGroup>
             <ChartGroup>
-              <ChartScatter
+              {groundTruthData.length > 0 && <ChartScatter
                 data={groundTruthData}
                 name="ground-truth-points"
                 size={({ active }) => active ? 6 : 4}
                 style={{ data: { fill: '#ffffff', stroke: chartColors.groundTruth, strokeWidth: 2 } }}
-              />
-              <ChartScatter
+              />}
+              {inferencexData.length > 0 && <ChartScatter
+                data={inferencexData}
+                name="inferencex-points"
+                size={({ active }) => active ? 6 : 4}
+                style={{ data: { fill: '#ffffff', stroke: chartColors.inferencex, strokeWidth: 2 } }}
+              />}
+              {estimateData.length > 0 && <ChartScatter
                 data={estimateData}
                 name="aisimulators-points"
                 size={({ active }) => active ? 6 : 4}
                 style={{ data: { fill: '#ffffff', stroke: chartColors.estimate, strokeWidth: 2 } }}
-              />
+              />}
             </ChartGroup>
           </Chart>
         ) : <div className={styles.chartPlaceholder} aria-hidden="true" />}
       </div>
-      <p className={styles.chartFoot}>{groundTruth.length} measured concurrency levels</p>
+      <p className={styles.chartFoot}>{concurrencyValues.length} measured concurrency levels</p>
     </article>
   )
 }
 
 export default function ComparisonPreview({
   groundTruth,
+  inferencex,
   estimates,
   predictionLabel,
+  showDifference,
 }: {
   groundTruth: GroundTruthPoint[]
+  inferencex: GroundTruthPoint[]
   estimates: EstimatePoint[]
   predictionLabel: string
+  showDifference: boolean
 }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
   const estimatesByConcurrency = new Map(estimates.map(point => [point.concurrency, point]))
+  const groundTruthByConcurrency = new Map(groundTruth.map(point => [point.concurrency, point]))
+  const inferencexByConcurrency = new Map(inferencex.map(point => [point.concurrency, point]))
+  const concurrencyValues = [...new Set([...groundTruth, ...inferencex].map(point => point.concurrency))].sort((left, right) => left - right)
 
   return (
     <>
@@ -193,17 +223,20 @@ export default function ComparisonPreview({
             key={metric.key}
             metric={metric}
             groundTruth={groundTruth}
+            inferencex={inferencex}
             estimates={estimates}
             mounted={mounted}
             predictionLabel={predictionLabel}
           />
         ))}
       </div>
-      {groundTruth.length > 0 && (
+      {concurrencyValues.length > 0 && (
         <section className={styles.details} aria-labelledby="comparison-details-heading">
           <div className={styles.detailsHead}>
             <h3 id="comparison-details-heading">Results by concurrency</h3>
-            <p>Each cell shows ground truth → {predictionLabel} and the relative difference.</p>
+            <p>{showDifference
+              ? `Each cell shows the selected measured source and ${predictionLabel} separately. The difference uses the selected measurement.`
+              : `Each cell shows the selected measured source and ${predictionLabel} separately. Percentage differences are hidden because the prediction backend or version differs from the measured run.`}</p>
           </div>
           <div className={styles.tableScroll}>
             <table className={styles.detailsTable}>
@@ -214,14 +247,18 @@ export default function ComparisonPreview({
                 </tr>
               </thead>
               <tbody>
-                {groundTruth.map(point => {
-                  const estimate = estimatesByConcurrency.get(point.concurrency)
+                {concurrencyValues.map(concurrency => {
+                  const internal = groundTruthByConcurrency.get(concurrency)
+                  const external = inferencexByConcurrency.get(concurrency)
+                  const estimate = estimatesByConcurrency.get(concurrency)
                   return (
-                    <tr key={point.concurrency}>
-                      <th scope="row">{point.concurrency.toLocaleString('en-US')}</th>
+                    <tr key={concurrency}>
+                      <th scope="row">{concurrency.toLocaleString('en-US')}</th>
                       {metrics.map(metric => (
                         <td key={metric.key}>
-                          {formatComparison(numberValue(point, metric.key), estimate ? numberValue(estimate, metric.key) : null, metric.digits)}
+                          {formatComparison(internal ? numberValue(internal, metric.key) : null,
+                            external ? numberValue(external, metric.key) : null,
+                            estimate ? numberValue(estimate, metric.key) : null, metric.digits, showDifference, predictionLabel)}
                         </td>
                       ))}
                     </tr>

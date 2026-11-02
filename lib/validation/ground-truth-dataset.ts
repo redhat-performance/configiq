@@ -1,4 +1,5 @@
 import { parquetReadObjects } from 'hyparquet'
+import appConfig from '../../public/config.json'
 import {
   GROUND_TRUTH_FILTER_KEYS,
   type ConfigurationOption,
@@ -17,8 +18,70 @@ const PARQUET_CONCURRENCY = 4
 const CACHE_TTL_MS = 5 * 60 * 1000
 /** Explicit refreshes are ignored until the cache is at least this old. */
 const MIN_REFRESH_INTERVAL_MS = 30 * 1000
+const INFERENCEX_DATASET_ID = 'redhat-performance/configiq-inferencex-comparison'
+const INFERENCEX_FILE_URL = `https://huggingface.co/datasets/${INFERENCEX_DATASET_ID}/resolve/main/inferencex-8k1k.json`
+
+interface InferenceXCache {
+  rows: DatasetRow[]
+  source: { url: string; retrievedAt: string; rowCount: number }
+  expiresAt: number
+}
+
+let cachedInferenceX: InferenceXCache | null = null
+let inFlightInferenceX: Promise<InferenceXCache> | null = null
+
+async function loadInferenceXDataset(): Promise<InferenceXCache> {
+  const token = process.env.INFERENCEX_HF_TOKEN
+  if (!token) throw new Error('Private InferenceX dataset access is not configured')
+  const response = await fetch(INFERENCEX_FILE_URL, {
+    headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(25_000),
+  })
+  if (!response.ok) throw new Error(`Private InferenceX dataset returned HTTP ${response.status}`)
+  const payload: unknown = await response.json()
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('Private InferenceX dataset has an invalid format')
+  }
+  const snapshot = payload as Record<string, unknown>
+  const rows = snapshot.rows
+  const testedModels = new Set(appConfig.testedModels)
+  if (!Array.isArray(rows) || rows.length === 0 || rows.some(row =>
+    !row || typeof row !== 'object' || Array.isArray(row)
+    || !testedModels.has((row as DatasetRow).model as string)
+    || (row as DatasetRow).benchmark_source !== 'inferencex'
+    || (row as DatasetRow).isl !== 8192 || (row as DatasetRow).osl !== 1024)) {
+    throw new Error('Private InferenceX dataset contains invalid or untested benchmark rows')
+  }
+  if (typeof snapshot.sourceUrl !== 'string' || typeof snapshot.retrievedAt !== 'string'
+    || !Number.isFinite(Date.parse(snapshot.retrievedAt))) {
+    throw new Error('Private InferenceX dataset is missing source metadata')
+  }
+  return {
+    rows: rows as DatasetRow[],
+    source: { url: snapshot.sourceUrl, retrievedAt: snapshot.retrievedAt, rowCount: rows.length },
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  }
+}
+
+export async function getInferenceXDataset(): Promise<InferenceXCache> {
+  if (cachedInferenceX && cachedInferenceX.expiresAt > Date.now()) return cachedInferenceX
+  if (inFlightInferenceX) return inFlightInferenceX
+  inFlightInferenceX = loadInferenceXDataset()
+  try {
+    cachedInferenceX = await inFlightInferenceX
+    return cachedInferenceX
+  } catch (error) {
+    if (cachedInferenceX) return cachedInferenceX
+    throw error
+  } finally {
+    inFlightInferenceX = null
+  }
+}
 
 const CONFIGURATION_FIELDS = [
+  'measurement_source',
+  'benchmark_version',
   'backend',
   'backend_version',
   'precision',
@@ -34,6 +97,9 @@ const CONFIGURATION_FIELDS = [
   'spec_decoding',
   'request_type',
   'turns',
+  'inferencex_topology',
+  'inferencex_curve',
+  'inferencex_offload',
 ] as const
 
 interface ParquetFile {
@@ -69,8 +135,36 @@ function normalizeValue(value: unknown): string | null {
   return null
 }
 
+const UNREPORTED_VERSION = 'Version not reported'
+
+function normalizeBackend(value: unknown): string | null {
+  return normalizeValue(value)?.toLowerCase() ?? null
+}
+
+export function normalizeBackendVersion(backend: unknown, value: unknown): string {
+  const version = normalizeValue(value)
+  if (!version) return UNREPORTED_VERSION
+  if (normalizeBackend(backend) === 'vllm') {
+    const release = /^(?:vllm[-\s]?)?v?(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)$/i.exec(version)
+    if (release) return `v${release[1]}`
+  }
+  return version
+}
+
+function filterValue(row: DatasetRow, key: GroundTruthFilterKey): string | null {
+  if (key === 'backend') return normalizeBackend(row.backend)
+  if (key === 'backendVersion') return normalizeBackendVersion(row.backend, row.backend_version)
+  return normalizeValue(row[key])
+}
+
 function configurationForRow(row: DatasetRow): DatasetConfiguration {
-  return Object.fromEntries(CONFIGURATION_FIELDS.map(field => [field, normalizeValue(row[field])])) as DatasetConfiguration
+  return Object.fromEntries(CONFIGURATION_FIELDS.map(field => {
+    if (field === 'measurement_source') return [field, row.benchmark_source === 'inferencex' ? 'InferenceX' : 'Internal GT']
+    if (field === 'benchmark_version') return [field, row.benchmark_source === 'inferencex' ? null : normalizeValue(row.version)]
+    if (field === 'backend') return [field, normalizeBackend(row.backend)]
+    if (field === 'backend_version') return [field, normalizeBackendVersion(row.backend, row.backend_version)]
+    return [field, normalizeValue(row[field])]
+  })) as DatasetConfiguration
 }
 
 function configurationKey(values: DatasetConfiguration): string {
@@ -79,10 +173,12 @@ function configurationKey(values: DatasetConfiguration): string {
 
 function configurationLabel(values: DatasetConfiguration): string {
   const labels: string[] = []
+  if (values.measurement_source) labels.push(values.measurement_source)
   const backend = values.backend?.replaceAll('-', ' ')
   if (backend) labels.push(backend)
   if (values.backend_version && values.backend_version !== values.backend) labels.push(values.backend_version)
   if (values.precision) labels.push(values.precision)
+  if (values.benchmark_version) labels.push(`benchmark ${values.benchmark_version}`)
   if (values.weight_quantization) labels.push(`weights ${values.weight_quantization}`)
   if (values.kv_quantization) labels.push(`KV ${values.kv_quantization}`)
   if (values.prefix_caching) labels.push(`prefix caching ${values.prefix_caching}`)
@@ -95,6 +191,9 @@ function configurationLabel(values: DatasetConfiguration): string {
   if (values.spec_decoding) labels.push(`speculative decoding ${values.spec_decoding}`)
   if (values.request_type) labels.push(values.request_type)
   if (values.turns) labels.push(`${values.turns} turns`)
+  if (values.inferencex_topology) labels.push(values.inferencex_topology)
+  if (values.inferencex_offload && values.inferencex_offload !== 'off') labels.push(`offload ${values.inferencex_offload}`)
+  if (values.inferencex_curve) labels.push(values.inferencex_curve)
   return labels.length ? labels.join(' · ') : 'Default benchmark configuration'
 }
 
@@ -227,14 +326,14 @@ export function parseGroundTruthFilters(searchParams: URLSearchParams): GroundTr
 export function filterRows(rows: DatasetRow[], filters: Partial<GroundTruthFilters>): DatasetRow[] {
   return rows.filter(row => GROUND_TRUTH_FILTER_KEYS.every(key => {
     const selected = filters[key]
-    return !selected || normalizeValue(row[key]) === selected
+    return !selected || filterValue(row, key) === selected
   }))
 }
 
 export function getFilterOptions(rows: DatasetRow[], filters: GroundTruthFilters): Record<GroundTruthFilterKey, string[]> {
   return Object.fromEntries(GROUND_TRUTH_FILTER_KEYS.map(key => {
     const matchingRows = filterRows(rows, { ...filters, [key]: '' })
-    const values = [...new Set(matchingRows.map(row => normalizeValue(row[key])).filter((value): value is string => value !== null))]
+    const values = [...new Set(matchingRows.map(row => filterValue(row, key)).filter((value): value is string => value !== null))]
     values.sort((left, right) => {
       const leftNumber = Number(left)
       const rightNumber = Number(right)

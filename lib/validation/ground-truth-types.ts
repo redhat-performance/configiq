@@ -1,7 +1,8 @@
 export const GROUND_TRUTH_FILTER_KEYS = [
   'accelerator',
   'model',
-  'version',
+  'backend',
+  'backendVersion',
   'isl',
   'osl',
   'tp',
@@ -12,6 +13,8 @@ export type GroundTruthFilters = Record<GroundTruthFilterKey, string>
 export type DatasetRow = Record<string, unknown>
 
 export interface DatasetConfiguration extends Record<string, string | null> {
+  measurement_source: string | null
+  benchmark_version: string | null
   backend: string | null
   backend_version: string | null
   precision: string | null
@@ -27,6 +30,9 @@ export interface DatasetConfiguration extends Record<string, string | null> {
   spec_decoding: string | null
   request_type: string | null
   turns: string | null
+  inferencex_topology: string | null
+  inferencex_curve: string | null
+  inferencex_offload: string | null
 }
 
 export interface DatasetSource {

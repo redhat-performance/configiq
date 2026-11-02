@@ -23,7 +23,7 @@ afterEach(() => {
 })
 
 const EMPTY_FILTERS: GroundTruthFilters = {
-  accelerator: '', model: '', version: '', isl: '', osl: '', tp: '',
+  accelerator: '', model: '', backend: '', backendVersion: '', isl: '', osl: '', tp: '',
 }
 
 function row(values: DatasetRow): DatasetRow {

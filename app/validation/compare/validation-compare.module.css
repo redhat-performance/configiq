@@ -52,6 +52,7 @@
   font-size: 12px;
   line-height: 1.4;
 }
+.sourceBadges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .sourceBadge a { color: var(--gc-link); font-weight: 600; }
 .sourceBadge span { color: var(--gc-text-2); }
 .notice { margin-bottom: 20px; }
@@ -95,19 +96,36 @@
 .field label {
   display: block;
   color: var(--gc-text-2);
-  font: 500 13px var(--gc-font-sans);
+  font: 600 12px/1.2 var(--gc-font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
   margin-bottom: 6px;
 }
-.field > div label {
-  margin-bottom: 0;
-  text-transform: none;
-  letter-spacing: normal;
-}
-.field :global(.pf-v6-c-form-control),
-.field :global(.pf-v6-c-menu-toggle),
-.field :global(.pf-c-form-control) {
+.field > div label { margin-bottom: 0; }
+.compareMenuToggle {
   min-height: 42px;
-  font-size: 14px;
+  height: 42px;
+  font: 400 14px var(--gc-font-sans);
+  text-align: left;
+}
+.selectedOption,
+.placeholderOption {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selectedOption { color: var(--gc-text); }
+.placeholderOption { color: var(--gc-text-2); }
+.compareSelectList {
+  max-height: 320px;
+  overflow-y: auto;
+  font: 400 14px/1.4 var(--gc-font-sans);
+}
+.compareSelectList :global(.pf-v6-c-menu__item-text) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .configurationField { grid-column: span 2; }
 .helperText { margin-top: 6px; font-size: 12px; }
@@ -128,6 +146,7 @@
 .predictGrid { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 16px; }
 .predictHeading { display: flex; align-items: center; gap: 10px; }
 .methodNote { font-size: 13px; color: var(--gc-text-2); }
+.methodNote a { color: var(--gc-link); }
 .filterFooter {
   align-items: center;
   border-top: 1px solid #d2d2d2;
@@ -158,6 +177,7 @@
   transform: translateX(-50%);
 }
 .groundTruthSwatch { border-color: #0066cc; color: #0066cc; }
+.inferencexSwatch { border-color: #ec7a08; color: #a34b00; }
 .aisimSwatch { border-color: #009596; color: #009596; }
 
 .chartGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
@@ -236,6 +256,7 @@
   .resultsHead,
   .filterFooter { flex-direction: column; align-items: flex-start; }
   .sourceBadge { width: 100%; }
+  .sourceBadges { width: 100%; }
   .filterGrid,
   .predictGrid { grid-template-columns: 1fr; }
   .configurationField { grid-column: auto; }
