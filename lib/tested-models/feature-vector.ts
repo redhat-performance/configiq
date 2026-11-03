@@ -36,11 +36,11 @@ const RUNTIME_TOKEN_PATTERN = new RegExp(
   `\\b(${Object.keys(RUNTIME_TOKEN_FAMILY)
     .sort((left, right) => right.length - left.length)
     .map(token => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('|')})-(\\d+(?:\\.\\d+)*)`,
+    .join('|')})-(\\d+)(?:\\.(\\d+))?`,
   'gi',
 )
 
-const BARE_VERSION_PATTERN = /^\s*(\d+(?:\.\d+)*)(?:[-._+]\S*)?\s*$/
+const BARE_VERSION_PATTERN = /^\s*(\d+)(?:\.(\d+))?(?:[-._+]\S*)?\s*$/
 
 /** Canonical runtime family for an already-resolved backend name. */
 export function backendFamily(value: string | null | undefined): string {
@@ -48,8 +48,12 @@ export function backendFamily(value: string | null | undefined): string {
   return text in RUNTIME_FAMILY_LABEL ? text : 'unknown'
 }
 
-function versionFamily(numbers: string): string {
-  return numbers.split('.').slice(0, 2).join('.')
+/**
+ * Only the major.minor family is a feature; patch and suffix detail stays in
+ * coverage provenance. Parsing is bounded to avoid regex backtracking.
+ */
+function versionFamily(major: string, minor?: string): string {
+  return minor ? `${major}.${minor}` : major
 }
 
 /**
@@ -70,13 +74,13 @@ export function normalizeBackendVersion(
   if (matches.length > 0) {
     for (const match of matches) {
       const resolved = RUNTIME_TOKEN_FAMILY[match[1].toLowerCase()]
-      if (resolved === family) return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(match[2])}`
+      if (resolved === family) return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(match[2], match[3])}`
     }
     const resolved = RUNTIME_TOKEN_FAMILY[matches[0][1].toLowerCase()]
-    return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(matches[0][2])}`
+    return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(matches[0][2], matches[0][3])}`
   }
   const bare = BARE_VERSION_PATTERN.exec(text)
-  if (bare && family !== 'unknown') return `${RUNTIME_FAMILY_LABEL[family]}-${versionFamily(bare[1])}`
+  if (bare && family !== 'unknown') return `${RUNTIME_FAMILY_LABEL[family]}-${versionFamily(bare[1], bare[2])}`
   return 'unknown'
 }
 

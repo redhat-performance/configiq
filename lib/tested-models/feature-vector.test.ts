@@ -173,6 +173,10 @@ describe('normalizeBackendVersion', () => {
     expect(normalizeBackendVersion('rhaiis', 'RHAIIS-3.5-GA')).toBe('rhaiis-3.5')
   })
 
+  it('stays linear on pathological labels', () => {
+    expect(normalizeBackendVersion('vllm', '0.'.repeat(5000))).toBe('vLLM-0.0')
+  })
+
   it('returns unknown for unresolved labels', () => {
     expect(normalizeBackendVersion('vllm', 'current')).toBe('unknown')
     expect(normalizeBackendVersion(null, null)).toBe('unknown')

@@ -71,6 +71,10 @@ def test_normalize_backend_version_pools_runtime_and_training_labels() -> None:
         assert normalize_backend_version(version, backend) == expected
 
 
+def test_normalize_backend_version_handles_pathological_labels_without_backtracking() -> None:
+    assert normalize_backend_version("0." * 5000, "vllm") == "vLLM-0.0"
+
+
 def test_normalize_features_uses_the_backend_scoped_version_family() -> None:
     frame = pd.DataFrame(
         [

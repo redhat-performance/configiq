@@ -172,9 +172,9 @@ _RUNTIME_TOKEN_FAMILY = {
 _RUNTIME_TOKEN_PATTERN = re.compile(
     r"(?i)\b("
     + "|".join(sorted((re.escape(token) for token in _RUNTIME_TOKEN_FAMILY), key=len, reverse=True))
-    + r")-(\d+(?:\.\d+)*)"
+    + r")-(\d+)(?:\.(\d+))?"
 )
-_BARE_VERSION_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)*)(?:[-._+]\S*)?\s*$")
+_BARE_VERSION_PATTERN = re.compile(r"^\s*(\d+)(?:\.(\d+))?(?:[-._+]\S*)?\s*$")
 
 
 def backend_family(value: Any) -> str:
@@ -183,8 +183,10 @@ def backend_family(value: Any) -> str:
     return text if text in _RUNTIME_FAMILY_LABEL else "unknown"
 
 
-def _version_family(numbers: str) -> str:
-    return ".".join(numbers.split(".")[:2])
+def _version_family(major: str, minor: str | None) -> str:
+    # Only the major.minor family is a feature; patch and suffix detail stays
+    # in coverage provenance. Parsing is bounded to avoid regex backtracking.
+    return f"{major}.{minor}" if minor else major
 
 
 def normalize_backend_version(value: Any, backend: Any = None) -> str:
@@ -200,16 +202,16 @@ def normalize_backend_version(value: Any, backend: Any = None) -> str:
     family = backend_family(backend)
     matches = _RUNTIME_TOKEN_PATTERN.findall(text)
     if matches:
-        for token, numbers in matches:
+        for token, major, minor in matches:
             resolved = _RUNTIME_TOKEN_FAMILY[token.lower()]
             if resolved == family:
-                return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(numbers)}"
-        token, numbers = matches[0]
+                return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(major, minor or None)}"
+        token, major, minor = matches[0]
         resolved = _RUNTIME_TOKEN_FAMILY[token.lower()]
-        return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(numbers)}"
+        return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(major, minor or None)}"
     bare = _BARE_VERSION_PATTERN.match(text)
     if bare and family != "unknown":
-        return f"{_RUNTIME_FAMILY_LABEL[family]}-{_version_family(bare.group(1))}"
+        return f"{_RUNTIME_FAMILY_LABEL[family]}-{_version_family(bare.group(1), bare.group(2))}"
     return "unknown"
 
 
