@@ -67,8 +67,12 @@ and `GET /models?source=` serves a single feed or the merged view:
 
 - **OpenRouter** (`GET https://openrouter.ai/api/v1/models`) — `source="openrouter"`;
   structured pricing for 100+ models.
-- **LiteLLM Catalog** (`GET https://api.litellm.ai/model_catalog`) —
-  `source="litellm"`; comparable coverage from an independent feed.
+- **LiteLLM public cost map**
+  ([official JSON](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)) —
+  `source="litellm"`; fetched automatically without credentials. The map is keyed
+  by model ID; only chat records with valid input/output token rates are used.
+  USD/token is converted once to USD/million tokens. Malformed or unusably empty
+  refreshes report a source error rather than replacing that source's cached prices.
 - **Curated YAML overrides** (`data/model-overrides.yaml`, optional) —
   `source="override"`; adds models missing from both feeds and corrects
   individual fields.
@@ -78,6 +82,12 @@ precedence is **overrides > OpenRouter > LiteLLM**. Overrides are applied as
 *field-level patches* — an override overlays only the fields it specifies onto
 the matching scraped record, so unspecified fields keep tracking the live feeds;
 an override for an id neither feed has is a full add.
+
+OpenRouter's optional `hugging_face_id` is retained alongside the offer `id`.
+Hybrid Savings uses this checkpoint identity ahead of name/slug aliases when
+present, preventing base, Instruct, distilled or different-version checkpoints
+from being silently substituted. Older records without this metadata retain
+strict legacy matching. The source's offer ID and pricing provenance do not change.
 
 ### Cloud GPU pricing
 
@@ -167,7 +177,7 @@ tools/
     app.py                 # FastAPI application + scheduler
     valkey.py              # Valkey client wrapper
     scrapers/
-      models.py            # OpenRouter + curated overrides
+      models.py            # OpenRouter + LiteLLM cost map + curated overrides
       cloud_rates.py       # per-provider cloud rate scrapers
       hardware_costs.py    # hardware cost loader
 tests/
