@@ -29,4 +29,6 @@ AISimulators and aicostings services without exposing service URLs to the browse
   multiple workloads
 - [MCP server](mcp-server.md): connect Claude and other MCP clients to ConfigIQ
 - [REST API](api.md): endpoint reference and examples
+- [DeepWiki](https://deepwiki.com/redhat-performance/configiq): AI generated
+  docs from the codebase
 - [Tested-model validation](tested-models.md)
