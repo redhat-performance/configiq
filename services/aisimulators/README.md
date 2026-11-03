@@ -102,6 +102,25 @@ to `blis run` with the image-pinned catalog and registry. Unsupported models,
 systems, or settings return an explicit client error. A BLIS failure is never
 retried through AISimulate.
 
+## AISimulate backend versions
+
+`backend_version` is optional. When it is omitted, the service resolves it to the
+system default — the SDK's `current` slot, the same value `/backends` reports in
+`system_defaults`. The `current` alias means the same thing and behaves the same
+way; `previous` and `next` name specific slots and are treated as pins. A model
+can be absent from the default version's performance data while a newer version
+covers it, so if the default cannot serve the request the service retries the
+newest declared versions (at most three attempts) and reports the version it used
+in `backend_version`, `provenance.engine_version`, and a `warnings` entry. The
+resolved fallback is cached per model, system, and backend.
+
+An explicit `backend_version` is never substituted. If the performance data
+cannot serve it, `/predict`, `/estimate`, and `/recommend` return 422 and name
+the versions the SDK ships for that system, so the caller can retry or omit the
+field. The same 422 class covers a compute shape the selected data never
+measured (`EmpiricalNotImplementedError` inside the replay engine), which
+previously surfaced as a generic 500.
+
 BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
 `0.31.0`, the newest release that models prefill/decode disaggregation and
 accepts `max_model_len: auto`. `0.32.0` is opt-in and colocated-only: a P/D
