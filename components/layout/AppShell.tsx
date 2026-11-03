@@ -31,6 +31,7 @@ import {
   CogIcon,
   DatabaseIcon,
   ListIcon,
+  BookIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getBuildTimeString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
@@ -244,6 +245,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 isActive={pathname === "/sources"}
               />
             )}
+
+            <div style={groupLabelStyle}>DOCS</div>
+
+            <NavItemWithIcon
+              icon={BookIcon}
+              label="Docs"
+              href="/docs"
+              isActive={pathname === "/docs"}
+            />
           </NavList>
         </Nav>
 

@@ -1,0 +1,138 @@
+/* ConfigIQ docs viewer — uses established --gc-* and --font-* variables. */
+
+.gc-docs-shell {
+  min-height: 100vh;
+  padding: 32px 24px 64px;
+}
+
+.gc-docs-card {
+  max-width: 980px;
+  margin: 0 auto;
+  background: var(--gc-bg-1, #fff);
+  border: 1px solid color-mix(in srgb, var(--gc-text, #151515) 12%, transparent);
+  border-radius: 8px;
+  padding: 32px 40px 48px;
+  font-family: var(--gc-font-sans, system-ui, sans-serif);
+  color: var(--gc-text, #151515);
+  font-size: var(--gc-fs-body, 15px);
+  line-height: 1.65;
+}
+
+.gc-docs-page-title {
+  font-family: var(--gc-font-display, inherit);
+  margin-bottom: 4px;
+}
+
+.gc-docs-intro {
+  color: color-mix(in srgb, var(--gc-text, #151515) 65%, transparent);
+  margin: 0 0 8px;
+}
+
+.gc-docs-markdown {
+  padding-top: 8px;
+}
+
+.gc-docs-markdown h1 {
+  font-family: var(--gc-font-display, inherit);
+  font-size: 24px;
+  font-weight: 600;
+  margin: 8px 0 12px;
+}
+
+.gc-docs-markdown h2 {
+  font-family: var(--gc-font-display, inherit);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 36px 0 12px;
+  padding-top: 16px;
+  border-top: 1px solid color-mix(in srgb, var(--gc-text, #151515) 10%, transparent);
+}
+
+.gc-docs-markdown h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 24px 0 8px;
+}
+
+.gc-docs-markdown h4 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+.gc-docs-markdown a {
+  color: var(--gc-link, #0066cc);
+  text-decoration: none;
+}
+
+.gc-docs-markdown a:hover {
+  color: var(--gc-link-hover, #004080);
+  text-decoration: underline;
+}
+
+.gc-docs-markdown ul,
+.gc-docs-markdown ol {
+  padding-left: 24px;
+  margin: 8px 0;
+}
+
+.gc-docs-markdown li {
+  margin: 4px 0;
+}
+
+.gc-docs-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+  font-size: 14px;
+  display: block;
+  overflow-x: auto;
+}
+
+.gc-docs-markdown th,
+.gc-docs-markdown td {
+  border: 1px solid color-mix(in srgb, var(--gc-text, #151515) 18%, transparent);
+  padding: 8px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.gc-docs-markdown th {
+  background: color-mix(in srgb, var(--gc-text, #151515) 6%, transparent);
+  font-weight: 600;
+}
+
+.gc-docs-markdown code {
+  font-family: var(--gc-font-mono, monospace);
+  font-size: 0.85em;
+  background: color-mix(in srgb, var(--gc-text, #151515) 7%, transparent);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.gc-docs-markdown pre {
+  background: color-mix(in srgb, var(--gc-text, #151515) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--gc-text, #151515) 12%, transparent);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+}
+
+.gc-docs-markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+}
+
+.gc-docs-markdown blockquote {
+  margin: 12px 0;
+  padding: 4px 16px;
+  border-left: 3px solid color-mix(in srgb, var(--gc-text, #151515) 25%, transparent);
+  color: color-mix(in srgb, var(--gc-text, #151515) 70%, transparent);
+}
+
+.gc-docs-markdown hr {
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--gc-text, #151515) 12%, transparent);
+  margin: 32px 0;
+}

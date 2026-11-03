@@ -18,6 +18,7 @@ import "@patternfly/react-styles/css/components/Title/title.css";
 import "@patternfly/react-styles/css/components/Content/content.css";
 // Components used across the app
 import "@patternfly/react-styles/css/components/Accordion/accordion.css";
+import "@patternfly/react-styles/css/components/Tabs/tabs.css";
 import "@patternfly/react-styles/css/components/Alert/alert.css";
 import "@patternfly/react-styles/css/components/Backdrop/backdrop.css";
 import "@patternfly/react-styles/css/components/Button/button.css";

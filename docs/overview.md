@@ -24,9 +24,9 @@ AISimulators and aicostings services without exposing service URLs to the browse
 
 ## Guides
 
-- [User scenarios and sizing paths](user-scenarios.md) — which tool to use
+- [User scenarios and sizing paths](user-scenarios.md): which tool to use
   for which ask, the scenarios we test sizing against, and how to size
   multiple workloads
-- [MCP server](mcp-server.md) — connect Claude and other MCP clients to ConfigIQ
-- [REST API](api.md) — endpoint reference and examples
+- [MCP server](mcp-server.md): connect Claude and other MCP clients to ConfigIQ
+- [REST API](api.md): endpoint reference and examples
 - [Tested-model validation](tested-models.md)
