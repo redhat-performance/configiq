@@ -2,9 +2,10 @@
 
 The AISimulators service provides GPU recommendation and performance
 estimation for LLM inference. Interactive docs: https://aisimulators.dev/docs
-(OpenAPI spec: [`services/aisimulators/docs/api/openapi.yaml`](../services/aisimulators/docs/api/openapi.yaml)).
+(OpenAPI spec:
+[`services/aisimulators/docs/api/openapi.yaml`](../services/aisimulators/docs/api/openapi.yaml)).
 
-Cost and pricing endpoints (aicostings) are not documented here yet; pricing
+Cost and pricing endpoints are not documented here yet. Pricing
 documentation is deferred to a separate change.
 
 ## Endpoints
@@ -12,8 +13,8 @@ documentation is deferred to a separate change.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/recommend` | Find an optimal GPU configuration for a workload |
-| POST | `/predict` | Single-point performance estimate for a given parallelism configuration |
-| POST | `/estimate` | Deprecated compatibility alias for `/predict` |
+| POST | `/predict` | Single point performance estimate for a given parallelism configuration |
+| POST | `/estimate` | Deprecated alias for `/predict` |
 | POST | `/memory` | Estimate the GPU memory breakdown for a model configuration |
 | GET | `/models` | List supported model architectures |
 | GET | `/systems` | List supported GPU systems |
@@ -21,7 +22,7 @@ documentation is deferred to a separate change.
 | GET | `/networks` | List supported network fabrics |
 | GET | `/metrics` | Service metrics via content negotiation |
 
-Tool selection guidance per ask lives in
+Which tool to use for which ask is covered in
 [user scenarios](user-scenarios.md#which-tool-to-use-when).
 
 ## Examples
@@ -44,12 +45,12 @@ curl -X POST https://aisimulators.dev/recommend \
 
 `POST /predict` takes a model plus an explicit parallelism configuration and
 returns the expected TTFT, TPOT, and throughput. `/estimate` is the
-deprecated alias — use `/predict` in new work.
+deprecated alias. Use `/predict` in new work.
 
 ### Estimate memory
 
 `POST /memory` takes a model configuration and returns the memory breakdown
-including KV cache.
+including the KV cache.
 
 ## Run the service locally
 
@@ -63,10 +64,10 @@ The API is then at `http://localhost:8000` with interactive docs at
 
 ## Sizing multiple workloads
 
-One call per workload — there is no single mixed-workload endpoint. See
+One call per workload. There is no single mixed workload endpoint. See
 [user scenarios](user-scenarios.md#sizing-multiple-workloads).
 
 ## MCP
 
-The same API is available as MCP tools through the ConfigIQ MCP gateway. See
-[MCP server](mcp-server.md).
+The same API is available as MCP tools through the ConfigIQ MCP gateway.
+See [MCP server](mcp-server.md).
