@@ -159,6 +159,17 @@ def build_registry(
         if not dashboard_path.is_file():
             raise FileNotFoundError(dashboard_path)
 
+        warnings = report_entry.get("warnings") or []
+        selection_basis = report_entry.get("selection_basis")
+        diagnostics: dict | None = None
+        if warnings or selection_basis == "train_fallback":
+            diagnostics = {
+                "trainingStatus": report_entry.get("status", "not_trained"),
+                "warnings": warnings,
+            }
+            if selection_basis:
+                diagnostics["selectionBasis"] = selection_basis
+
         entry: dict = {
             "id": pair_id,
             "modelId": source["model_id"],
@@ -192,10 +203,12 @@ def build_registry(
                 }
             )
         else:
-            entry["diagnostics"] = {
-                "trainingStatus": report_entry.get("status", "not_trained"),
-                "reasons": gate["reasons"],
-            }
+            if diagnostics is None:
+                diagnostics = {"trainingStatus": report_entry.get("status", "not_trained")}
+            diagnostics["reasons"] = gate["reasons"]
+
+        if diagnostics is not None:
+            entry["diagnostics"] = diagnostics
 
         registry_pairs.append(entry)
 

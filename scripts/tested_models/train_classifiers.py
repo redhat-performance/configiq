@@ -29,7 +29,7 @@ def _metrics(model: XGBClassifier, matrix: pd.DataFrame, labels: pd.Series) -> d
     predictions = (probabilities >= WITHIN_THRESHOLD).astype(int)
     accuracy = float(accuracy_score(labels, predictions))
     balanced_accuracy = accuracy if labels.nunique() < 2 else float(balanced_accuracy_score(labels, predictions))
-    result: dict[str, Any] = {"rows": len(labels), "positive": int(labels.sum()), "negative": int((labels == 0).sum()), "accuracy": accuracy, "balanced_accuracy": balanced_accuracy, "f1": float(f1_score(labels, predictions, zero_division=0)), "precision": float(precision_score(labels, predictions, zero_division=0)), "recall": float(recall_score(labels, predictions, zero_division=0))}
+    result: dict[str, Any] = {"rows": len(labels), "classes": int(labels.nunique()), "positive": int(labels.sum()), "negative": int((labels == 0).sum()), "accuracy": accuracy, "balanced_accuracy": balanced_accuracy, "f1": float(f1_score(labels, predictions, zero_division=0)), "precision": float(precision_score(labels, predictions, zero_division=0)), "recall": float(recall_score(labels, predictions, zero_division=0))}
     result["roc_auc"] = float(roc_auc_score(labels, probabilities)) if labels.nunique() == 2 else None
     return result
 
@@ -59,16 +59,21 @@ def main() -> int:
         frames = {split: pd.read_parquet(args.labeled_dir / f"{pair}.{split}.parquet") for split in ("train", "validation", "test")}
         target = "within_tested_region"
         y_train, y_validation, y_test = (frames[split][target].astype(int) for split in ("train", "validation", "test"))
-        pair_report: dict[str, Any] = {"split_counts": {split: {"rows": len(frame), "positive": int(frame[target].sum()), "negative": int((frame[target] == 0).sum())} for split, frame in frames.items()}}
+        pair_report: dict[str, Any] = {
+            "split_counts": {split: {"rows": len(frame), "positive": int(frame[target].sum()), "negative": int((frame[target] == 0).sum())} for split, frame in frames.items()},
+            "version_support": split_summary["pairs"].get(pair, {}).get("versions", {}),
+        }
         pair_report["warnings"] = []
         if split_summary["pairs"].get(pair, {}).get("status") == "insufficient_groups":
             pair_report["status"] = "skipped_insufficient_groups"
             pair_report["warnings"].append("too_few_configuration_groups_for_holdout_splits")
             report["pairs"][pair] = pair_report
             continue
-        if y_validation.nunique() < 2:
+        validation_single_class = y_validation.nunique() < 2
+        test_single_class = y_test.nunique() < 2
+        if validation_single_class:
             pair_report["warnings"].append("validation_single_class")
-        if y_test.nunique() < 2:
+        if test_single_class:
             pair_report["warnings"].append("test_single_class")
         if y_train.nunique() < 2:
             pair_report["status"] = "skipped_single_class_train"
@@ -84,14 +89,14 @@ def main() -> int:
         for params in _candidates():
             model = XGBClassifier(**params, objective="binary:logistic", eval_metric="logloss", random_state=args.seed, n_jobs=1, tree_method="hist")
             model.fit(train_matrix, y_train)
-            score = _metrics(model, validation_matrix, y_validation)["balanced_accuracy"] if y_validation.nunique() > 1 else _metrics(model, train_matrix, y_train)["balanced_accuracy"]
+            score = _metrics(model, train_matrix, y_train)["balanced_accuracy"] if validation_single_class else _metrics(model, validation_matrix, y_validation)["balanced_accuracy"]
             if score > best_score:
                 best_model, best_score, best_params = model, score, params
         assert best_model is not None and best_params is not None
         model_path = args.output_dir / f"{pair}.json"
         best_model.save_model(model_path)
         # This is the only test evaluation; test data is not used for selection or fitting.
-        pair_report.update({"status": "trained", "selected_params": best_params, "validation_selection_score": best_score, "validation": _metrics(best_model, validation_matrix, y_validation), "test": _metrics(best_model, test_matrix, y_test), "feature_schema": {"feature_names": test_info["feature_names"], "numeric_medians": test_info["numeric_medians"]}, "thresholds": {"within_region_probability": WITHIN_THRESHOLD, "uncertain_probability": UNCERTAIN_THRESHOLD}, "label_rules": label_rules[pair], "model_format": "xgboost-json"})
+        pair_report.update({"status": "trained", "selection_basis": "train_fallback" if validation_single_class else "validation", "selected_params": best_params, "validation_selection_score": best_score, "validation": _metrics(best_model, validation_matrix, y_validation), "test": _metrics(best_model, test_matrix, y_test), "feature_schema": {"feature_names": test_info["feature_names"], "numeric_medians": test_info["numeric_medians"]}, "thresholds": {"within_region_probability": WITHIN_THRESHOLD, "uncertain_probability": UNCERTAIN_THRESHOLD}, "label_rules": label_rules[pair], "model_format": "xgboost-json"})
         (args.output_dir / f"{pair}.metadata.json").write_text(json.dumps(pair_report, indent=2, sort_keys=True, allow_nan=False) + "\n")
         (args.output_dir / f"{pair}.config.pbtxt").write_text(_fil_config(pair, len(test_info["feature_names"])))
         report["pairs"][pair] = pair_report

@@ -215,10 +215,10 @@ def normalize_backend_version(value: Any, backend: Any = None) -> str:
     return "unknown"
 
 
-def configuration_group(frame: pd.DataFrame) -> pd.Series:
-    features = normalize_features(frame)
-    keys = [column for column in features.columns if column not in {"token_budget", "parallelism", "memory_pressure", "prefix_pressure", "sequence_pressure"}]
-    values = features[keys].fillna("<NA>").astype(str).agg("|".join, axis=1)
+def configuration_group(frame: pd.DataFrame, features: pd.DataFrame | None = None) -> pd.Series:
+    resolved = normalize_features(frame) if features is None else features
+    keys = [column for column in resolved.columns if column not in {"token_budget", "parallelism", "memory_pressure", "prefix_pressure", "sequence_pressure"}]
+    values = resolved[keys].fillna("<NA>").astype(str).agg("|".join, axis=1)
     return values.map(lambda value: hashlib.sha256(value.encode()).hexdigest()[:16])
 
 

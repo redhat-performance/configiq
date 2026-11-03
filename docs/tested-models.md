@@ -209,6 +209,17 @@ assigned as a unit so repeated measurements cannot cross train/validation/test
 splits. Throughput, latency, identifiers, runtime arguments, and other
 measurements are excluded from classifier inputs to avoid leakage.
 
+`split-summary.json` records, per version family, the rows and configuration
+groups that landed in each split. A family that only appears in one split
+cannot be both learned and evaluated: the classifier is either blind to it at
+inference or cannot score it on held-out data. The training report copies that
+support into `version_support`, and records `selection_basis`
+(`validation` or `train_fallback`) plus an explicit `validation_single_class` /
+`test_single_class` warning when a split lacks both label classes. Those data
+shape caveats are published as `diagnostics.warnings` for both validated and
+measured pairs, while `diagnostics.reasons` stays a direct mirror of the
+quality gate so a caveat is never mistaken for a gate failure.
+
 `legacy_mvp.py` remains only as a migration reference. It is not part of the
 production build and must not be used to publish artifacts.
 

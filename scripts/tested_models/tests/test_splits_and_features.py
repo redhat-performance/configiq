@@ -38,6 +38,37 @@ def test_split_is_deterministic_and_keeps_configuration_groups_together(tmp_path
     assert not groups_by_split["validation"] & groups_by_split["test"]
 
 
+def test_split_summary_records_per_version_family_support(tmp_path, monkeypatch) -> None:
+    source_dir = tmp_path / "data" / "tested-models" / "datasets"
+    source_dir.mkdir(parents=True)
+    rows = [
+        {"model_id": "model", "accelerator": "H200", "tp": 1, "concurrency": value, "version": "vLLM-0.24.0", "backend": "vllm"}
+        for value in range(10)
+    ] + [
+        {"model_id": "model", "accelerator": "H200", "tp": 2, "concurrency": value, "version": "0.31.0", "backend": "vllm"}
+        for value in range(10)
+    ]
+    source = source_dir / "model__h200.parquet"
+    pd.DataFrame(rows).to_parquet(source, index=False)
+    manifest = tmp_path / "data" / "tested-models" / "dataset-manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": "model__h200", "model_id": "model", "path": str(source)}]}))
+    output = tmp_path / "splits"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["split_dataset.py", "--manifest", str(manifest), "--output-dir", str(output)],
+    )
+    assert split_dataset.main() == 0
+
+    summary = json.loads((output / "split-summary.json").read_text())
+    support = summary["pairs"]["model__h200"]["versions"]
+    assert set(support) == {"vLLM-0.24", "vLLM-0.31"}
+    for family in support.values():
+        assert set(family) == {"train", "validation", "test"}
+        assert sum(frame["rows"] for frame in family.values()) == 10
+
+
 def test_feature_matrix_fits_medians_and_categories_from_train_only() -> None:
     train = pd.DataFrame(
         [{"model_id": "a", "accelerator": "H200", "tp": 1, "concurrency": 2, "moe_num_experts": 2}, {"model_id": "a", "accelerator": "H200", "tp": 3, "concurrency": 4, "moe_num_experts": 4}]

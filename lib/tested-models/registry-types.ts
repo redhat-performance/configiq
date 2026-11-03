@@ -38,6 +38,10 @@ export interface RegistryGateResult {
 export interface RegistryDiagnostics {
   trainingStatus: string
   reasons: string[]
+  /** Data-shape caveats, such as a single-class validation or test split. */
+  warnings?: string[]
+  /** Which split picked the hyperparameters: `validation` or `train_fallback`. */
+  selectionBasis?: string
 }
 
 export interface RegistryPair {
@@ -199,6 +203,12 @@ function parseV2Pair(raw: unknown, index: number): RegistryPair {
         ? diagnostics.reasons.filter((reason): reason is string => typeof reason === 'string')
         : [],
     }
+    const warnings = Array.isArray(diagnostics.warnings)
+      ? diagnostics.warnings.filter((warning): warning is string => typeof warning === 'string')
+      : []
+    if (warnings.length > 0) entry.diagnostics.warnings = warnings
+    const selectionBasis = stringOrNull(diagnostics.selectionBasis)
+    if (selectionBasis !== null) entry.diagnostics.selectionBasis = selectionBasis
   }
   if (status === 'validated') {
     entry.classifier = requireString(pair, 'classifier', id)
