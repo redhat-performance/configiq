@@ -1,8 +1,8 @@
-# ConfigIQ REST API reference
+# AISimulate REST API reference
 
-The AISimulators service provides GPU recommendation and performance
-estimation for LLM inference. Interactive docs: https://aisimulators.dev/docs
-(OpenAPI spec:
+The REST API is served by AISimulate, the sizing engine behind ConfigIQ. It
+provides GPU recommendation and performance estimation for LLM inference.
+Interactive docs: https://aisimulators.dev/docs (OpenAPI spec:
 [`services/aisimulators/docs/api/openapi.yaml`](../services/aisimulators/docs/api/openapi.yaml)).
 
 Cost and pricing endpoints are not documented here yet. Pricing
@@ -55,6 +55,7 @@ including the KV cache.
 ## Run the service locally
 
 ```bash
+cd services/aisimulators
 pip install -e ".[service]"
 python -m uvicorn tools.api_service.app:app --reload --host 0.0.0.0 --port 8000
 ```
