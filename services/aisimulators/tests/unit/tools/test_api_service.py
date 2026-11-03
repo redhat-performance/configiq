@@ -1567,7 +1567,10 @@ class TestVersionFallback:
             calls.append(req.backend_version)
             if req.backend_version == "0.24.0":
                 raise RuntimeError(EMPIRICAL_GAP)
-            return make_mock_recommendation_result()
+            # Report the version the SDK would have used for this attempt.
+            candidate = MockCandidate()
+            candidate.prediction_config["engine"]["backend_version"] = req.backend_version
+            return make_mock_recommendation_result([candidate])
 
         monkeypatch.setattr(
             app_module, "_run_aisimulate_recommendation", fake_recommendation
@@ -1578,9 +1581,12 @@ class TestVersionFallback:
         assert resp.status_code == 200
         # The recommendation searched the version that has the model's data.
         assert calls == ["0.24.0", "0.31.0"]
-        # Every returned config says the default could not serve the request.
-        warnings = [cfg["warnings"][0] for cfg in resp.json()["configs"]]
-        assert warnings and all("used 0.31.0" in warning for warning in warnings)
+        # Every returned config reports the version that served the request and
+        # says the default could not.
+        configs = resp.json()["configs"]
+        assert configs
+        assert all(cfg["backend_version"] == "0.31.0" for cfg in configs)
+        assert all("used 0.31.0" in cfg["warnings"][0] for cfg in configs)
 
     def test_the_current_alias_falls_back_like_a_blank_version(self, monkeypatch):
         """``current`` means "the system default", not a pin on a literal version."""
@@ -1643,11 +1649,26 @@ class TestVersionFallback:
         assert short_context.status_code == 200
         assert calls == [(4000, "0.24.0")]
 
+    def test_the_fallback_cache_evicts_least_recently_used_shapes(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        monkeypatch.setattr(app_module, "_VERSION_FALLBACK_CACHE_MAX", 2)
+
+        def fake_prediction(req, include):
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        for isl in (1024, 2048, 4096):
+            response = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": isl})
+            assert response.status_code == 200
+
+        assert len(app_module._VERSION_FALLBACK_CACHE) == 2
+
     def test_a_cached_fallback_that_is_no_longer_declared_is_ignored(self, monkeypatch):
         self._patch_versions_h200(monkeypatch)
-        app_module._VERSION_FALLBACK_CACHE[
-            (VALID_ESTIMATE_BODY["model_path"], "h200_sxm", "vllm")
-        ] = "0.99.0"
+        request = app_module.EstimateRequest.model_validate(VALID_ESTIMATE_BODY)
+        app_module._VERSION_FALLBACK_CACHE[app_module._fallback_cache_key(request)] = "0.99.0"
         calls: list[str | None] = []
 
         def fake_prediction(req, include):

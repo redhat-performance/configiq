@@ -9,6 +9,7 @@ See docs/api/openapi.yaml for the full spec.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -16,7 +17,7 @@ import os
 import re
 import sys
 import tempfile
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
@@ -967,8 +968,10 @@ def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
 #: One cached fallback per request shape, so a blank-version request pays the
 #: failed attempt once instead of on every call. The shape is part of the key:
 #: a version can cover one shape and miss another, and a cached fallback must
-#: not skip a default that works for a different request.
-_VERSION_FALLBACK_CACHE: dict[tuple[str, str, str, str], str] = {}
+#: not skip a default that works for a different request. Least-recently-used
+#: entries are evicted so sustained traffic cannot grow it without bound.
+_VERSION_FALLBACK_CACHE: OrderedDict[tuple[str, str, str, str], str] = OrderedDict()
+_VERSION_FALLBACK_CACHE_MAX = 512
 
 #: Bound the extra replay work: the system default plus the two newest versions.
 _VERSION_FALLBACK_ATTEMPTS = 3
@@ -987,15 +990,14 @@ def _fallback_cache_key(req: Any) -> tuple[str, str, str, str]:
     """Model, system, backend, and the request shape that drove the replay.
 
     Coverage gaps depend on the compute shape, so keying on the model alone
-    would let a fallback for one workload skip the default for another.
+    would let a fallback for one workload skip the default for another. The
+    shape is hashed so a large ``model_config`` does not stay resident.
     """
     shape = req.model_dump(mode="json", exclude={"backend_version"})
-    return (
-        req.model_path,
-        req.system,
-        _sdk_backend_id(req.backend),
-        json.dumps(shape, sort_keys=True, default=str, separators=(",", ":")),
-    )
+    digest = hashlib.sha256(
+        json.dumps(shape, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+    return (req.model_path, req.system, _sdk_backend_id(req.backend), digest)
 
 
 def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, str | None]:
@@ -1035,6 +1037,8 @@ def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, s
     # Ignore a cached fallback that a data update no longer declares: replaying
     # it would fail as an unlisted version instead of finding coverage again.
     cached = _VERSION_FALLBACK_CACHE.get(cache_key)
+    if cached is not None:
+        _VERSION_FALLBACK_CACHE.move_to_end(cache_key)
     first = cached if cached in declared else default
     ordered = [first] + [version for version in reversed(declared) if version != first]
 
@@ -1057,6 +1061,9 @@ def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, s
                     req.model_path, req.backend, default, req.system, version,
                 )
             _VERSION_FALLBACK_CACHE[cache_key] = version
+            _VERSION_FALLBACK_CACHE.move_to_end(cache_key)
+            while len(_VERSION_FALLBACK_CACHE) > _VERSION_FALLBACK_CACHE_MAX:
+                _VERSION_FALLBACK_CACHE.popitem(last=False)
             return result, default
         return result, None
 
