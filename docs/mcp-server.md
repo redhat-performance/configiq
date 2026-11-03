@@ -3,7 +3,7 @@
 ConfigIQ exposes one stable MCP server, presented by the MCP gateway
 ([`services/mcp-gateway`](../services/mcp-gateway)). It proxies the
 inference sizing APIs while keeping MCP session state in one process,
-separate from the horizontally scaled AISimulators REST service.
+separate from the horizontally scaled AISimulate service.
 
 Cost and pricing MCP tools exist on the gateway but are not documented here
 yet. Pricing documentation is deferred to a separate change.
@@ -27,7 +27,7 @@ uv run uvicorn api_service.app:app --host 0.0.0.0 --port 8090
 The MCP server is then at `http://localhost:8090/mcp` (SSE) and
 `http://localhost:8090/mcp/http` (Streamable HTTP).
 
-### Expose the AISimulators API as an MCP server
+### Expose the REST API as an MCP server directly
 
 The FastAPI service can serve MCP directly without the gateway. Install the
 `mcp` extra, then run the API as usual:
@@ -115,8 +115,6 @@ Sizing requests run one workload per call. See
 [user scenarios](user-scenarios.md#sizing-multiple-workloads) for guidance on
 sizing multiple workloads.
 
-## Tools
-
 | Tool | Purpose |
 |---|---|
 | `recommend` | Find an optimal GPU configuration for a workload |
@@ -127,7 +125,10 @@ sizing multiple workloads.
 | `models` | List supported model architectures |
 | `systems` | List supported GPU systems |
 
-Tool names are the gateway operation IDs. Full request parameters are in the
+## Tools
+
+Inference sizing tools proxy to the AISimulate REST API. Tool names are the
+gateway operation IDs. Full request parameters are in the
 [REST API reference](api.md). The MCP tools take the same bodies.
 
 ## Deployment notes
@@ -136,7 +137,7 @@ Tool names are the gateway operation IDs. Full request parameters are in the
   this gateway by the deployment repository during migration. Their REST
   endpoints remain owned by the original services.
 - The gateway runs on port 8090 in its
-  [Containerfile](../services/mcp-gateway/Containerfile). The AISimulators
+  [Containerfile](../services/mcp-gateway/Containerfile). The AISimulate
   service defaults to 8000.
 - `configiq-py` mounts an MCP server exposing the app endpoints as tools.
 

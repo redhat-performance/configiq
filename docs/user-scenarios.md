@@ -17,7 +17,7 @@ questions:
 3. **Will the model fit?** Estimate KV cache memory and headroom for a model
    configuration.
 
-The webapp is powered by the AISimulators REST API and is also available as
+The webapp is powered by the AISimulate REST API and is also available as
 MCP tools, so the same sizing is reachable from the UI, from scripts, and
 from AI assistants such as Claude. You can also compare GPUs side by side in
 the GPU Explorer.
