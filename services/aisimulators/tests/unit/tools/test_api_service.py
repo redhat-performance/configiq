@@ -1578,6 +1578,9 @@ class TestVersionFallback:
         assert resp.status_code == 200
         # The recommendation searched the version that has the model's data.
         assert calls == ["0.24.0", "0.31.0"]
+        # Every returned config says the default could not serve the request.
+        warnings = [cfg["warnings"][0] for cfg in resp.json()["configs"]]
+        assert warnings and all("used 0.31.0" in warning for warning in warnings)
 
     def test_the_current_alias_falls_back_like_a_blank_version(self, monkeypatch):
         """``current`` means "the system default", not a pin on a literal version."""
@@ -1618,6 +1621,28 @@ class TestVersionFallback:
         assert resp.status_code == 422
         assert calls == ["previous"]
 
+    def test_the_fallback_cache_is_scoped_to_the_request_shape(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[tuple[int, str | None]] = []
+
+        def fake_prediction(req, include):
+            calls.append((req.isl, req.backend_version))
+            if req.isl == 8192 and req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        long_context = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": 8192})
+        assert long_context.status_code == 200
+        assert calls == [(8192, "0.24.0"), (8192, "0.31.0")]
+
+        calls.clear()
+        # A different shape still gets the default, which covers it.
+        short_context = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert short_context.status_code == 200
+        assert calls == [(4000, "0.24.0")]
+
     def test_a_cached_fallback_that_is_no_longer_declared_is_ignored(self, monkeypatch):
         self._patch_versions_h200(monkeypatch)
         app_module._VERSION_FALLBACK_CACHE[
@@ -1637,12 +1662,15 @@ class TestVersionFallback:
         # A data update can retire a version; the stale entry is not replayed.
         assert calls == ["0.24.0"]
 
-    def test_unwrapped_coverage_error_is_mapped_to_422(self):
+    def test_unwrapped_coverage_error_is_mapped_to_422(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
         error = RuntimeError(EMPIRICAL_GAP)
         with pytest.raises(app_module.HTTPException) as raised:
             app_module._common_error_handler(error, "memory", "org/model", "vllm", "h200_sxm")
         assert raised.value.status_code == 422
         assert "No empirical performance data" in raised.value.detail
+        # /memory does not pick a version, so it names the ones the SDK ships.
+        assert "Versions the SDK ships for h200_sxm: 0.24.0, 0.31.0" in raised.value.detail
 
 
 # ─── model_config passthrough tests ──────────────────────────────────────────

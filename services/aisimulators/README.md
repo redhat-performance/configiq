@@ -111,8 +111,10 @@ way; `previous` and `next` name specific slots and are treated as pins. A model
 can be absent from the default version's performance data while a newer version
 covers it, so if the default cannot serve the request the service retries the
 newest declared versions (at most three attempts) and reports the version it used
-in `backend_version`, `provenance.engine_version`, and a `warnings` entry. The
-resolved fallback is cached per model, system, and backend.
+in `backend_version` and `provenance.engine_version`, plus a `warnings` entry
+(`/predict`) or a warning on each returned config (`/recommend`). The resolved
+fallback is cached per request shape — model, system, backend, and workload — so
+a fallback for one shape never skips a default that covers another.
 
 An explicit `backend_version` is never substituted. If the performance data
 cannot serve it, `/predict`, `/estimate`, and `/recommend` return 422 and name

@@ -964,9 +964,11 @@ def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
         return _PredictionResult(dict(report.metrics))
 
 
-#: One cached fallback per (model, system, backend), so a blank-version request
-#: pays the failed attempt once instead of on every call.
-_VERSION_FALLBACK_CACHE: dict[tuple[str, str, str], str] = {}
+#: One cached fallback per request shape, so a blank-version request pays the
+#: failed attempt once instead of on every call. The shape is part of the key:
+#: a version can cover one shape and miss another, and a cached fallback must
+#: not skip a default that works for a different request.
+_VERSION_FALLBACK_CACHE: dict[tuple[str, str, str, str], str] = {}
 
 #: Bound the extra replay work: the system default plus the two newest versions.
 _VERSION_FALLBACK_ATTEMPTS = 3
@@ -979,6 +981,21 @@ _DEFAULT_VERSION_ALIAS = "current"
 def _clear_version_fallback_cache() -> None:
     """Drop the resolved-version cache (used by tests and after data reloads)."""
     _VERSION_FALLBACK_CACHE.clear()
+
+
+def _fallback_cache_key(req: Any) -> tuple[str, str, str, str]:
+    """Model, system, backend, and the request shape that drove the replay.
+
+    Coverage gaps depend on the compute shape, so keying on the model alone
+    would let a fallback for one workload skip the default for another.
+    """
+    shape = req.model_dump(mode="json", exclude={"backend_version"})
+    return (
+        req.model_path,
+        req.system,
+        _sdk_backend_id(req.backend),
+        json.dumps(shape, sort_keys=True, default=str, separators=(",", ":")),
+    )
 
 
 def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, str | None]:
@@ -1012,7 +1029,7 @@ def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, s
                 ) from error
             raise
 
-    cache_key = (req.model_path, req.system, _sdk_backend_id(req.backend))
+    cache_key = _fallback_cache_key(req)
     declared = _declared_versions(req.system, req.backend)
     default = _system_default_version(req.system, req.backend)
     # Ignore a cached fallback that a data update no longer declares: replaying
@@ -1347,11 +1364,18 @@ def _common_error_handler(e: Exception, op: str, model_path: str, backend: str, 
     # (/memory, legacy callers). Predict and recommend raise _PerfDataGap,
     # which carries the versions already tried.
     if _is_perf_data_gap(e):
+        declared = _declared_versions(system, backend)
+        listed = (
+            f" Versions the SDK ships for {system}: {', '.join(declared)}."
+            if declared
+            else ""
+        )
         raise HTTPException(
             status_code=422,
             detail=(
                 f"No empirical performance data for model={model_path} with {backend} "
-                f"on {system}: {_perf_gap_shape(e)}. Try another backend_version, backend or GPU system."
+                f"on {system}: {_perf_gap_shape(e)}.{listed} Try another backend_version, "
+                "backend or GPU system."
             ),
         )
     if isinstance(e, KeyError):
@@ -1574,7 +1598,7 @@ def post_recommend(
         )
 
     try:
-        result, _ = _run_with_version_fallback(
+        result, fell_back_from = _run_with_version_fallback(
             req, lambda: _run_aisimulate_recommendation(req)
         )
     except Exception as e:
@@ -1586,6 +1610,13 @@ def post_recommend(
 
     includes = _parse_include(include)
     configs = [_aisimulate_candidate_config(candidate, req) for candidate in candidates]
+    if fell_back_from and req.backend_version:
+        fallback_warning = (
+            f"No performance data for {req.backend} {fell_back_from} on {req.system}; "
+            f"used {req.backend_version}."
+        )
+        for cfg in configs:
+            cfg.warnings.insert(0, fallback_warning)
     for cfg in configs:
         if req.inclusive_tpot:
             cfg.tpot = _inclusive_tpot(cfg.ttft, cfg.tpot, req.osl)
