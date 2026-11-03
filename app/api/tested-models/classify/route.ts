@@ -1,53 +1,90 @@
-import { readFile } from 'node:fs/promises'
 import { NextResponse } from 'next/server'
-import { buildFeatureVector, type FeatureSchema } from '@/lib/tested-models/feature-vector'
-import type { CanonicalClassifierInput } from '@/lib/tested-models/types'
+import { buildFeatureVector } from '@/lib/tested-models/feature-vector'
+import type { CanonicalClassifierInput, ClassifierStatus } from '@/lib/tested-models/types'
+import { modelStatus, readTestedModelsRegistry, type RegistryPair } from '@/lib/tested-models/registry'
+import { testedModelsFilterHref, testedPairHref } from '@/lib/tested-models/links'
 
 export const dynamic = 'force-dynamic'
 
-interface RegistryPair {
-  id: string
-  modelId: string
-  systemId: string
-  classifier: string
-  tritonModel: string
-  featureSchema: FeatureSchema
-  thresholds?: {
-    within_region_probability?: number
-    uncertain_probability?: number
-  }
+function statusForProbability(probability: number, thresholds: RegistryPair['thresholds']): ClassifierStatus {
+  const parsed = thresholds !== null && typeof thresholds === 'object' ? thresholds as Record<string, unknown> : {}
+  const within = typeof parsed.within_region_probability === 'number' ? parsed.within_region_probability : 0.85
+  const uncertain = typeof parsed.uncertain_probability === 'number' ? parsed.uncertain_probability : 0.5
+  if (probability >= within) return 'within_validated_range'
+  if (probability >= uncertain) return 'near_validated_boundary'
+  return 'outside_validated_range'
 }
 
-interface Registry {
-  schemaVersion: number
-  pairs: RegistryPair[]
-}
-
-function registryPath(): string {
-  return `${process.env.TESTED_MODELS_DIR ?? '/tested-models'}/registry.json`
-}
-
-function statusForProbability(probability: number, thresholds: RegistryPair['thresholds']) {
-  const within = thresholds?.within_region_probability ?? 0.85
-  const uncertain = thresholds?.uncertain_probability ?? 0.5
-  if (probability >= within) return 'within_validated_range' as const
-  if (probability >= uncertain) return 'near_validated_boundary' as const
-  return 'outside_validated_range' as const
+function unavailable(reasons: string[], status: ClassifierStatus = 'validation_unavailable', extra: Record<string, unknown> = {}) {
+  return NextResponse.json({
+    status,
+    confidence: null,
+    pair_id: null,
+    classifier: null,
+    reasons,
+    dashboard_href: null,
+    boundary_href: null,
+    ...extra,
+  })
 }
 
 export async function POST(request: Request) {
+  let input: CanonicalClassifierInput
   try {
-    const input = await request.json() as CanonicalClassifierInput
-    const registry = JSON.parse(await readFile(registryPath(), 'utf8')) as Registry
-    const pair = registry.pairs.find(candidate =>
-      candidate.modelId === input.effective.model_id && candidate.systemId === input.effective.system_id)
-    if (!pair) {
-      return NextResponse.json({ status: 'validation_unavailable', confidence: null, pair_id: null, classifier: null, reasons: ['No classifier is available for this model and GPU system.'] })
-    }
+    input = await request.json() as CanonicalClassifierInput
+  } catch {
+    return unavailable(['The classification request was not valid JSON.'])
+  }
 
+  let registry
+  try {
+    registry = await readTestedModelsRegistry()
+  } catch {
+    return unavailable(['The tested-model registry is unavailable. Tested status is unknown, not untested.'])
+  }
+
+  const modelId = input?.effective?.model_id
+  const systemId = input?.effective?.system_id
+  if (!modelId || !systemId) {
+    return unavailable(['The request did not include a model and GPU system.'])
+  }
+
+  const pair = registry.pairs.find(candidate => candidate.modelId === modelId && candidate.systemId === systemId)
+  if (!pair) {
+    const status = modelStatus(modelId, registry)
+    if (status === 'approved_no_data') {
+      return unavailable(
+        ['This model is approved for testing, but no measurements have been published yet.'],
+        'no_measurements',
+        { dashboard_href: testedModelsFilterHref({ modelId }) },
+      )
+    }
+    if (status === 'measured_no_envelope' || status === 'validated') {
+      return unavailable(
+        [`Measurements exist for ${modelId}, but not for ${systemId}. No classifier verdict is available for this pair.`],
+        'no_measurements',
+        { dashboard_href: testedModelsFilterHref({ modelId }) },
+      )
+    }
+    return unavailable(['No tested measurements are available for this model and GPU system.'])
+  }
+
+  const dashboardHref = testedPairHref(pair.id)
+  const boundaryHref = testedPairHref(pair.id, 'boundary')
+  if (pair.status !== 'validated') {
+    return unavailable(
+      [
+        'Measurements exist for this model and GPU system, but no classifier passes the validation gate, so no verdict is shown.',
+      ],
+      'measured_no_envelope',
+      { pair_id: pair.id, dashboard_href: dashboardHref, boundary_href: boundaryHref },
+    )
+  }
+
+  try {
     const tritonUrl = process.env.TRITON_INFERENCE_URL ?? 'http://host.containers.internal:8000'
-    const vector = buildFeatureVector(input, pair.featureSchema)
-    const response = await fetch(`${tritonUrl}/v2/models/${encodeURIComponent(pair.tritonModel)}/infer`, {
+    const vector = buildFeatureVector(input, pair.featureSchema!)
+    const response = await fetch(`${tritonUrl}/v2/models/${encodeURIComponent(pair.tritonModel!)}/infer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -68,8 +105,14 @@ export async function POST(request: Request) {
       pair_id: pair.id,
       classifier: pair.classifier,
       reasons: [],
+      dashboard_href: dashboardHref,
+      boundary_href: boundaryHref,
     })
   } catch {
-    return NextResponse.json({ status: 'validation_unavailable', confidence: null, pair_id: null, classifier: null, reasons: ['Performance-envelope classification is unavailable.'] })
+    return unavailable(
+      ['The validated classifier could not be evaluated. No verdict is available for this request.'],
+      'validation_unavailable',
+      { pair_id: pair.id, dashboard_href: dashboardHref, boundary_href: boundaryHref },
+    )
   }
 }

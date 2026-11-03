@@ -112,6 +112,8 @@ export interface PerformanceMetrics {
   tpot_ms: number  // Time per output token (decode latency)
   request_latency_ms: number  // Full request latency (ttft + tpot * osl)
   throughput_tokens_per_sec: number
+  /** Per-concurrent-user output rate, when the simulator reports it. */
+  throughput_tokens_per_sec_per_user?: number | null
   concurrency: number  // Max concurrent users
 }
 

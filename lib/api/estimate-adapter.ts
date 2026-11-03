@@ -306,6 +306,10 @@ export async function fetchEstimateAsInferenceResult(
       tpot_ms: tpot,
       request_latency_ms: requestLatency,
       throughput_tokens_per_sec: throughput,
+      throughput_tokens_per_sec_per_user: typeof data.tokens_per_second_per_user === 'number'
+        && Number.isFinite(data.tokens_per_second_per_user)
+        ? data.tokens_per_second_per_user
+        : null,
       concurrency: Math.max(0, concurrency),
     },
     bottleneck_analysis: deriveBottleneck(ttft, tpot),

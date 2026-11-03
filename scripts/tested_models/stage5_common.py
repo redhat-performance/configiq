@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from quantization import canonical_quantization
 
 MEASUREMENT_COLUMNS = {
     "measured rps", "output_tok/sec", "total_tok/sec", "prompt_token_count_mean",
@@ -79,8 +80,8 @@ def normalize_features(frame: pd.DataFrame) -> pd.DataFrame:
     result["prefix_caching"] = _column(frame, "prefix_caching", np.nan).map(_to_boolean_number)
     result["shared_prefix"] = _column(frame, "shared_prefix", _column(frame, "prefix_tokens", np.nan)).map(_to_number)
     result["precision"] = _column(frame, "precision", "unknown").fillna("unknown").astype(str)
-    result["weight_quantization"] = _column(frame, "weight_quantization", "unknown").fillna("unknown").astype(str)
-    result["kv_quantization"] = _column(frame, "kv_quantization", "unknown").fillna("unknown").astype(str)
+    result["weight_quantization"] = _column(frame, "weight_quantization", "unknown").fillna("unknown").astype(str).map(lambda value: canonical_quantization("weight_quantization", value))
+    result["kv_quantization"] = _column(frame, "kv_quantization", "unknown").fillna("unknown").astype(str).map(lambda value: canonical_quantization("kv_quantization", value))
     for name in ("moe_num_experts", "moe_top_k"):
         result[name] = _column(frame, name, np.nan).map(_to_number)
 

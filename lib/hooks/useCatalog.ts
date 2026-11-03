@@ -257,7 +257,7 @@ let cacheTimestamp: number | null = null
 let fetchPromise: Promise<void> | null = null
 
 function isCacheValid(): boolean {
-  return cachedGpus !== null && cachedModels !== null && cachedModelSpecs !== null && cachedBackends !== null && cachedNetworks !== null &&
+  return cachedGpus !== null && cachedModels !== null && cachedModelSpecs !== null && cachedBackends !== null && cachedBackends.length > 0 && cachedNetworks !== null &&
     cacheTimestamp !== null && Date.now() - cacheTimestamp < CLIENT_CACHE_TTL_MS.catalog
 }
 
@@ -290,6 +290,7 @@ export function useCatalog(): Catalog {
     fetchPromise = null  // reset so stale cache triggers a fresh fetch
 
     let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
     async function fetchCatalog() {
       if (!fetchPromise) {
@@ -352,6 +353,15 @@ export function useCatalog(): Catalog {
           setNetworkOptions(cachedNetworks!)
           setSimulatorSupport(cachedSimulatorSupport)
           setTimeoutSeconds(cachedTimeoutSeconds)
+          if (cachedBackends!.length === 0) {
+            setError('AISimulators returned no serving backends. Retrying the catalog.')
+            retryTimer = setTimeout(() => {
+              fetchPromise = null
+              void fetchCatalog()
+            }, 15_000)
+          } else {
+            setError(null)
+          }
         }
       } catch (err) {
         fetchPromise = null
@@ -364,7 +374,10 @@ export function useCatalog(): Catalog {
     }
 
     fetchCatalog()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
   }, [])
 
   return { gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds, isLoading, error }

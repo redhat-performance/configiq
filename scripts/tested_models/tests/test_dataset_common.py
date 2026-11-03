@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
-from dataset_common import normalize_rows
+from dataset_common import load_approved_models, normalize_rows
 
 
 def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> None:
@@ -71,3 +73,23 @@ def test_normalize_rows_returns_dataframe_for_empty_source() -> None:
         "accelerator",
         "pair_id",
     ]
+
+
+def test_load_approved_models_prefers_the_new_name_and_accepts_the_transition(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"approvedModels": ["org/new"], "testedModels": ["org/old"]}))
+    assert load_approved_models(config) == ["org/new"]
+
+    config.write_text(json.dumps({"testedModels": ["org/old"]}))
+    assert load_approved_models(config) == ["org/old"]
+
+
+def test_load_approved_models_rejects_an_empty_or_duplicate_list(tmp_path) -> None:
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"approvedModels": []}))
+    with pytest.raises(ValueError, match="non-empty approvedModels"):
+        load_approved_models(config)
+
+    config.write_text(json.dumps({"approvedModels": ["org/model", "org/model"]}))
+    with pytest.raises(ValueError, match="duplicate approved model"):
+        load_approved_models(config)
