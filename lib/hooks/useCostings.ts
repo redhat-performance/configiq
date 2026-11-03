@@ -189,9 +189,14 @@ interface CostingsResult {
 const cached = new Map<CacheKey, { result: CostingsResult; updatedAt: number }>()
 const inFlight = new Map<CacheKey, Promise<CostingsResult>>()
 
-function cacheTtl(result: CostingsResult, scope: CostingsScope): number {
+function cacheTtl(result: CostingsResult, scope: CostingsScope, source: PricingSource): number {
+  const staleSource = Object.entries(result.health?.sources ?? {}).some(([name, status]) =>
+    status.stale && (scope === 'all' || (source === 'merged'
+      ? name.startsWith('models.') : name === `models.${source}`)),
+  )
   const incomplete = result.modelsStale || result.models.length === 0 ||
-    (scope === 'all' && (result.cloudRates.size === 0 || result.hardwareCosts.size === 0))
+    (scope === 'all' && (result.cloudRates.size === 0 || result.hardwareCosts.size === 0)) ||
+    result.health === null || staleSource
   return incomplete ? RETRY_INTERVAL_MS : CLIENT_CACHE_TTL_MS.costings
 }
 
@@ -290,20 +295,25 @@ const EMPTY: CostingsData = {
   error: null,
 }
 
+function dataFromCache(key: CacheKey): CostingsData {
+  const entry = cached.get(key)
+  return entry ? resultToData(entry.result) : { ...EMPTY, isLoading: true }
+}
+
 export function useCostings(
   enabled: boolean,
   pricingSource: PricingSource = 'merged',
   scope: CostingsScope = 'all',
 ): CostingsData {
   const key: CacheKey = `${pricingSource}:${scope}`
-  const [data, setData] = useState<CostingsData>(() => {
-    const entry = enabled ? cached.get(key) : undefined
-    return entry ? resultToData(entry.result) : { ...EMPTY, isLoading: enabled }
-  })
+  const [state, setState] = useState<{ key: CacheKey | null; data: CostingsData }>(() => ({
+    key: enabled ? key : null,
+    data: enabled ? dataFromCache(key) : EMPTY,
+  }))
 
   useEffect(() => {
     if (!enabled) {
-      setData(EMPTY)
+      setState({ key: null, data: EMPTY })
       return
     }
 
@@ -311,23 +321,30 @@ export function useCostings(
     let lastAttempt = 0
     const refresh = () => {
       const entry = cached.get(key)
-      if (entry && Date.now() - entry.updatedAt < cacheTtl(entry.result, scope)) {
-        setData(resultToData(entry.result))
+      if (entry && Date.now() - entry.updatedAt < cacheTtl(entry.result, scope, pricingSource)) {
+        setState({ key, data: resultToData(entry.result) })
         return
       }
       if (lastAttempt && Date.now() - lastAttempt < RETRY_INTERVAL_MS) return
       lastAttempt = Date.now()
-      // Keep the last-good result during refresh, but never carry prices from
-      // a different source or scope into the newly selected comparison.
-      setData(entry ? resultToData(entry.result) : { ...EMPTY, isLoading: true })
+      // Retain this key's last-good prices and failure flags until the retry
+      // settles, without borrowing values from another source or scope.
+      setState(previous => {
+        const data = dataFromCache(key)
+        return { key, data: previous.key === key ? {
+          ...data,
+          modelsStale: data.modelsStale || previous.data.modelsStale,
+          error: previous.data.error,
+        } : data }
+      })
       void getCostingsFetch(pricingSource, scope).then(result => {
-        if (active) setData(resultToData(result))
+        if (active) setState({ key, data: resultToData(result) })
       }).catch((error: unknown) => {
-        if (active) setData({
+        if (active) setState({ key, data: {
           ...(entry ? resultToData(entry.result) : EMPTY),
           modelsStale: true,
           error: error instanceof Error ? error.message : 'Failed to fetch costings data',
-        })
+        } })
       })
     }
     const revalidate = () => { if (document.visibilityState !== 'hidden') refresh() }
@@ -343,5 +360,8 @@ export function useCostings(
     }
   }, [enabled, pricingSource, scope, key])
 
-  return data
+  // Effects run after rendering: never expose the previous selection's data
+  // during the first render of a source/scope change.
+  if (!enabled) return EMPTY
+  return state.key === key ? state.data : dataFromCache(key)
 }

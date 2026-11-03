@@ -43,15 +43,17 @@ afterEach(async () => {
 async function harness(enabled = true, source: PricingSource = 'merged', scope?: CostingsScope) {
   const { useCostings } = await import('./useCostings')
   let state!: CostingsData
+  const renders: CostingsData[] = []
   function Harness(props: { enabled: boolean; source: PricingSource; scope?: CostingsScope }) {
     state = useCostings(props.enabled, props.source, props.scope)
+    renders.push(state)
     return null
   }
   const render = async (active: boolean, selected: PricingSource = source, selectedScope = scope) => {
     await act(async () => root.render(<Harness enabled={active} source={selected} scope={selectedScope} />))
   }
   await render(enabled)
-  return { get state() { return state }, render }
+  return { get state() { return state }, renders, render }
 }
 
 it('recovers an empty cold-start catalogue without remounting or reloading', async () => {
@@ -105,6 +107,48 @@ it('deduplicates simultaneous consumers of the same pricing scope', async () => 
   expect(fetch).toHaveBeenCalledTimes(3)
 })
 
+it.each(['unavailable', 'stale'] as const)('retries %s hosted health without discarding valid prices', async condition => {
+  reply = url => url.includes('/health')
+    ? condition === 'unavailable' ? new Response('', { status: 503 }) : Response.json({
+      status: 'ok', version: 'test', sources: {
+        'models.litellm': { last_success: null, last_error: null, stale: true },
+      },
+    }) : healthyResponse(url)
+  const view = await harness(true, 'merged', 'models')
+  expect(view.state.models).toHaveLength(1)
+  expect(fetch).toHaveBeenCalledTimes(2)
+  reply = healthyResponse
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(4)
+  expect(view.state.health?.sources).toEqual({})
+  expect(view.state.models).toHaveLength(1)
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(4)
+})
+
+it.each(['merged', 'openrouter'] as const)('ignores unrelated health sources for %s models-only pricing', async source => {
+  reply = url => url.includes('/health') ? Response.json({ status: 'ok', version: 'test', sources: {
+    'cloud.aws': { last_success: null, last_error: null, stale: true },
+    hardware_costs: { last_success: null, last_error: null, stale: true },
+    ...(source === 'openrouter' ? { 'models.litellm': { last_success: null, last_error: null, stale: true } } : {}),
+  } }) : healthyResponse(url)
+  await harness(true, source, 'models')
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(2)
+})
+
+it('retries stale cloud health in full scope even when both price maps have entries', async () => {
+  reply = url => url.includes('/health') ? Response.json({ status: 'ok', version: 'test', sources: {
+    'cloud.aws': { last_success: null, last_error: null, stale: true },
+  } }) : healthyResponse(url)
+  const view = await harness()
+  expect(view.state.gpuCloudRates.size).toBe(1)
+  expect(view.state.gpuHardwareCosts.size).toBe(1)
+  reply = healthyResponse
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(6)
+})
+
 it('keeps source changes isolated when an older request finishes later', async () => {
   let complete!: (response: Response) => void
   reply = url => url.includes('source=litellm') ? new Promise(resolve => { complete = resolve }) : healthyResponse(url)
@@ -118,6 +162,35 @@ it('keeps source changes isolated when an older request finishes later', async (
   expect(view.state.models[0].id).toBe('litellm/model')
 })
 
+it('never renders the previous source while the selected source is loading', async () => {
+  const view = await harness(true, 'openrouter', 'models')
+  let complete!: (response: Response) => void
+  reply = url => url.includes('source=litellm') ? new Promise(resolve => { complete = resolve }) : healthyResponse(url)
+  view.renders.length = 0
+  await view.render(true, 'litellm', 'models')
+  expect(view.renders.every(data => data.models.length === 0 && data.isLoading)).toBe(true)
+  await act(async () => complete(Response.json({ models: [{ ...model, id: 'litellm/model' }], stale: false })))
+  expect(view.state.models[0].id).toBe('litellm/model')
+})
+
+it('immediately renders the selected source cache rather than the previous source', async () => {
+  reply = url => url.includes('/models')
+    ? Response.json({ models: [{ ...model, id: url.includes('source=litellm') ? 'litellm/model' : 'openrouter/model' }] })
+    : healthyResponse(url)
+  const view = await harness(true, 'litellm', 'models')
+  await view.render(true, 'openrouter', 'models')
+  view.renders.length = 0
+  await view.render(true, 'litellm', 'models')
+  expect(view.renders.every(data => data.models[0]?.id === 'litellm/model')).toBe(true)
+})
+
+it('never renders full-scope infrastructure in a models-only consumer', async () => {
+  const view = await harness()
+  view.renders.length = 0
+  await view.render(true, 'merged', 'models')
+  expect(view.renders.every(data => data.gpuCloudRates.size === 0 && data.gpuHardwareCosts.size === 0)).toBe(true)
+})
+
 it('preserves last-good values during refresh failures and automatically recovers', async () => {
   const view = await harness()
   const previousModels = view.state.models
@@ -127,8 +200,13 @@ it('preserves last-good values during refresh failures and automatically recover
   expect(view.state.gpuCloudRates.size).toBe(1)
   expect(view.state.modelsStale).toBe(true)
   expect(view.state.error).toBe('Offline')
-  reply = healthyResponse
+  let complete!: (response: Response) => void
+  reply = url => url.includes('/models') ? new Promise(resolve => { complete = resolve }) : healthyResponse(url)
   await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(view.state.models).toBe(previousModels)
+  expect(view.state.modelsStale).toBe(true)
+  expect(view.state.error).toBe('Offline')
+  await act(async () => complete(healthyResponse('/models')))
   expect(view.state.error).toBeNull()
   expect(view.state.modelsStale).toBe(false)
 })
@@ -139,8 +217,13 @@ it('does not reuse another source after a failed switch and retries the selected
   await view.render(true, 'litellm', 'models')
   expect(view.state.models).toEqual([])
   expect(view.state.error).toBe('/models 503')
-  reply = healthyResponse
+  let complete!: (response: Response) => void
+  reply = url => url.includes('/models') ? new Promise(resolve => { complete = resolve }) : healthyResponse(url)
   await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(view.state.models).toEqual([])
+  expect(view.state.modelsStale).toBe(true)
+  expect(view.state.error).toBe('/models 503')
+  await act(async () => complete(healthyResponse('/models')))
   expect(view.state.models).toHaveLength(1)
   expect(view.state.error).toBeNull()
 })
