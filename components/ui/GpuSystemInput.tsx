@@ -2,6 +2,7 @@
 
 import * as React from 'react'
 import {
+  Label,
   Select,
   SelectList,
   SelectGroup,
@@ -17,11 +18,14 @@ interface GpuSystemInputProps {
   value: string
   onChange: (value: string) => void
   gpuOptions: GpuOption[]
+  /** Systems with measurements for the selected model; annotated and sorted first. */
+  testedSystemIds?: string[]
 }
 
-export function GpuSystemInput({ id, value, onChange, gpuOptions }: GpuSystemInputProps) {
+export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemIds = [] }: GpuSystemInputProps) {
   const [open, setOpen] = React.useState(false)
   const current = gpuOptions.find(g => g.systemId === value)
+  const testedSystems = React.useMemo(() => new Set(testedSystemIds), [testedSystemIds])
 
   const architectureGroups = React.useMemo(() => {
     const groups = new Map<string, GpuOption[]>()
@@ -47,11 +51,14 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions }: GpuSystemInp
         .map(([groupLabel, gpus]) =>
           [
             groupLabel,
-            [...gpus].sort((a, b) => a.label.localeCompare(b.label)),
+            [...gpus].sort((a, b) => {
+              const tested = Number(testedSystems.has(b.systemId)) - Number(testedSystems.has(a.systemId))
+              return tested !== 0 ? tested : a.label.localeCompare(b.label)
+            }),
           ] as const,
         ),
     )
-  }, [gpuOptions])
+  }, [gpuOptions, testedSystems])
 
   const selectedOption = gpuOptions.find(g => g.systemId === value)
   const selectedLabel = selectedOption
@@ -104,7 +111,12 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions }: GpuSystemInp
                     isSelected={g.systemId === value}
                   >
                     <div className={styles.optionContent}>
-                      <span>{g.label}</span>
+                      <span>
+                        {g.label}
+                        {testedSystems.has(g.systemId) && (
+                          <Label color="blue" isCompact style={{ marginLeft: 8 }}>Tested</Label>
+                        )}
+                      </span>
                       <span className={styles.specs}>
                         {g.vramGb ? `${g.vramGb} GB` : ''}
                       </span>

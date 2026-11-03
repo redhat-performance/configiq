@@ -34,13 +34,18 @@ import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelCom
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
+import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
+import { useTestedModels } from '@/lib/hooks/useTestedModels';
+import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
+import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
+import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import Link from 'next/link';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import { parsePerformancePrefill } from './performance-prefill';
@@ -53,6 +58,44 @@ function detectMoe(spec: ModelSpec | undefined, hfConfig: HFModelConfig | null):
   const catalogExperts = spec?.num_experts ?? 0;
   const hfExperts = (hfConfig?.text_config?.num_experts as number) ?? (hfConfig?.num_experts as number) ?? (hfConfig?.num_local_experts as number) ?? 0;
   return catalogExperts > 1 || hfExperts > 1;
+}
+
+type WeightPrecision = 'FP16' | 'FP8' | 'INT8' | 'INT4' | 'MXFP4' | 'NVFP4'
+
+/** Map an HF quantization config to the precision label used by the classifier. */
+function resolveActualWeightPrecision(hfConfig: HFModelConfig | null, fallback: WeightPrecision): WeightPrecision {
+  const qconfig = hfConfig?.quantization_config as Record<string, unknown> | undefined;
+  if (!hfConfig || !qconfig) return fallback;
+  const rawMethod = qconfig.quant_method ?? qconfig.quant_type ?? qconfig.quantization_algo;
+  const quantMethod = typeof rawMethod === 'string' ? rawMethod : null;
+  if (!quantMethod || quantMethod === 'none') return fallback;
+
+  const method = quantMethod.toLowerCase();
+  if (method.includes('fp8') || method === 'fp8') return 'FP8';
+  if (method.includes('int8') || method === 'int8') return 'INT8';
+  if (method.includes('int4') || method === 'int4') return 'INT4';
+  if (method.includes('mxfp4') || method === 'mxfp4') return 'MXFP4';
+  if (method === 'gptq' || method === 'awq') {
+    const bits = typeof qconfig.bits === 'number'
+      ? qconfig.bits
+      : typeof qconfig.num_bits === 'number' ? qconfig.num_bits : 4;
+    return bits === 8 ? 'INT8' : 'INT4';
+  }
+  if (method === 'bnb' || method.includes('bitsandbytes')) return 'INT4';
+  return fallback;
+}
+
+function classifierPhase(value: EstimatePhase | undefined, moeTp: number | null, moeEp: number | null): ClassifierPhaseInput | null {
+  return value ? {
+    tp_size: value.tp_size,
+    pp_size: value.pp_size,
+    dp_size: 1,
+    cp_size: 1,
+    moe_tp_size: moeTp,
+    moe_ep_size: moeEp,
+    workers: value.workers,
+    batch_size: value.batch_size,
+  } : null;
 }
 
 /** String-backed parallelism inputs for one disagg pool (prefill/decode). */
@@ -152,9 +195,18 @@ export default function Performance() {
   // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
   // search takes none, so the fabric control stays hidden there.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
+  const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
+  const testedSystemsForModel = React.useMemo(
+    () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
+    [testedPairs, model],
+  );
+  const selectableGpus = React.useMemo(
+    () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
+    [catalogGpus, testedSystemsForModel],
+  );
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const modelWasPrefilled = React.useRef(false);
 
@@ -167,7 +219,7 @@ export default function Performance() {
   }, []);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs), [catalogModels, modelSpecs, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
 
   // Set model from settings after context has loaded from localStorage
   const modelFromSettings = React.useRef(false);
@@ -186,10 +238,10 @@ export default function Performance() {
   }, []);
 
   React.useEffect(() => {
-    if (prefillChecked && catalogGpus.length > 0 && !catalogGpus.find(g => g.systemId === gpu) && !gpuWasPrefilled.current) {
-      setGpu(catalogGpus[0].systemId);
+    if (prefillChecked && selectableGpus.length > 0 && !selectableGpus.find(g => g.systemId === gpu)) {
+      setGpu(selectableGpus[0].systemId);
     }
-  }, [catalogGpus, gpu, prefillChecked]);
+  }, [gpu, prefillChecked, selectableGpus]);
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -198,6 +250,7 @@ export default function Performance() {
 
   // 🧪 TEST: Inference config engine integration
   const [testResult, setTestResult] = React.useState<InferenceConfigResult | null>(null);
+  const [testClassifierInput, setTestClassifierInput] = React.useState<CanonicalClassifierInput | null>(null);
   const [testError, setTestError] = React.useState<string | null>(null);
   const [testErrorCode, setTestErrorCode] = React.useState<string | null>(null);
 
@@ -214,7 +267,7 @@ export default function Performance() {
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
 
-  const modelStatus: ModelStatus = getAppConfig().testedModels.includes(model)
+  const modelStatus: ModelStatus = validatedModelIds.includes(model)
     ? 'supported'
     : catalogModels.includes(model)
     ? 'catalog'
@@ -288,7 +341,7 @@ export default function Performance() {
   React.useEffect(() => {
     if (servingMode === 'disagg' && !disaggSupported) {
       setServingMode('agg');
-      setTestResult(null);
+      setTestResult(null); setTestClassifierInput(null);
     }
   }, [servingMode, disaggSupported]);
 
@@ -514,8 +567,55 @@ export default function Performance() {
         const response = await fetchEstimateAsInferenceResult(estimateInput, true);
 
         const result = 'result' in response ? response.result : response;
+        const submittedClassifierInput: CanonicalClassifierInput = {
+          effective: {
+            model_id: estimateInput.model_path,
+            system_id: estimateInput.system,
+            backend: estimateInput.backend ?? inferenceBackend,
+            backend_version: estimateInput.backend_version ?? null,
+            isl: estimateInput.isl,
+            osl: estimateInput.osl,
+            max_seq_len: estimateInput.max_seq_len ?? null,
+            prefill_max_seq_len: estimateInput.prefill_max_seq_len ?? null,
+            decode_max_seq_len: estimateInput.decode_max_seq_len ?? null,
+            concurrency: estimateInput.batch_size,
+            tp_size: result.memory_analysis.tp_size,
+            pp_size: result.parallelism_strategy.pp_size || 1,
+            dp_size: 1,
+            cp_size: 1,
+            moe_tp_size: isMoe ? testMoeEtpSize : null,
+            moe_ep_size: isMoe ? testMoeEpSize : null,
+            shared_prefix_tokens: estimateInput.prefix ?? 0,
+            prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
+            weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
+            kv_cache_precision: testKVCachePrecision,
+            gemm_quant_mode: estimateInput.gemm_quant_mode ?? null,
+            kvcache_quant_mode: estimateInput.kvcache_quant_mode ?? null,
+            moe_quant_mode: isMoe ? testMoeQuantMode : null,
+            gpu_memory_utilization: estimateInput.gpu_memory_utilization ?? null,
+            max_num_seqs: result.vllm_config.max_num_seqs,
+            chunked_prefill_enabled: result.vllm_config.enable_chunked_prefill,
+            serving_mode: result.mode === 'disagg' ? 'disagg' : 'agg',
+            replicas: result.memory_analysis.replicas,
+            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, isMoe ? testMoeEtpSize : null, isMoe ? testMoeEpSize : null),
+            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, isMoe ? testMoeEtpSize : null, isMoe ? testMoeEpSize : null),
+            encode: null,
+          },
+          request: {
+            request_kind: 'predict',
+            target_request_rate: null,
+            target_concurrency: null,
+            target_latency_ms: null,
+            target_ttft_ms: null,
+            target_tpot_ms: null,
+            database_mode: null,
+            top_n: null,
+          },
+          model_config: estimateInput.hf_model_config ?? null,
+        };
         if (!cancelled) {
           setTestResult(result);
+          setTestClassifierInput(submittedClassifierInput);
           setTestError(null);
           setTestErrorCode(null);
           if ('debugRequest' in response) {
@@ -633,35 +733,10 @@ export default function Performance() {
     0;
 
   // Get actual weight precision being used (detected from HF config or user-selected)
-  const actualWeightPrecision = React.useMemo(() => {
-    if (!hfConfig || !hfConfig.quantization_config) {
-      return testWeightPrecision; // No HF config, use user selection
-    }
-
-    const qconfig = hfConfig.quantization_config as any;
-    const quantMethod = qconfig.quant_method || qconfig.quant_type || qconfig.quantization_algo;
-
-    if (!quantMethod || quantMethod === 'none') {
-      return testWeightPrecision; // No quantization, use user selection
-    }
-
-    // Map quantization method to display format
-    const method = quantMethod.toLowerCase();
-    if (method.includes('fp8') || method === 'fp8') return 'FP8';
-    if (method.includes('int8') || method === 'int8') return 'INT8';
-    if (method.includes('int4') || method === 'int4') return 'INT4';
-    if (method.includes('mxfp4') || method === 'mxfp4') return 'MXFP4';
-    if (method === 'gptq' || method === 'awq') {
-      // Check bits field for GPTQ/AWQ
-      const bits = qconfig.bits || qconfig.num_bits || 4;
-      if (bits === 8) return 'INT8';
-      if (bits === 4) return 'INT4';
-      return 'INT4'; // Default to INT4 for GPTQ/AWQ
-    }
-    if (method === 'bnb' || method.includes('bitsandbytes')) return 'INT4';
-
-    return testWeightPrecision; // Unknown, fall back to user selection
-  }, [hfConfig, testWeightPrecision]);
+  const actualWeightPrecision = React.useMemo(
+    () => resolveActualWeightPrecision(hfConfig, testWeightPrecision),
+    [hfConfig, testWeightPrecision],
+  );
 
   const realKVPerReqMB = testResult && testResult.memory_analysis.kv_cache_used_gb ?
     (testResult.memory_analysis.kv_cache_used_gb / testConcurrentUsers) * 1000 : // Convert GB to MB
@@ -672,7 +747,8 @@ export default function Performance() {
   const isMoe = detectMoe(spec, hfConfig)
 
   // Use live pricing if available, fallback to estimated pricing from hardware cost
-  const currentCatalogGpu = catalogGpus.find(g => g.systemId === gpu);
+  const currentCatalogGpu = selectableGpus.find(g => g.systemId === gpu);
+  const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(testClassifierInput);
   const hwCostEntry = costings.gpuHardwareCosts.get(gpu)
   const catalogGpuForPricing = hwCostEntry?.new_usd != null
     ? { hardware_cost_usd: hwCostEntry.new_usd, name: currentCatalogGpu?.label ?? gpu }
@@ -1326,20 +1402,20 @@ export default function Performance() {
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
-              supportedModels={getAppConfig().testedModels}
+               supportedModels={testedModelsAvailable ? validatedModelIds : undefined}
               hfToken={hfToken}
             />
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={catalogGpus} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <Button
             variant="primary"
-            onClick={() => { setTestResult(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
+            onClick={() => { setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
             isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
@@ -1352,12 +1428,12 @@ export default function Performance() {
       <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); }}>Aggregated</Button>
+          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); }}>Aggregated</Button>
           <Button
             variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
             size="sm"
             isDisabled={!disaggSupported}
-            onClick={() => { setServingMode('disagg'); setTestResult(null); }}
+            onClick={() => { setServingMode('disagg'); setTestResult(null); setTestClassifierInput(null); }}
           >
             Disaggregated
           </Button>
@@ -1380,7 +1456,7 @@ export default function Performance() {
                   value={selectedNetworkFabric}
                   aria-label="Inter-node fabric"
                   isDisabled={(networkOptions ?? []).length === 0}
-                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); }}
+                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); }}
                 >
                   <FormSelectOption value="" label="Select a fabric" isDisabled />
                   {(networkOptions ?? []).map(network => (
@@ -1547,6 +1623,8 @@ export default function Performance() {
           </div>
         </div>
       )}
+
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={testClassifierInput?.effective.model_id ?? model} systemId={testClassifierInput?.effective.system_id ?? gpu} />
 
       {/* ---------- result tiles ---------- */}
       {!testResult && !isCalculating && !testError}

@@ -26,7 +26,11 @@ Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://
 ConfigIQ maintains empirically trained performance-envelope classifiers for
 supported model and hardware pairs. The classifiers are built from sanitized,
 pinned ground-truth data and served by Triton FIL; the webapp consumes their
-registry and dashboard payloads through `/api/tested-models`.
+registry and dashboard payloads through `/api/tested-models`. Registry schema v2
+distinguishes validated classifiers from measured pairs without a validated
+envelope, and from models that are approved for measurement but have no data.
+Only validated pairs emit a verdict; every measured pair links to its graph at
+`/tested-models/<pair-id>`.
 
 The complete pipeline, data boundary, artifact schema, and deployment procedure
 are documented in [docs/tested-models.md](docs/tested-models.md). Source scripts

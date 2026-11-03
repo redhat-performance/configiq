@@ -45,6 +45,7 @@ services, typically behind nginx. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
 | Catalog hook | `lib/hooks/useCatalog.ts` | Same-origin GPU, model, and backend catalog |
 | Costings hook | `lib/hooks/useCostings.ts` | Same-origin pricing and health data |
 | Complete offers hook | `lib/hooks/useInfrastructureOffers.ts` | Validated whole-instance/server prices; isolated from the shared pricing cache |
+| Ground truth comparison | `app/validation/compare/` | Internal GT and InferenceX benchmark filters, AISimulators comparison, and PatternFly charts |
 | API adapters | `lib/api/` | Request shapes, response normalization, and error handling |
 | Legacy catalogs | `lib/gpu-math/` | Historical static data and types; no new sizing formulas |
 
@@ -106,6 +107,51 @@ GPU sizing formulas or call external service URLs directly from the browser.
    rejects results from a different simulator. Cost formulas remain client-side;
    performance and GPU sizing remain service-owned.
 
+### Ground truth comparison
+
+1. The comparison page requests benchmark rows through the same-origin
+   `/api/validation/ground-truth` route.
+2. The route reads the public internal GT Hugging Face Parquet files and a
+   private Hugging Face InferenceX snapshot with a server-side read token. It
+   caches both sources for five minutes and derives filter options from their
+   union. Measured runtime configurations retain their source and serving
+   settings; a selection returns only its own source's rows. If either dataset
+   fails to load, measurements from the other remain available.
+3. Selected measurements are grouped by source and concurrency; ConfigIQ calls its existing
+   `/api/predict` proxy for estimates at up to 24 measured concurrency levels,
+   with at most three requests in flight. The request carries the simulator
+   selected in Settings, and the page refuses unsupported model/system/backend
+   combinations instead of falling back to another simulator. MoE expert
+   parallelism is set from catalog or Hugging Face expert-count metadata so its
+   width matches TP. When the measured backend version is supported, prediction
+   controls match it; otherwise the user chooses a supported prediction version.
+4. PatternFly charts show source-labeled measured and predicted values for TTFT, TPOT,
+   throughput, throughput per user, and request latency. The predicted series is
+   labeled with the simulator that actually produced the results. Aggregate
+   throughput comes from the simulator's cluster-wide rate; per-user throughput
+   uses its reported per-user rate when present. Percentage differences are
+   hidden when the measured and predicted backend versions differ. An unavailable dataset is shown
+   separately from a configuration that simply matches no rows.
+
+### Tested-model envelopes
+
+1. `lib/hooks/useTestedModels.ts` loads `/api/tested-models`, which parses the
+   host-mounted `registry.json` through `lib/tested-models/registry-types.ts`.
+   Schema v2 exposes each pair's status (`validated` or
+   `measured_no_envelope`), coverage, gate result, diagnostics, and the
+   `approvedModels` list.
+2. Model pickers treat only registry-validated models as tested. Approved models
+   and measured-only pairs remain selectable but never claim a validated
+   envelope.
+3. Before a prediction result is shown, the sizing pages call
+   `/api/tested-models/classify`. A pair that fails the gate returns
+   `measured_no_envelope` with no verdict; unavailable registry data is distinct
+   from "untested".
+4. The feedback component and classify response link to the canonical pair graph
+   at `/tested-models/<pair-id>`, falling back to
+   `/tested-models?model=<modelId>&system=<systemId>`. Legacy `?pair=` links
+   redirect to the pair route.
+
 ## API route map
 
 | Route | Method | Upstream or role |
@@ -115,6 +161,10 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
 | `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
+| `/api/validation/ground-truth` | GET | Union filters and source-specific aggregated measurements from internal GT and private InferenceX datasets |
+| `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
+| `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs |
+| `/api/tested-models/dashboard/[pairId]` | GET | Sanitized measured graph data for one model/system pair |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |
 | `/api/costings/models` | GET | aicostings hosted-model pricing |

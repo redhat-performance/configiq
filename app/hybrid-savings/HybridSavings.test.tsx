@@ -25,6 +25,20 @@ vi.mock('@/lib/huggingface/fetch-config', () => ({ fetchModelConfig: vi.fn() }))
 vi.mock('@/lib/app-config', () => ({ getAppConfig: () => appConfig }))
 vi.mock('next/dynamic', () => ({ default: () => (props: { points: unknown; hostedModelLabel?: string; infrastructureModelLabel?: string }) => <div data-testid="chart">Comparison chart {props.hostedModelLabel} {props.infrastructureModelLabel} {JSON.stringify(props.points)}</div> }))
 vi.mock('@/lib/hooks/useCatalog', () => ({ useCatalog: vi.fn() }))
+vi.mock('@/lib/hooks/useTestedModels', () => ({
+  useTestedModels: () => ({
+    pairs: [],
+    modelIds: ['tested/model', 'tested/other'],
+    validatedModelIds: ['tested/model', 'tested/other'],
+    measuredModelIds: ['tested/model', 'tested/other'],
+    approvedModels: ['tested/model', 'tested/other'],
+    modelStatus: () => 'validated',
+    gate: null,
+    schemaVersion: 2,
+    isLoading: false,
+    isAvailable: true,
+  }),
+}))
 
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement

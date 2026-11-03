@@ -30,6 +30,7 @@ import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
+import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
 import {
@@ -197,7 +198,6 @@ export default function HybridSavings() {
   const {
     hydrated,
     defaultModel,
-    testedModels,
     inferenceBackend,
     simulator,
     backendVersion,
@@ -206,6 +206,7 @@ export default function HybridSavings() {
     pricingSource,
     hfToken,
   } = useSettings()
+  const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
   const {
     gpuOptions: allGpuOptions,
     modelOptions: allModelOptions,
@@ -282,7 +283,7 @@ export default function HybridSavings() {
     setModel(configured ?? qwenStartingPoint ?? firstPriced ?? modelOptions[0])
   }, [hydrated, model, modelOptions, defaultModel, costings.models])
 
-  const modelItems = React.useMemo(() => hydrated ? buildModelItems(modelOptions, modelSpecs) : [], [modelOptions, modelSpecs, hydrated])
+  const modelItems = React.useMemo(() => hydrated ? buildModelItems(modelOptions, modelSpecs, validatedModelIds) : [], [modelOptions, modelSpecs, validatedModelIds, hydrated])
   React.useEffect(() => {
     setModelConfig(null)
     setConfigError(null)
@@ -512,7 +513,7 @@ export default function HybridSavings() {
             <div className={styles.inputGrid}>
               <div className={styles.modelField}>
                 <ComboBox id="hybrid-model" value={model} onChange={setModel} items={modelItems}
-                  allowCustom supportedModels={testedModels} hfToken={hfToken}
+                  allowCustom supportedModels={testedModelsAvailable ? validatedModelIds : undefined} hfToken={hfToken}
                   helperText="Choose a model checkpoint to compare." />
               </div>
               <NumberField id="hybrid-input-tokens" label="Monthly input tokens" value={monthlyInputTokens} max={HYBRID_PLANNING_HORIZON_TOKENS} step={1_000_000} formatWithCommas onChange={setMonthlyInputTokens} />

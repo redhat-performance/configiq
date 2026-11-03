@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 import requests
+from quantization import canonical_quantization
 
 DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
@@ -62,21 +63,32 @@ def _runtime_value(text: str, *names: str) -> str | None:
 
 def _backend_name(version: Any) -> str:
     text = str(version or "").lower()
-    for name in ("vllm", "sglang", "trt-llm", "rhaiis", "nim", "aic"):
+    # Productized builds sometimes embed "vllm" in their version string, so
+    # check the more specific stacks first.
+    for name in ("rhaiis", "sglang", "trt-llm", "nim", "aic", "vllm"):
         if name in text:
             return name
     return "unknown"
 
 
-def load_required_models(config_path: Path) -> list[str]:
-    """Load the required tested-model IDs from ConfigIQ's public config."""
+def load_approved_models(config_path: Path) -> list[str]:
+    """Load models approved for measurement from ConfigIQ's public config.
+
+    ``approvedModels`` is the durable name. ``testedModels`` is accepted during
+    the transition because the approved list must never be mistaken for the
+    registry's classifier-validated list.
+    """
     data = json.loads(config_path.read_text())
-    models = data.get("testedModels")
+    models = data.get("approvedModels", data.get("testedModels"))
     if not isinstance(models, list) or not models or not all(isinstance(model, str) for model in models):
-        raise ValueError(f"{config_path} must contain a non-empty testedModels string array")
+        raise ValueError(f"{config_path} must contain a non-empty approvedModels string array")
     if len(models) != len(set(models)):
-        raise ValueError(f"{config_path} contains duplicate tested model IDs")
+        raise ValueError(f"{config_path} contains duplicate approved model IDs")
     return models
+
+
+# Kept for callers that predate the approved/validated distinction.
+load_required_models = load_approved_models
 
 
 def pair_id(model_id: str, accelerator: str) -> str:
@@ -139,6 +151,11 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     for column, names in runtime_aliases.items():
         if column not in frame:
             frame[column] = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+    for column in ("weight_quantization", "kv_quantization"):
+        if column in frame:
+            frame[column] = frame[column].map(
+                lambda value, name=column: canonical_quantization(name, value)
+            )
     frame = frame[[column for column in frame.columns if column in CLASSIFICATION_COLUMNS]]
 
     frame["model_id"] = model_id

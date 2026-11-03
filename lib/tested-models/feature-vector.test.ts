@@ -56,4 +56,76 @@ describe('buildFeatureVector', () => {
 
     expect(vector).toEqual([1, 1, 1, 1, 1, 4, 20480, 1, 7])
   })
+
+  it('matches a kernel mode to the measured quantization category', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, gemm_quant_mode: 'int4_wo' },
+    }, {
+      feature_names: ['weight_quantization=awq', 'weight_quantization=fp8', 'weight_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([1, 0, 0])
+  })
+
+  it('prefers an exact category when a legacy schema lists an alias too', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, kvcache_quant_mode: 'fp8' },
+    }, {
+      feature_names: ['kv_quantization=fp8', 'kv_quantization=fp8_e4m3', 'kv_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([1, 0, 0])
+  })
+
+  it('keeps the exact legacy category when the request names it explicitly', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, kvcache_quant_mode: 'fp8_e4m3' },
+    }, {
+      feature_names: ['kv_quantization=fp8', 'kv_quantization=fp8_e4m3', 'kv_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 1, 0])
+  })
+
+  it('prefers the canonical spelling before another alias', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, gemm_quant_mode: 'int4_wo' },
+    }, {
+      feature_names: ['weight_quantization=awq', 'weight_quantization=int4', 'weight_quantization=fp8'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 1, 0])
+  })
+
+  it('matches a canonical value to a legacy alias-only category', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, kvcache_quant_mode: 'fp8' },
+    }, {
+      feature_names: ['kv_quantization=fp8_e4m3', 'kv_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([1, 0])
+  })
+
+  it('activates no quantization category for an unseen mode', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, gemm_quant_mode: 'nvfp4' },
+    }, {
+      feature_names: ['weight_quantization=fp8', 'weight_quantization=unknown'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 0])
+  })
 })

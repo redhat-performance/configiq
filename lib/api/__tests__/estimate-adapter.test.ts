@@ -225,6 +225,19 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     expect(result.warnings).toContain('The selected simulator uses a model configuration marked different_quantization.')
   })
 
+  it('keeps aggregate and per-user throughput distinct', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...VALID_RESPONSE,
+      tokens_per_second: 549.7077676117464,
+      tokens_per_second_per_user: 153.80785873894342,
+    }))
+
+    const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, batch_size: 4 })
+
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(549.7078)
+    expect(result.performance?.throughput_tokens_per_sec_per_user).toBeCloseTo(153.8079)
+  })
+
   it('omits backend_version when not provided', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
@@ -592,6 +605,30 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result.performance?.throughput_tokens_per_sec).toBeGreaterThan(0)
     // concurrency = floor(max_num_seqs) = floor(32) from serving_config
     expect(result.performance?.concurrency).toBe(32)
+  })
+
+  it('keeps aggregate and per-user throughput distinct', async () => {
+    const mockFetch = mockFetchOk({
+      ...VALID_RESPONSE,
+      tokens_per_second: 1000,
+      tokens_per_second_per_user: 31.25,
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.performance?.throughput_tokens_per_sec).toBe(1000)
+    expect(result.performance?.throughput_tokens_per_sec_per_user).toBe(31.25)
+  })
+
+  it('leaves per-user throughput null when the simulator omits it', async () => {
+    const mockFetch = mockFetchOk({ ...VALID_RESPONSE, tokens_per_second: 1000 })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.performance?.throughput_tokens_per_sec).toBe(1000)
+    expect(result.performance?.throughput_tokens_per_sec_per_user).toBeNull()
   })
 
   it('handles zero output sequence length gracefully', async () => {

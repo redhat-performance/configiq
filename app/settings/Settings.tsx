@@ -7,10 +7,11 @@ import { isSimulatorBackendCompatible, useSettings, type InferenceBackend, type 
 import { getAppConfig } from '@/lib/app-config';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
+import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import styles from './Settings.module.css';
 
-type ModelStatus = 'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error';
+type ModelStatus = 'idle' | 'supported' | 'measured' | 'approved' | 'catalog' | 'fetching' | 'fetched' | 'error';
 
 const BACKEND_LABELS: Record<string, string> = {
   vllm: 'vLLM',
@@ -31,6 +32,7 @@ export function Settings() {
     ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
     : backendOptions.find(b => b.id === inferenceBackend);
   const modelChoices = support?.models ?? modelOptions;
+  const { validatedModelIds, modelStatus: registryModelStatus, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [localModel, setLocalModel] = React.useState('');
   const [modelStatus, setModelStatus] = React.useState<ModelStatus>('idle');
@@ -68,7 +70,13 @@ export function Settings() {
     if (catalogLoading) { setModelStatus('idle'); return; }
     if (!localModel || !localModel.includes('/')) { setModelStatus('idle'); return; }
     const timer = setTimeout(() => {
-      if (getAppConfig().testedModels.includes(localModel)) { setModelStatus('supported'); return; }
+      // The registry is authoritative for tested status. An unavailable
+      // registry leaves the status unknown instead of falling back to the
+      // approved-for-measurement list.
+      const status = registryModelStatus(localModel);
+      if (status === 'validated') { setModelStatus('supported'); return; }
+      if (status === 'measured_no_envelope') { setModelStatus('measured'); return; }
+      if (status === 'approved_no_data') { setModelStatus('approved'); return; }
       const inCatalog = modelChoices.includes(localModel);
       if (inCatalog) { setModelStatus('catalog'); return; }
       setModelStatus('fetching');
@@ -77,7 +85,7 @@ export function Settings() {
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelChoices, catalogLoading, hydrated]);
+  }, [localModel, hfToken, modelChoices, catalogLoading, hydrated, registryModelStatus, testedModelsAvailable]);
 
   const handleTokenChange = (v: string) => {
     setHfToken(v);
@@ -151,21 +159,21 @@ export function Settings() {
           >
             <div>
               <div className={styles.sectionTitle}>
-                Tested models
+                Validated models
                 <span style={{ fontSize: '11px', fontWeight: 400, marginLeft: '8px', color: '#6a6e73' }}>
                   {validatedOpen ? '▲' : '▼'}
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Models tested for use with the AISimulators sizing engine.
+                Models with a validated performance envelope in the tested-model registry.
               </div>
             </div>
-            <Label color="blue" isCompact>{getAppConfig().testedModels.length} models</Label>
+            <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>
           </div>
           {validatedOpen && (
             <div className={styles.fieldWrap}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 8px' }}>
-                {getAppConfig().testedModels.map(m => (
+                 {validatedModelIds.map(m => (
                   <Label
                     key={m}
                     color="blue"
