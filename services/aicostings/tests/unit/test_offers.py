@@ -140,17 +140,24 @@ def test_coreweave_complete_page_contract_rejects_truncation_but_allows_delistin
     assert result.rented and all(record.system_id == 'b200_sxm' for record in result.rented)
 
 
-def gcp_sku(description, price, unit="h"):
+def gcp_sku(description, price, unit="h", group="GPU"):
     return {"skuId": description, "description": description, "serviceRegions": ["us-central1"],
-            "category": {"usageType": "OnDemand"}, "pricingInfo": [{
+            "category": {"usageType": "OnDemand", "resourceGroup": group,
+                         "resourceFamily": "Storage" if group == "LocalSSD" else "Compute"}, "pricingInfo": [{
                 "effectiveTime": "2026-10-01T00:00:00Z", "pricingExpression": {
                     "usageUnit": unit, "tieredRates": [{"startUsageAmount": 0, "unitPrice": {
                         "currencyCode": "USD", "units": str(int(price)), "nanos": round((price - int(price)) * 1e9)}}]}}]}
 
 
+def gcp_components():
+    return [gcp_sku("Nvidia Tesla A100 80GB GPU running in Americas", 5),
+            gcp_sku("A2 Instance Core running in Americas", .1, group="CPU"),
+            gcp_sku("A2 Instance Ram running in Americas", .01, "GiBy.h", group="RAM"),
+            gcp_sku("SSD backed Local Storage", .02, "GiBy.h", group="LocalSSD")]
+
+
 def test_gcp_requires_all_machine_components_and_rejects_ambiguous_prices():
-    skus = [gcp_sku("NVIDIA A100 80GB GPU", 5), gcp_sku("A2 Ultra Instance Core", .1),
-            gcp_sku("A2 Ultra Instance RAM", .01, "GiBy.h"), gcp_sku("Local SSD", .02, "GiBy.h")]
+    skus = gcp_components()
     offers = parse_gcp_a2_prices(skus, ["us-central1"])
     assert [record.gpu_count for record in offers] == [1, 2, 4, 8]
     for record in offers:
@@ -159,7 +166,7 @@ def test_gcp_requires_all_machine_components_and_rejects_ambiguous_prices():
     for invalid in [skus[:-1], [*skus, skus[0]]]:
         with pytest.raises(ValueError):
             parse_gcp_a2_prices(invalid, ["us-central1"])
-    future_price = gcp_sku("NVIDIA A100 80GB GPU", 100)["pricingInfo"][0]
+    future_price = gcp_sku("Nvidia Tesla A100 80GB GPU running in Americas", 100)["pricingInfo"][0]
     future_price["effectiveTime"] = "2100-01-01T00:00:00Z"
     skus[0]["pricingInfo"].append(future_price)
     assert parse_gcp_a2_prices(skus, ["us-central1"])[0].hourly_cost == offers[0].hourly_cost
@@ -167,8 +174,7 @@ def test_gcp_requires_all_machine_components_and_rejects_ambiguous_prices():
 
 @pytest.mark.parametrize('invalid', ['currency', 'unit', 'region', 'tier'])
 def test_gcp_rejects_incomplete_regions_and_incompatible_components(invalid):
-    skus = [gcp_sku("NVIDIA A100 80GB GPU", 5), gcp_sku("A2 Ultra Instance Core", .1),
-            gcp_sku("A2 Ultra Instance RAM", .01, "GiBy.h"), gcp_sku("Local SSD", .02, "GiBy.h")]
+    skus = gcp_components()
     expression = skus[0]['pricingInfo'][0]['pricingExpression']
     if invalid == 'currency':
         expression['tieredRates'][0]['unitPrice']['currencyCode'] = 'EUR'

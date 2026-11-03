@@ -96,8 +96,9 @@ Credential-free providers (Azure, AWS, Vast.ai) run out of the box. The
 remaining providers require a per-provider API key and only run when their
 environment variable is set (see [Configuration](#configuration)) — until then
 they're skipped, so `/health` only ever reports providers actually being
-scraped. Their request/auth is wired but response parsing is **unverified**
-against the live APIs; validate with a real key before trusting output.
+scraped. GCP A2 Ultra collection has been validated against the public catalogue
+in `us-central1`. The other key-gated providers still have **unverified**
+response parsing; validate with a real key before trusting their output.
 
 | Provider | Method | Status |
 |---|---|---|
@@ -107,7 +108,7 @@ against the live APIs; validate with a real key before trusting output.
 | Vast.ai | Public marketplace API (spot-style median) | Implemented (no key) |
 | RunPod | GraphQL API | Key-gated, parsing TODO |
 | Lambda Labs | Cloud API | Key-gated, parsing TODO |
-| GCP | Cloud Billing Catalog API | Key-gated, conservative A2 Ultra component parser; live-key validation still required |
+| GCP | Cloud Billing Catalog API | Key-gated A2 Ultra on-demand component prices; live-validated in `us-central1` with a real-response regression fixture |
 | Scaleway | Product catalog API | Key-gated, parsing TODO |
 | IBM Cloud | Global Catalog API | Key-gated, parsing TODO |
 
@@ -154,10 +155,16 @@ these do not change `new_usd` into a server price.
 - GCP currently composes only A2 Ultra on-demand GPU, vCPU, RAM and bundled
   Local SSD charges. Missing, ambiguous or tiered components in any configured
   region fail the whole collection, retaining the last complete snapshot.
-  Monthly SSD prices use 730 hours/month. No live-key validation was possible
-  during development: validate against real catalogue responses before enabling
-  this collector. Other GCP shapes remain clearly curated, not automatically
-  priced. The collector never accesses billing-account/private contract APIs.
+  Monthly SSD prices use 730 hours/month. The real-response regression fixture
+  was collected on 2026-11-03 in `us-central1`; the complete catalogue was fetched
+  with pagination, not just the fixture subset. Component identity requires the
+  standard SKU description and resource category: A2 CPU/RAM prices are shared,
+  while DWS, reserved, other GPU variants and other families' SSD rates are
+  excluded even when Google labels them `OnDemand`. Other GCP shapes remain
+  clearly curated, not automatically priced. Prices do not guarantee available
+  GPU capacity. The collector never accesses billing-account/private contract APIs.
+  The API key is sent in a header, never a query string; redirects and malformed
+  catalogue pages fail the collection without publishing partial prices.
 
 `data/infrastructure-offers.yaml` centralises the former Hybrid Savings
 catalogue (28 rental references and 19 complete-server estimates). It is
@@ -191,7 +198,7 @@ Routing Economics are unchanged.
 | `AWS_PRICING_REGIONS` | `us-east-1,us-west-2` | Comma-separated AWS regions to scrape GPU on-demand prices for |
 | `RUNPOD_API_KEY` | _(unset)_ | Activates the RunPod scraper (parsing TODO) |
 | `LAMBDA_API_KEY` | _(unset)_ | Activates the Lambda Labs scraper (parsing TODO) |
-| `GCP_BILLING_API_KEY` | _(unset)_ | Activates public A2 Ultra catalogue collection; requires live validation |
+| `GCP_BILLING_API_KEY` | _(unset)_ | Backend-only key activating public A2 Ultra catalogue collection; restrict to the Cloud Billing API |
 | `GCP_PRICING_REGIONS` | `us-central1` | Regions for the conservative GCP A2 Ultra component mapping |
 | `SCALEWAY_SECRET_KEY` | _(unset)_ | Activates the Scaleway scraper (parsing TODO) |
 | `IBMCLOUD_API_KEY` | _(unset)_ | Activates the IBM Cloud scraper (parsing TODO) |

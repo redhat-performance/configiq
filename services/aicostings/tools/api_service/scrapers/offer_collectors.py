@@ -18,6 +18,15 @@ from .cloud_rates import AWS_PRICING_REGIONS, RateRecord
 COREWEAVE_URL = "https://www.coreweave.com/pricing"
 GCP_SKUS_URL = "https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus"
 
+# A2 Ultra uses shared A2 CPU/RAM rates. OnDemand also contains DWS and
+# reserved SKUs, so both category and the standard-price description must match.
+GCP_A2_COMPONENT_SKUS = {
+    ("Compute", "GPU"): ("gpu", r"Nvidia Tesla A100 80GB GPU running in .+"),
+    ("Compute", "CPU"): ("cpu", r"A2 Instance Core running in .+"),
+    ("Compute", "RAM"): ("ram", r"A2 Instance Ram running in .+"),
+    ("Storage", "LocalSSD"): ("ssd", r"SSD backed Local Storage(?: in .+)?"),
+}
+
 # These aliases describe *different* physical GPUs from the SDK identities used
 # by the legacy aggregate feed. Do not inherit those historical approximations.
 UNSUPPORTED_VARIANTS = {"p4d.24xlarge", "Standard_ND96asr_v4", "Standard_NC80adis_H100_v5"}
@@ -218,21 +227,13 @@ def parse_gcp_a2_prices(skus: list[dict], regions: list[str]) -> list[RentalOffe
     for region in regions:
         components: dict[str, list[tuple[float, str, str | None]]] = {key: [] for key in ("gpu", "cpu", "ram", "ssd")}
         for sku in skus:
-            if region not in sku.get("serviceRegions", []) or sku.get("category", {}).get("usageType") != "OnDemand":
+            category = sku.get("category", {})
+            if region not in sku.get("serviceRegions", []) or category.get("usageType") != "OnDemand":
                 continue
-            description = sku.get("description", "").lower()
-            component = None
-            if "a100" in description and "80gb" in description.replace(" ", ""):
-                component = "gpu"
-            elif "a2" in description and "ultra" in description:
-                if "core" in description or "cpu" in description:
-                    component = "cpu"
-                elif "ram" in description:
-                    component = "ram"
-            elif "local ssd" in description and "preemptible" not in description:
-                component = "ssd"
-            if not component:
+            match = GCP_A2_COMPONENT_SKUS.get((category.get("resourceFamily"), category.get("resourceGroup")))
+            if not match or not re.fullmatch(match[1], sku.get("description", ""), flags=re.IGNORECASE):
                 continue
+            component = match[0]
             pricing = sorted(
                 (item for item in sku.get("pricingInfo", []) if item.get("effectiveTime")
                  and datetime.fromisoformat(item["effectiveTime"]) <= now),
@@ -280,16 +281,21 @@ async def scrape_gcp_offers(session: aiohttp.ClientSession) -> dict:
     token = ""
     seen = set()
     while True:
-        params = {"key": key, "currencyCode": "USD", "pageSize": "5000", "pageToken": token}
+        params = {"currencyCode": "USD", "pageSize": "5000", "pageToken": token}
         try:
-            async with session.get(GCP_SKUS_URL, params=params, timeout=aiohttp.ClientTimeout(total=60)) as response:
+            async with session.get(GCP_SKUS_URL, params=params, headers={"X-Goog-Api-Key": key},
+                                   allow_redirects=False, timeout=aiohttp.ClientTimeout(total=60)) as response:
                 if response.status != 200:
                     raise RuntimeError(f"GCP public catalogue returned HTTP {response.status}")
                 data = await response.json()
         except (aiohttp.ClientError, TimeoutError):
-            # aiohttp exceptions may contain the API-key query string.
+            # Transport exceptions may contain request details; never expose credentials.
             raise RuntimeError("GCP public catalogue request failed") from None
-        skus.extend(data.get("skus", []))
+        if (not isinstance(data, dict) or not isinstance(data.get("skus"), list)
+                or any(not isinstance(sku, dict) for sku in data["skus"])
+                or not isinstance(data.get("nextPageToken", ""), str)):
+            raise ValueError("GCP public catalogue returned an invalid page")
+        skus.extend(data["skus"])
         token = data.get("nextPageToken", "")
         if not token:
             break
