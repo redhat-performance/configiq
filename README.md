@@ -1,5 +1,7 @@
 # ConfigIQ
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/redhat-performance/configiq)
+
 LLM inference sizing, GPU comparison, and cost modeling for engineers and infrastructure teams.
 
 ## Live
