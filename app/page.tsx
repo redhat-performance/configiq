@@ -18,9 +18,12 @@ import {
   RouteIcon,
   BoltIcon,
   CubesIcon,
+  PlayIcon,
 } from "@patternfly/react-icons";
 import Link from "next/link";
+import { useState } from "react";
 import { useSettings } from "@/contexts/SettingsContext";
+import { DemoVideoModal } from "@/components/ui/DemoVideoModal";
 
 const tools = [
   {
@@ -79,6 +82,7 @@ const costingsTools = [
 
 export default function HomePage() {
   const { costingsEnabled } = useSettings();
+  const [isDemoOpen, setIsDemoOpen] = useState(false);
   const visibleTools = costingsEnabled ? [...tools, ...costingsTools] : tools;
 
   return (
@@ -99,6 +103,15 @@ export default function HomePage() {
               real-world performance.
             </Content>
           </Content>
+          <div style={{ marginTop: "1.5rem" }}>
+            <Button
+              variant="primary"
+              icon={<PlayIcon />}
+              onClick={() => setIsDemoOpen(true)}
+            >
+              Watch a demo
+            </Button>
+          </div>
         </div>
       </PageSection>
 
@@ -129,6 +142,8 @@ export default function HomePage() {
           ))}
         </Grid>
       </PageSection>
+
+      <DemoVideoModal isOpen={isDemoOpen} onClose={() => setIsDemoOpen(false)} />
     </>
   );
 }
