@@ -61,11 +61,10 @@ python -m uvicorn tools.api_service.app:app --reload --host 0.0.0.0 --port 8000
 The API is then at `http://localhost:8000` with interactive docs at
 `http://localhost:8000/docs`.
 
-## Sizing in bands
+## Sizing multiple workloads
 
-One call per workload row or demand band — there is no single mixed-workload
-endpoint. See [user scenarios](user-scenarios.md#sizing-in-bands-batch-sizing)
-for band sizing guidance.
+One call per workload — there is no single mixed-workload endpoint. See
+[user scenarios](user-scenarios.md#sizing-multiple-workloads).
 
 ## MCP
 
