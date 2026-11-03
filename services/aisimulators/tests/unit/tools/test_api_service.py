@@ -1665,10 +1665,44 @@ class TestVersionFallback:
 
         assert len(app_module._VERSION_FALLBACK_CACHE) == 2
 
+    def test_the_cache_is_invalidated_when_the_system_default_changes(self, monkeypatch):
+        versions = {"h200_sxm": {"vllm": ["0.24.0", "0.28.0", "0.31.0"]}}
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+        )
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert calls == ["0.24.0", "0.31.0"]
+
+        # The SDK moves `current` to 0.28.0; the cached 0.31.0 must not bypass it.
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.28.0", "next": "0.31.0"}},
+        )
+        calls.clear()
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert calls == ["0.28.0"]
+
     def test_a_cached_fallback_that_is_no_longer_declared_is_ignored(self, monkeypatch):
         self._patch_versions_h200(monkeypatch)
         request = app_module.EstimateRequest.model_validate(VALID_ESTIMATE_BODY)
-        app_module._VERSION_FALLBACK_CACHE[app_module._fallback_cache_key(request)] = "0.99.0"
+        key = app_module._fallback_cache_key(
+            request, app_module._system_default_version("h200_sxm", "vllm")
+        )
+        app_module._VERSION_FALLBACK_CACHE[key] = "0.99.0"
         calls: list[str | None] = []
 
         def fake_prediction(req, include):
