@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
+from tools.api_service import offers as offers_module
 from tools.api_service.offers import assemble_offers, load_curated_offers
 from tools.api_service.scrapers import cloud_rates, offer_collectors
 
@@ -21,6 +22,7 @@ def catalogue(monkeypatch):
     clock = MagicMock(wraps=datetime)
     clock.now.return_value = datetime.fromisoformat(data["_meta"]["retrieved_at"])
     monkeypatch.setattr(offer_collectors, "datetime", clock)
+    monkeypatch.setattr(offers_module, "datetime", clock)
     monkeypatch.setenv("GCP_BILLING_API_KEY", "test-catalogue-key")
     monkeypatch.setenv("GCP_PRICING_REGIONS", "us-central1")
     return data["skus"]

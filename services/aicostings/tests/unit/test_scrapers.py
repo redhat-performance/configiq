@@ -31,6 +31,7 @@ from tools.api_service.scrapers.models import (
     fetch_openrouter_models,
     scrape_all_models,
 )
+from tools.api_service.scrapers.offer_collectors import snapshot_from_rates
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -40,18 +41,36 @@ async def test_complete_offers_publish_without_waiting_for_another_provider():
     import asyncio
 
     published = asyncio.Event()
+    published_args = []
     release = asyncio.Event()
+
+    def publish(provider, records):
+        published_args.append((provider, records))
+        published.set()
+
     async def fast(_session, _mapping):
-        return [{"system_id": "l40s", "provider_region": "azure.eastus", "on_demand": 2}]
+        return [{
+            "system_id": "a100_sxm", "provider_region": "azure.eastus", "on_demand": 4.0,
+            "instance_name": "Standard_ND96amsr_A100_v4", "gpus_per_instance": 8,
+            "instance_hourly_cost": 32.0, "source_url": "https://prices.azure.com/api/retail/prices",
+            "currency": "USD", "unit": "1 Hour",
+        }]
     async def slow(_session, _mapping):
         await release.wait()
         return []
 
     with patch("tools.api_service.scrapers.cloud_rates.active_scrapers", return_value=[("azure", fast), ("aws", slow)]):
-        task = asyncio.create_task(scrape_all_cloud_rates(MagicMock(), publish_offers=lambda *_: published.set()))
+        task = asyncio.create_task(scrape_all_cloud_rates(MagicMock(), publish_offers=publish))
         try:
             await asyncio.wait_for(published.wait(), timeout=1)
             assert not task.done()
+            provider, records = published_args[0]
+            assert provider == "azure"
+            offers = snapshot_from_rates(provider, records)["offers"]
+            assert len(offers) == 1
+            assert offers[0]["instance_name"] == "Standard_ND96amsr_A100_v4"
+            assert offers[0]["gpu_count"] == 8
+            assert offers[0]["hourly_cost"] == 32.0
         finally:
             release.set()
             await task
