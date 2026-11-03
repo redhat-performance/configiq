@@ -87,6 +87,19 @@ The `main` branch is protected. Nobody can push to it directly — all changes g
 - CI to pass (type-check + lint + build)
 - At least one approving review from another engineer
 
+### Update the docs when you land a feature
+
+Everyone updates `docs/` in the same PR that lands user facing work:
+
+- A new tool, page, endpoint, or MCP tool: document it in the relevant
+  `docs/` page ([user scenarios](user-scenarios.md),
+  [MCP server](mcp-server.md), [REST API](api.md)) and link it from
+  [overview](overview.md) and the README.
+- A changed default, output, or request parameter: update the existing page
+  rather than adding a new one.
+- Docs describe what is delivered. Do not document planned or unshipped
+  functionality.
+
 ### Step-by-step
 
 **1. Always start from an up-to-date main**
@@ -256,6 +269,7 @@ Before marking a PR ready for review:
 - [ ] `npm run type-check` passes locally
 - [ ] `npm run lint` passes locally
 - [ ] `npm run build` passes locally
+- [ ] `docs/` updated for any user facing behavior added or changed by this PR
 - [ ] New GPU math is in AISimulators, not in a component or `lib/gpu-math/`
 - [ ] No new third-party UI libraries added to `package.json`
 - [ ] All UI text uses sentence case
