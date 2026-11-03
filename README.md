@@ -24,7 +24,7 @@ Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://
 ## User scenarios
 
 Which tool to use for which customer ask, the scenarios we test sizing
-against, and how to size in demand bands:
+against, and how to size multiple workloads:
 [docs/user-scenarios.md](docs/user-scenarios.md). The same APIs are available
 as MCP tools — see [docs/mcp-server.md](docs/mcp-server.md) — and the REST
 API is referenced in [docs/api.md](docs/api.md).
