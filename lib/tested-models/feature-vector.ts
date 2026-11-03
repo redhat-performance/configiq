@@ -9,6 +9,77 @@ export interface FeatureSchema {
   numeric_medians: Record<string, number>
 }
 
+const RUNTIME_FAMILY_LABEL: Record<string, string> = {
+  vllm: 'vLLM',
+  sglang: 'sglang',
+  'trt-llm': 'trt-llm',
+  rhaiis: 'rhaiis',
+  nim: 'nim',
+  aic: 'aic',
+  tgi: 'tgi',
+  lmdeploy: 'lmdeploy',
+}
+
+const RUNTIME_TOKEN_FAMILY: Record<string, string> = {
+  vllm: 'vllm',
+  sglang: 'sglang',
+  'tensorrt-llm': 'trt-llm',
+  'trt-llm': 'trt-llm',
+  rhaiis: 'rhaiis',
+  nim: 'nim',
+  aic: 'aic',
+  tgi: 'tgi',
+  lmdeploy: 'lmdeploy',
+}
+
+const RUNTIME_TOKEN_PATTERN = new RegExp(
+  `\\b(${Object.keys(RUNTIME_TOKEN_FAMILY)
+    .sort((left, right) => right.length - left.length)
+    .map(token => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})-(\\d+(?:\\.\\d+)*)`,
+  'gi',
+)
+
+const BARE_VERSION_PATTERN = /^\s*(\d+(?:\.\d+)*)(?:[-._+]\S*)?\s*$/
+
+/** Canonical runtime family for an already-resolved backend name. */
+export function backendFamily(value: string | null | undefined): string {
+  const text = (value ?? '').trim().toLowerCase()
+  return text in RUNTIME_FAMILY_LABEL ? text : 'unknown'
+}
+
+function versionFamily(numbers: string): string {
+  return numbers.split('.').slice(0, 2).join('.')
+}
+
+/**
+ * Pool a raw version label into a backend-scoped major.minor family.
+ *
+ * Training rows carry labels such as `vLLM-0.24.0` while the runtime sends the
+ * catalog version `0.24.0`. Both must map to the same feature category, and
+ * families from different runtimes must never collide.
+ */
+export function normalizeBackendVersion(
+  backend: string | null | undefined,
+  version: string | null | undefined,
+): string {
+  const text = (version ?? '').trim()
+  if (!text || ['nan', 'none', 'unknown', 'current'].includes(text.toLowerCase())) return 'unknown'
+  const family = backendFamily(backend)
+  const matches = [...text.matchAll(RUNTIME_TOKEN_PATTERN)]
+  if (matches.length > 0) {
+    for (const match of matches) {
+      const resolved = RUNTIME_TOKEN_FAMILY[match[1].toLowerCase()]
+      if (resolved === family) return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(match[2])}`
+    }
+    const resolved = RUNTIME_TOKEN_FAMILY[matches[0][1].toLowerCase()]
+    return `${RUNTIME_FAMILY_LABEL[resolved]}-${versionFamily(matches[0][2])}`
+  }
+  const bare = BARE_VERSION_PATTERN.exec(text)
+  if (bare && family !== 'unknown') return `${RUNTIME_FAMILY_LABEL[family]}-${versionFamily(bare[1])}`
+  return 'unknown'
+}
+
 function systemFamily(systemId: string): string {
   const normalized = systemId.toLowerCase()
   if (normalized.startsWith('h200')) return 'H200'
@@ -61,7 +132,7 @@ export function buildFeatureValues(input: CanonicalClassifierInput): Record<stri
     model_id: effective.model_id,
     system_id: effective.system_id,
     backend: effective.backend,
-    version: effective.backend_version ?? 'unknown',
+    version: normalizeBackendVersion(effective.backend, effective.backend_version),
     accelerator: systemFamily(effective.system_id),
     request_type: 'unknown',
     precision: dtypeValue(effective),

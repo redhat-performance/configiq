@@ -48,6 +48,24 @@ Schema v1 registries remain readable during rollout. A v1 pair is treated as
 validated only when its recorded test AUC and F1 clear the metric thresholds;
 v1 carries no coverage summary, so it cannot claim the full gate.
 
+### Coverage and feature categories
+
+A v2 pair's `coverage` object records `records`, `concurrencyLevels`,
+`concurrencyLevelCount`, the raw `backendVersions` for provenance, and the
+measured `backends` (runtime families such as `vllm` or `sglang`). The
+classify endpoint refuses to score a request whose backend family is not in
+that list: it returns `no_measurements` with a reason instead of applying an
+envelope trained on a different runtime. Bundles that predate `backends` are
+treated as unknown and stay permissive.
+
+The classifier's `version` feature is a backend-scoped major.minor family, not
+a raw label. Training rows (`vLLM-0.24.0`) and runtime catalog versions
+(`0.24.0`) both normalize to `vLLM-0.24`;
+`sglang-0.5.18-recipe-latency-oriented` normalizes to `sglang-0.5`. Pooling
+keeps a category dense enough to validate while preventing families from
+different runtimes from colliding. Unrecognised or unresolved labels
+(`current`, arbitrary build strings) become `unknown`.
+
 ConfigIQ's `public/config.json` still names approved models in `testedModels`
 during the transition to `approvedModels`. The pipeline accepts either name.
 The config list governs measurement coverage; it is not evidence that a model

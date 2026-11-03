@@ -23,7 +23,10 @@ export interface RegistryCoverage {
   records: number
   concurrencyLevels: number[]
   concurrencyLevelCount: number
+  /** Raw version labels, kept for provenance. */
   backendVersions: string[]
+  /** Runtime families the pair was measured on, e.g. `vllm`, `sglang`. */
+  backends: string[]
 }
 
 export interface RegistryGateResult {
@@ -131,11 +134,17 @@ function parseCoverage(raw: unknown, pairId: string): RegistryCoverage {
   const versions = Array.isArray(coverage.backendVersions)
     ? coverage.backendVersions.filter((value): value is string => typeof value === 'string')
     : []
+  // Legacy bundles predate the backend-family list; an absent list means
+  // "unknown", so the classify guard stays permissive for them.
+  const backends = Array.isArray(coverage.backends)
+    ? coverage.backends.filter((value): value is string => typeof value === 'string')
+    : []
   return {
     records,
     concurrencyLevels: levels,
     concurrencyLevelCount,
     backendVersions: versions,
+    backends,
   }
 }
 

@@ -104,6 +104,7 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
     assert by_id[validated_pair]["coverage"]["records"] == 600
     assert by_id[validated_pair]["coverage"]["concurrencyLevelCount"] == 5
     assert by_id[validated_pair]["coverage"]["backendVersions"] == ["vLLM-0.10.2"]
+    assert by_id[validated_pair]["coverage"]["backends"] == ["vllm"]
     assert by_id[weak_pair]["status"] == "measured_no_envelope"
     assert by_id[weak_pair]["diagnostics"]["reasons"] == ["test_auc_below_minimum", "test_f1_below_minimum"]
     assert "classifier" not in by_id[weak_pair]

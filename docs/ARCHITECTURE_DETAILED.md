@@ -125,8 +125,9 @@ GPU sizing formulas or call external service URLs directly from the browser.
    envelope.
 3. Before a prediction result is shown, the sizing pages call
    `/api/tested-models/classify`. A pair that fails the gate returns
-   `measured_no_envelope` with no verdict; unavailable registry data is distinct
-   from "untested".
+   `measured_no_envelope` with no verdict; a backend the pair was not measured
+   on returns `no_measurements`; unavailable registry data is distinct from
+   "untested".
 4. The feedback component and classify response link to the canonical pair graph
    at `/tested-models/<pair-id>`, falling back to
    `/tested-models?model=<modelId>&system=<systemId>`. Legacy `?pair=` links
@@ -143,7 +144,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
 | `/api/validation/ground-truth` | GET | Union filters and source-specific aggregated measurements from internal GT and private InferenceX datasets |
 | `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
-| `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs |
+| `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs or a backend the pair was not measured on |
 | `/api/tested-models/dashboard/[pairId]` | GET | Sanitized measured graph data for one model/system pair |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |

@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 from dataset_common import load_approved_models
+from stage5_common import _backend_name, backend_family
 
 GATE_MIN_RECORDS = 100
 GATE_MIN_TEST_AUC = 0.70
@@ -77,17 +78,27 @@ def coverage_for(pair_id: str, labeled_dir: Path | None, fallback_records: int) 
             "concurrencyLevels": [],
             "concurrencyLevelCount": 0,
             "backendVersions": [],
+            "backends": [],
         }
 
     frame = pd.concat(frames, ignore_index=True)
     concurrency = pd.to_numeric(frame.get("concurrency"), errors="coerce").dropna()
     levels = sorted({float(value) for value in concurrency.unique()})
     versions = frame.get("backend_version", pd.Series(dtype="object"))
+    backend_source = frame.get("backend", versions)
+    backends = sorted(
+        {
+            backend_family(_backend_name(value))
+            for value in backend_source.dropna().unique()
+        }
+        - {"unknown"}
+    )
     return {
         "records": len(frame),
         "concurrencyLevels": levels,
         "concurrencyLevelCount": len(levels),
         "backendVersions": sorted({str(value) for value in versions.dropna().unique()}),
+        "backends": backends,
     }
 
 

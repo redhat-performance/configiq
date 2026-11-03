@@ -20,7 +20,7 @@ const input = {
 }
 
 const gate = { minRecords: 100, minTestAuc: 0.7, minTestF1: 0.3, minConcurrencyLevels: 5 }
-const coverage = { records: 600, concurrencyLevels: [1, 2, 4, 8, 16], concurrencyLevelCount: 5, backendVersions: ['vLLM-0.10.2'] }
+const coverage = { records: 600, concurrencyLevels: [1, 2, 4, 8, 16], concurrencyLevelCount: 5, backendVersions: ['vLLM-0.10.2'], backends: ['vllm'] }
 
 function registryWith(pairs: unknown[], approvedModels: string[] = ['org/model']) {
   return JSON.stringify({ schemaVersion: 2, gate, approvedModels, pairs })
@@ -110,6 +110,44 @@ describe('POST /api/tested-models/classify', () => {
     const body = await response.json()
     expect(body.status).toBe('validation_unavailable')
     expect(body.reasons[0]).toContain('unknown, not untested')
+  })
+
+  it('refuses to score a backend the pair was not measured on', async () => {
+    mockReadFile.mockResolvedValue(registryWith([validatedPair]) as never)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const sglangInput = {
+      ...input,
+      effective: { ...input.effective, backend: 'sglang', backend_version: '0.5.18' },
+    }
+    const response = await POST(new Request('http://localhost/api/tested-models/classify', { method: 'POST', body: JSON.stringify(sglangInput) }))
+    const body = await response.json()
+    expect(body).toMatchObject({
+      status: 'no_measurements',
+      confidence: null,
+      pair_id: 'model__h200',
+      dashboard_href: '/tested-models/model__h200',
+    })
+    expect(body.reasons[0]).toContain('not sglang')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('keeps scoring a legacy bundle that carries no backend list', async () => {
+    mockReadFile.mockResolvedValue(registryWith([{
+      ...validatedPair,
+      coverage: { records: 600, concurrencyLevels: [1, 2, 4, 8, 16], concurrencyLevelCount: 5, backendVersions: ['vLLM-0.10.2'] },
+    }]) as never)
+    const fetchMock = vi.fn(() => Promise.resolve(Response.json({ outputs: [{ data: [0.9] }] })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const sglangInput = {
+      ...input,
+      effective: { ...input.effective, backend: 'sglang', backend_version: '0.5.18' },
+    }
+    const response = await POST(new Request('http://localhost/api/tested-models/classify', { method: 'POST', body: JSON.stringify(sglangInput) }))
+    expect(await response.json()).toMatchObject({ status: 'within_validated_range', confidence: 0.9 })
+    expect(fetchMock).toHaveBeenCalled()
   })
 
   it('treats a null JSON body as an incomplete request, not a server error', async () => {

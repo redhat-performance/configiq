@@ -5,7 +5,7 @@ import sys
 
 import pandas as pd
 import split_dataset
-from stage5_common import feature_matrix
+from stage5_common import feature_matrix, normalize_backend_version, normalize_features
 
 
 def test_split_is_deterministic_and_keeps_configuration_groups_together(tmp_path, monkeypatch) -> None:
@@ -51,3 +51,35 @@ def test_feature_matrix_fits_medians_and_categories_from_train_only() -> None:
     assert "model_id=unseen" not in info["feature_names"]
     assert info["features"].loc[0, "model_id=a"] == 0
     assert "model_id=unseen" not in info["features"]
+
+
+def test_normalize_backend_version_pools_runtime_and_training_labels() -> None:
+    cases = {
+        ("vLLM-0.24.0", "vllm"): "vLLM-0.24",
+        ("0.24.0", "vllm"): "vLLM-0.24",
+        ("AIC-0.10.0-vLLM-0.24.0", "vllm"): "vLLM-0.24",
+        ("vLLM-0.24.0", "sglang"): "vLLM-0.24",
+        ("sglang-0.5.18-recipe-latency-oriented", "sglang"): "sglang-0.5",
+        ("0.5.18", "sglang"): "sglang-0.5",
+        ("0.5.18-recipe-latency-oriented", "sglang"): "sglang-0.5",
+        ("RHAIIS-3.5-GA", "rhaiis"): "rhaiis-3.5",
+        ("RHAIIS-3.2-vLLM-0.9.0", "rhaiis"): "rhaiis-3.2",
+        ("current", "vllm"): "unknown",
+        (None, None): "unknown",
+    }
+    for (version, backend), expected in cases.items():
+        assert normalize_backend_version(version, backend) == expected
+
+
+def test_normalize_features_uses_the_backend_scoped_version_family() -> None:
+    frame = pd.DataFrame(
+        [
+            {"version": "vLLM-0.24.0", "backend": "vllm"},
+            {"version": "0.24.0", "backend": "vllm"},
+            {"version": "sglang-0.5.18", "backend": "sglang"},
+        ]
+    )
+
+    result = normalize_features(frame)
+
+    assert result["version"].tolist() == ["vLLM-0.24", "vLLM-0.24", "sglang-0.5"]
