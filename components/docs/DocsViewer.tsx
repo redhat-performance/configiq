@@ -36,6 +36,16 @@ function slugify(children: React.ReactNode): string {
 export default function DocsViewer({ docs }: { docs: DocSection[] }) {
   const [activeKey, setActiveKey] = useState<number>(0);
 
+  // Deep link support: /docs?tab=mcp-server opens that tab.
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    if (tab) {
+      const index = docs.findIndex((doc) => doc.key === tab);
+      if (index >= 0) setActiveKey(index);
+    }
+  }, [docs]);
+
   const components = useMemo(
     () => ({
       h1: ({ children }: any) => <h1 id={slugify(children)}>{children}</h1>,
