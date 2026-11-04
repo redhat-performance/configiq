@@ -41,7 +41,7 @@
 .inputCard { padding: 18px 20px; margin-bottom: 16px; }
 
 .fieldLabel {
-  font-family: var(--mono);
+  font-family: var(--sans);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -276,7 +276,7 @@
 /* ---------- disagg phase tiles ---------- */
 .phaseSection { margin: -8px 0 24px; }
 .phaseHeading {
-  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  font-family: var(--sans); font-size: 12px; font-weight: 600;
   letter-spacing: 0.06em; text-transform: uppercase; color: var(--t2);
   margin-bottom: 12px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
 }
@@ -333,7 +333,7 @@
 .tileDark .flipBack { background: #1f1f1f; border-color: #1f1f1f; color: #fff; }
 
 .tileLabel {
-  font-family: var(--mono); font-size: 13px; font-weight: 600;
+  font-family: var(--sans); font-size: 13px; font-weight: 600;
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--t2);
   display: flex; align-items: center; gap: 7px;
 }

@@ -12,6 +12,7 @@ import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/excl
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import DollarSignIcon from '@patternfly/react-icons/dist/esm/icons/dollar-sign-icon';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
+import { WarningPanel } from '@/components/ui/WarningPanel';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 
 import styles from './Sizing.module.css';
@@ -26,6 +27,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -35,10 +37,6 @@ import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeed
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 
-function modelSuggestions(): string {
-  const names = getAppConfig().suggestedModelNames;
-  return names.length > 0 ? names.join(', ') : 'Nemotron, DeepSeek V4, Gemma 4, Kimi';
-}
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
 import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
@@ -277,7 +275,7 @@ export default function Sizing() {
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [ttft, setTtft] = React.useState(1000);
   const [tpot, setTpot] = React.useState(30);
-  const [targetConcurrency, setTargetConcurrency] = React.useState(1);
+  const [targetConcurrency, setTargetConcurrency] = React.useState(100);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
 
@@ -285,8 +283,9 @@ export default function Sizing() {
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
+  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing, reset: resetRecommend } = useRecommend();
   const [debugOpen, setDebugOpen] = React.useState(false);
+  const [inputsDirty, setInputsDirty] = React.useState(false);
 
   // Additional constraints accordion
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -298,7 +297,7 @@ export default function Sizing() {
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [ttftInput, setTtftInput] = React.useState('1000');
   const [tpotInput, setTpotInput] = React.useState('30');
-  const [concurrencyInput, setConcurrencyInput] = React.useState('1');
+  const [concurrencyInput, setConcurrencyInput] = React.useState('100');
   const [latencyInput, setLatencyInput] = React.useState('');
   const [prefixInput, setPrefixInput] = React.useState('0');
 
@@ -313,6 +312,11 @@ export default function Sizing() {
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && !validSequenceLength(prefillMaxSeqLenInput);
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
 
+  const markInputsDirty = () => {
+    if (result || isLoading) setInputsDirty(true);
+  };
+    
+
   const handleSequenceLengthChange = (
     raw: string,
     setInput: (value: string) => void,
@@ -322,6 +326,7 @@ export default function Sizing() {
     setInput(value);
     const n = Number(value);
     setValue(validSequenceLength(value) ? n : null);
+    markInputsDirty();
   };
 
   const handleIslChange = (raw: string) => {
@@ -329,6 +334,8 @@ export default function Sizing() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setIsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleOslChange = (raw: string) => {
@@ -336,6 +343,8 @@ export default function Sizing() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setOsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleTtftChange = (raw: string) => {
@@ -343,6 +352,7 @@ export default function Sizing() {
     setTtftInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTtft(n);
+    markInputsDirty();
   };
 
   const handleTpotChange = (raw: string) => {
@@ -350,6 +360,7 @@ export default function Sizing() {
     setTpotInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTpot(n);
+    markInputsDirty();
   };
 
   const handleConcurrencyChange = (raw: string) => {
@@ -357,6 +368,8 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
+    setActiveConcurrencyPreset('');
+    markInputsDirty();
   };
 
   const handleLatencyChange = (raw: string) => {
@@ -364,6 +377,7 @@ export default function Sizing() {
     setLatencyInput(cleaned);
     const n = Number(cleaned);
     setRequestLatency(cleaned === '' ? null : (Number.isFinite(n) && n > 0 ? n : null));
+    markInputsDirty();
   };
 
   const handlePrefixChange = (raw: string) => {
@@ -371,6 +385,7 @@ export default function Sizing() {
     setPrefixInput(digits);
     const n = parseInt(digits, 10);
     setPrefix(isNaN(n) ? 0 : n);
+    markInputsDirty();
   };
 
   // Model status check + fetch HF config. Catalog models resolve server-side;
@@ -477,13 +492,10 @@ export default function Sizing() {
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
 
-  const applyPreset = (p: WorkloadPreset) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+    resetRecommend();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
-    setTtft(p.ttft); setTtftInput(String(p.ttft));
-    setTpot(p.tpot); setTpotInput(String(p.tpot));
-    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
@@ -496,7 +508,29 @@ export default function Sizing() {
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
   };
 
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+
+  React.useEffect(() => {
+    if (!hydrated) return;
+    const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small');
+    if (!preset) return;
+    setActiveConcurrencyPreset(preset.key);
+    setTargetConcurrency(preset.concurrency);
+    setConcurrencyInput(String(preset.concurrency));
+  }, [hydrated]);
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
+    markInputsDirty();
+  };
+
   const handleCalculate = () => {
+    setInputsDirty(false);
     startSizing({
       model_path: model, system: gpuSystem, isl, osl, ttft,
       tpot, target_concurrency: targetConcurrency, prefix,
@@ -553,7 +587,7 @@ export default function Sizing() {
             <ComboBox
               id="adv-model"
               value={model}
-              onChange={setModel}
+              onChange={(value) => { setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
@@ -562,7 +596,7 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
         {fabricRequired && (
@@ -606,6 +640,8 @@ export default function Sizing() {
         </div>
       </div>
 
+      {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
+
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
@@ -618,11 +654,23 @@ export default function Sizing() {
         </div>
       )}
 
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
       <InfoStrip>
-        Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {(() => {
+        Based on your configuration — ISL: {isl}, OSL: {osl}, Maximum TTFT: {(() => {
           const sec = (ttft / 1000).toFixed(3);
           return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
+        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} Concurrent {targetConcurrency === 1 ? 'User' : 'Users'}.
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
@@ -1112,13 +1160,6 @@ export default function Sizing() {
       />
     </div>
   );
-}
-
-// ─── Status chip ─────────────────────────────────────────────────────────────
-
-function StatusChip({ status }: { status: string }) {
-  if (status === 'idle') return null;
-  return null; // Chip is rendered inside the input wrapper instead
 }
 
 function recommendProgressMessages(progressHistory: RecommendProgressEvent[]): string[] {

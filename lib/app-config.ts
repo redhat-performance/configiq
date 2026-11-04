@@ -1,4 +1,5 @@
 import type { WorkloadPreset } from './workload-presets';
+import type { ConcurrencyPreset } from './concurrency-presets';
 
 export interface AppConfig {
   defaultModel: string;
@@ -11,6 +12,7 @@ export interface AppConfig {
   suggestedModelNames: string[];
   modelRequestUrl: string;
   workloadPresets: WorkloadPreset[];
+  concurrencyPresets: ConcurrencyPreset[];
 }
 
 // Hardcoded fallback — used if /config.json fails to load
@@ -25,6 +27,7 @@ const FALLBACK: AppConfig = {
   suggestedModelNames: [],
   modelRequestUrl: '',
   workloadPresets: [],
+  concurrencyPresets: [],
 };
 
 let cached: AppConfig | null = null;
@@ -48,6 +51,7 @@ export async function loadAppConfig(): Promise<AppConfig> {
       suggestedModelNames: data.suggestedModelNames ?? FALLBACK.suggestedModelNames,
       modelRequestUrl: data.modelRequestUrl ?? FALLBACK.modelRequestUrl,
       workloadPresets: data.workloadPresets ?? FALLBACK.workloadPresets,
+      concurrencyPresets: data.concurrencyPresets ?? FALLBACK.concurrencyPresets,
     };
   } catch {
     cached = FALLBACK;
