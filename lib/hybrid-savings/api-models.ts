@@ -3,11 +3,11 @@ import type { FrontierModel } from '@/lib/hooks/useCostings'
 
 export const SAME_API_MODEL = '__same_model__'
 
-/** The feed has no modality/rate-condition fields. Keep special-rate and
- * non-text identities out of the ordinary text-token comparison. */
+/** Keep unsupported tariffs and non-standard identities out of text comparisons. */
 export function isStandardTokenOffer(offer: FrontierModel): boolean {
   return Number.isFinite(offer.price_per_m_input) && offer.price_per_m_input >= 0 &&
     Number.isFinite(offer.price_per_m_output) && offer.price_per_m_output >= 0 &&
+    !offer.billing?.unsupported.length &&
     !/(?:[:@]|batch|image|audio|realtime|transcrib|embedding|moderation|\btts\b|search|long-context)/i.test(offer.id)
 }
 

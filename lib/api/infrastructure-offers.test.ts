@@ -19,6 +19,7 @@ describe('complete-offer API validation', () => {
     expect(data.rented[0]).toMatchObject({ id: rental.id, gpuCount: 8, hourlyCost: 16,
       instanceName: 'g6e.48xlarge', sourceDate: null, collectionKind: 'automated', retrievedAt: source.retrieved_at })
     expect(data.purchased[0]).toMatchObject({ purchasePrice: 150000, installationCost: 10500,
+      includes: server.includes,
       sourceDate: '2026-08-01', retrievedAt: null, collectionKind: 'curated' })
   })
   it.each([

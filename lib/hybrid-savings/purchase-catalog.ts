@@ -12,6 +12,7 @@ export interface ServerPurchaseConfiguration {
   collectionKind: 'automated' | 'curated'
   retrievedAt: string | null
   stale: boolean
+  includes?: string
 }
 export function hasServerPurchaseConfiguration(
   configurations: readonly ServerPurchaseConfiguration[], systemId: string,

@@ -69,6 +69,7 @@ export function parseInfrastructureOffers(raw: unknown): InfrastructureOffers {
     return [{
       id: offer.id, systemId: offer.system_id, gpuCount: offer.gpu_count, purchasePrice: offer.purchase_price,
       installationCost: offer.installation_cost, indicative: offer.indicative,
+      includes: offer.includes,
       sourceLabel: offer.source.label, sourceUrl: offer.source.url,
       sourceDate: offer.source.price_date ?? offer.source.effective_at?.slice(0, 10) ?? null,
       collectionKind: offer.source.kind, retrievedAt: offer.source.retrieved_at, stale: offer.source.stale,

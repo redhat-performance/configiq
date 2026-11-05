@@ -67,7 +67,7 @@ describe('Applied cost inputs', () => {
     await render({ ...assumptions, costLens: 'marginal' }, { ...candidate, cloudRateKind: 'capacity_block' })
     expect(value('Billing mode')).toBe('Always onRequired by capacity block.')
     expect(value('Runtime buffer')).toContain('Not used in this billing mode.')
-    expect(host.textContent).toContain('Marginal costs exclude acquisition')
+    expect(host.textContent).toContain('Direct running costs exclude acquisition')
   })
   it('does not claim hardware-dependent inputs are resolved before a valid calculation', async () => {
     await render(assumptions, null)

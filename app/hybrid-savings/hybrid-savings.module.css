@@ -80,15 +80,18 @@
   .costFlip { perspective: none; }
 }
 .costFace { grid-area: 1 / 1; z-index: 2; display: flex; flex-direction: column; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); pointer-events: none; backface-visibility: hidden; -webkit-backface-visibility: hidden; transition: opacity 0.3s ease, transform 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
-.costFront { min-height: 400px; opacity: 1; transform: rotateY(0); }
+.costFront { min-height: 350px; opacity: 1; transform: rotateY(0); }
 .costBack { opacity: 0; transform: rotateY(180deg); }
 .costFlipped .costFront { opacity: 0; transform: rotateY(-180deg); }
 .costFlipped .costBack { opacity: 1; transform: rotateY(0); }
 /* A real sibling button makes the surface keyboard-accessible, not a button containing selects. */
 .page .costFlipControl { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; border-radius: var(--radius); cursor: pointer; }
 .costFlip:has(.costFlipControl:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: var(--radius); }
-.costFront .costSelector, .costFlipped .costBack a { pointer-events: auto; }
+.costFront .costSelector, .costFront .costUnitHelp, .costFlipped .costBack a { pointer-events: auto; }
 .costFlipped .costFront .costSelector { pointer-events: none; }
+.costUnit { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
+.costFront .costUnitHelp { display: inline-flex; align-items: center; }
+.costFront .costUnitHelp :global(svg) { width: 16px; height: 16px; }
 .costFlipHint { margin-top: auto; padding-top: 12px; color: var(--text-muted); font: 400 11.5px var(--gc-font-mono); letter-spacing: 0.04em; }
 .costFlip:hover .costFlipHint { color: var(--blue); }
 .costBackHeading { margin-bottom: 14px; }
@@ -109,10 +112,10 @@
 .hostedSelectors { display: grid; gap: 14px; }
 .apiSourceLine { margin: 0; font-size: 13px; color: var(--text-muted); }
 .apiModelFallback { max-width: 420px; margin-top: 12px; }
-.metricList { margin: 16px 0; display: grid; gap: 12px; }
-.metricList > div { display: grid; gap: 4px; min-width: 0; }
-.metricList dt { font-size: 13px; color: var(--text-muted); }
-.metricList dd { margin: 0; font-size: 14px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.costSelectionNote { margin: 8px 0 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.costCapacity { margin-top: 14px; font-size: 13px; color: var(--text-muted); }
+.costCapacity p { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.costCapacity p.costCapacityLabel { margin-top: 10px; }
 .unavailable { color: var(--text-muted); }
 .calculationDetailsHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .assumptionsLink { color: var(--blue); font-size: 13px; font-weight: 600; }
@@ -138,12 +141,32 @@
 .sourceDetailsLink { display: inline-block; margin-top: 12px; color: var(--blue); font-size: 13px; }
 .alertAction { margin-top: 12px; }
 .chartPanel { margin-top: 16px; }
-.chartHeader { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: start; }
-.chartHeader h3 { font-size: 16px; margin: 0 0 4px; }
-.chartHeader p, .currentMarker { color: var(--text-muted); font-size: 13px; margin: 0; }
-.chartLegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
-.chartLegend span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.chartLegend i { display: inline-block; border-radius: 2px; height: 4px; width: 18px; }
+.chartControls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.chartViewSwitch { max-width: 100%; }
+.chartControls :global(.pf-v6-c-toggle-group__button) { font-size: 13px; }
+.chartControls :global(.pf-v6-c-toggle-group__button:not(:disabled)) { color: var(--t); }
+.chartControls :global(.pf-v6-c-toggle-group__button.pf-m-selected) { color: var(--blue); }
+.chartHeading { flex: 1 1 260px; min-width: 0; }
+.chartWorkload, .chartDeployment { flex: 0 1 340px; width: 100%; max-width: 100%; padding: 12px 16px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; column-gap: 16px; }
+.chartWorkload { grid-template-columns: 1.3fr 1fr 1fr; font-variant-numeric: tabular-nums; }
+.chartWorkload :global(.pf-v6-c-description-list__term), .chartDeployment :global(.pf-v6-c-description-list__term) { color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.chartWorkload :global(.pf-v6-c-description-list__description) { color: var(--t); font-family: var(--display); font-size: 18px; font-weight: 600; }
+.chartDeployment :global(.pf-v6-c-description-list__description) { color: var(--t); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.chartExplanation { color: var(--text-muted); font-size: 13px; margin: 8px 0 0; line-height: 1.5; }
+.page .chartInsight { --pf-v6-c-alert--FontSize: 13px; --pf-v6-c-alert__title--FontWeight: 400; margin: 16px 0 0; }
+.chartControlNote { color: var(--text-muted); font-size: 13px; }
+.fixedPathChoice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-inline-start: auto; font-size: 13px; }
+.alignRequestMix { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 16px; }
+.alignRequestMixNote { color: var(--text-muted); font-size: 13px; margin: 0; }
+.chartPlotHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 20px; margin-top: 20px; }
+.chartAxisTitle { display: flex; align-items: center; gap: 4px; color: var(--t); font-size: 13px; font-weight: 600; }
+.chartEmpty { color: var(--text-muted); font-size: 14px; margin: 20px 0 4px; }
+.chartHeader { display: flex; flex-wrap: wrap; gap: 16px 24px; justify-content: space-between; align-items: start; }
+.chartHeader h3 { font-size: 16px; margin: 0; }
+.currentMarker { color: var(--text-muted); font-size: 13px; margin: 0; }
+.chartLegend { --pf-v6-c-list--m-inline--ColumnGap: 16px; --pf-v6-c-list--m-inline--RowGap: 8px; --pf-v6-c-list__item-icon--MarginBlockStart: 0; --pf-v6-c-list__item-icon--MarginInlineEnd: 0; margin: 0; font-size: 13px; }
+.chartLegend > li { align-items: center; gap: 6px; white-space: nowrap; }
+.chartLegend i { display: block; border-radius: 2px; height: 4px; width: 18px; }
 .hostedSwatch { background: var(--hosted-line); }
 .rentedSwatch { background: var(--rented-line); }
 .ownedSwatch { background: var(--purchased-line); }
@@ -158,7 +181,7 @@
 .breakEvenMilestone .rentedMilestone::before { border-color: var(--rented-line); }
 .breakEvenMilestone .ownedMilestone::before { border-color: var(--purchased-line); }
 .chartLoading { display: flex; justify-content: center; align-items: center; gap: 8px; min-height: 180px; font-size: 13px; }
-.chartCanvas { position: relative; width: 100%; margin-top: 16px; min-width: 0; }
+.chartCanvas { position: relative; width: 100%; margin-top: 8px; min-width: 0; }
 .currentWorkloadLabel { position: absolute; top: 8px; z-index: 1; padding: 4px 8px; border-radius: 6px; background: var(--bg2); color: var(--text-muted); font: 500 11.5px var(--gc-font-mono); pointer-events: none; white-space: nowrap; }
 .chartCanvas :global(svg) { display: block; max-width: 100%; height: auto; }
 .currentMarker { margin: 8px 0 0; }
@@ -179,6 +202,8 @@
   .workloadBilling { grid-column: auto; }
   .header { flex-wrap: wrap; }
   .inputActions > button { width: 100%; }
+  .chartViewSwitch { width: 100%; }
+  .fixedPathChoice { margin-inline-start: 0; }
   .calculationList > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }
 @media (prefers-reduced-motion: reduce) {
