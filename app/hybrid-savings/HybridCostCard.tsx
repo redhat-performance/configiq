@@ -50,6 +50,9 @@ export function HybridCostCard({
   const priceSource = option?.key === 'rented' ? candidate?.cloudPriceSource : candidate?.purchasePriceSource
   const priceSourceUrl = option?.key === 'rented' ? candidate?.cloudPriceSourceUrl : candidate?.purchasePriceSourceUrl
   const priceDate = option?.key === 'rented' ? candidate?.cloudPriceSourceDate : candidate?.purchasePriceSourceDate
+  const collectionKind = option?.key === 'rented' ? candidate?.cloudPriceCollectionKind : candidate?.purchasePriceCollectionKind
+  const retrievedAt = option?.key === 'rented' ? candidate?.cloudPriceRetrievedAt : candidate?.purchasePriceRetrievedAt
+  const priceStale = option?.key === 'rented' ? candidate?.cloudPriceStale : candidate?.purchasePriceStale
 
   React.useLayoutEffect(() => {
     if (frontRef.current) frontRef.current.inert = isFlipped
@@ -99,6 +102,9 @@ export function HybridCostCard({
               {hostedOfferId && <div><dt>Offer / checkpoint</dt><dd>{hostedOfferId}</dd></div>}
               {candidate ? <>
                 <div><dt>GPUs</dt><dd>{option.gpuCount} required · {option.billedGpuCount} {option.key === 'rented' ? 'rented' : 'purchased'}</dd></div>
+                {option.key === 'rented' && <div><dt>Billing basis</dt><dd>{candidate.cloudRateKind === 'capacity_block'
+                  ? 'Capacity block · committed reservation' : candidate.cloudRateKind === 'spot'
+                    ? 'Spot · interruptible' : 'On-demand · whole instance-hour'}</dd></div>}
                 <div><dt>{option.key === 'rented' ? 'Instance rate' : 'Server price'}</dt><dd>{option.key === 'rented'
                   ? (candidate.cloudHourlyCostPerInstance == null ? 'Not supplied' : `${rate.format(candidate.cloudHourlyCostPerInstance)} / hour`)
                   : `${money.format(candidate.purchasePricePerReplica ?? 0)}${candidate.purchasePriceIndicative ? ' · indicative' : ''}`}</dd></div>
@@ -106,7 +112,9 @@ export function HybridCostCard({
             </dl>
             {candidate && <p className={styles.costPriceSource}>
               {priceSourceUrl ? <a href={priceSourceUrl} target="_blank" rel="noreferrer" aria-label={priceSource || 'Price source'}>Price source</a> : <span>Source link unavailable</span>}
-              <span> · {priceDate ?? 'Date not supplied'}</span>
+              <span> · {collectionKind === 'automated' ? 'Automatically collected' : 'Curated estimate'}{priceStale ? ' · stale' : ''}</span>
+              {priceDate && <span> · price dated {priceDate}</span>}
+              {retrievedAt && <span> · collected {retrievedAt.slice(0, 10)}</span>}
             </p>}
             <span className={styles.costFlipHint} aria-hidden="true">↻ flip back</span>
           </div>}

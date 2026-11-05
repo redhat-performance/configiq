@@ -63,9 +63,14 @@ def normalize_features(frame: pd.DataFrame) -> pd.DataFrame:
     result["model_id"] = model_id.fillna("unknown").astype(str)
     accelerator = _column(frame, "accelerator", "unknown")
     result["system_id"] = accelerator.fillna("unknown").map(_system_id)
-    result["version"] = _column(frame, "version", "unknown").fillna("unknown").astype(str)
+    raw_version = _column(frame, "version", "unknown").fillna("unknown").astype(str)
     backend_values = _column(frame, "backend", np.nan)
-    result["backend"] = backend_values.fillna(result["version"]).map(_backend_name)
+    backend_source = backend_values.astype(object).where(backend_values.notna(), raw_version)
+    result["backend"] = backend_source.map(_backend_name)
+    result["version"] = [
+        normalize_backend_version(version, backend)
+        for version, backend in zip(raw_version, result["backend"])
+    ]
     result["accelerator"] = _column(frame, "accelerator", "unknown").fillna("unknown").astype(str)
     result["request_type"] = _column(frame, "request_type", "unknown").fillna("unknown").astype(str)
 
@@ -143,10 +148,77 @@ def _backend_name(value: Any) -> str:
     return text
 
 
-def configuration_group(frame: pd.DataFrame) -> pd.Series:
-    features = normalize_features(frame)
-    keys = [column for column in features.columns if column not in {"token_budget", "parallelism", "memory_pressure", "prefix_pressure", "sequence_pressure"}]
-    values = features[keys].fillna("<NA>").astype(str).agg("|".join, axis=1)
+_RUNTIME_FAMILY_LABEL = {
+    "vllm": "vLLM",
+    "sglang": "sglang",
+    "trt-llm": "trt-llm",
+    "rhaiis": "rhaiis",
+    "nim": "nim",
+    "aic": "aic",
+    "tgi": "tgi",
+    "lmdeploy": "lmdeploy",
+}
+_RUNTIME_TOKEN_FAMILY = {
+    "vllm": "vllm",
+    "sglang": "sglang",
+    "tensorrt-llm": "trt-llm",
+    "trt-llm": "trt-llm",
+    "rhaiis": "rhaiis",
+    "nim": "nim",
+    "aic": "aic",
+    "tgi": "tgi",
+    "lmdeploy": "lmdeploy",
+}
+_RUNTIME_TOKEN_PATTERN = re.compile(
+    r"(?i)\b("
+    + "|".join(sorted((re.escape(token) for token in _RUNTIME_TOKEN_FAMILY), key=len, reverse=True))
+    + r")-(\d+)(?:\.(\d+))?"
+)
+_BARE_VERSION_PATTERN = re.compile(r"^\s*(\d+)(?:\.(\d+))?(?:[-._+]\S*)?\s*$")
+
+
+def backend_family(value: Any) -> str:
+    """Return the canonical runtime family for an already-resolved backend name."""
+    text = str(value or "").strip().lower()
+    return text if text in _RUNTIME_FAMILY_LABEL else "unknown"
+
+
+def _version_family(major: str, minor: str | None) -> str:
+    # Only the major.minor family is a feature; patch and suffix detail stays
+    # in coverage provenance. Parsing is bounded to avoid regex backtracking.
+    return f"{major}.{minor}" if minor else major
+
+
+def normalize_backend_version(value: Any, backend: Any = None) -> str:
+    """Pool a raw version label into a backend-scoped major.minor family.
+
+    Training rows carry labels such as ``vLLM-0.24.0`` while the runtime sends
+    the catalog version ``0.24.0``. Both must map to the same feature category,
+    and families from different runtimes must never collide.
+    """
+    text = "" if value is None else str(value).strip()
+    if not text or text.lower() in {"nan", "none", "unknown", "current"}:
+        return "unknown"
+    family = backend_family(backend)
+    matches = _RUNTIME_TOKEN_PATTERN.findall(text)
+    if matches:
+        for token, major, minor in matches:
+            resolved = _RUNTIME_TOKEN_FAMILY[token.lower()]
+            if resolved == family:
+                return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(major, minor or None)}"
+        token, major, minor = matches[0]
+        resolved = _RUNTIME_TOKEN_FAMILY[token.lower()]
+        return f"{_RUNTIME_FAMILY_LABEL[resolved]}-{_version_family(major, minor or None)}"
+    bare = _BARE_VERSION_PATTERN.match(text)
+    if bare and family != "unknown":
+        return f"{_RUNTIME_FAMILY_LABEL[family]}-{_version_family(bare.group(1), bare.group(2))}"
+    return "unknown"
+
+
+def configuration_group(frame: pd.DataFrame, features: pd.DataFrame | None = None) -> pd.Series:
+    resolved = normalize_features(frame) if features is None else features
+    keys = [column for column in resolved.columns if column not in {"token_budget", "parallelism", "memory_pressure", "prefix_pressure", "sequence_pressure"}]
+    values = resolved[keys].fillna("<NA>").astype(str).agg("|".join, axis=1)
     return values.map(lambda value: hashlib.sha256(value.encode()).hexdigest()[:16])
 
 

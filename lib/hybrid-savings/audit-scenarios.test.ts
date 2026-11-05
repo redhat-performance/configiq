@@ -34,7 +34,6 @@ const candidate: InfrastructureCandidate = {
   replicasNeeded: 1,
   clusterOutputTokensPerSecond: 100,
   cloudHourlyCostPerInstance: 2,
-  cloudDirectInfrastructureMonthly: 0,
   cloudRatePerGpuHour: 2,
   cloudGpusPerInstance: 1,
   cloudProvider: 'audit.region',
@@ -142,7 +141,6 @@ describe('hybrid savings independently calculated audit scenarios', () => {
       ...candidate,
       cloudHourlyCostPerInstance: 1,
       cloudRatePerGpuHour: 1,
-      cloudDirectInfrastructureMonthly: null,
     }
     const crossoverAssumptions = {
       ...assumptions,

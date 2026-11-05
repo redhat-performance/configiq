@@ -24,6 +24,10 @@ TTL_MODELS = 25 * 3600          # 25 hours
 TTL_CLOUD_RATES = 25 * 3600     # 25 hours
 TTL_HARDWARE = 7 * 24 * 3600    # 7 days
 TTL_GPU_ID_MAPPING = 30 * 24 * 3600  # 30 days
+# Retain last-good offer snapshots beyond the refresh interval, but expose
+# their age. This is not a promise that a stale price is still purchasable.
+TTL_OFFERS = 7 * 24 * 3600
+KEY_CURATED_OFFERS = "offers:curated"
 
 # Keys
 KEY_HEALTH = "health"
@@ -128,6 +132,25 @@ class ValkeyStore:
 
     # ── GPU ID mapping ────────────────────────────────────────────────────
 
+    def set_curated_offers(self, data: dict[str, Any]) -> None:
+        self.client.setex(KEY_CURATED_OFFERS, 30 * 24 * 3600, json.dumps(data))
+
+    def get_curated_offers(self) -> dict[str, Any] | None:
+        raw = self.client.get(KEY_CURATED_OFFERS)
+        return json.loads(raw) if raw else None
+
+    def set_offer_snapshot(self, provider: str, snapshot: dict[str, Any]) -> None:
+        # One SET publishes the entire provider scope atomically.
+        self.client.setex(f"offers:rented:{provider}", TTL_OFFERS, json.dumps(snapshot))
+
+    def get_offer_snapshots(self) -> dict[str, dict[str, Any]]:
+        result = {}
+        for key in self.client.scan_iter(match="offers:rented:*"):
+            raw = self.client.get(key)
+            if raw:
+                result[key.split(":")[-1]] = json.loads(raw)
+        return result
+
     def set_gpu_id_mapping(self, mapping: dict[str, str]) -> None:
         self.client.setex(KEY_GPU_ID_MAPPING, TTL_GPU_ID_MAPPING, json.dumps(mapping))
 
@@ -154,7 +177,7 @@ class ValkeyStore:
                 result[source] = json.loads(raw)
         return result
 
-    def _mark_scrape(self, source: str) -> None:
+    def mark_scrape(self, source: str) -> None:
         now = datetime.now(UTC).isoformat()
         self.client.set(_key_scrape_last(source), now)
         self.clear_scrape_error(source)

@@ -364,6 +364,7 @@ export default function Sizing() {
   };
 
   const handleConcurrencyChange = (raw: string) => {
+    concurrencyInteracted.current = true;
     const digits = raw.replace(/[^0-9]/g, '');
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
@@ -509,9 +510,11 @@ export default function Sizing() {
   };
 
   const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  const concurrencyInteracted = React.useRef(false);
 
   React.useEffect(() => {
     if (!hydrated) return;
+    if (concurrencyInteracted.current) return;
     const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small');
     if (!preset) return;
     setActiveConcurrencyPreset(preset.key);
@@ -530,6 +533,7 @@ export default function Sizing() {
   };
 
   const handleCalculate = () => {
+    concurrencyInteracted.current = true;
     setInputsDirty(false);
     startSizing({
       model_path: model, system: gpuSystem, isl, osl, ttft,

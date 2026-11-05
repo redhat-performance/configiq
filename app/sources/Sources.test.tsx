@@ -18,7 +18,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   localStorage.clear()
   vi.mocked(useSettings).mockReturnValue({
-    hydrated: true, defaultModel: '', testedModels: [], hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
+    hydrated: true, defaultModel: '', hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: false, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(), setBackendVersion: vi.fn(),
     setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(), setPricingSource: vi.fn(),
@@ -39,7 +39,7 @@ async function click(text: string) {
 }
 
 describe('Sources shared assumptions', () => {
-  it('keeps the editor available without requesting live pricing when costings is disabled', async () => {
+  it('keeps one assumptions editor accessible without live costings or source requests', async () => {
     await render()
     expect(host.textContent).toContain('Costings features are disabled')
     expect(host.textContent).not.toContain('Pricing data sources')

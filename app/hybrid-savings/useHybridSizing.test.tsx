@@ -7,6 +7,7 @@ import type { GpuOption } from '@/lib/hooks/useCatalog'
 import type { RecommendResponse } from '@/lib/api/recommend'
 import { readRecommendStream } from '@/lib/api/recommend-stream'
 import { useHybridSizing } from './useHybridSizing'
+import { TEST_OFFERS } from '@/lib/hybrid-savings/__fixtures__/offers'
 
 vi.mock('@/lib/api/recommend-stream', () => ({ readRecommendStream: vi.fn() }))
 
@@ -15,13 +16,13 @@ function gpu(systemId: string): GpuOption {
     bandwidthTbps: null, tflopsBf16: null, tdpWatts: 400, gpusPerNode: null }
 }
 const result = {
-  status: 'completed',
+  status: 'completed', simulator: 'aisimulate',
   recommendation: { gpusPerReplica: 1, replicasNeeded: 1 },
   throughput: { tokensPerSecond: 1000 },
   performance: { ttftLatencyMs: 100, tpotMs: 20 },
 } as RecommendResponse
 const input = {
-  signature: 'first', model: 'Qwen/Qwen3-8B', backend: 'vllm',
+  signature: 'first', model: 'Qwen/Qwen3-8B', backend: 'vllm', simulator: 'aisimulate' as const, backendVersion: '',
   averageInputTokens: 2048, averageOutputTokens: 512, targetTtftMs: 5000, targetTpotMs: 60,
   targetConcurrency: 32, prefixTokens: 0,
   preferredCloudProvider: null, gpuOptions: [gpu('l40s')],
@@ -32,7 +33,7 @@ let hook: ReturnType<typeof useHybridSizing>
 let host: HTMLDivElement
 const fetchMock = vi.fn<typeof fetch>()
 function Harness() {
-  const next = useHybridSizing()
+  const next = useHybridSizing(TEST_OFFERS, null)
   React.useEffect(() => { hook = next })
   return null
 }
@@ -55,6 +56,16 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals() })
 
 describe('Hybrid live sizing orchestration', () => {
+  it('forwards simulator/version and rejects results from a different simulator', async () => {
+    await act(async () => hook.runSizing({ ...input, simulator: 'blis', backendVersion: '0.11.0' }))
+    expect(JSON.parse(fetchMock.mock.calls[0][1]!.body as string)).toMatchObject({ simulator: 'blis', backend_version: '0.11.0' })
+    expect(hook.candidates).toEqual([])
+    expect(hook.sizingError).not.toBeNull()
+    vi.mocked(readRecommendStream).mockResolvedValue({ ...result, simulator: 'blis' } as RecommendResponse)
+    await act(async () => hook.runSizing({ ...input, simulator: 'blis', backendVersion: '0.11.0' }))
+    expect(hook.candidates.length).toBeGreaterThan(0)
+    expect(hook.resultSimulator).toBe('blis')
+  })
   it('collects eligible offers and forwards the selected reference load, prefix and HF config', async () => {
     await act(async () => hook.runSizing({ ...input, targetConcurrency: 64, prefixTokens: 1024, modelConfig: { model_type: 'qwen3' } }))
     const init = fetchMock.mock.calls[0][1]!

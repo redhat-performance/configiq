@@ -117,6 +117,7 @@ export default function KvCacheCalc() {
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null)
 
   const [maxNumTokensInput, setMaxNumTokensInput] = React.useState(String(defaultMaxNumTokens))
+  const maxBatchSizeUserEdited = React.useRef(false)
   const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('100')
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
@@ -133,6 +134,7 @@ export default function KvCacheCalc() {
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
     setActivePreset(p.key)
     setResults([])
+    setInputsDirty(false)
   }
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD)
@@ -140,7 +142,7 @@ export default function KvCacheCalc() {
   const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
 
   React.useEffect(() => {
-    if (!hydrated) return
+    if (!hydrated || maxBatchSizeUserEdited.current || loading || results.length > 0) return
     const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small')
     if (!preset) return
     setActiveConcurrencyPreset(preset.key)
@@ -206,6 +208,7 @@ export default function KvCacheCalc() {
   
   const handleMaxBatchSizeChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
+    maxBatchSizeUserEdited.current = true;
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
@@ -450,6 +453,7 @@ export default function KvCacheCalc() {
                       memFractionValueUserEdited.current = false
                     }
                     setBackend(nextBackend)
+                    markInputsDirty()
                   }}
                   className={styles.gpuSelect}
                 >
@@ -464,7 +468,7 @@ export default function KvCacheCalc() {
                   type="text"
                   id="kv-backend-ver"
                   value={backendVersion}
-                  onChange={e => setBackendVersion(e.target.value)}
+                  onChange={e => { setBackendVersion(e.target.value); markInputsDirty(); }}
                   placeholder={backendOptions.find(option => option.id === backend)?.defaultVersion ?? 'latest'}
                   className={styles.numberInput}
                 />
@@ -634,7 +638,7 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-mem-kind"
                   value={memFractionKind}
-                  onChange={e => setMemFractionKind(e.target.value)}
+                  onChange={e => { setMemFractionKind(e.target.value); markInputsDirty(); }}
                   className={styles.gpuSelect}
                 >
                   <option value="of_total">of_total</option>

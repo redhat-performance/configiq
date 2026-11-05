@@ -5,7 +5,7 @@
   "defaultOpenModel": "Qwen/Qwen3-32B",
   "defaultFrontierModel": "claude-fable-5",
   "suggestedModelNames": ["Gemma 4", "Nemotron Super", "DeepSeek V4", "gpt-oss"],
-  "testedModels": [
+  "approvedModels": [
     "google/gemma-4-31B-it",
     "RedHatAI/gemma-4-26B-A4B-it",
     "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic",

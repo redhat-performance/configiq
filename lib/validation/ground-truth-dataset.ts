@@ -56,9 +56,7 @@ async function loadInferenceXDataset(): Promise<InferenceXCache> {
   }
   const snapshot = payload as Record<string, unknown>
   const rows = snapshot.rows
-  // `approvedModels` is the durable name; `testedModels` is the transition key.
-  const config = appConfig as { approvedModels?: string[]; testedModels?: string[] }
-  const approvedModelIds = config.approvedModels ?? config.testedModels
+  const approvedModelIds = appConfig.approvedModels
   if (!Array.isArray(approvedModelIds) || approvedModelIds.length === 0
     || !approvedModelIds.every(model => typeof model === 'string')) {
     throw new Error('ConfigIQ approved model list is missing or invalid')

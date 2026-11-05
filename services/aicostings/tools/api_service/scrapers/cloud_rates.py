@@ -13,8 +13,11 @@ from __future__ import annotations
 import logging
 import os
 import statistics
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 import ijson
@@ -54,27 +57,42 @@ AZURE_GPUS_PER_INSTANCE = {
 AZURE_API = "https://prices.azure.com/api/retail/prices"
 
 
+async def _azure_items(session: aiohttp.ClientSession, sku: str) -> list[dict]:
+    url = AZURE_API
+    params = {"$filter": f"armSkuName eq '{sku}' and priceType eq 'Consumption'", "currencyCode": "USD"}
+    items = []
+    visited = set()
+    while url:
+        if url in visited or urlparse(url).scheme != "https" or urlparse(url).netloc != "prices.azure.com":
+            raise ValueError("Invalid Azure pagination link")
+        visited.add(url)
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=20)) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Azure pricing returned HTTP {response.status}")
+            data = await response.json()
+        items.extend(data.get("Items", []))
+        url = data.get("NextPageLink")
+        params = None
+    return items
+
+
 async def scrape_azure(session: aiohttp.ClientSession, mapping: dict[str, str]) -> list[RateRecord]:
     records: list[RateRecord] = []
     failures = 0  # per-SKU errors; a total failure is propagated as a provider error
     for sku in AZURE_GPU_SKUS:
         try:
-            params = {
-                "$filter": f"armSkuName eq '{sku}' and priceType eq 'Consumption'",
-                "$top": "100",
-            }
-            async with session.get(AZURE_API, params=params, timeout=aiohttp.ClientTimeout(total=20)) as resp:
-                if resp.status != 200:
-                    logger.warning("Azure %s returned %d", sku, resp.status)
-                    failures += 1
-                    continue
-                data = await resp.json()
-
-            for item in data.get("Items", []):
+            for item in await _azure_items(session, sku):
                 region = item.get("armRegionName", "")
                 price = item.get("retailPrice")
                 meter = item.get("meterName", "")
                 if not region or price is None:
+                    continue
+                ended = item.get("effectiveEndDate")
+                starts = item.get("effectiveStartDate")
+                now = datetime.now(UTC)
+                if ((ended and datetime.fromisoformat(ended) <= now)
+                        or (starts and datetime.fromisoformat(starts) > now)
+                        or item.get("isPrimaryMeterRegion") is False):
                     continue
 
                 # Azure returns both Linux and Windows meters for the same SKU;
@@ -102,6 +120,12 @@ async def scrape_azure(session: aiohttp.ClientSession, mapping: dict[str, str]) 
                     "spot_median": round(per_gpu_price, 6) if is_spot else None,
                     "rate_basis": "gpu_hour",
                     "gpus_per_instance": gpus_per_instance,
+                    "instance_name": sku,
+                    "instance_hourly_cost": float(price),
+                    "source_url": AZURE_API,
+                    "effective_at": item.get("effectiveStartDate"),
+                    "currency": item.get("currencyCode", "USD"),
+                    "unit": item.get("unitOfMeasure", "1 Hour"),
                 })
         except Exception as e:
             logger.error("Azure scrape failed for %s: %s", sku, e)
@@ -113,6 +137,9 @@ async def scrape_azure(session: aiohttp.ClientSession, mapping: dict[str, str]) 
     # scrape_aws and scrape_vastai.
     if failures == len(AZURE_GPU_SKUS):
         raise RuntimeError(f"Azure scrape failed for all {failures} SKU(s)")
+    if failures:
+        for record in records:
+            record["collection_partial"] = True
 
     logger.info("Azure: %d rate records", len(records))
     return records
@@ -135,7 +162,13 @@ AWS_PRICING_REGIONS = [
 ]
 AWS_GPUS_PER_INSTANCE = {
     "p4d.24xlarge": 8,
+    "p4de.24xlarge": 8,
     "p5.48xlarge": 8,
+    "p5e.48xlarge": 8,
+    "p5en.48xlarge": 8,
+    "g6e.xlarge": 1,
+    "g6e.12xlarge": 4,
+    "g6e.48xlarge": 8,
 }
 
 
@@ -175,7 +208,8 @@ async def _aws_scrape_region(
     USD leaf by suffix instead.
     """
     matched_skus: dict[str, str] = {}  # sku -> instance_type
-    seen: set[str] = set()             # (system_id, region) already recorded
+    dimensions: dict[tuple[str, str], dict[str, str]] = {}
+    effective_dates: dict[str, str] = {}
     records: list[RateRecord] = []
     cur_sku: str | None = None
     cur_attrs: dict[str, str] = {}
@@ -208,35 +242,41 @@ async def _aws_scrape_region(
                 if cur_sku is not None:
                     finalize(cur_sku, cur_attrs)
                     cur_sku, cur_attrs = None, {}
-                # Match the USD leaf by suffix; the SKU is always the 3rd path
-                # component (it has no dots) even though later term/rate keys do.
-                if event == "string" and prefix.endswith(".pricePerUnit.USD"):
-                    sku = prefix.split(".", 3)[2]  # terms . OnDemand . <sku> . …
-                    if sku not in matched_skus:
-                        continue
-                    try:
-                        usd = float(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if usd <= 0:
-                        continue
-                    instance_type = matched_skus[sku]
-                    system_id = _map_gpu_name(instance_type, mapping)
-                    if not system_id or (system_id, region) in seen:
-                        continue
-                    gpus_per_instance = AWS_GPUS_PER_INSTANCE.get(instance_type)
-                    if not gpus_per_instance:
-                        logger.warning("AWS: GPU count is unknown for %s; skipping rate", instance_type)
-                        continue
-                    seen.add((system_id, region))
-                    records.append({
-                        "system_id": system_id,
-                        "provider_region": f"aws.{region}",
-                        "on_demand": round(usd / gpus_per_instance, 6),
-                        "spot_median": None,
-                        "rate_basis": "gpu_hour",
-                        "gpus_per_instance": gpus_per_instance,
-                    })
+                sku = prefix.split(".", 3)[2]
+                if sku not in matched_skus or event != "string":
+                    continue
+                if prefix.endswith(".effectiveDate"):
+                    effective_dates[sku] = value
+                if ".priceDimensions." not in prefix:
+                    continue
+                if prefix.endswith(".pricePerUnit.USD"):
+                    key = (sku, prefix.removesuffix(".pricePerUnit.USD"))
+                    dimensions.setdefault(key, {})["usd"] = value
+                elif prefix.endswith(".unit"):
+                    key = (sku, prefix.removesuffix(".unit"))
+                    dimensions.setdefault(key, {})["unit"] = value
+    # Wait until a dimension is complete: JSON key order is not guaranteed,
+    # and an hourly GPU instance must not be priced from a non-hourly meter.
+    for (sku, _dimension), price in dimensions.items():
+        if price.get("unit") != "Hrs":
+            continue
+        try:
+            usd = float(price["usd"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        instance_type = matched_skus[sku]
+        system_id = _map_gpu_name(instance_type, mapping)
+        gpus_per_instance = AWS_GPUS_PER_INSTANCE.get(instance_type)
+        if not system_id or not gpus_per_instance or usd <= 0:
+            continue
+        records.append({
+            "system_id": system_id, "provider_region": f"aws.{region}",
+            "on_demand": round(usd / gpus_per_instance, 6), "spot_median": None,
+            "rate_basis": "gpu_hour", "gpus_per_instance": gpus_per_instance,
+            "instance_name": instance_type, "instance_hourly_cost": usd,
+            "source_url": url, "effective_at": effective_dates.get(sku),
+            "currency": "USD", "unit": "Hrs",
+        })
     return records
 
 
@@ -247,10 +287,12 @@ async def scrape_aws(session: aiohttp.ClientSession, mapping: dict[str, str]) ->
         return []
     region_urls = await _aws_region_file_urls(session)
     records: list[RateRecord] = []
+    partial = False
     for region in AWS_PRICING_REGIONS:
         url = region_urls.get(region)
         if not url:
             logger.warning("AWS: no offer file URL for region %s", region)
+            partial = True
             continue
         region_records = await _aws_scrape_region(session, region, url, want_types, mapping)
         records.extend(region_records)
@@ -267,6 +309,9 @@ async def scrape_aws(session: aiohttp.ClientSession, mapping: dict[str, str]) ->
             "have changed"
         )
     logger.info("AWS: %d rate records across %d region(s)", len(records), len(AWS_PRICING_REGIONS))
+    if partial:
+        for record in records:
+            record["collection_partial"] = True
     return records
 
 
@@ -353,15 +398,18 @@ async def scrape_lambda(session: aiohttp.ClientSession, mapping: dict[str, str])
 
 
 async def scrape_gcp(session: aiohttp.ClientSession, mapping: dict[str, str]) -> list[RateRecord]:
-    """GCP GPU pricing via the Cloud Billing Catalog API.
+    """Complete, validated A2 Ultra component prices; other families are not guessed."""
+    from .offer_collectors import scrape_gcp_offers
 
-    Auth (API key) is wired, but mapping GCP's per-SKU catalog descriptions to
-    our GPU system ids is non-trivial and UNVERIFIED. Raises until the SKU→system
-    parsing is implemented and tested, so it surfaces in /health as an error
-    rather than emitting wrong prices.
-    """
-    os.environ["GCP_BILLING_API_KEY"]  # presence already gated; kept explicit
-    raise NotImplementedError("GCP catalog SKU→system parsing not yet implemented")
+    data = await scrape_gcp_offers(session)
+    return [{
+        "system_id": offer["system_id"], "provider_region": offer["provider_region"],
+        "on_demand": offer["hourly_cost"] / offer["gpu_count"], "spot_median": None,
+        "rate_basis": "gpu_hour", "gpus_per_instance": offer["gpu_count"],
+        "instance_name": offer["instance_name"], "instance_hourly_cost": offer["hourly_cost"],
+        "source_url": offer["source"]["url"], "effective_at": offer["source"]["effective_at"],
+        "currency": "USD", "unit": "Hrs",
+    } for offer in data["offers"]]
 
 
 async def scrape_scaleway(session: aiohttp.ClientSession, mapping: dict[str, str]) -> list[RateRecord]:
@@ -433,7 +481,10 @@ def _merge_records(records: list[RateRecord]) -> dict[str, dict[str, dict[str, A
 
         if rec.get("on_demand") is not None:
             current = systems[sid][pr]["on_demand"]
-            systems[sid][pr]["on_demand"] = min(rec["on_demand"], current) if current is not None else rec["on_demand"]
+            if current is None or rec["on_demand"] < current:
+                systems[sid][pr]["on_demand"] = rec["on_demand"]
+                systems[sid][pr]["rate_basis"] = rec.get("rate_basis")
+                systems[sid][pr]["gpus_per_instance"] = rec.get("gpus_per_instance")
         if rec.get("spot_median") is not None:
             current = systems[sid][pr]["spot_median"]
             systems[sid][pr]["spot_median"] = min(rec["spot_median"], current) if current is not None else rec["spot_median"]
@@ -450,6 +501,7 @@ ProviderResult = tuple[str, list[RateRecord] | Exception]
 
 async def scrape_all_cloud_rates(
     session: aiohttp.ClientSession,
+    *, publish_offers: Callable[[str, list[RateRecord]], None] | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, Exception | None]]:
     """Scrape all cloud providers concurrently.
 
@@ -461,7 +513,18 @@ async def scrape_all_cloud_rates(
 
     mapping = load_gpu_id_mapping()
     scrapers = active_scrapers()
-    tasks = [scraper(session, mapping) for _, scraper in scrapers]
+    async def collect(name, scraper):
+        try:
+            records = await scraper(session, mapping)
+            if publish_offers is not None and name in {"aws", "azure", "gcp"}:
+                publish_offers(name, records)
+            return records
+        except Exception as error:
+            return error
+
+    # Publish each complete provider independently. A slow AWS download must
+    # not delay a ready Azure snapshot; legacy aggregation still waits for all.
+    tasks = [collect(name, scraper) for name, scraper in scrapers]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_records: list[RateRecord] = []

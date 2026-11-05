@@ -321,6 +321,7 @@ export default function Performance() {
   const [prefillMaxSeqLenInput, setPrefillMaxSeqLenInput] = React.useState('');
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('100');
+  const concurrentUsersUserEdited = React.useRef(false);
   const [prefixInput, setPrefixInput] = React.useState('0');
   const [tpSizeInput, setTpSizeInput] = React.useState('1');
   const [ppSizeInput, setPpSizeInput] = React.useState('1');
@@ -378,6 +379,7 @@ export default function Performance() {
   };
 
   const handleConcurrentUsersChange = (raw: string) => {
+    concurrentUsersUserEdited.current = true;
     const digits = raw.replace(/[^0-9]/g, '');
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
@@ -445,6 +447,7 @@ export default function Performance() {
     setTestResult(null);
     setTestClassifierInput(null)
     setIsCalculating(false);
+    setInputsDirty(false);
   };
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
@@ -452,7 +455,7 @@ export default function Performance() {
   const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
 
   React.useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || concurrentUsersUserEdited.current) return;
     const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small');
     if (!preset) return;
     setActiveConcurrencyPreset(preset.key);
@@ -1162,6 +1165,7 @@ export default function Performance() {
           onChange: (val: string) => {
             if (val === 'FP16' || val === 'FP8' || val === 'INT8' || val === 'INT4' || val === 'MXFP4' || val === 'NVFP4') {
               setTestWeightPrecision(val);
+              markInputsDirty();
             }
           }
         },
@@ -1174,6 +1178,7 @@ export default function Performance() {
           onChange: (val: string) => {
             if (val === 'FP16' || val === 'FP8' || val === 'NVFP4') {
               setTestKVCachePrecision(val);
+              markInputsDirty();
             }
           }
         },
@@ -1192,6 +1197,7 @@ export default function Performance() {
             if (val === 'w4a16_mxfp4' || val === 'w4a8_mxfp4_mxfp8' ||
                 val === 'w4a16_mxfp4_cutlass' || val === 'w4a8_mxfp4_mxfp8_trtllm') {
               setTestMoeQuantMode(val);
+              markInputsDirty();
             }
           },
           help: 'W4A16: best quality, H100+. W4A8: ~2× faster on B200. CUTLASS: H100-optimized. TRT-LLM: B200 TRT-LLM variant.'
@@ -1206,7 +1212,7 @@ export default function Performance() {
           max: memoryOverride ? 100 : undefined,
           step: memoryOverride ? 0.5 : undefined,
           rangeValue: memoryOverride && effectiveGpuMemoryUtilization != null ? effectiveGpuMemoryUtilization * 100 : undefined,
-          onChange: memoryOverride ? (val: number) => setGpuMemoryUtilization(val / 100) : undefined,
+          onChange: memoryOverride ? (val: number) => { setGpuMemoryUtilization(val / 100); markInputsDirty(); } : undefined,
           help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISimulate default.',
         },
       ],
@@ -1458,8 +1464,7 @@ export default function Performance() {
           <button
             className={styles.calcBtn}
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            disabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
-          >
+            disabled={!hydrated || isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}          >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </button>
         </div>
@@ -2437,7 +2442,7 @@ export default function Performance() {
         <Button
           variant="primary"
           onClick={() => setShowSaveModal(true)}
-          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
+          isDisabled={!testResult || inputsDirty || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
           title={isDisagg ? 'Saving currently supports aggregated results only' : !testResult?.memory_available ? 'Saving requires a memory estimate.' : undefined}
         >
           Save estimate{savedCount > 0 && ` (${savedCount})`}

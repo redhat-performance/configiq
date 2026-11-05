@@ -23,7 +23,10 @@ export interface RegistryCoverage {
   records: number
   concurrencyLevels: number[]
   concurrencyLevelCount: number
+  /** Raw version labels, kept for provenance. */
   backendVersions: string[]
+  /** Runtime families the pair was measured on, e.g. `vllm`, `sglang`. */
+  backends: string[]
 }
 
 export interface RegistryGateResult {
@@ -35,6 +38,10 @@ export interface RegistryGateResult {
 export interface RegistryDiagnostics {
   trainingStatus: string
   reasons: string[]
+  /** Data-shape caveats, such as a single-class validation or test split. */
+  warnings?: string[]
+  /** Which split picked the hyperparameters: `validation` or `train_fallback`. */
+  selectionBasis?: string
 }
 
 export interface RegistryPair {
@@ -131,11 +138,17 @@ function parseCoverage(raw: unknown, pairId: string): RegistryCoverage {
   const versions = Array.isArray(coverage.backendVersions)
     ? coverage.backendVersions.filter((value): value is string => typeof value === 'string')
     : []
+  // Legacy bundles predate the backend-family list; an absent list means
+  // "unknown", so the classify guard stays permissive for them.
+  const backends = Array.isArray(coverage.backends)
+    ? coverage.backends.filter((value): value is string => typeof value === 'string')
+    : []
   return {
     records,
     concurrencyLevels: levels,
     concurrencyLevelCount,
     backendVersions: versions,
+    backends,
   }
 }
 
@@ -190,6 +203,12 @@ function parseV2Pair(raw: unknown, index: number): RegistryPair {
         ? diagnostics.reasons.filter((reason): reason is string => typeof reason === 'string')
         : [],
     }
+    const warnings = Array.isArray(diagnostics.warnings)
+      ? diagnostics.warnings.filter((warning): warning is string => typeof warning === 'string')
+      : []
+    if (warnings.length > 0) entry.diagnostics.warnings = warnings
+    const selectionBasis = stringOrNull(diagnostics.selectionBasis)
+    if (selectionBasis !== null) entry.diagnostics.selectionBasis = selectionBasis
   }
   if (status === 'validated') {
     entry.classifier = requireString(pair, 'classifier', id)
