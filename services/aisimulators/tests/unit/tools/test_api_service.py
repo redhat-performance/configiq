@@ -703,7 +703,8 @@ class TestRecommendDemand:
         token_sla = (token_config.model_dump().get("evaluation") or {}).get("sla") or {}
         assert token_sla.get("ttft_ms") == 2000.0
         assert token_sla.get("itl_ms") == 30.0
-        assert "e2e_ms" not in token_sla
+        # The SDK serializes an unused bound as None rather than omitting it.
+        assert token_sla.get("e2e_ms") is None
 
         e2e_request = app_module.RecommendRequest.model_validate({
             "model_path": "Qwen/Qwen3-32B",
@@ -714,7 +715,7 @@ class TestRecommendDemand:
         e2e_config = app_module._aisimulate_recommendation_config(e2e_request)
         e2e_sla = (e2e_config.model_dump().get("evaluation") or {}).get("sla") or {}
         assert e2e_sla.get("e2e_ms") == 2500.0
-        assert "ttft_ms" not in e2e_sla
+        assert e2e_sla.get("ttft_ms") is None
 
 
 class TestSelectDemandRecord:
@@ -1681,6 +1682,8 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "target_concurrency": 32,
+            "ttft": 2000.0,
+            "tpot": 30.0,
             "top_n": 1,
         })
         _skip_if_missing_perf_data(resp)
@@ -1698,6 +1701,8 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "target_concurrency": 32,
+            "ttft": 2000.0,
+            "tpot": 30.0,
             "top_n": 1,
         })
         _skip_if_missing_perf_data(resp)
