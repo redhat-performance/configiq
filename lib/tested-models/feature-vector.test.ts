@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFeatureVector } from './feature-vector'
+import { buildFeatureVector, normalizeBackendVersion } from './feature-vector'
 import type { CanonicalClassifierInput } from './types'
 
 const input: CanonicalClassifierInput = {
@@ -50,7 +50,7 @@ const input: CanonicalClassifierInput = {
 describe('buildFeatureVector', () => {
   it('uses the recorded feature order and derived values', () => {
     const vector = buildFeatureVector(input, {
-      feature_names: ['model_id=org/model', 'system_id=h200_sxm', 'backend=vllm', 'version=0.24.0', 'accelerator=H200', 'tp', 'memory_pressure', 'prefix_caching', 'unseen_numeric'],
+      feature_names: ['model_id=org/model', 'system_id=h200_sxm', 'backend=vllm', 'version=vLLM-0.24', 'accelerator=H200', 'tp', 'memory_pressure', 'prefix_caching', 'unseen_numeric'],
       numeric_medians: { unseen_numeric: 7 },
     })
 
@@ -127,5 +127,59 @@ describe('buildFeatureVector', () => {
     })
 
     expect(vector).toEqual([0, 0])
+  })
+
+  it('matches a runtime catalog version to the pooled training family', () => {
+    const vector = buildFeatureVector(input, {
+      feature_names: ['version=vLLM-0.24', 'version=vLLM-0.31'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([1, 0])
+  })
+
+  it('keeps runtime families separate in the version feature', () => {
+    const vector = buildFeatureVector({
+      ...input,
+      effective: { ...input.effective, backend: 'sglang', backend_version: '0.5.18-recipe-latency-oriented' },
+    }, {
+      feature_names: ['version=sglang-0.5', 'version=vLLM-0.24'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([1, 0])
+  })
+
+  it('does not match a literal label that differs from the pooled family', () => {
+    const vector = buildFeatureVector(input, {
+      feature_names: ['version=0.24.0', 'version=vLLM-0.24'],
+      numeric_medians: {},
+    })
+
+    expect(vector).toEqual([0, 1])
+  })
+})
+
+describe('normalizeBackendVersion', () => {
+  it('pools training labels and runtime catalog versions into one family', () => {
+    expect(normalizeBackendVersion('vllm', 'vLLM-0.24.0')).toBe('vLLM-0.24')
+    expect(normalizeBackendVersion('vllm', '0.24.0')).toBe('vLLM-0.24')
+    expect(normalizeBackendVersion('vllm', 'AIC-0.10.0-vLLM-0.24.0')).toBe('vLLM-0.24')
+  })
+
+  it('keeps families from different runtimes separate', () => {
+    expect(normalizeBackendVersion('sglang', 'sglang-0.5.18-recipe-latency-oriented')).toBe('sglang-0.5')
+    expect(normalizeBackendVersion('sglang', '0.5.18')).toBe('sglang-0.5')
+    expect(normalizeBackendVersion('rhaiis', 'RHAIIS-3.5-GA')).toBe('rhaiis-3.5')
+  })
+
+  it('stays linear on pathological labels', () => {
+    expect(normalizeBackendVersion('vllm', '0.'.repeat(5000))).toBe('vLLM-0.0')
+  })
+
+  it('returns unknown for unresolved labels', () => {
+    expect(normalizeBackendVersion('vllm', 'current')).toBe('unknown')
+    expect(normalizeBackendVersion(null, null)).toBe('unknown')
+    expect(normalizeBackendVersion('vllm', 'custom-build')).toBe('unknown')
   })
 })

@@ -136,7 +136,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/EstimateResponse'
         '422':
-          description: Unsupported model/backend/system combination
+          description: |
+            Unsupported model/backend/system combination, including a
+            `backend_version` whose performance data has no measurement for
+            the requested model or compute shape. The detail names the
+            versions the SDK ships for the system when another version may work.
           content:
             application/json:
               schema:
@@ -173,7 +177,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/MemoryResponse'
         '422':
-          description: Unsupported model/backend/system combination
+          description: |
+            Unsupported model/backend/system combination, including a
+            `backend_version` whose performance data has no measurement for
+            the requested model or compute shape. The detail names the
+            versions the SDK ships for the system when another version may work.
           content:
             application/json:
               schema:
@@ -406,9 +414,16 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null uses the latest available.
-            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
-            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
+            Backend version. AISimulate: null resolves to the system default
+            (`current`, the same value `/backends` reports in
+            `system_defaults`); the `current` alias behaves the same way. If
+            that version has no performance data for the model, the service
+            retries the newest declared versions and reports the one it used.
+            Literal versions, `previous`, and `next` are pins and are never
+            substituted: if the data cannot serve them, the request returns 422
+            naming the versions the SDK ships for the system. BLIS: must be one
+            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
+            0.31.0. Aliases and unmodeled releases return 422.
           default: null
         target_request_rate:
           type: number
@@ -769,9 +784,16 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null uses the latest available.
-            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
-            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
+            Backend version. AISimulate: null resolves to the system default
+            (`current`, the same value `/backends` reports in
+            `system_defaults`); the `current` alias behaves the same way. If
+            that version has no performance data for the model, the service
+            retries the newest declared versions and reports the one it used.
+            Literal versions, `previous`, and `next` are pins and are never
+            substituted: if the data cannot serve them, the request returns 422
+            naming the versions the SDK ships for the system. BLIS: must be one
+            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
+            0.31.0. Aliases and unmodeled releases return 422.
           default: null
         mode:
           type: string

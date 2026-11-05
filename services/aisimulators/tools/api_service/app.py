@@ -9,6 +9,7 @@ See docs/api/openapi.yaml for the full spec.
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -16,7 +17,9 @@ import os
 import re
 import sys
 import tempfile
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -70,7 +73,18 @@ class RecommendRequest(BaseModel):
     model_path: str = Field(examples=["Qwen/Qwen3-32B"], description="HuggingFace model path or SDK model key.")
     system: str = Field(examples=["h200_sxm"], description="GPU system identifier.")
     backend: str = Field(default="vllm", description="Inference backend.")
-    backend_version: str | None = Field(default=None, examples=[None], description="Backend version.")
+    backend_version: str | None = Field(
+        default=None,
+        examples=[None],
+        description=(
+            "Backend version. Omit (or send `current`) to resolve the system "
+            "default published in /backends system_defaults and let the service "
+            "retry newer versions when the default has no performance data for "
+            "this model. Literal versions, `previous`, and `next` are pins and are "
+            "never substituted; if the data cannot serve them the request returns "
+            "422 naming the versions the SDK ships."
+        ),
+    )
     target_request_rate: float | None = Field(default=None, examples=[None], description="Target req/s.")
     target_concurrency: float | None = Field(default=None, examples=[32], description="Target concurrent users.")
     isl: int = Field(default=4000, description="Input sequence length.")
@@ -135,7 +149,18 @@ class EstimateRequest(BaseModel):
     model_path: str = Field(examples=["Qwen/Qwen3-32B"], description="HuggingFace model path or SDK model key.")
     system: str = Field(examples=["h200_sxm"], description="GPU system identifier.")
     backend: str = Field(default="vllm", description="Inference backend.")
-    backend_version: str | None = Field(default=None, examples=[None], description="Backend version.")
+    backend_version: str | None = Field(
+        default=None,
+        examples=[None],
+        description=(
+            "Backend version. Omit (or send `current`) to resolve the system "
+            "default published in /backends system_defaults and let the service "
+            "retry newer versions when the default has no performance data for "
+            "this model. Literal versions, `previous`, and `next` are pins and are "
+            "never substituted; if the data cannot serve them the request returns "
+            "422 naming the versions the SDK ships."
+        ),
+    )
     isl: int = Field(default=4000, description="Input sequence length.")
     osl: int = Field(default=1000, description="Output sequence length.")
     max_seq_len: int | None = Field(default=None, gt=0, description="Maximum sequence length for KV cache allocation.")
@@ -479,6 +504,37 @@ def _current_or_newest(slots: dict[str, str] | None, versions: list[str]) -> str
     if slots and slots.get("current"):
         return slots["current"]
     return max(versions, key=_version_sort_key) if versions else None
+
+
+def _declared_versions(system: str, backend: str) -> list[str]:
+    """Literal backend versions declared for a system, oldest first.
+
+    Mirrors the per-system list ``/backends`` publishes, so a fallback can
+    never offer a version the SDK does not ship data for.
+    """
+    try:
+        supported = get_supported_databases().get(system, {})
+    except Exception:
+        logger.warning("Could not read the supported databases for %s", system, exc_info=True)
+        return []
+    return sorted(supported.get(_sdk_backend_id(backend), []) or [], key=_version_sort_key)
+
+
+def _system_default_version(system: str, backend: str) -> str | None:
+    """The literal version an omitted ``backend_version`` resolves to.
+
+    ``/backends`` documents this as ``system_defaults[system]``. Resolving it
+    here with the same rule lets a prediction report the version it actually
+    used instead of echoing the caller's blank.
+    """
+    versions = _declared_versions(system, backend)
+    if not versions:
+        return None
+    try:
+        slots = get_version_slots(system, _sdk_backend_id(backend))
+    except Exception:
+        slots = None
+    return _current_or_newest(slots, versions)
 
 
 class _noop_context:
@@ -910,6 +966,141 @@ def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
         return _PredictionResult(dict(report.metrics))
 
 
+#: One cached fallback per request shape, so a blank-version request pays the
+#: failed attempt once instead of on every call. The shape is part of the key:
+#: a version can cover one shape and miss another, and a cached fallback must
+#: not skip a default that works for a different request. Least-recently-used
+#: entries are evicted so sustained traffic cannot grow it without bound.
+#: Synchronous handlers run in a threadpool, so cache access is locked.
+_VERSION_FALLBACK_CACHE_LOCK = threading.Lock()
+_VERSION_FALLBACK_CACHE: OrderedDict[tuple[str, str, str, str, str], str] = OrderedDict()
+_VERSION_FALLBACK_CACHE_MAX = 512
+
+#: Bound the extra replay work: the system default plus the two newest versions.
+_VERSION_FALLBACK_ATTEMPTS = 3
+
+#: The SDK slot alias that means "the system default" (see
+#: ``resolve_query_version``). ``previous`` and ``next`` name specific slots.
+_DEFAULT_VERSION_ALIAS = "current"
+
+
+def _clear_version_fallback_cache() -> None:
+    """Drop the resolved-version cache (used by tests and after data reloads)."""
+    with _VERSION_FALLBACK_CACHE_LOCK:
+        _VERSION_FALLBACK_CACHE.clear()
+
+
+def _fallback_cache_key(req: Any, default: str | None) -> tuple[str, str, str, str, str]:
+    """Model, system, backend, resolved default, and the request shape.
+
+    Coverage gaps depend on the compute shape, so keying on the model alone
+    would let a fallback for one workload skip the default for another. The
+    resolved default is part of the key too: when the SDK moves its ``current``
+    slot, a cached fallback must not bypass the new default. The shape is
+    hashed so a large ``model_config`` does not stay resident.
+    """
+    shape = req.model_dump(mode="json", exclude={"backend_version"})
+    digest = hashlib.sha256(
+        json.dumps(shape, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+    return (req.model_path, req.system, _sdk_backend_id(req.backend), default or "", digest)
+
+
+def _fallback_cache_get(cache_key: tuple[str, str, str, str, str]) -> str | None:
+    """Read a cached fallback and mark it most recently used."""
+    with _VERSION_FALLBACK_CACHE_LOCK:
+        cached = _VERSION_FALLBACK_CACHE.get(cache_key)
+        if cached is not None:
+            _VERSION_FALLBACK_CACHE.move_to_end(cache_key)
+        return cached
+
+
+def _fallback_cache_put(cache_key: tuple[str, str, str, str, str], version: str) -> bool:
+    """Store a resolved fallback, evicting least-recently-used entries.
+
+    Returns whether this was a new entry, so the caller logs each model once
+    rather than on every request that hits the cache.
+    """
+    with _VERSION_FALLBACK_CACHE_LOCK:
+        is_new = cache_key not in _VERSION_FALLBACK_CACHE
+        _VERSION_FALLBACK_CACHE[cache_key] = version
+        _VERSION_FALLBACK_CACHE.move_to_end(cache_key)
+        while len(_VERSION_FALLBACK_CACHE) > _VERSION_FALLBACK_CACHE_MAX:
+            _VERSION_FALLBACK_CACHE.popitem(last=False)
+        return is_new
+
+
+def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, str | None]:
+    """Resolve an omitted ``backend_version`` to a version that can serve the model.
+
+    A blank version (or the ``current`` alias, which means the same thing) is
+    resolved to a literal version. The system default is right for most models,
+    but a model can be missing from that version's op-level data while a newer
+    version covers it (dense Gemma-4 31B is absent on vLLM 0.24.0 and present on
+    0.31.0). Retry only on a performance-data gap, and never for a version the
+    caller pinned literally: ``previous`` and ``next`` name specific slots.
+
+    Returns ``(result, version_the_default_could_not_serve)``.
+    """
+    requested = (req.backend_version or "").strip() or None
+    # ``current`` is an alias for the system default, not a pin on a literal
+    # version; ``previous`` and ``next`` name specific slots and are honoured.
+    open_version = requested is None or requested == _DEFAULT_VERSION_ALIAS
+    if not open_version:
+        try:
+            return run(), None
+        except Exception as error:
+            if _is_perf_data_gap(error):
+                raise _PerfDataGap(
+                    model=req.model_path,
+                    system=req.system,
+                    backend=req.backend,
+                    requested_version=requested,
+                    attempted=[requested],
+                    cause=error,
+                ) from error
+            raise
+
+    declared = _declared_versions(req.system, req.backend)
+    default = _system_default_version(req.system, req.backend)
+    cache_key = _fallback_cache_key(req, default)
+    # Ignore a cached fallback that a data update no longer declares: replaying
+    # it would fail as an unlisted version instead of finding coverage again.
+    cached = _fallback_cache_get(cache_key)
+    first = cached if cached in declared else default
+    ordered = [first] + [version for version in reversed(declared) if version != first]
+
+    attempted: list[str | None] = []
+    cause: BaseException | None = None
+    for version in ordered[:_VERSION_FALLBACK_ATTEMPTS]:
+        req.backend_version = version
+        attempted.append(version)
+        try:
+            result = run()
+        except Exception as error:
+            if not _is_perf_data_gap(error):
+                raise
+            cause = error
+            continue
+        if version and default and version != default:
+            if _fallback_cache_put(cache_key, version):
+                logger.warning(
+                    "No performance data for %s with %s %s on %s; resolved to %s",
+                    req.model_path, req.backend, default, req.system, version,
+                )
+            return result, default
+        return result, None
+
+    raise _PerfDataGap(
+        model=req.model_path,
+        system=req.system,
+        backend=req.backend,
+        requested_version=None,
+        attempted=attempted,
+        cause=cause or RuntimeError("no performance data for this model"),
+    )
+
+
 def _worker_config_from_row(row: pd.Series, prefix: str, req: RecommendRequest) -> WorkerConfig | None:
     def g(col: str) -> Any:
         v = row.get(f"({prefix}){col}")
@@ -1079,6 +1270,100 @@ _UNSERVABLE_MESSAGE = re.compile(
     r"is not a queryable version|no queryable versions defined|no timing data for"
 )
 
+#: A replay that reaches a compute shape the selected performance data never
+#: measured. The runner wraps these in "AISimulate replay failed: engine error:
+#: ...", so they are matched by text (and by exception type) rather than class.
+#: This is a coverage gap for this model/version, not a service failure: a 500
+#: told users the API was down when another backend_version would have worked.
+_PERF_DATA_GAP_MESSAGE = re.compile(
+    r"EmpiricalNotImplementedError"
+    r"|empirical estimation not implemented"
+    r"|No empirical utilisation data"
+    r"|no own-shape, cross-shape, or sibling transfer reference"
+    r"|perf database error: (?:data missing|data empty|data unavailable|no rows in"
+    r"|has no compatible data|has data for|no data to anchor)",
+    re.IGNORECASE,
+)
+
+_PERF_DATA_GAP_TYPES = frozenset({"EmpiricalNotImplementedError", "PerfDataNotAvailableError"})
+
+#: The op query the estimator could not price, e.g. ``[32.0, 2048.0, 1.0]``.
+_SHAPE_QUERY = re.compile(r"at query=\[([^\]]*)\]")
+
+
+def _exception_chain_text(error: BaseException) -> str:
+    """Every message in an exception's cause chain, innermost text included."""
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(parts) < 6:
+        seen.add(id(current))
+        parts.append(str(current))
+        current = current.__cause__ or current.__context__
+    return " | ".join(parts)
+
+
+def _is_perf_data_gap(error: BaseException) -> bool:
+    """Whether an error means "this data set has no measurement", not "we broke"."""
+    if error.__class__.__name__ in _PERF_DATA_GAP_TYPES:
+        return True
+    return bool(_PERF_DATA_GAP_MESSAGE.search(_exception_chain_text(error)))
+
+
+def _perf_gap_shape(error: BaseException) -> str:
+    """Name the missing coverage in the estimator's own terms, without the noise."""
+    text = _exception_chain_text(error)
+    match = _SHAPE_QUERY.search(text)
+    if match is not None:
+        shape = ", ".join(
+            part.strip().removesuffix(".0") or part.strip()
+            for part in match.group(1).split(",")
+        )
+        return f"no measurement for compute shape [{shape}]"
+    if "no own-shape, cross-shape, or sibling transfer reference" in text:
+        return "no measurement, and no transferable reference shape"
+    return "no measurement for a compute shape this model needs"
+
+
+class _PerfDataGap(Exception):
+    """No empirical performance data for this model on the selected backend."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        system: str,
+        backend: str,
+        requested_version: str | None,
+        attempted: list[str | None],
+        cause: BaseException,
+    ) -> None:
+        self.model = model
+        self.system = system
+        self.backend = backend
+        self.requested_version = requested_version
+        self.attempted = attempted
+        self.cause = cause
+        super().__init__(self.detail())
+
+    def detail(self) -> str:
+        shape = _perf_gap_shape(self.cause)
+        declared = _declared_versions(self.system, self.backend)
+        listed = ", ".join(declared) if declared else "none"
+        if self.requested_version:
+            return (
+                f"No empirical performance data for model={self.model} with "
+                f"{self.backend} {self.requested_version} on {self.system}: {shape}. "
+                f"Versions the SDK ships for {self.system}: {listed}. Retry with one of "
+                "those, or omit backend_version to let the service choose."
+            )
+        tried = ", ".join(version or "the system default" for version in self.attempted)
+        return (
+            f"No empirical performance data for model={self.model} with {self.backend} on "
+            f"{self.system}: {shape}. Tried {tried or 'the system default'}. The estimator "
+            "has no coverage for this model on this system; try another backend or GPU system."
+        )
+
 
 def _unwrapped_detail(msg: str) -> str:
     return re.sub(r"^[A-Za-z_][A-Za-z0-9_]*Error: ", "", msg, count=1)
@@ -1086,6 +1371,10 @@ def _unwrapped_detail(msg: str) -> str:
 
 def _common_error_handler(e: Exception, op: str, model_path: str, backend: str, system: str) -> None:
     msg = str(e)
+    # A pinned version that the performance data cannot serve, or a blank
+    # version that no declared version can serve. Both are client-actionable.
+    if isinstance(e, _PerfDataGap):
+        raise HTTPException(status_code=422, detail=e.detail())
     # aisimulate's recommendation stack uses NoViableParallelConfig when a
     # bounded GPU window is too small to hold the model. That is an expected
     # no-result response (the caller may try a larger window), not a server
@@ -1102,6 +1391,24 @@ def _common_error_handler(e: Exception, op: str, model_path: str, backend: str, 
     # ("ValueError: ..."), so they are matched by text as well as by type.
     if _UNSERVABLE_MESSAGE.search(msg):
         raise HTTPException(status_code=422, detail=_unwrapped_detail(msg))
+    # Defence for call sites that do not run the version-fallback wrapper
+    # (/memory, legacy callers). Predict and recommend raise _PerfDataGap,
+    # which carries the versions already tried.
+    if _is_perf_data_gap(e):
+        declared = _declared_versions(system, backend)
+        listed = (
+            f" Versions the SDK ships for {system}: {', '.join(declared)}."
+            if declared
+            else ""
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No empirical performance data for model={model_path} with {backend} "
+                f"on {system}: {_perf_gap_shape(e)}.{listed} Try another backend_version, "
+                "backend or GPU system."
+            ),
+        )
     if isinstance(e, KeyError):
         # A bare KeyError here almost always means a supplied model_config is
         # incomplete (e.g. missing 'architectures'); str(KeyError('x')) is "'x'".
@@ -1322,7 +1629,9 @@ def post_recommend(
         )
 
     try:
-        result = _run_aisimulate_recommendation(req)
+        result, fell_back_from = _run_with_version_fallback(
+            req, lambda: _run_aisimulate_recommendation(req)
+        )
     except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
 
@@ -1332,6 +1641,13 @@ def post_recommend(
 
     includes = _parse_include(include)
     configs = [_aisimulate_candidate_config(candidate, req) for candidate in candidates]
+    if fell_back_from and req.backend_version:
+        fallback_warning = (
+            f"No performance data for {req.backend} {fell_back_from} on {req.system}; "
+            f"used {req.backend_version}."
+        )
+        for cfg in configs:
+            cfg.warnings.insert(0, fallback_warning)
     for cfg in configs:
         if req.inclusive_tpot:
             cfg.tpot = _inclusive_tpot(cfg.ttft, cfg.tpot, req.osl)
@@ -1526,10 +1842,13 @@ def post_predict(
 
     if req.simulator == "aisimulate":
         try:
-            prediction = _run_aisimulate_prediction(req, _parse_include(include))
+            prediction, fell_back_from = _run_with_version_fallback(
+                req, lambda: _run_aisimulate_prediction(req, _parse_include(include))
+            )
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
     else:
+        fell_back_from = None
         try:
             prediction = _blis_estimate(req)
         except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
@@ -1542,6 +1861,14 @@ def post_predict(
     tpot = _metric(prediction.summary, "tpot_ms", "mean_tpot_ms", "itl_ms")
     if req.inclusive_tpot:
         tpot = _inclusive_tpot(_metric(prediction.summary, "ttft_ms", "mean_ttft_ms"), tpot, req.osl)
+
+    warnings = list(getattr(prediction, "warnings", []) or [])
+    if fell_back_from and req.backend_version:
+        warnings.insert(
+            0,
+            f"No performance data for {req.backend} {fell_back_from} on {req.system}; "
+            f"used {req.backend_version}.",
+        )
 
     resp = EstimateResponse(
         ttft=_metric(prediction.summary, "ttft_ms", "mean_ttft_ms") or 0.0,
@@ -1573,9 +1900,10 @@ def post_predict(
                 simulator=req.simulator,
                 requested_model=req.model_path,
                 system=req.system,
+                engine_version=req.backend_version,
             )
         ),
-        warnings=getattr(prediction, "warnings", []),
+        warnings=warnings,
     )
 
     if req.simulator == "blis":

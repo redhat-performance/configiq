@@ -103,6 +103,25 @@ export function TestedModelPair({ pair, gate }: TestedModelPairProps) {
         </Alert>
       )}
 
+      {pair.diagnostics?.warnings?.length ? (
+        <Alert
+          isInline
+          variant="info"
+          title="Data notes"
+          className={styles.pairAlert}
+        >
+          These caveats describe the measured data, not the classifier verdict.
+          <ul className={styles.reasonList}>
+            {pair.diagnostics.warnings.map(warning => <li key={warning}>{warning}</li>)}
+          </ul>
+          {pair.diagnostics.selectionBasis === 'train_fallback' ? (
+            <p className={styles.panelNote}>
+              Hyperparameters were selected on the training split because the validation split contained a single class.
+            </p>
+          ) : null}
+        </Alert>
+      ) : null}
+
       {loading && <Spinner aria-label="Loading pair coverage" />}
       {unavailable && (
         <div className={styles.notice} role="status">

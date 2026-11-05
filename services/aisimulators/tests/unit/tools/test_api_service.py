@@ -880,6 +880,7 @@ class TestSystems:
 # ever reached in an environment that genuinely lacks perf data.
 _NO_PERF_DATA_MARKERS = (
     "no performance data available",   # _common_error_handler perf-data path
+    "no empirical performance data",   # _PerfDataGap (version/shape coverage)
     "no configuration meets",          # /recommend fallback (no config found)
     "no feasible",                     # NoFeasibleConfigError
 )
@@ -1415,6 +1416,316 @@ class TestEstimate:
         mock_estimate.return_value = make_mock_estimate_result()
         resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
         assert resp.json()["tpot"] == pytest.approx(28.118)
+
+
+# ─── model-aware backend_version resolution ──────────────────────────────────
+
+# The real replay error for a model the selected data never measured. The runner
+# wraps it, so the service has to classify it by text, not by exception type.
+EMPIRICAL_GAP = (
+    "AISimulate replay failed: engine error: generalized engine worker 0 is now poisoned "
+    "because a rank may have been partially mutated: executing attention-DP rank 0: external "
+    "prefill prediction failed: AIC static_ctx evidence prediction failed: "
+    "EmpiricalNotImplementedError: empirical estimation not implemented: No empirical "
+    "utilisation data to estimate this op at query=[32.0, 2048.0, 1.0]: no own-shape, "
+    "cross-shape, or sibling transfer reference available."
+)
+
+
+class TestVersionFallback:
+    """A blank backend_version must find a version that can serve the model."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        app_module._clear_version_fallback_cache()
+        yield
+        app_module._clear_version_fallback_cache()
+
+    def _patch_versions(self, monkeypatch, supported, slots):
+        monkeypatch.setattr(app_module, "get_supported_databases", lambda: supported)
+        monkeypatch.setattr(
+            app_module, "get_version_slots",
+            lambda system, backend: slots.get((system, backend)),
+        )
+
+    def _patch_versions_h200(self, monkeypatch):
+        self._patch_versions(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.24.0", "0.31.0"]}},
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+        )
+
+    def test_system_default_follows_the_current_slot(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        assert app_module._system_default_version("h200_sxm", "vllm") == "0.24.0"
+
+    def test_system_default_is_newest_without_a_version_gate(self, monkeypatch):
+        self._patch_versions(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.9.0", "0.10.0"]}},
+            slots={},
+        )
+        assert app_module._system_default_version("h200_sxm", "vllm") == "0.10.0"
+
+    def test_blank_version_uses_a_version_that_can_serve_the_model(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Report the version that produced the numbers, not the caller's blank.
+        assert data["backend_version"] == "0.31.0"
+        assert calls == ["0.24.0", "0.31.0"]
+        assert data["provenance"]["engine_version"] == "0.31.0"
+        assert "used 0.31.0" in data["warnings"][0]
+
+    def test_the_fallback_is_cached_per_model_system_and_backend(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        calls.clear()
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        # The failed default is not retried on every request.
+        assert calls == ["0.31.0"]
+
+    def test_explicit_version_is_never_swapped_and_names_the_alternatives(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "0.24.0"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "No empirical performance data" in detail
+        assert "0.24.0" in detail
+        # The client is told which versions the SDK ships so it can retry.
+        assert "0.31.0" in detail
+        assert calls == ["0.24.0"]
+
+    def test_blank_version_reports_every_version_it_tried(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+
+        def fake_prediction(req, include):
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "Tried 0.24.0, 0.31.0" in detail
+        assert "compute shape [32, 2048, 1]" in detail
+
+    def test_other_failures_are_not_retried(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError("crash")
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 500
+        assert calls == ["0.24.0"]
+
+    def test_recommend_resolves_a_blank_version_the_same_way(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_recommendation(req):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            # Report the version the SDK would have used for this attempt.
+            candidate = MockCandidate()
+            candidate.prediction_config["engine"]["backend_version"] = req.backend_version
+            return make_mock_recommendation_result([candidate])
+
+        monkeypatch.setattr(
+            app_module, "_run_aisimulate_recommendation", fake_recommendation
+        )
+
+        resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
+
+        assert resp.status_code == 200
+        # The recommendation searched the version that has the model's data.
+        assert calls == ["0.24.0", "0.31.0"]
+        # Every returned config reports the version that served the request and
+        # says the default could not.
+        configs = resp.json()["configs"]
+        assert configs
+        assert all(cfg["backend_version"] == "0.31.0" for cfg in configs)
+        assert all("used 0.31.0" in cfg["warnings"][0] for cfg in configs)
+
+    def test_the_current_alias_falls_back_like_a_blank_version(self, monkeypatch):
+        """``current`` means "the system default", not a pin on a literal version."""
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post(
+            "/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "current"}
+        )
+
+        assert resp.status_code == 200
+        assert calls == ["0.24.0", "0.31.0"]
+        assert resp.json()["backend_version"] == "0.31.0"
+
+    def test_other_slot_aliases_are_pins(self, monkeypatch):
+        """``previous`` and ``next`` name a slot; never swap them silently."""
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post(
+            "/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "previous"}
+        )
+
+        assert resp.status_code == 422
+        assert calls == ["previous"]
+
+    def test_the_fallback_cache_is_scoped_to_the_request_shape(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[tuple[int, str | None]] = []
+
+        def fake_prediction(req, include):
+            calls.append((req.isl, req.backend_version))
+            if req.isl == 8192 and req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        long_context = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": 8192})
+        assert long_context.status_code == 200
+        assert calls == [(8192, "0.24.0"), (8192, "0.31.0")]
+
+        calls.clear()
+        # A different shape still gets the default, which covers it.
+        short_context = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert short_context.status_code == 200
+        assert calls == [(4000, "0.24.0")]
+
+    def test_the_fallback_cache_evicts_least_recently_used_shapes(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        monkeypatch.setattr(app_module, "_VERSION_FALLBACK_CACHE_MAX", 2)
+
+        def fake_prediction(req, include):
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        for isl in (1024, 2048, 4096):
+            response = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": isl})
+            assert response.status_code == 200
+
+        assert len(app_module._VERSION_FALLBACK_CACHE) == 2
+
+    def test_the_cache_is_invalidated_when_the_system_default_changes(self, monkeypatch):
+        versions = {"h200_sxm": {"vllm": ["0.24.0", "0.28.0", "0.31.0"]}}
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+        )
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert calls == ["0.24.0", "0.31.0"]
+
+        # The SDK moves `current` to 0.28.0; the cached 0.31.0 must not bypass it.
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.28.0", "next": "0.31.0"}},
+        )
+        calls.clear()
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert calls == ["0.28.0"]
+
+    def test_a_cached_fallback_that_is_no_longer_declared_is_ignored(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        request = app_module.EstimateRequest.model_validate(VALID_ESTIMATE_BODY)
+        key = app_module._fallback_cache_key(
+            request, app_module._system_default_version("h200_sxm", "vllm")
+        )
+        app_module._VERSION_FALLBACK_CACHE[key] = "0.99.0"
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        # A data update can retire a version; the stale entry is not replayed.
+        assert calls == ["0.24.0"]
+
+    def test_unwrapped_coverage_error_is_mapped_to_422(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        error = RuntimeError(EMPIRICAL_GAP)
+        with pytest.raises(app_module.HTTPException) as raised:
+            app_module._common_error_handler(error, "memory", "org/model", "vllm", "h200_sxm")
+        assert raised.value.status_code == 422
+        assert "No empirical performance data" in raised.value.detail
+        # /memory does not pick a version, so it names the ones the SDK ships.
+        assert "Versions the SDK ships for h200_sxm: 0.24.0, 0.31.0" in raised.value.detail
 
 
 # ─── model_config passthrough tests ──────────────────────────────────────────
