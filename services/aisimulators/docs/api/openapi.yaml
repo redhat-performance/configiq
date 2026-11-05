@@ -682,11 +682,11 @@ components:
         moe_tp:
           type: integer
           nullable: true
-          description: MoE tensor parallel size.
+          description: Resolved MoE/FFN tensor width for this pool.
         moe_ep:
           type: integer
           nullable: true
-          description: MoE expert parallel size.
+          description: Resolved MoE/FFN expert width for this pool.
         num_workers:
           type: integer
           nullable: true
@@ -848,9 +848,11 @@ components:
         prefill_moe_tp_size:
           type: integer
           nullable: true
+          description: MoE tensor width for the prefill pool. Falls back to `moe_tp_size`, then to `(prefill_tp_size * attention_dp_size)`.
         prefill_moe_ep_size:
           type: integer
           nullable: true
+          description: MoE expert width for the prefill pool. Falls back to `moe_ep_size`, then to 1.
         prefill_batch_size:
           type: integer
           nullable: true
@@ -866,9 +868,11 @@ components:
         decode_moe_tp_size:
           type: integer
           nullable: true
+          description: MoE tensor width for the decode pool. Falls back to `moe_tp_size`, then to `(decode_tp_size * attention_dp_size)`.
         decode_moe_ep_size:
           type: integer
           nullable: true
+          description: MoE expert width for the decode pool. Falls back to `moe_ep_size`, then to 1.
         decode_batch_size:
           type: integer
           nullable: true
@@ -910,10 +914,22 @@ components:
           type: integer
           nullable: true
           default: null
+          description: |
+            MoE/FFN tensor width. When both `moe_tp_size` and `moe_ep_size` are
+            omitted, the API resolves the pair to
+            `(tp_size * attention_dp_size, 1)`: the FFN or expert block is
+            tensor-sharded across the attention group with no expert
+            parallelism. This default also applies to dense variants of
+            MoE-capable families, such as dense Gemma 4. When only one width is
+            supplied, the other is inferred from the attention width.
         moe_ep_size:
           type: integer
           nullable: true
           default: null
+          description: |
+            MoE/FFN expert width. Omitted alongside `moe_tp_size`, it resolves
+            to 1; supplied alone, `moe_tp_size` is inferred from the attention
+            width.
         attention_dp_size:
           type: integer
           default: 1
@@ -1001,6 +1017,20 @@ components:
           type: integer
           nullable: true
           description: Data parallel size.
+        moe_tp:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN tensor width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_tp` and
+            `decode_config.moe_tp`.
+        moe_ep:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN expert width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_ep` and
+            `decode_config.moe_ep`.
         system:
           type: string
           nullable: true

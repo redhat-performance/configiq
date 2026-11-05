@@ -123,6 +123,29 @@ field. The same 422 class covers a compute shape the selected data never
 measured (`EmpiricalNotImplementedError` inside the replay engine), which
 previously surfaced as a generic 500.
 
+### MoE / FFN width resolution
+
+AISimulate validates that `tp_size * attention_dp_size * cp_size` equals
+`moe_tp_size * moe_ep_size` for model families that can host MoE layers,
+including dense variants such as dense Gemma 4. The service therefore resolves
+an omitted width pair per worker to
+`(tp_size * attention_dp_size, 1)`, meaning the FFN or expert block is
+tensor-sharded across the attention group with no expert parallelism. This
+applies to dense and MoE models alike.
+
+An explicit pair is passed through unchanged. If only one width is supplied,
+the other is inferred when it divides the attention width. Disaggregated
+requests resolve each pool independently from `prefill_moe_tp_size` /
+`prefill_moe_ep_size` and `decode_moe_tp_size` / `decode_moe_ep_size`, falling
+back to the top-level pair, so pools with different TP widths receive matching
+pairs. The response reports the resolved layout: `moe_tp` / `moe_ep` for an
+aggregated prediction, and `prefill_config.moe_tp` / `decode_config.moe_tp`
+(plus the matching `_ep` fields) for a disaggregated one. Clients should send
+only widths they explicitly chose and display the returned values rather than
+reconstructing the default. BLIS has no width invariant: it receives only the
+widths the caller supplied, and its aggregated response reports those explicit
+values (or null).
+
 BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
 `0.31.0`, the newest release that models prefill/decode disaggregation and
 accepts `max_model_len: auto`. `0.32.0` is opt-in and colocated-only: a P/D

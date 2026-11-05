@@ -1126,6 +1126,10 @@ class TestEstimate:
 
         assert resp.status_code == 200
         assert resp.json()["ttft"] == pytest.approx(471.378)
+        # VALID_ESTIMATE_BODY uses TP=2 with no widths: the API reports the
+        # resolved default layout it sent.
+        assert resp.json()["moe_tp"] == 2
+        assert resp.json()["moe_ep"] == 1
         assert resp.json()["provenance"]["simulator"] == "aisimulate"
         assert resp.json()["provenance"]["requested_model"] == VALID_ESTIMATE_BODY["model_path"]
 
@@ -1312,6 +1316,55 @@ class TestEstimate:
         assert config.engine.gemm_quant_mode == "fp8"
         assert config.engine.kvcache_quant_mode == "fp8"
 
+    def test_prediction_config_defaults_moe_widths_to_attention_group(self):
+        body = {**VALID_ESTIMATE_BODY, "tp_size": 4}
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 4
+        assert parallel.moe_expert == 1
+
+    def test_prediction_config_preserves_explicit_moe_widths(self):
+        body = {
+            **VALID_ESTIMATE_BODY,
+            "tp_size": 4,
+            "moe_tp_size": 2,
+            "moe_ep_size": 2,
+        }
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 2
+        assert parallel.moe_expert == 2
+
+    def test_prediction_config_infers_the_missing_moe_width(self):
+        body = {**VALID_ESTIMATE_BODY, "tp_size": 4, "moe_ep_size": 4}
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 1
+        assert parallel.moe_expert == 4
+
+    def test_prediction_config_resolves_each_disagg_pool_width(self):
+        body = {
+            **VALID_ESTIMATE_BODY,
+            "mode": "disagg",
+            "prefill_tp_size": 8,
+            "decode_tp_size": 2,
+        }
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+
+        prefill = config.engine.workers.prefill.parallelism
+        decode = config.engine.workers.decode.parallelism
+        assert prefill.moe_tensor == 8
+        assert prefill.moe_expert == 1
+        assert decode.moe_tensor == 2
+        assert decode.moe_expert == 1
+
     @patch("tools.api_service.app._run_aisimulate_prediction")
     def test_disagg_mode(self, mock_estimate):
         mock_estimate.return_value = MockPredictionResult(
@@ -1333,9 +1386,13 @@ class TestEstimate:
         # Top-level parallelism is None for disagg; see prefill/decode_config.
         assert data["tp"] is None
         assert data["prefill_config"]["tp"] == 1
+        assert data["prefill_config"]["moe_tp"] == 1
+        assert data["prefill_config"]["moe_ep"] == 1
         assert data["prefill_config"]["num_workers"] == 4
         assert data["prefill_config"]["batch_size"] == 1
         assert data["decode_config"]["tp"] == 4
+        assert data["decode_config"]["moe_tp"] == 4
+        assert data["decode_config"]["moe_ep"] == 1
         assert data["decode_config"]["batch_size"] == 64
         assert data["tokens_per_second_per_gpu"] == pytest.approx(125.0)
         # Per-GPU peak is the worst case across pools, not summed.

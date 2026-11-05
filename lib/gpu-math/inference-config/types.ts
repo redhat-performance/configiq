@@ -105,6 +105,9 @@ export interface EstimatePhase {
   pp_size: number
   batch_size: number
   memory_gb: number | null
+  /** Resolved FFN/expert widths reported by the API, when present. */
+  moe_tp_size: number | null
+  moe_ep_size: number | null
 }
 
 export interface PerformanceMetrics {
@@ -128,6 +131,9 @@ export interface InferenceConfigResult {
   llmd_config?: LLMDConfig
   /** Serving mode. Defaults to 'agg' when absent. */
   mode?: 'agg' | 'disagg'
+  /** Resolved FFN/expert widths reported by the API (aggregated only). */
+  moe_tp_size?: number | null
+  moe_ep_size?: number | null
   /** Per-pool detail (disagg only). */
   disagg?: {
     prefill: EstimatePhase

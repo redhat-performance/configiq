@@ -174,6 +174,46 @@ no fallback. Treat the service-specific documentation as the source of the
 current capability matrix rather than assuming all simulators support the same
 features.
 
+## Generic frontend requirement
+
+The Next.js frontend must stay simulator-generic. It may select a simulator and
+forward explicit user intent, but it must not encode per-simulator defaults,
+invariants, capability rules, or fallback behavior. Those belong in the
+AISimulators REST API and its service tests, which are the single boundary
+where simulator identity is allowed to change behavior.
+
+Rules:
+
+- Do not add `simulator === ...` branches in React components, hooks, or
+  `lib/api/` adapters to decide requests, defaults, or display values.
+- Send only values the user actually chose. When a contract has a default,
+  omit the field and let the API resolve it.
+- Read resolved values, capability flags, and provenance from the API response;
+  do not recompute them in the browser.
+- If a simulator cannot support a request, surface the API's explicit
+  unsupported/error response. Never substitute values or another simulator to
+  make the UI look uniform.
+- Simulator-specific support (for example which backend versions, fabrics, or
+  request fields are accepted) belongs in catalog/capability metadata and the
+  service README/OpenAPI, not in frontend conditionals.
+- When a default or invariant moves to the service, add or update API and
+  service tests. Keep frontend tests focused on forwarding intent and rendering
+  the response.
+
+Worked example: MoE/FFN width defaults. AISimulate validates
+`tp * attention_dp * cp == moe_tp * moe_ep` even for dense variants of
+MoE-capable families such as dense Gemma 4. The frontend used to derive
+`moe_ep_size=1, moe_tp_size=tp` for AISimulate but not BLIS, and had to
+special-case each disaggregated pool. That was simulator logic in the browser.
+The correct split is:
+
+- The adapter forwards `moe_tp_size` / `moe_ep_size` only when the user set
+  them.
+- The AISimulators service resolves the omitted pair per worker for AISimulate,
+  including each disaggregated pool, and reports the resolved values
+  (`moe_tp` / `moe_ep`, or `prefill_config` / `decode_config`).
+- The UI renders the values it was told, instead of reconstructing the default.
+
 ## Commands
 
 ```bash
