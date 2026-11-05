@@ -747,11 +747,10 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             f"(configured limit {request.max_candidate_gpus}, {topology_limit})"
         )
 
-    demand_window_seconds = 0.0
     demand_requests = 0
     concurrency: int | None = None
     if demand:
-        demand_window_seconds, demand_requests = _demand_slice(float(request.request_rate))
+        _, demand_requests = _demand_slice(float(request.request_rate))
         # The scheduler admission cap is the run's whole request slice, so it
         # never limits admission below what the open-loop generator can inject.
         # This is a run bound, not a claim about the production engine's cap.
