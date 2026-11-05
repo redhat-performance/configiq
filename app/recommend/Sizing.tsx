@@ -47,6 +47,12 @@ import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 /** Offered rate a demand run starts from; the UI labels it as the default. */
 const DEFAULT_DEMAND_RATE = 10;
 
+/** Render a millisecond latency bound in seconds, dropping a trailing `.000`. */
+function formatLatencyBound(ms: number): string {
+  const sec = (ms / 1000).toFixed(3);
+  return sec.endsWith('000') ? (ms / 1000).toFixed(0) : parseFloat(sec).toString();
+}
+
 
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
 
@@ -554,6 +560,7 @@ export default function Sizing() {
   // Animated values
   const gpuCount = useCountUp(result?.recommendation.gpusNeeded ?? 0);
   const ttftMs = useCountUp(result?.performance.ttftLatencyMs ?? 0, 750, 0);
+  const e2eLatencyMs = useCountUp(result?.performance.requestLatencyMs ?? 0, 750, 0);
   const tpsVal = useCountUp(result?.throughput.tokensPerSecond ?? 0, 750, 0);
   const memVal = useCountUp(result?.memory.value ?? 0, 750, 1);
 
@@ -689,12 +696,15 @@ export default function Sizing() {
             )}
             {' '}(≈ {Math.round(demandOutputTokPerSecond).toLocaleString()} output tok/s at OSL {osl}), no latency target.
           </>
+        ) : requestLatency != null ? (
+          <>
+            Based on your configuration — ISL {isl}, OSL {osl}, E2E target {formatLatencyBound(requestLatency)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}.
+          </>
         ) : (
           <>
-            Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {(() => {
-              const sec = (ttft / 1000).toFixed(3);
-              return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-            })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
+            Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {formatLatencyBound(ttft)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
           </>
         )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
@@ -1047,6 +1057,34 @@ export default function Sizing() {
                       Sustained rate excludes the final response drain, so it is directly comparable to
                       the offered rate.
                     </p>
+                  </>
+                }
+              />
+            ) : requestLatency != null ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><ClockIcon /> E2E latency</span>
+                    <span className={styles.tileValue}>
+                      {e2eLatencyMs.toLocaleString()}<span className={styles.tileUnit}>ms</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.performance.requestLatencyMs <= requestLatency ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>End-to-end latency</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{requestLatency.toLocaleString()} ms</span><br />
+                      estimated: <span className={styles.em}>{result.performance.requestLatencyMs.toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(requestLatency - result.performance.requestLatencyMs).toFixed(1)} ms</span>
+                    </div>
                   </>
                 }
               />

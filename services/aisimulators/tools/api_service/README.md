@@ -37,7 +37,9 @@ curl -X POST http://localhost:8000/recommend \
     "system": "h100_sxm",
     "target_concurrency": 32,
     "isl": 4000,
-    "osl": 1000
+    "osl": 1000,
+    "ttft": 2000,
+    "tpot": 30
   }'
 ```
 
