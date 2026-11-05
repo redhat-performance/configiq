@@ -48,6 +48,24 @@ Schema v1 registries remain readable during rollout. A v1 pair is treated as
 validated only when its recorded test AUC and F1 clear the metric thresholds;
 v1 carries no coverage summary, so it cannot claim the full gate.
 
+### Coverage and feature categories
+
+A v2 pair's `coverage` object records `records`, `concurrencyLevels`,
+`concurrencyLevelCount`, the raw `backendVersions` for provenance, and the
+measured `backends` (runtime families such as `vllm` or `sglang`). The
+classify endpoint refuses to score a request whose backend family is not in
+that list: it returns `no_measurements` with a reason instead of applying an
+envelope trained on a different runtime. Bundles that predate `backends` are
+treated as unknown and stay permissive.
+
+The classifier's `version` feature is a backend-scoped major.minor family, not
+a raw label. Training rows (`vLLM-0.24.0`) and runtime catalog versions
+(`0.24.0`) both normalize to `vLLM-0.24`;
+`sglang-0.5.18-recipe-latency-oriented` normalizes to `sglang-0.5`. Pooling
+keeps a category dense enough to validate while preventing families from
+different runtimes from colliding. Unrecognised or unresolved labels
+(`current`, arbitrary build strings) become `unknown`.
+
 ConfigIQ's `public/config.json` still names approved models in `testedModels`
 during the transition to `approvedModels`. The pipeline accepts either name.
 The config list governs measurement coverage; it is not evidence that a model
@@ -190,6 +208,17 @@ thresholds are recorded in each model's metadata. Configuration groups are
 assigned as a unit so repeated measurements cannot cross train/validation/test
 splits. Throughput, latency, identifiers, runtime arguments, and other
 measurements are excluded from classifier inputs to avoid leakage.
+
+`split-summary.json` records, per version family, the rows and configuration
+groups that landed in each split. A family that only appears in one split
+cannot be both learned and evaluated: the classifier is either blind to it at
+inference or cannot score it on held-out data. The training report copies that
+support into `version_support`, and records `selection_basis`
+(`validation` or `train_fallback`) plus an explicit `validation_single_class` /
+`test_single_class` warning when a split lacks both label classes. Those data
+shape caveats are published as `diagnostics.warnings` for both validated and
+measured pairs, while `diagnostics.reasons` stays a direct mirror of the
+quality gate so a caveat is never mistaken for a gate failure.
 
 `legacy_mvp.py` remains only as a migration reference. It is not part of the
 production build and must not be used to publish artifacts.
