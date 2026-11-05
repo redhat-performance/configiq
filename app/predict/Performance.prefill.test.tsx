@@ -94,6 +94,9 @@ vi.mock('@/lib/hooks/useCostings', async (importOriginal) => {
 });
 vi.mock('@/lib/api/estimate-adapter', () => ({
   fetchEstimateAsInferenceResult: vi.fn(),
+  buildPredictRequestBody: (input: Record<string, unknown>) => input,
+  isMoeConfig: () => false,
+  resolvePredictMoeWidths: ({ tp_size }: { tp_size: number }) => ({ moe_ep_size: 1, moe_tp_size: tp_size }),
   EstimateError: class EstimateError extends Error {},
 }));
 
