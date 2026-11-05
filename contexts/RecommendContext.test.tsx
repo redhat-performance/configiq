@@ -22,12 +22,15 @@ import { fetchFrontier } from '@/lib/api/pareto'
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement
 let startSizing: ReturnType<typeof useRecommend>['startSizing']
+let reset: ReturnType<typeof useRecommend>['reset']
 
 function Consumer() {
   const currentStartSizing = useRecommend().startSizing
+  const currentReset = useRecommend().reset
   React.useEffect(() => {
     startSizing = currentStartSizing
-  }, [currentStartSizing])
+    reset = currentReset
+  }, [currentStartSizing, currentReset])
   return null
 }
 
@@ -204,6 +207,36 @@ describe('RecommendContext request construction', () => {
         target_concurrency: 8,
         simulator: 'blis',
       })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(fetchFrontier)).not.toHaveBeenCalled()
+  })
+
+  it('discards a primary completion aborted by reset', async () => {
+    let resolveStream!: (value: unknown) => void
+    vi.mocked(readRecommendStream).mockReturnValueOnce(new Promise(resolve => {
+      resolveStream = resolve
+    }) as never)
+    await render()
+
+    await act(async () => {
+      startSizing({
+        model_path: 'org/model',
+        system: 'h200_sxm',
+        isl: 2048,
+        osl: 128,
+        sla_mode: 'enforce',
+        ttft: 1000,
+        target_concurrency: 8,
+        simulator: 'aisimulate',
+      })
+      await Promise.resolve()
+    })
+    await act(async () => { reset() })
+    await act(async () => {
+      resolveStream({ status: 'completed', recommendation: { gpusNeeded: 4 } })
       await Promise.resolve()
       await Promise.resolve()
     })

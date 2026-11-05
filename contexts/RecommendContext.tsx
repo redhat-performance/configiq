@@ -253,6 +253,10 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           setProgress(event);
           setProgressHistory(history => [...history, event]);
         });
+        // `reset` may have aborted the request after the stream finished
+        // reading. Do not publish a result (or start a frontier) for a run the
+        // user already discarded.
+        if (controller.signal.aborted) return;
         setDebugResponse(response as unknown as Record<string, unknown>);
         setDebugDuration(Math.round(performance.now() - t0));
         if (response.status === 'failed') {
