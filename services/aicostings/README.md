@@ -90,6 +90,21 @@ present, preventing base, Instruct, distilled or different-version checkpoints
 from being silently substituted. Older records without this metadata retain
 strict legacy matching. The source's offer ID and pricing provenance do not change.
 
+Model records additionally retain `model_author`/`serving_provider` when known,
+separate `max_input_tokens`, `max_output_tokens`, `max_context_tokens`, and
+normalized `billing` metadata. `billing.currency` is USD, `request_price` is
+USD/request, cache rates and input/output tier rates are USD/million tokens.
+`billing.overrides` is ordered, with a strictly exceeded `min_prompt_tokens`
+threshold and partial `input_per_million`, `output_per_million`, `request_price`
+fields. OpenRouter overrides retain feed order; LiteLLM's standard
+`*_cost_per_token_above_<N>k_tokens` fields are sorted by increasing threshold.
+Alternate batch/priority/flex rates are not standard-tariff overrides. Unhandled
+conditions or additional charges are recorded in `billing.unsupported` so Hybrid
+Savings can exclude them rather than silently assuming the base tariff. Cache
+metadata is not an inferred discount. OpenRouter's catalogue does not identify
+a guaranteed serving endpoint, so `serving_provider` is null. Existing base-rate,
+provider, source-selection and merge-precedence fields remain compatible.
+
 ### Cloud GPU pricing
 
 Credential-free providers (Azure, AWS, Vast.ai) run out of the box. The

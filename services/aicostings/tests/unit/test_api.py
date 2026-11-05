@@ -67,6 +67,8 @@ class TestGetModels:
                 assert result["hugging_face_id"] == offer["hugging_face_id"]
                 assert result["id"] == offer["id"]
                 assert result["price_per_m_input"] == input_rate
+                assert result["billing"] == offer["billing"]
+                assert result["serving_provider"] is None
 
     @pytest.mark.asyncio
     async def test_failed_collection_keeps_last_good_source_and_records_error(self):
