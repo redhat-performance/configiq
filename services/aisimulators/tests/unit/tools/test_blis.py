@@ -323,8 +323,8 @@ def test_run_command_passes_catalog_registry_and_scenario_directory():
         "--scenario", "generated.yaml",
         "--prompt-tokens", "2048",
         "--output-tokens", "128",
-        "--concurrency", "8",
         "--num-requests", "8",
+        "--concurrency", "8",
         "--prefix-tokens", "16",
     ]
 
@@ -475,6 +475,150 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
         + first_pd["decode_config"]["tp"] * first_pd["decode_config"]["num_workers"]
     )
     assert any(call.prefill_instances == 1 and call.decode_instances == 1 for call, _docs in calls)
+
+
+def test_run_command_uses_rate_and_omits_concurrency():
+    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
+    command = build_run_command(runtime, RunRequest(
+        scenario="generated.yaml",
+        scenario_directory="/tmp/scenarios",
+        isl=2048,
+        osl=128,
+        concurrency=None,
+        num_requests=50,
+        rate=10.0,
+    ))
+
+    assert "--rate" in command
+    assert command[command.index("--rate") + 1] == "10"
+    assert "--concurrency" not in command
+    assert command[command.index("--num-requests") + 1] == "50"
+
+
+def test_run_command_requires_exactly_one_load_control():
+    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
+    with pytest.raises(ValueError, match="exactly one"):
+        build_run_command(runtime, RunRequest(
+            scenario="generated.yaml",
+            scenario_directory="/tmp/scenarios",
+            isl=2048,
+            osl=128,
+            concurrency=8,
+            num_requests=8,
+            rate=10.0,
+        ))
+    with pytest.raises(ValueError, match="exactly one"):
+        build_run_command(runtime, RunRequest(
+            scenario="generated.yaml",
+            scenario_directory="/tmp/scenarios",
+            isl=2048,
+            osl=128,
+            concurrency=None,
+            num_requests=8,
+        ))
+
+
+def _demand_replay(completed: int, arrival_rps: float, *, e2e_ms: float = 2640.0) -> dict:
+    """BLIS metrics for a run that offered `arrival_rps` over its arrivals.
+
+    BLIS times a run to its last completion, so the duration is the arrival
+    window plus one mean latency. `responses_per_sec` is then lower than the
+    offered rate, which is exactly what the drain-aware compliance check exists
+    to correct.
+    """
+    arrival_s = completed / arrival_rps
+    duration_s = arrival_s + e2e_ms / 1000.0
+    return {
+        "completed_requests": completed,
+        "dropped_unservable": 0,
+        "ttft_mean_ms": 80.0,
+        "itl_mean_ms": 20.0,
+        "e2e_mean_ms": e2e_ms,
+        "tokens_per_sec": arrival_rps * 128,
+        "responses_per_sec": completed / duration_s,
+        "vllm_estimated_duration_s": duration_s,
+    }
+
+
+def _demand_recommend_input() -> blis_service.RecommendInput:
+    return blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version=None,
+        isl=2048,
+        osl=128,
+        concurrency=None,
+        request_rate=10.0,
+        ttft=None,
+        tpot=None,
+        request_latency=None,
+        prefix=0,
+        min_candidate_gpus=1,
+        max_candidate_gpus=4,
+        top_n=5,
+        search_budget_seconds=60,
+        demand=True,
+    )
+
+
+def test_recommend_demand_selects_fewest_gpus_that_sustains_rate(monkeypatch, manifest):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_support_manifest", lambda: manifest)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
+    calls = []
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        calls.append(run_request)
+        # Candidate order is ascending: 1 GPU, then 2, then 4.
+        achieved = 4.0 if len(calls) == 1 else 12.0
+        return _demand_replay(run_request.num_requests, achieved)
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    result = blis_service.recommend(_demand_recommend_input())
+
+    assert len(calls) == 3
+    assert all(call.rate == 10.0 for call in calls)
+    assert all(call.concurrency is None for call in calls)
+    # max(4, round(10 req/s * 5 s)) = 50 requests per candidate.
+    assert all(call.num_requests == 50 for call in calls)
+    assert result.demand is not None
+    assert result.demand.met is True
+    assert result.demand.achieved_rps == 12.0
+    assert result.demand.evaluated_configurations == 3
+    assert result.configs[0]["total_gpus_needed"] == 2
+    assert result.search_summary["modes_searched"] == ["agg"]
+
+
+def test_recommend_demand_reports_best_observed_when_rate_is_unmet(monkeypatch, manifest):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_support_manifest", lambda: manifest)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        return _demand_replay(run_request.num_requests, 4.0)
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    result = blis_service.recommend(_demand_recommend_input())
+
+    assert result.demand is not None
+    assert result.demand.met is False
+    assert result.demand.best_observed_rps == 4.0
+    assert result.demand.target_rps == 10.0
+    assert result.configs[0]["total_gpus_needed"] == 1
+
+
+def test_recommend_demand_rejects_latency_targets(monkeypatch, manifest):
+    monkeypatch.setattr(blis_service, "load_support_manifest", lambda: manifest)
+    request = _demand_recommend_input()
+    with pytest.raises(blis_service.BlisUnsupportedRequest, match="does not apply latency targets"):
+        blis_service.recommend(blis_service.RecommendInput(
+            **{**request.__dict__, "ttft": 1000.0}
+        ))
 
 
 def test_recommend_skips_pd_candidates_without_a_fabric(monkeypatch, manifest):

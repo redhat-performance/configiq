@@ -1,4 +1,6 @@
-// Pareto frontier types — mirrors CandidateResponse / CandidateViews from the FastAPI backend.
+// Pareto frontier types — mirrors CandidateResponse / CandidateViews from the
+// AISimulators REST API. Values are copied from the aisimulate SDK record; the
+// browser must not synthesize topology or performance data.
 
 export type CandidateStatus =
   | 'feasible'
@@ -61,11 +63,14 @@ export interface Candidate {
   used_gpus: number | null
   metrics: Record<string, number | null>
   objectives: CandidateObjectives | null
+  /**
+   * True only when the response was produced by a sweep that explicitly
+   * modeled P/D KV transfer and the candidate has replay metrics. False does
+   * not mean the candidate is aggregated; check `mode`.
+   */
   transfer_delay_modeled: boolean
   provenance_sources: string[]
   simulator: SimulatorId
-  /** Populated client-side from aicostings; not from the backend. */
-  cost_per_m_tokens: number | null
 }
 
 export interface CandidateViews {
@@ -73,17 +78,27 @@ export interface CandidateViews {
   top_n: string[]
 }
 
-export interface ParetoRequest {
-  model_path: string
-  system: string
-  isl: number
-  osl: number
-  ttft: number
-  tpot: number
-  backend: string
-  kv_transfer_bandwidth_gb_per_second: number
-  min_candidate_gpus?: number
-  max_candidate_gpus?: number
-  database_mode: string
+/** Run-control facts from the sweep that produced a frontier. */
+export interface FrontierSweep {
+  maxTrials: number | null
+  evaluated: number | null
+  budgetExhausted: boolean
+  strictSla: boolean | null
+  algorithm: string | null
+  seed: number | null
+  windowMinGpus: number | null
+  windowMaxGpus: number | null
 }
 
+/** State of the Pareto companion sweep that runs alongside a sizing request. */
+export type FrontierState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | {
+      status: 'ready'
+      candidates: Candidate[]
+      views: CandidateViews | null
+      sweep: FrontierSweep | null
+    }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'error'; message: string }

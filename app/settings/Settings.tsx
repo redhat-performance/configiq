@@ -275,6 +275,14 @@ export function Settings() {
               <div className={styles.helperText}>
                 Predict, Recommend and Hybrid savings use this simulator. BLIS is available with vLLM; KV cache uses AISimulate.
               </div>
+              <ul className={styles.capabilityList}>
+                <li><strong>AISimulate</strong>: latency SLO sizing, throughput-demand sizing, and Pareto frontier scans.</li>
+                <li><strong>BLIS</strong>: latency SLO and throughput-demand sizing. Pareto frontier scans are unavailable.</li>
+                <li>
+                  A simulator never silently substitutes for another. Choosing BLIS hides the frontier and reports
+                  that it is AISimulate-only rather than showing results from a different simulator.
+                </li>
+              </ul>
             </div>
           </div>
         </div>

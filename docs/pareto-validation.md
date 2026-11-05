@@ -88,6 +88,109 @@ destination_missing` shows up in **TTFT / e2e latency**, not in steady-state
 not cleanly in `mean_ttst_ms`. Use `mean_e2e_latency_ms` / `mean_ttft_ms` as the
 transfer-sensitive signal.
 
+## ConfigIQ companion-scan contract
+
+The Pareto frontier runs as a companion scan after the primary sizing result.
+It never replaces that result: `/recommend` returns the primary sizing first,
+and the browser starts the frontier request separately so both can render
+independently. The contract below is what the UI and service rely on.
+
+### Availability
+
+`objective=pareto` is AISimulate-only. A BLIS request returns 422 at the API
+boundary and the UI shows an explicit unavailable state naming AISimulate as the
+capable simulator. There is no silent substitution and no cross-simulator
+frontier.
+
+### Window
+
+The browser sizes the window from the primary recommendation:
+
+- `min_candidate_gpus = max(1, floor(primary_gpus / 2))`
+- `max_candidate_gpus = clamp(2 x primary_gpus, 32, server_ceiling)`
+
+The server clamps the requested maximum again to
+`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024). Candidate enumeration is
+roughly O(max²), which is the practical reason a ceiling exists; it is not a
+claim that a larger cluster cannot be sized. A one-GPU total window runs a
+single aggregate trial, because a P/D deployment needs at least two GPUs.
+
+### Budgets and sampler
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `PARETO_MAX_TRIALS` | 20 | Total trial budget, split across searched deployment modes |
+| `PARETO_PARALLELISM` | 8 | Concurrent candidate evaluations |
+| `PARETO_CANDIDATE_TIMEOUT_S` | 8 | Per-candidate wall budget |
+| `PARETO_MAX_CONCURRENCY` | 2 | Concurrent sweeps per worker; excess returns 429 |
+| `PARETO_ALGORITHM` | `random` | `random` or `bayesian` |
+| `SWEEP_SEED` | 42 | Reproducible sampling and optimizer seed |
+
+`bayesian` maps to `SeededBayesianBranchSampler`, which flips `jax_enable_x64`
+process-wide. At the default budget of ~20 trials it gets only one or two GPU
+optimization rounds, so it is not the default. The trial budget is split across
+aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
+a per-mode count.
+
+`sweep.budget_exhausted` is true when `evaluated >= max_trials`. It means the
+trial budget was spent, never that the search enumerated every configuration.
+The UI caption is always "best of N sampled — not exhaustive".
+
+### Dominance authority
+
+`views.pareto_front` is computed by the simulator and is authoritative for the
+simulator's own objectives: maximize `throughput_per_user` and
+`throughput_per_gpu`. The browser uses that view unchanged.
+
+When the user flips the x-axis to TTFT, the orientation changes (minimize TTFT,
+maximize throughput per GPU), so the browser recomputes the non-dominated set
+locally and labels the view as client-recomputed. It does not overwrite or
+replace the server's view.
+
+The served objective pair is fixed to (`throughput_per_user`,
+`throughput_per_gpu`) because `pareto_objectives` is not reachable through
+`run_recommendation`. A native SLA-free demand frontier (`min_gpus` +
+`min_goodput_rps`) is blocked upstream: `goodput_*` metrics are only emitted
+when an SLA exists, and the validators require an SLA for `min_gpus`.
+
+### Demand-mode budgets
+
+Throughput-demand sizing uses its own run control so it does not borrow the
+closed-loop sizing budget:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `DEMAND_MAX_TRIALS` | 16 | Total demand trial budget |
+| `DEMAND_PARALLELISM` | 4 | Concurrent candidate evaluations |
+| `DEMAND_CANDIDATE_TIMEOUT_S` | 15 | Per-candidate wall budget |
+| `DEMAND_REQUESTS_PER_LOAD_UNIT` | 5 | Requests per load unit for the constant-rate stop rule |
+| `DEMAND_SEARCH_BUDGET_S` | 50 | Whole-ladder wall budget |
+| `DEMAND_WINDOW_START_GPUS` | 8 | First GPU window; doubles until met or capped |
+
+Demand search walks a growing GPU window (`8, 16, 32, …` up to the effective
+ceiling) and stops at the first window that sustains the rate. A window that
+cannot hold the model is skipped; each window's trial and timeout budgets are
+reduced to the time remaining. An explicit `max_candidate_gpus` pins a single
+window. The 50-second ladder budget stays inside the 90-second gateway timeout.
+
+Demand selection prefers the fewest GPUs that sustain the rate, then the highest
+sustained rate, then the lowest E2E latency. When nothing complies, the response
+is 200 with `met=false` and the best observed rate; a request with no feasible
+measured candidate returns 422.
+
+Compliance uses the arrival-window rate `completed / (duration - mean_e2e)`,
+not `completed / duration`. A replay is timed to its last completion, so the
+latter appends one response latency and marks even a correctly sized cluster
+unmet. `demand.window_seconds` reports that same arrival window.
+
+### Timing
+
+The primary sizing request and the companion scan are sequential from the
+browser's point of view. A worst-case primary run plus a worst-case scan is
+about 84 seconds against a 90-second default gateway timeout. The primary
+result renders while the scan is still running, so a scan timeout degrades only
+the frontier panel, not the sizing recommendation.
+
 ## Conclusion
 
 Across model size, MoE sparsity, GPU class, context length, the Pareto trade-off,

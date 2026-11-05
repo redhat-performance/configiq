@@ -32,6 +32,31 @@ from .scenario import (
 
 _MAX_RECOMMEND_BUDGET_SECONDS = 60.0
 _DEFAULT_RUN_TIMEOUT_SECONDS = 60.0
+#: Length of the open-loop slice replayed for a throughput-demand candidate.
+#: The request count scales with the offered rate so the measured window is the
+#: same at every target instead of shrinking as the rate rises.
+_DEMAND_WINDOW_SECONDS = 5.0
+#: Safety bound on the generated slice. A very high target still measures over
+#: the actual run window; this only keeps one candidate from ballooning.
+_DEFAULT_DEMAND_MAX_REQUESTS = 5000
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _demand_slice(rate: float) -> tuple[float, int]:
+    """Return `(window_seconds, num_requests)` for an open-loop demand run."""
+    window = _positive_float_env("BLIS_DEMAND_WINDOW_SECONDS", _DEMAND_WINDOW_SECONDS)
+    cap = int(_positive_float_env("BLIS_DEMAND_MAX_REQUESTS", _DEFAULT_DEMAND_MAX_REQUESTS))
+    return window, min(max(4, round(rate * window)), cap)
 
 
 @dataclass(frozen=True)
@@ -91,14 +116,16 @@ class RecommendInput:
     osl: int
     concurrency: int | None
     request_rate: float | None
-    ttft: float
-    tpot: float
+    ttft: float | None
+    tpot: float | None
     request_latency: float | None
     prefix: int
     min_candidate_gpus: int | None
     max_candidate_gpus: int | None
     top_n: int
     search_budget_seconds: int
+    # Open-loop demand sizing: replay `request_rate`, ignore latency targets.
+    demand: bool = False
     max_seq_len: int | None = None
     prefill_max_seq_len: int | None = None
     decode_max_seq_len: int | None = None
@@ -119,10 +146,24 @@ class BlisPrediction:
 
 
 @dataclass(frozen=True)
+class BlisDemandOutcome:
+    target_rps: float
+    achieved_rps: float | None
+    met: bool
+    observed_concurrency: float | None
+    window_seconds: float | None
+    completed_requests: int | None
+    evaluated_configurations: int | None
+    best_observed_rps: float | None
+    simulator: str = "blis"
+
+
+@dataclass(frozen=True)
 class BlisRecommendation:
     configs: list[dict[str, Any]]
     search_summary: dict[str, Any]
     provenance: dict[str, str | None]
+    demand: BlisDemandOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -350,6 +391,8 @@ def _run_scenario(
     timeout_seconds: float,
     prefill_instances: int = 0,
     decode_instances: int = 0,
+    rate: float | None = None,
+    num_requests: int | None = None,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="configiq-blis-") as scenario_directory:
         filename = write_scenario(scenario_directory, scenario)
@@ -360,11 +403,15 @@ def _run_scenario(
                 scenario_directory=scenario_directory,
                 isl=scenario.isl,
                 osl=scenario.osl,
-                concurrency=scenario.concurrency,
+                # Closed-loop runs use concurrency as virtual users. Open-loop
+                # demand runs send only the arrival rate, because BLIS refuses
+                # a command that sets both.
+                concurrency=None if rate is not None else scenario.concurrency,
+                rate=rate,
                 # BLIS treats concurrency as virtual users and num-requests as
-                # the total simulation slice. The API uses a bounded smoke run
-                # of one request per virtual user, matching its current input.
-                num_requests=scenario.concurrency,
+                # the total simulation slice. Closed-loop recommendations use a
+                # bounded smoke run of one request per virtual user.
+                num_requests=num_requests if num_requests is not None else scenario.concurrency,
                 prefix_tokens=prefix,
                 prefill_instances=prefill_instances,
                 decode_instances=decode_instances,
@@ -631,20 +678,61 @@ def _recommend_disagg_scenario(
     )
 
 
+def _search_summary(
+    request: RecommendInput,
+    candidates: list[_RecommendCandidate],
+    evaluated: list[_RecommendCandidate],
+    include_disagg: bool,
+    hardware_max: int,
+    upper: int,
+    total_budget_seconds: int,
+    timed_out: bool,
+) -> dict[str, Any]:
+    return {
+        "strategy": "aggregate_tp_and_pd_grid" if include_disagg else "tensor_parallel_only",
+        "modes_searched": ["agg", "disagg"] if include_disagg else ["agg"],
+        "candidate_gpus": sorted({candidate.total_gpus for candidate in candidates}),
+        "evaluated_gpus": sorted({candidate.total_gpus for candidate in evaluated}),
+        "max_candidates": len(candidates),
+        "candidate_configurations": len(candidates),
+        "evaluated_configurations": len(evaluated),
+        "configured_max_gpus": request.max_candidate_gpus or hardware_max,
+        "hardware_max_gpus": hardware_max,
+        "effective_max_gpus": upper,
+        "time_budget_seconds": total_budget_seconds,
+        "budget_exhausted": timed_out,
+    }
+
+
 def recommend(request: RecommendInput) -> BlisRecommendation:
-    if request.request_rate is not None:
+    demand = request.demand
+    if request.request_rate is not None and not demand:
         raise BlisUnsupportedRequest(
             "BLIS recommendation currently searches concurrency workloads; choose a target concurrency "
             "or select AISimulate for request-rate search"
         )
+    if demand:
+        if request.request_rate is None or request.request_rate <= 0:
+            raise BlisUnsupportedRequest("BLIS throughput-demand sizing requires a positive request rate")
+        if request.concurrency is not None:
+            raise BlisUnsupportedRequest(
+                "BLIS throughput-demand sizing derives load from the request rate; "
+                "target_concurrency is not accepted"
+            )
+        if request.request_latency is not None or request.ttft is not None or request.tpot is not None:
+            raise BlisUnsupportedRequest(
+                "BLIS throughput-demand sizing does not apply latency targets; "
+                "omit ttft, tpot, and request_latency"
+            )
     if request.database_mode != "HYBRID":
         raise BlisUnsupportedRequest("BLIS does not accept the AISimulate database_mode option")
-    concurrency = request.concurrency or 1
     resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
-    include_disagg = bool(request.fabric)
+    # Demand runs replay open-loop traffic and are aggregate-only: the adapter
+    # cannot attach a P/D transfer fabric to a rate-driven run it did not search.
+    include_disagg = bool(request.fabric) and not demand
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.manifest.resolve_network(request.fabric) if request.fabric else None
+    fabric = resolved.manifest.resolve_network(request.fabric) if include_disagg and request.fabric else None
     hardware_max = resolved.gpus_per_node * (2 if include_disagg else 1)
     upper = min(request.max_candidate_gpus or hardware_max, hardware_max)
     lower = request.min_candidate_gpus or 1
@@ -658,6 +746,19 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             f"Requested minimum GPU count {lower} exceeds the effective BLIS search ceiling {upper} "
             f"(configured limit {request.max_candidate_gpus}, {topology_limit})"
         )
+
+    demand_window_seconds = 0.0
+    demand_requests = 0
+    concurrency: int | None = None
+    if demand:
+        demand_window_seconds, demand_requests = _demand_slice(float(request.request_rate))
+        # The scheduler admission cap is the run's whole request slice, so it
+        # never limits admission below what the open-loop generator can inject.
+        # This is a run bound, not a claim about the production engine's cap.
+        concurrency = demand_requests
+    else:
+        concurrency = request.concurrency or 1
+    assert concurrency is not None
 
     candidates = [
         _RecommendCandidate(mode="agg", total_gpus=tp, tp=tp)
@@ -694,6 +795,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     started = time.monotonic()
     evaluated: list[_RecommendCandidate] = []
     feasible: list[dict[str, Any]] = []
+    demand_measured: list[dict[str, Any]] = []
     timed_out = False
     execution_failures: list[BlisExecutionError] = []
 
@@ -746,6 +848,8 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 timeout_seconds=timeout,
                 prefill_instances=prefill_instances,
                 decode_instances=decode_instances,
+                rate=request.request_rate if demand else None,
+                num_requests=demand_requests if demand else None,
             )
         except BlisExecutionError as exc:
             evaluated.append(candidate)
@@ -753,18 +857,31 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             continue
         evaluated.append(candidate)
         completed = metrics.get("completed_requests")
-        if not isinstance(completed, (int, float)) or completed <= 0 or metrics.get("dropped_unservable", 0):
+        if not isinstance(completed, (int, float)) or completed <= 0:
+            continue
+        dropped = metrics.get("dropped_unservable", 0)
+        dropped = dropped if isinstance(dropped, (int, float)) else 0
+        # A closed-loop recommendation treats a dropped request as a failed
+        # candidate. Demand runs keep measuring it so the shortfall can be
+        # reported, but a drop still fails demand compliance below.
+        if dropped and not demand:
             continue
         ttft = metrics.get("ttft_mean_ms")
         itl = metrics.get("itl_mean_ms")
         e2e = metrics.get("e2e_mean_ms")
         if not all(isinstance(value, (int, float)) for value in (ttft, itl, e2e)):
             continue
-        if request.request_latency is not None:
-            if e2e > request.request_latency:
+        if not demand:
+            if request.request_latency is not None:
+                if e2e > request.request_latency:
+                    continue
+            elif (
+                request.ttft is None
+                or request.tpot is None
+                or ttft > request.ttft
+                or itl > request.tpot
+            ):
                 continue
-        elif ttft > request.ttft or itl > request.tpot:
-            continue
 
         tokens_per_second = metrics.get("tokens_per_sec")
         reported_tpot = (
@@ -772,11 +889,67 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             if request.inclusive_tpot and request.osl > 0
             else float(itl)
         )
+        # Demand runs measure request throughput. BLIS reports it directly;
+        # fall back to output tokens per second divided by the fixed OSL.
+        achieved_rps: float | None = None
+        window_seconds: float | None = None
+        observed_concurrency: float | None = None
+        demand_met = False
+        if demand:
+            responded = metrics.get("responses_per_sec")
+            if isinstance(responded, (int, float)) and float(responded) > 0:
+                measured_rps = float(responded)
+            elif isinstance(tokens_per_second, (int, float)) and request.osl > 0:
+                measured_rps = float(tokens_per_second) / request.osl
+            else:
+                measured_rps = None
+            duration = metrics.get("vllm_estimated_duration_s")
+            duration_s = (
+                float(duration)
+                if isinstance(duration, (int, float)) and float(duration) > 0
+                else None
+            )
+            if duration_s is not None:
+                # BLIS times a run to its last completion, so the measured
+                # window appends one response latency to the offered traffic.
+                # Removing one mean latency recovers the arrival window; without
+                # that, every candidate with a non-zero latency looks short of
+                # the target it actually sustained.
+                arrival_s = duration_s - float(e2e) / 1000.0
+                if arrival_s > 0:
+                    window_seconds = arrival_s
+                    achieved_rps = float(completed) / arrival_s
+                else:
+                    window_seconds = duration_s
+                    achieved_rps = measured_rps
+            elif measured_rps is not None and measured_rps > 0:
+                window_seconds = float(completed) / measured_rps
+                achieved_rps = measured_rps
+            else:
+                achieved_rps = measured_rps
+            observed_concurrency = (
+                achieved_rps * float(e2e) / 1000.0 if achieved_rps is not None else None
+            )
+            target_rps = float(request.request_rate or 0.0)
+            # A compliant run must sustain the offered rate over the arrival
+            # window and actually serve every request it generated; a dropped
+            # request is not service.
+            demand_met = (
+                achieved_rps is not None
+                and achieved_rps * (1 + 1e-3) >= target_rps
+                and dropped == 0
+                and completed >= demand_requests
+            )
+        batch_size = (
+            max(1, round(observed_concurrency))
+            if demand and observed_concurrency
+            else concurrency
+        )
         common_config: dict[str, Any] = {
             "total_gpus_needed": candidate.total_gpus,
             "replicas_needed": 1,
             "num_total_gpus": candidate.total_gpus,
-            "bs": concurrency,
+            "bs": batch_size,
             "ttft": float(ttft),
             "tpot": reported_tpot,
             "request_latency": float(e2e),
@@ -787,11 +960,12 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 else None
             ),
             "tokens_per_second_per_user": (
-                float(tokens_per_second) / concurrency
-                if isinstance(tokens_per_second, (int, float)) and concurrency > 0
+                float(tokens_per_second) / batch_size
+                if isinstance(tokens_per_second, (int, float)) and batch_size > 0
                 else None
             ),
-            "concurrency": concurrency,
+            "concurrency": batch_size,
+            "request_rate": achieved_rps if demand else None,
             "model": request.model_path,
             "system": request.system,
             "backend": request.backend,
@@ -803,7 +977,11 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         }
         if candidate.mode == "agg":
             common_config.update({"tp": candidate.tp, "pp": 1, "dp": 1})
-            if not include_disagg:
+            if demand:
+                common_config["warnings"].append(
+                    "BLIS throughput-demand sizing is aggregate-only; P/D candidates were not searched."
+                )
+            elif not include_disagg:
                 common_config["warnings"].append(
                     "No network fabric was selected; BLIS P/D candidates were not searched."
                 )
@@ -826,11 +1004,89 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                     "backend_version": resolved.engine_version,
                 },
             })
-        feasible.append(common_config)
+        if demand:
+            demand_measured.append({
+                "candidate": candidate,
+                "config": common_config,
+                "achieved_rps": achieved_rps,
+                "met": demand_met,
+                "observed_concurrency": observed_concurrency,
+                "window_seconds": window_seconds,
+                "completed_requests": int(completed),
+                "e2e_ms": float(e2e),
+            })
+        else:
+            feasible.append(common_config)
 
         at_end_of_gpu_group = index + 1 == len(candidates) or candidates[index + 1].total_gpus > candidate.total_gpus
-        if at_end_of_gpu_group and len(feasible) >= request.top_n:
+        if not demand and at_end_of_gpu_group and len(feasible) >= request.top_n:
             break
+
+    if demand:
+        if not demand_measured:
+            if candidates and len(execution_failures) == len(evaluated):
+                raise execution_failures[-1]
+            return BlisRecommendation(
+                configs=[],
+                provenance=_provenance(resolved, request.model_path, request.system),
+                search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
+            )
+        target_rps = float(request.request_rate or 0.0)
+        best_observed = max(
+            (entry["achieved_rps"] for entry in demand_measured if entry["achieved_rps"] is not None),
+            default=None,
+        )
+        compliant = [entry for entry in demand_measured if entry["met"]]
+        if compliant:
+            # Fewest GPUs that sustained the rate, then the highest measured
+            # rate, then the lowest end-to-end latency.
+            winner = min(
+                compliant,
+                key=lambda entry: (
+                    entry["candidate"].total_gpus,
+                    -(entry["achieved_rps"] or 0.0),
+                    entry["e2e_ms"],
+                ),
+            )
+            met = True
+        else:
+            # Report the best observed shortfall at 200 rather than a bare 422.
+            winner = min(
+                demand_measured,
+                key=lambda entry: (
+                    -(entry["achieved_rps"] or 0.0),
+                    entry["candidate"].total_gpus,
+                ),
+            )
+            met = False
+        outcome = BlisDemandOutcome(
+            target_rps=target_rps,
+            achieved_rps=(
+                round(winner["achieved_rps"], 3)
+                if winner["achieved_rps"] is not None
+                else None
+            ),
+            met=met,
+            observed_concurrency=(
+                round(winner["observed_concurrency"], 1)
+                if winner["observed_concurrency"] is not None
+                else None
+            ),
+            window_seconds=(
+                round(winner["window_seconds"], 3)
+                if winner["window_seconds"] is not None
+                else None
+            ),
+            completed_requests=winner["completed_requests"],
+            evaluated_configurations=len(demand_measured),
+            best_observed_rps=round(best_observed, 3) if best_observed is not None else None,
+        )
+        return BlisRecommendation(
+            configs=[winner["config"]],
+            provenance=_provenance(resolved, request.model_path, request.system),
+            search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
+            demand=outcome,
+        )
 
     if not feasible and candidates and len(execution_failures) == len(evaluated):
         raise execution_failures[-1]
@@ -840,22 +1096,8 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         config["mode"],
     ))
     feasible = feasible[:request.top_n]
-    modes_searched = ["agg", "disagg"] if include_disagg else ["agg"]
     return BlisRecommendation(
         configs=feasible,
         provenance=_provenance(resolved, request.model_path, request.system),
-        search_summary={
-            "strategy": "aggregate_tp_and_pd_grid" if include_disagg else "tensor_parallel_only",
-            "modes_searched": modes_searched,
-            "candidate_gpus": sorted({candidate.total_gpus for candidate in candidates}),
-            "evaluated_gpus": sorted({candidate.total_gpus for candidate in evaluated}),
-            "max_candidates": len(candidates),
-            "candidate_configurations": len(candidates),
-            "evaluated_configurations": len(evaluated),
-            "configured_max_gpus": request.max_candidate_gpus or hardware_max,
-            "hardware_max_gpus": hardware_max,
-            "effective_max_gpus": upper,
-            "time_budget_seconds": total_budget_seconds,
-            "budget_exhausted": timed_out,
-        },
+        search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
     )

@@ -35,6 +35,25 @@
 .pageTitle { font-family: var(--display); font-size: 30px; font-weight: 700; letter-spacing: -0.01em; margin: 8px 0 4px; }
 .subtitle { font-size: 15px; color: var(--t2); margin: 0; }
 
+/* ---------- sizing goal ---------- */
+.goalRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+.goalLabel {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+}
+.goalHint { font-size: 13px; color: var(--t2); }
+@media (max-width: 700px) { .goalHint { flex-basis: 100%; } }
+
 /* ---------- input card ---------- */
 .card { background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
 .cardBody { padding: 20px; }
@@ -376,6 +395,14 @@
   color: var(--t);
 }
 .tileDark .formula { color: #ffffff; }
+.formulaNote {
+  margin: 10px 0 0;
+  font-family: var(--text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--t2);
+}
+.tileDark .formulaNote { color: rgba(255,255,255,0.75); }
 .em { color: var(--blue); font-weight: 600; }
 .tileDark .em { color: #7cc4ff; }
 

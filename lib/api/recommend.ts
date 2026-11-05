@@ -1,5 +1,7 @@
 import type { RecommendRequest } from './schemas'
 import { gatewayTimeoutSeconds } from './timeout'
+import type { Candidate, CandidateViews, FrontierSweep } from '../types/pareto'
+import { isRecord, parseFrontierBody } from '../pareto/parse'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -44,11 +46,41 @@ export interface PhaseConfig {
   memoryGb: number | null
 }
 
+export interface RecommendDemandOutcome {
+  targetRps: number
+  achievedRps: number | null
+  met: boolean
+  observedConcurrency: number | null
+  windowSeconds: number | null
+  completedRequests: number | null
+  evaluatedConfigurations: number | null
+  bestObservedRps: number | null
+  simulator: 'aisimulate' | 'blis'
+}
+
+export interface RecommendSweepMeta {
+  runId: string | null
+  algorithm: string | null
+  seed: number | null
+  maxTrials: number | null
+  evaluated: number | null
+  feasible: number | null
+  timedOut: number | null
+  budgetExhausted: boolean
+  strictSla: boolean | null
+  windowMinGpus: number | null
+  windowMaxGpus: number | null
+}
+
 export interface RecommendResult {
   requestId: string
   status: 'completed'
   simulator: 'aisimulate' | 'blis'
   searchSummary?: RecommendSearchSummary
+  /** Measured outcome of a throughput-demand run (demand objective only). */
+  demand?: RecommendDemandOutcome
+  /** Run-control facts for the sweep that produced the candidates. */
+  sweep?: RecommendSweepMeta
   /** Serving mode the recommender chose. Disagg splits prefill/decode pools. */
   mode: ServingMode
   recommendation: {
@@ -100,7 +132,7 @@ export interface RecommendResult {
     system: string
     inputTokens: number
     outputTokens: number
-    targetTtftMs: number
+    targetTtftMs: number | null
     durationMs: number
   }
   warnings: RecommendWarning[]
@@ -196,6 +228,58 @@ function parsePhase(raw: RawWorkerConfig | null | undefined): PhaseConfig | null
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
+/**
+ * Shared request mapping for the min_gpus and pareto paths. Both must send the
+ * same workload shape; the objective only changes how the service searches it.
+ */
+function baseRequestPayload(request: RecommendRequest): Record<string, unknown> {
+  const externalPayload: Record<string, unknown> = {
+    model_path: request.model_path,
+    system: request.system,
+    backend: request.backend ?? 'vllm',
+    isl: request.isl,
+    osl: request.osl,
+    database_mode: request.database_mode ?? 'HYBRID',
+    top_n: request.top_n ?? 5,
+    sla_mode: request.sla_mode ?? 'enforce',
+  }
+
+  const slaMode = request.sla_mode ?? 'enforce'
+  if (slaMode === 'enforce' && request.request_latency == null) {
+    // Preserve the long-standing default TPOT for callers that send only a
+    // TTFT bound. A demand run (sla_mode=none) never sends either bound.
+    if (request.ttft != null) externalPayload.ttft = request.ttft
+    externalPayload.tpot = request.tpot ?? 30
+  } else {
+    if (request.ttft != null) externalPayload.ttft = request.ttft
+    if (request.tpot != null) externalPayload.tpot = request.tpot
+  }
+
+  if (request.fabric !== undefined) externalPayload.fabric = request.fabric
+  if (request.max_seq_len != null) externalPayload.max_seq_len = request.max_seq_len
+  if (request.prefill_max_seq_len != null) externalPayload.prefill_max_seq_len = request.prefill_max_seq_len
+  if (request.decode_max_seq_len != null) externalPayload.decode_max_seq_len = request.decode_max_seq_len
+
+  if (request.backend_version != null) externalPayload.backend_version = request.backend_version
+  if (request.target_request_rate != null) externalPayload.target_request_rate = request.target_request_rate
+  if (request.target_concurrency != null) externalPayload.target_concurrency = request.target_concurrency
+  if (request.request_latency != null) externalPayload.request_latency = request.request_latency
+  if (request.prefix != null) externalPayload.prefix = request.prefix
+  if (request.model_config != null) externalPayload.model_config = request.model_config
+  if (request.simulator != null) externalPayload.simulator = request.simulator
+  if (request.objective) externalPayload.objective = request.objective
+  if (request.min_candidate_gpus != null) {
+    externalPayload.min_candidate_gpus = request.min_candidate_gpus
+  }
+  if (request.max_candidate_gpus != null) {
+    externalPayload.max_candidate_gpus = request.max_candidate_gpus
+  }
+  if (request.kv_transfer_bandwidth_gb_per_second != null) {
+    externalPayload.kv_transfer_bandwidth_gb_per_second = request.kv_transfer_bandwidth_gb_per_second
+  }
+  return externalPayload
+}
+
 export async function callRecommend(
   request: RecommendRequest,
   options: { window?: RecommendWindow; timeoutSeconds?: number; signal?: AbortSignal } = {},
@@ -211,17 +295,7 @@ export async function callRecommend(
     return makeError(requestId, 'AISIM_NOT_CONFIGURED', 'AISimulators API URL is not configured')
   }
 
-  const externalPayload: Record<string, unknown> = {
-    model_path: request.model_path,
-    system: request.system,
-    backend: request.backend ?? 'vllm',
-    isl: request.isl,
-    osl: request.osl,
-    ttft: request.ttft,
-    tpot: request.tpot ?? 30,
-    database_mode: request.database_mode ?? 'HYBRID',
-    top_n: request.top_n ?? 5,
-  }
+  const externalPayload = baseRequestPayload(request)
 
   if (request.simulator === 'blis') {
     const blisSearchBudgetSeconds = Math.min(60, requestTimeoutSeconds - 5)
@@ -234,19 +308,6 @@ export async function callRecommend(
     }
     externalPayload.search_budget_seconds = blisSearchBudgetSeconds
   }
-  if (request.fabric !== undefined) externalPayload.fabric = request.fabric
-
-  if (request.max_seq_len != null) externalPayload.max_seq_len = request.max_seq_len
-  if (request.prefill_max_seq_len != null) externalPayload.prefill_max_seq_len = request.prefill_max_seq_len
-  if (request.decode_max_seq_len != null) externalPayload.decode_max_seq_len = request.decode_max_seq_len
-
-  if (request.backend_version != null) externalPayload.backend_version = request.backend_version
-  if (request.target_request_rate != null) externalPayload.target_request_rate = request.target_request_rate
-  if (request.target_concurrency != null) externalPayload.target_concurrency = request.target_concurrency
-  if (request.request_latency != null) externalPayload.request_latency = request.request_latency
-  if (request.prefix != null) externalPayload.prefix = request.prefix
-  if (request.model_config != null) externalPayload.model_config = request.model_config
-  if (request.simulator != null) externalPayload.simulator = request.simulator
   if (options.window?.minGpus != null) externalPayload.min_candidate_gpus = options.window.minGpus
   if (options.window?.maxGpus != null) externalPayload.max_candidate_gpus = options.window.maxGpus
 
@@ -278,11 +339,13 @@ export async function callRecommend(
   }
 
   if (!response.ok) {
-    let detail = `AISimulators API returned HTTP ${response.status}`
+    let body: unknown = null
     try {
-      const body = await response.json()
-      if (typeof body.detail === 'string') detail = body.detail
+      body = await response.json()
     } catch { /* ignore parse errors */ }
+    const parsedDetail = parseErrorDetail(body)
+    const detail = parsedDetail?.message ?? `AISimulators API returned HTTP ${response.status}`
+    const validationError = parsedDetail?.validation === true
 
     // Current AISimulators deployments can surface an undersized bounded
     // search as a 500 NoViableParallelConfig. It is a normal signal for the
@@ -298,7 +361,7 @@ export async function callRecommend(
       : response.status >= 500
         ? 'AISIM_UNAVAILABLE'
         : response.status === 422
-          ? 'AISIM_NO_CONFIGURATION'
+          ? validationError ? 'INVALID_REQUEST' : 'AISIM_NO_CONFIGURATION'
           : 'AISIM_UNAVAILABLE'
     return makeError(requestId, code, detail)
   }
@@ -362,6 +425,43 @@ export async function callRecommend(
         evaluated_configurations: typeof searchSummaryRaw.evaluated_configurations === 'number'
           ? searchSummaryRaw.evaluated_configurations
           : undefined,
+      }
+    : undefined
+
+  const demandRaw = rawData.demand && typeof rawData.demand === 'object'
+    ? rawData.demand as Record<string, unknown>
+    : null
+  const demand: RecommendDemandOutcome | undefined = demandRaw
+    ? {
+        targetRps: typeof demandRaw.target_rps === 'number' ? demandRaw.target_rps : 0,
+        achievedRps: typeof demandRaw.achieved_rps === 'number' ? demandRaw.achieved_rps : null,
+        met: demandRaw.met === true,
+        observedConcurrency: typeof demandRaw.observed_concurrency === 'number' ? demandRaw.observed_concurrency : null,
+        windowSeconds: typeof demandRaw.window_seconds === 'number' ? demandRaw.window_seconds : null,
+        completedRequests: typeof demandRaw.completed_requests === 'number' ? demandRaw.completed_requests : null,
+        evaluatedConfigurations: typeof demandRaw.evaluated_configurations === 'number'
+          ? demandRaw.evaluated_configurations
+          : null,
+        bestObservedRps: typeof demandRaw.best_observed_rps === 'number' ? demandRaw.best_observed_rps : null,
+        simulator: demandRaw.simulator === 'blis' ? 'blis' : 'aisimulate',
+      }
+    : undefined
+  const sweepRaw = rawData.sweep && typeof rawData.sweep === 'object'
+    ? rawData.sweep as Record<string, unknown>
+    : null
+  const sweep: RecommendSweepMeta | undefined = sweepRaw
+    ? {
+        runId: typeof sweepRaw.run_id === 'string' ? sweepRaw.run_id : null,
+        algorithm: typeof sweepRaw.algorithm === 'string' ? sweepRaw.algorithm : null,
+        seed: typeof sweepRaw.seed === 'number' ? sweepRaw.seed : null,
+        maxTrials: typeof sweepRaw.max_trials === 'number' ? sweepRaw.max_trials : null,
+        evaluated: typeof sweepRaw.evaluated === 'number' ? sweepRaw.evaluated : null,
+        feasible: typeof sweepRaw.feasible === 'number' ? sweepRaw.feasible : null,
+        timedOut: typeof sweepRaw.timed_out === 'number' ? sweepRaw.timed_out : null,
+        budgetExhausted: sweepRaw.budget_exhausted === true,
+        strictSla: typeof sweepRaw.strict_sla === 'boolean' ? sweepRaw.strict_sla : null,
+        windowMinGpus: typeof sweepRaw.window_min_gpus === 'number' ? sweepRaw.window_min_gpus : null,
+        windowMaxGpus: typeof sweepRaw.window_max_gpus === 'number' ? sweepRaw.window_max_gpus : null,
       }
     : undefined
 
@@ -457,9 +557,12 @@ export async function callRecommend(
     gpusPerReplica,
     replicasNeeded,
     clusterTokensPerSecond,
-    ttftLatencyMs,
-    tpotMs,
   ]
+  // A demand run has no latency SLA, so latency columns are informational and
+  // must not make an otherwise usable sizing result fail validation.
+  if ((request.sla_mode ?? 'enforce') === 'enforce') {
+    requiredValues.push(ttftLatencyMs, tpotMs)
+  }
   if (requiredValues.some(value => !Number.isFinite(value) || value <= 0)) {
     return makeError(
       requestId,
@@ -468,9 +571,12 @@ export async function callRecommend(
     )
   }
 
-  const missesLatencyTarget = request.request_latency != null
-    ? !Number.isFinite(requestLatencyMs) || requestLatencyMs <= 0 || requestLatencyMs > request.request_latency
-    : ttftLatencyMs > request.ttft || tpotMs > (request.tpot ?? 30)
+  const missesLatencyTarget = (request.sla_mode ?? 'enforce') === 'none'
+    ? false
+    : request.request_latency != null
+      ? !Number.isFinite(requestLatencyMs) || requestLatencyMs <= 0 || requestLatencyMs > request.request_latency
+      : ttftLatencyMs > (request.ttft ?? Number.POSITIVE_INFINITY) ||
+        tpotMs > (request.tpot ?? 30)
   if (missesLatencyTarget) {
     return makeError(
       requestId,
@@ -484,6 +590,8 @@ export async function callRecommend(
     status: 'completed',
     simulator,
     searchSummary,
+    demand,
+    sweep,
     mode,
     recommendation: {
       gpusNeeded: totalGpusNeeded,
@@ -521,7 +629,7 @@ export async function callRecommend(
       system: request.system,
       inputTokens: request.isl,
       outputTokens: request.osl,
-      targetTtftMs: request.ttft,
+      targetTtftMs: request.ttft ?? null,
       durationMs,
     },
     warnings: Array.isArray(best.warnings)
@@ -529,6 +637,132 @@ export async function callRecommend(
           .filter((warning): warning is string => typeof warning === 'string')
           .map(message => ({ code: 'SIMULATOR_WARNING', message }))
       : [],
+  }
+}
+
+// ─── Pareto sweep ────────────────────────────────────────────────────────────
+
+export interface ParetoResult {
+  status: 'completed'
+  simulator: 'aisimulate'
+  candidates: Candidate[]
+  views: CandidateViews | null
+  sweep: FrontierSweep | null
+}
+
+export interface ParetoErrorResponse {
+  status: 'failed'
+  error: { code: string; message: string }
+}
+
+export type ParetoResponse = ParetoResult | ParetoErrorResponse
+
+/**
+ * Run one bounded Pareto sweep and return the candidate ledger plus the
+ * simulator-computed views. This is a companion to a normal sizing request —
+ * it never replaces or substitutes for the min_gpus recommendation.
+ */
+export async function callPareto(
+  request: RecommendRequest,
+  options: { timeoutSeconds?: number; signal?: AbortSignal } = {},
+): Promise<ParetoResponse> {
+  if (request.simulator !== 'aisimulate') {
+    return {
+      status: 'failed',
+      error: {
+        code: 'AISIM_UNSUPPORTED',
+        message: 'The Pareto frontier is available from AISimulate only; BLIS does not provide it.',
+      },
+    }
+  }
+
+  const baseUrl = process.env.AISIMULATORS_GATEWAY_URL
+  const requestTimeoutSeconds = options.timeoutSeconds ?? gatewayTimeoutSeconds()
+  if (!baseUrl) {
+    return {
+      status: 'failed',
+      error: { code: 'AISIM_NOT_CONFIGURED', message: 'AISimulators API URL is not configured' },
+    }
+  }
+
+  const basePayload = baseRequestPayload(request)
+  // A Pareto sweep drives its own load. Strip the primary request's load target
+  // and, in demand mode, its absent latency bounds; the sweep is strict-SLA
+  // only when the primary request enforced one.
+  delete basePayload.target_request_rate
+  delete basePayload.target_concurrency
+  if ((request.sla_mode ?? 'enforce') === 'none') {
+    delete basePayload.ttft
+    delete basePayload.tpot
+    delete basePayload.request_latency
+  }
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl}/recommend`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ ...basePayload, objective: 'pareto' }),
+      signal: options.signal
+        ? AbortSignal.any([AbortSignal.timeout(requestTimeoutSeconds * 1000), options.signal])
+        : AbortSignal.timeout(requestTimeoutSeconds * 1000),
+    })
+  } catch (err: unknown) {
+    if (options.signal?.aborted) throw err
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      return {
+        status: 'failed',
+        error: { code: 'AISIM_TIMEOUT', message: `The Pareto sweep did not finish within ${requestTimeoutSeconds} seconds.` },
+      }
+    }
+    return {
+      status: 'failed',
+      error: { code: 'AISIM_UNAVAILABLE', message: 'The AISimulators API is unreachable.' },
+    }
+  }
+
+  let body: unknown = null
+  try {
+    body = await response.json()
+  } catch {
+    // Fall through to the status-based error below.
+  }
+
+  if (!response.ok) {
+    const parsedDetail = parseErrorDetail(body)
+    const detail = parsedDetail?.message
+      ?? (isRecord(body) && isRecord(body.error) && typeof body.error.message === 'string'
+        ? body.error.message
+        : `Pareto sweep failed (${response.status})`)
+    const validationError = parsedDetail?.validation === true
+    const code = response.status === 429
+      ? 'AISIM_BUSY'
+      : response.status === 504
+        ? 'AISIM_TIMEOUT'
+        : response.status === 422
+          ? validationError ? 'INVALID_REQUEST' : 'AISIM_NO_CONFIGURATION'
+          : response.status >= 500
+            ? 'AISIM_UNAVAILABLE'
+            : 'INVALID_REQUEST'
+    return { status: 'failed', error: { code, message: detail } }
+  }
+
+  const parsed = parseFrontierBody(body)
+  if (parsed === null) {
+    return {
+      status: 'failed',
+      error: {
+        code: 'SIMULATOR_MISMATCH',
+        message: 'The API did not confirm AISimulate as the Pareto sweep simulator.',
+      },
+    }
+  }
+
+  return {
+    status: 'completed',
+    simulator: 'aisimulate',
+    candidates: parsed.candidates,
+    views: parsed.views,
+    sweep: parsed.sweep,
   }
 }
 
@@ -547,6 +781,22 @@ export async function* incrementalRecommend(
     // BLIS owns a bounded TP-only search in the service. It is one request,
     // not a sequence of AISimulate GPU windows; avoid publishing a guessed
     // max-GPU range that would misstate the search the service actually ran.
+    const response = await callRecommend(request, {
+      timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),
+      signal,
+    })
+    yield { type: 'completed', response }
+    return
+  }
+
+  if ((request.sla_mode ?? 'enforce') === 'none') {
+    if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
+    const totalTimeoutSeconds = gatewayTimeoutSeconds()
+    // Demand sizing is one bounded sweep over the full GPU window: the service
+    // itself selects the fewest GPUs that sustain the rate, or the best
+    // observed rate when none do. Replaying it as shrinking windows would
+    // repeat the same sweep and could return an unmet window before a larger
+    // one was ever tried.
     const response = await callRecommend(request, {
       timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),
       signal,
@@ -624,7 +874,7 @@ export async function* incrementalRecommend(
   }
 }
 
-function configuredMaxCandidateGpus(): number {
+export function configuredMaxCandidateGpus(): number {
   const value = Number(process.env.AISIMULATORS_MAX_CANDIDATE_GPUS)
   return Number.isInteger(value) && value > 0 ? value : 1024
 }
@@ -633,4 +883,38 @@ function configuredMaxCandidateGpus(): number {
 
 function makeError(requestId: string, code: string, message: string): RecommendErrorResponse {
   return { requestId, status: 'failed', error: { code, message } }
+}
+
+/**
+ * Read a FastAPI error `detail`.
+ *
+ * A string is a domain message, such as "No configuration meets the specified
+ * requirements." A list is a Pydantic request-validation failure, which means
+ * the request we built was malformed rather than the workload infeasible — the
+ * two must not collapse into the same "no configuration" state.
+ */
+function parseErrorDetail(body: unknown): { message: string; validation: boolean } | null {
+  if (!isRecord(body)) return null
+  const raw = body.detail
+  if (typeof raw === 'string' && raw.length > 0) {
+    return { message: raw, validation: false }
+  }
+  if (Array.isArray(raw)) {
+    const parts = raw
+      .map((item) => {
+        if (!isRecord(item)) return null
+        const location = Array.isArray(item.loc)
+          ? item.loc.filter((part): part is string | number => typeof part === 'string' || typeof part === 'number').join('.')
+          : ''
+        const message = typeof item.msg === 'string' ? item.msg : null
+        if (message == null) return null
+        return location ? `${location}: ${message}` : message
+      })
+      .filter((part): part is string => part != null)
+    return {
+      message: parts.length > 0 ? parts.join('; ') : 'Request validation failed',
+      validation: true,
+    }
+  }
+  return null
 }

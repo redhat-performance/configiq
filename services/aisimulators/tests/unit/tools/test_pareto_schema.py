@@ -24,6 +24,13 @@ VALID_BASE = {
     "tpot": 30.0,
 }
 
+#: A Pareto sweep drives load itself, so it carries no sizing target.
+PARETO_BASE = {
+    key: value
+    for key, value in VALID_BASE.items()
+    if key not in {"target_concurrency", "target_request_rate"}
+}
+
 
 def test_recommend_request_default_objective():
     req = RecommendRequest(**VALID_BASE)
@@ -31,17 +38,25 @@ def test_recommend_request_default_objective():
 
 
 def test_recommend_request_pareto_objective():
-    req = RecommendRequest(**VALID_BASE, objective="pareto")
+    req = RecommendRequest(**PARETO_BASE, objective="pareto")
     assert req.objective == "pareto"
 
 
-def test_recommend_request_kv_transfer_bandwidth_default():
-    req = RecommendRequest(**VALID_BASE, objective="pareto")
-    assert req.kv_transfer_bandwidth_gb_per_second == 25.0
+def test_pareto_rejects_a_sizing_target():
+    with pytest.raises(ValueError, match="does not accept target_request_rate"):
+        RecommendRequest(**VALID_BASE, objective="pareto")
+
+
+def test_recommend_request_kv_transfer_bandwidth_defaults_to_not_modeled():
+    req = RecommendRequest(**PARETO_BASE, objective="pareto")
+    # Omission means "no modeled P/D transfer delay", not a fabric default.
+    assert req.kv_transfer_bandwidth_gb_per_second is None
 
 
 def test_recommend_request_kv_transfer_bandwidth_custom():
-    req = RecommendRequest(**VALID_BASE, objective="pareto", kv_transfer_bandwidth_gb_per_second=50.0)
+    req = RecommendRequest(
+        **PARETO_BASE, objective="pareto", kv_transfer_bandwidth_gb_per_second=50.0
+    )
     assert req.kv_transfer_bandwidth_gb_per_second == 50.0
 
 

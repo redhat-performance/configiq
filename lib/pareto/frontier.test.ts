@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeFrontier, pickRecommendation } from './frontier'
+import { computeFrontier } from './frontier'
 import type { Candidate } from '../types/pareto'
 
 function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
@@ -15,7 +15,6 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
     transfer_delay_modeled: false,
     provenance_sources: [],
     simulator: 'aisimulate',
-    cost_per_m_tokens: null,
     ...overrides,
   }
 }
@@ -76,60 +75,5 @@ describe('computeFrontier', () => {
   it('excludes candidates with null objectives', () => {
     const c = makeFeasible({ objectives: null })
     expect(computeFrontier([c])).toEqual([])
-  })
-})
-
-describe('pickRecommendation', () => {
-  it('returns fewest GPUs clearing SLA', () => {
-    const sla = 25
-    const f1 = makeFeasible({
-      used_gpus: 4,
-      objectives: { throughput_per_user: 30, throughput_per_gpu: 60 },
-    })
-    const f2 = makeFeasible({
-      used_gpus: 2,
-      objectives: { throughput_per_user: 28, throughput_per_gpu: 40 },
-    })
-    const f3 = makeFeasible({
-      used_gpus: 8,
-      objectives: { throughput_per_user: 10, throughput_per_gpu: 20 },
-    })
-    expect(pickRecommendation([f1, f2, f3], sla)).toBe(f2)
-  })
-
-  it('breaks ties by cost ascending', () => {
-    const sla = 25
-    const f1 = makeFeasible({
-      used_gpus: 4,
-      cost_per_m_tokens: 2.0,
-      objectives: { throughput_per_user: 30, throughput_per_gpu: 50 },
-    })
-    const f2 = makeFeasible({
-      used_gpus: 4,
-      cost_per_m_tokens: 1.5,
-      objectives: { throughput_per_user: 31, throughput_per_gpu: 55 },
-    })
-    expect(pickRecommendation([f1, f2], sla)).toBe(f2)
-  })
-
-  it('returns null when no candidate clears SLA', () => {
-    const c = makeFeasible({ objectives: { throughput_per_user: 5, throughput_per_gpu: 20 } })
-    expect(pickRecommendation([c], 25)).toBeNull()
-  })
-
-  it('returns null for empty frontier', () => {
-    expect(pickRecommendation([], 20)).toBeNull()
-  })
-
-  it('treats null used_gpus as Infinity for sorting', () => {
-    const f1 = makeFeasible({
-      used_gpus: null,
-      objectives: { throughput_per_user: 30, throughput_per_gpu: 60 },
-    })
-    const f2 = makeFeasible({
-      used_gpus: 4,
-      objectives: { throughput_per_user: 28, throughput_per_gpu: 40 },
-    })
-    expect(pickRecommendation([f1, f2], 25)).toBe(f2)
   })
 })

@@ -38,8 +38,8 @@ export const RecommendRequestSchema = z.object({
   max_seq_len: z.number().int().positive('max_seq_len must be a positive integer').nullish(),
   prefill_max_seq_len: z.number().int().positive('prefill_max_seq_len must be a positive integer').nullish(),
   decode_max_seq_len: z.number().int().positive('decode_max_seq_len must be a positive integer').nullish(),
-  ttft: z.number().positive('ttft must be a positive number (milliseconds)'),
-  tpot: z.number().positive('tpot must be a positive number (milliseconds)').default(30),
+  ttft: z.number().positive('ttft must be a positive number (milliseconds)').nullish(),
+  tpot: z.number().positive('tpot must be a positive number (milliseconds)').nullish(),
   target_request_rate: z.number().positive().nullish(),
   target_concurrency: z.number().positive().nullish(),
   request_latency: z.number().positive().nullish(),
@@ -52,12 +52,113 @@ export const RecommendRequestSchema = z.object({
   // Whether a simulator consumes a fabric is its own capability; the service
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
-}).strict().refine(
-  data => (data.target_request_rate != null) !== (data.target_concurrency != null),
-  { message: 'Exactly one of target_request_rate or target_concurrency must be provided' }
-)
+  /**
+   * Optimization objective. `pareto` returns a candidate ledger and the
+   * simulator-computed frontier views; `throughput_demand` finds the fewest
+   * GPUs that sustain `target_request_rate` with no latency target; the normal
+   * `min_gpus` path sizes subject to the latency SLA. Pareto and demand are
+   * AISimulate-only; the service rejects them for BLIS rather than
+   * substituting a simulator.
+   */
+  objective: z.enum(['min_gpus', 'throughput_demand', 'pareto']).default('min_gpus'),
+  /**
+   * Whether latency targets constrain the result. `none` is only valid for a
+   * demand run and rejects any latency bound rather than fabricating an SLA.
+   */
+  sla_mode: z.enum(['enforce', 'none']).default('enforce'),
+  /**
+   * Optional P/D KV transfer bandwidth for a Pareto sweep. Omit to apply
+   * AISimulate's default (no modeled P/D transfer delay).
+   */
+  kv_transfer_bandwidth_gb_per_second: z.number().positive().nullish(),
+  /**
+   * Explicit GPU window for a companion Pareto scan. The service clamps the
+   * maximum to its own candidate ceiling, so these express intent rather than
+   * a promise about the search space.
+   */
+  min_candidate_gpus: z.number().int().min(1).nullish(),
+  max_candidate_gpus: z.number().int().min(1).nullish(),
+}).strict().superRefine((data, ctx) => {
+  const hasLatency = data.request_latency != null
+  const hasTokenLatency = data.ttft != null || data.tpot != null
 
-export type RecommendRequest = z.infer<typeof RecommendRequestSchema>
+  if (data.objective === 'pareto') {
+    // A pareto sweep drives load internally, so it needs no target.
+    if (data.target_request_rate != null || data.target_concurrency != null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'A pareto sweep does not accept target_request_rate or target_concurrency',
+      })
+    }
+    if (data.sla_mode === 'none' && (hasLatency || hasTokenLatency)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sla_mode=none does not accept ttft, tpot, or request_latency',
+      })
+    }
+    if (data.sla_mode === 'enforce') {
+      if (hasLatency && hasTokenLatency) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'request_latency is mutually exclusive with ttft and tpot',
+        })
+      }
+      if (!hasLatency && data.ttft == null) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'sla_mode=enforce requires request_latency or a ttft target',
+        })
+      }
+    }
+    return
+  }
+
+  if (data.objective === 'throughput_demand') {
+    if (data.sla_mode !== 'none') {
+      ctx.addIssue({ code: 'custom', message: 'throughput_demand requires sla_mode=none' })
+    }
+    if (data.target_request_rate == null || data.target_concurrency != null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'throughput_demand requires target_request_rate and no target_concurrency',
+      })
+    }
+    if (hasLatency || hasTokenLatency) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'throughput_demand does not accept ttft, tpot, or request_latency',
+      })
+    }
+    return
+  }
+
+  // min_gpus: exactly one load target and an enforced latency SLA.
+  if (data.sla_mode !== 'enforce') {
+    ctx.addIssue({ code: 'custom', message: 'min_gpus requires sla_mode=enforce' })
+  }
+  if ((data.target_request_rate != null) === (data.target_concurrency != null)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Exactly one of target_request_rate or target_concurrency must be provided',
+    })
+  }
+  if (hasLatency && hasTokenLatency) {
+    ctx.addIssue({ code: 'custom', message: 'request_latency is mutually exclusive with ttft and tpot' })
+  }
+  if (!hasLatency && data.ttft == null) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'sla_mode=enforce requires request_latency or a ttft target',
+    })
+  }
+})
+
+/**
+ * Caller-facing request shape. Fields with schema defaults (`objective`,
+ * `sla_mode`, `top_n`, `database_mode`) stay optional at the call site and are
+ * filled by `RecommendRequestSchema.parse` at the API boundary.
+ */
+export type RecommendRequest = z.input<typeof RecommendRequestSchema>
 
 // ═══ KV CACHE CALCULATOR REQUEST SCHEMA ═══
 
