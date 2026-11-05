@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchEstimateAsInferenceResult, type EstimateAdapterInput, EstimateError } from '../estimate-adapter'
+import { fetchEstimateAsInferenceResult, resolveMoeWidths, type EstimateAdapterInput, EstimateError } from '../estimate-adapter'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -512,6 +512,66 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
     expect(body).toHaveProperty('moe_tp_size', 4)
+  })
+
+  it('sends a valid MoE width pair when TP > 1 and no widths are given', async () => {
+    const mockFetch = mockFetchOk(VALID_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await fetchEstimateAsInferenceResult({ ...VALID_INPUT, tp_size: 4 })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body).toHaveProperty('moe_ep_size', 1)
+    expect(body).toHaveProperty('moe_tp_size', 4)
+  })
+
+  it('does not forward expert parallelism for a dense model', async () => {
+    const mockFetch = mockFetchOk(VALID_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      tp_size: 4,
+      moe_ep_size: 4,
+      moe_tp_size: 1,
+      hf_model_config: {
+        model_type: 'gemma4',
+        text_config: { num_experts: null, enable_moe_block: false },
+      },
+    })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body).toHaveProperty('moe_ep_size', 1)
+    expect(body).toHaveProperty('moe_tp_size', 4)
+  })
+
+  it('detects MoE in a nested text_config and honors explicit widths', () => {
+    expect(resolveMoeWidths({
+      tp_size: 4,
+      moe_ep_size: 4,
+      hf_model_config: { text_config: { num_experts: 128, enable_moe_block: true } },
+    })).toEqual({ moe_ep_size: 4, moe_tp_size: 1 })
+  })
+
+  it('defaults nested MoE models to tensor-sharded experts', () => {
+    expect(resolveMoeWidths({
+      tp_size: 4,
+      hf_model_config: { text_config: { num_experts: 128, enable_moe_block: true } },
+    })).toEqual({ moe_ep_size: 1, moe_tp_size: 4 })
+  })
+
+  it('derives the missing width from the TP group', () => {
+    expect(resolveMoeWidths({ tp_size: 4, moe_ep_size: 4 }))
+      .toEqual({ moe_ep_size: 4, moe_tp_size: 1 })
+    expect(resolveMoeWidths({ tp_size: 8, moe_ep_size: 2 }))
+      .toEqual({ moe_ep_size: 2, moe_tp_size: 4 })
+    expect(resolveMoeWidths({ tp_size: 8, moe_tp_size: 2 }))
+      .toEqual({ moe_ep_size: 4, moe_tp_size: 2 })
+  })
+
+  it('keeps a non-divisible split visible as a configuration error', () => {
+    expect(resolveMoeWidths({ tp_size: 4, moe_ep_size: 3 }))
+      .toEqual({ moe_ep_size: 3, moe_tp_size: 1 })
   })
 
   it('includes include=config,memory in query params', async () => {
