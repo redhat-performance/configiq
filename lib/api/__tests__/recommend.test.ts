@@ -193,6 +193,35 @@ describe('RecommendRequestSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('rejects P/D transfer bandwidth outside a pareto sweep', () => {
+    const minGpus = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(minGpus.success).toBe(false)
+
+    const demand = RecommendRequestSchema.safeParse({
+      model_path: 'meta-llama/Llama-3.1-70B-Instruct',
+      system: 'h200_sxm',
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(demand.success).toBe(false)
+  })
+
+  it('accepts P/D transfer bandwidth for a pareto sweep', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(result.success).toBe(true)
+  })
+
   it('accepts a model_config object', () => {
     const result = RecommendRequestSchema.safeParse({
       ...VALID_REQUEST,

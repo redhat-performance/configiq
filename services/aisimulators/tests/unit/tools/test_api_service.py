@@ -678,6 +678,40 @@ class TestRecommendDemand:
         with pytest.raises(ValueError, match="min_gpus"):
             app_module.RecommendRequest.model_validate(body)
 
+    def test_transfer_bandwidth_is_rejected_outside_pareto(self):
+        for body in (VALID_RECOMMEND_BODY, VALID_DEMAND_BODY):
+            with pytest.raises(ValueError, match="only supported with objective='pareto'"):
+                app_module.RecommendRequest.model_validate(
+                    {**body, "kv_transfer_bandwidth_gb_per_second": 50.0}
+                )
+
+    def test_transfer_bandwidth_is_accepted_for_pareto(self):
+        request = app_module.RecommendRequest.model_validate({
+            "model_path": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "objective": "pareto",
+            "sla_mode": "none",
+            "kv_transfer_bandwidth_gb_per_second": 50.0,
+        })
+        assert request.kv_transfer_bandwidth_gb_per_second == 50.0
+
+    def test_closed_loop_rate_skips_the_arrival_window_correction(self):
+        # A closed-loop replay starts every request together, so its duration is
+        # about one wave. Subtracting a mean latency would inflate the rate.
+        metrics = _demand_metrics(10.0, e2e_ms=4000.0, window_s=10.0)
+        raw = metrics["request_throughput_rps"]
+
+        assert app_module._measured_request_rate(metrics, open_loop=False) == raw
+        assert app_module._measured_request_rate(metrics, open_loop=True) > raw
+
+    def test_closed_loop_concurrency_does_not_use_the_arrival_window(self):
+        request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+        metrics = _demand_metrics(10.0, e2e_ms=4000.0, window_s=10.0)
+
+        concurrency = app_module._recommendation_concurrency(metrics, request)
+
+        assert concurrency == round(metrics["request_throughput_rps"] * 4)
+
     def test_enforced_sla_requires_a_bound(self):
         body = {**VALID_RECOMMEND_BODY}
         del body["ttft"]
@@ -1249,6 +1283,39 @@ class TestRecommendDemandEndpoint:
         body = {**VALID_DEMAND_BODY, "sla_mode": "enforce", "ttft": 1000.0}
         resp = client.post("/recommend", json=body)
         assert resp.status_code == 422
+
+    @patch("tools.api_service.app._backend_memory_fraction_kind", return_value="of_total")
+    @patch("tools.api_service.app._backend_memory_fraction", return_value=0.9)
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_include_config_sizes_from_measured_concurrency(self, mock_recommend, _fraction, _kind):
+        # 12 req/s at 2 s mean latency is 24 concurrent requests. A demand
+        # winner has no requested `bs`, so the config must fall back to the
+        # measured concurrency instead of a placeholder of 1.
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(used_gpus=2, metrics=_demand_metrics(12.0))],
+            counts=MockRecommendationCounts(evaluated=1),
+        )
+
+        resp = client.post("/recommend?include=config", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        serving = resp.json()["configs"][0]["serving_config"]
+        assert serving["max_num_seqs"] == 24
+
+    @patch("tools.api_service.app._build_memory_breakdown")
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_include_memory_sizes_from_measured_concurrency(self, mock_recommend, mock_breakdown):
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(used_gpus=2, metrics=_demand_metrics(12.0))],
+            counts=MockRecommendationCounts(evaluated=1),
+        )
+        mock_breakdown.return_value = None
+
+        resp = client.post("/recommend?include=memory", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        # Positional args: ..., isl, osl, concurrency.
+        assert mock_breakdown.call_args.args[8] == 24
 
 
 # ─── /memory tests ───────────────────────────────────────────────────────────

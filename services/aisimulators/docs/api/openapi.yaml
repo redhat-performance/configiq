@@ -501,7 +501,8 @@ components:
           description: |
             P/D KV transfer bandwidth to model with objective=pareto. Omit to
             apply AISimulate's default of no modeled transfer delay; omission is
-            not a fabric default.
+            not a fabric default. A non-null value for any other objective is
+            rejected with 422 rather than silently ignored.
           default: null
         isl:
           type: integer

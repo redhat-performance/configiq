@@ -62,8 +62,9 @@ export const RecommendRequestSchema = z.object({
    */
   objective: z.enum(['min_gpus', 'throughput_demand', 'pareto']).default('min_gpus'),
   /**
-   * Whether latency targets constrain the result. `none` is only valid for a
-   * demand run and rejects any latency bound rather than fabricating an SLA.
+   * Whether latency targets constrain the result. `enforce` requires a latency
+   * bound and is required by `min_gpus`; `none` rejects any latency bound, is
+   * required by `throughput_demand`, and is optional for `pareto`.
    */
   sla_mode: z.enum(['enforce', 'none']).default('enforce'),
   /**
@@ -81,6 +82,15 @@ export const RecommendRequestSchema = z.object({
 }).strict().superRefine((data, ctx) => {
   const hasLatency = data.request_latency != null
   const hasTokenLatency = data.ttft != null || data.tpot != null
+
+  // P/D transfer bandwidth is a Pareto sweep input. Accepting it elsewhere
+  // would imply a topology the search does not model.
+  if (data.objective !== 'pareto' && data.kv_transfer_bandwidth_gb_per_second != null) {
+    ctx.addIssue({
+      code: 'custom',
+      message: "kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'",
+    })
+  }
 
   if (data.objective === 'pareto') {
     // A pareto sweep drives load internally, so it needs no target.

@@ -146,8 +146,9 @@ class RecommendRequest(BaseModel):
         default="enforce",
         description=(
             "Whether latency targets constrain the result. 'enforce' requires a TTFT/TPOT "
-            "or E2E bound; 'none' requires objective='throughput_demand' and rejects any "
-            "latency bound so no SLA is fabricated for demand sizing."
+            "or E2E bound and is required by objective='min_gpus'. 'none' rejects any "
+            "latency bound so no SLA is fabricated; it is required by "
+            "objective='throughput_demand' and optional for objective='pareto'."
         ),
     )
     kv_transfer_bandwidth_gb_per_second: float | None = Field(
@@ -201,6 +202,11 @@ class RecommendRequest(BaseModel):
                 raise ValueError("request_latency is mutually exclusive with ttft and tpot.")
             if not has_latency and not (self.ttft is not None and self.tpot is not None):
                 raise ValueError("sla_mode='enforce' requires request_latency or both ttft and tpot.")
+
+        # P/D transfer bandwidth is a Pareto sweep input. Accepting it for other
+        # objectives would imply a topology the search does not model.
+        if self.kv_transfer_bandwidth_gb_per_second is not None and self.objective != "pareto":
+            raise ValueError("kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'.")
 
         if (
             self.min_candidate_gpus is not None
@@ -1163,7 +1169,7 @@ def _recommendation_concurrency(metrics: dict[str, Any], req: RecommendRequest) 
     if reported is not None:
         return reported
 
-    request_rate = _measured_request_rate(metrics)
+    request_rate = _measured_request_rate(metrics, open_loop=req.target_request_rate is not None)
     request_latency = _metric(metrics, "mean_e2e_latency_ms", "e2e_latency_ms", "request_latency")
     if request_rate is not None and request_latency is not None:
         return max(0, round(request_rate * request_latency / 1000.0))
@@ -1268,7 +1274,7 @@ def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> Recom
         tokens_per_second_per_user=_per_user_throughput(metrics, concurrency),
         memory=_metric(metrics, "memory_gb", "memory", "peak_memory_gb"),
         concurrency=concurrency,
-        request_rate=_measured_request_rate(metrics),
+        request_rate=_measured_request_rate(metrics, open_loop=req.target_request_rate is not None),
         power_w=_metric(metrics, "power_w", "mean_power_w"),
         gemm=metrics.get("gemm") or engine.get("gemm_quant_mode"),
         kvcache=metrics.get("kvcache") or engine.get("kvcache_quant_mode"),
@@ -1326,7 +1332,7 @@ def _demand_config_from_record(record: Any, req: RecommendRequest) -> RecommendC
         tokens_per_second_per_user=_per_user_throughput(metrics, concurrency),
         memory=_metric(metrics, "memory_gb", "memory", "peak_memory_gb"),
         concurrency=concurrency,
-        request_rate=_measured_request_rate(metrics),
+        request_rate=_measured_request_rate(metrics, open_loop=req.target_request_rate is not None),
         power_w=_metric(metrics, "power_w", "mean_power_w"),
         model=req.model_path,
         system=req.system,
@@ -1426,16 +1432,20 @@ def _demand_sustained_rate(metrics: dict[str, Any]) -> float | None:
     return completed * 1000.0 / arrival_ms
 
 
-def _measured_request_rate(metrics: dict[str, Any]) -> float | None:
+def _measured_request_rate(metrics: dict[str, Any], *, open_loop: bool) -> float | None:
     """Request rate for reported configs, preferring the arrival window.
 
     `completed / duration` includes the final response drain, so using it for
     the config's `request_rate` (and for Little's-law concurrency) would
-    understate a cluster that kept up.
+    understate a cluster that kept up. The correction only holds for open-loop
+    traffic, where arrivals are spread over a window; a closed-loop replay
+    starts every request together, so its duration is roughly one wave and
+    subtracting a mean latency would inflate the rate.
     """
-    sustained = _demand_sustained_rate(metrics)
-    if sustained is not None:
-        return sustained
+    if open_loop:
+        sustained = _demand_sustained_rate(metrics)
+        if sustained is not None:
+            return sustained
     return _metric(
         metrics, "request_rate", "requests_per_second", "request_throughput_rps"
     )
@@ -2541,14 +2551,14 @@ def post_recommend(
             if "config" in includes:
                 cfg.serving_config = _build_serving_config(
                     req.backend, cfg.tp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, cfg.gemm, req.prefix,
+                    cfg.bs or req.target_concurrency or cfg.concurrency or 1, cfg.gemm, req.prefix,
                     max_seq_len=req.max_seq_len, backend_version=cfg.backend_version,
                 )
             if "memory" in includes:
                 cfg.memory_breakdown = _build_memory_breakdown(
                     req.model_path, req.system, req.backend, cfg.backend_version,
                     cfg.tp or 1, cfg.pp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, max_seq_len=req.max_seq_len,
+                    cfg.bs or req.target_concurrency or cfg.concurrency or 1, max_seq_len=req.max_seq_len,
                 )
                 if cfg.memory is None:
                     cfg.memory = _memory_breakdown_gb(cfg.memory_breakdown)

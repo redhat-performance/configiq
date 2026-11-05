@@ -302,6 +302,16 @@ export default function Sizing() {
 
   // GPU sizer (persistent across navigation)
   const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, reset } = useRecommend();
+  // The result outlives a remount, but the input goal does not. Derive the
+  // result's mode and targets from the request that produced it so returning
+  // to /recommend does not relabel a demand result as a latency result.
+  const resultIsDemand = params?.sla_mode === 'none';
+  const resultDemandRate = params?.target_request_rate ?? demandRate;
+  const resultRequestLatency = params?.request_latency ?? null;
+  const resultTtft = params?.ttft ?? ttft;
+  const resultDemandOutputTokPerSecond = resultIsDemand
+    ? resultDemandRate * (params?.osl ?? osl)
+    : 0;
   const [debugOpen, setDebugOpen] = React.useState(false);
 
   // Additional constraints accordion
@@ -954,7 +964,7 @@ export default function Sizing() {
                     {result.mode === 'disagg'
                       ? `${result.recommendation.replicasNeeded} replicas × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
                       : `${parallelLabel(result.recommendation)} · ${
-                          isDemand
+                          resultIsDemand
                             ? `${result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'} observed concurrent`
                             : `${result.performance.concurrency} concurrent users`
                         }`}
@@ -1009,7 +1019,7 @@ export default function Sizing() {
             />
 
             {/* Demand outcome (demand mode) or TTFT (latency mode) */}
-            {isDemand ? (
+            {resultIsDemand ? (
               <FlipTile
                 front={
                   <>
@@ -1025,12 +1035,12 @@ export default function Sizing() {
                           <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>
                             below target
                           </Label>
-                          <span> · target {result.demand?.targetRps ?? demandRate} req/s</span>
+                          <span> · target {result.demand?.targetRps ?? resultDemandRate} req/s</span>
                         </>
                       ) : result.demand?.met ? (
                         <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
                       ) : (
-                        <span>target {demandRate} req/s</span>
+                        <span>target {resultDemandRate} req/s</span>
                       )}
                     </span>
                   </>
@@ -1039,7 +1049,7 @@ export default function Sizing() {
                   <>
                     <div className={styles.backTitle}>Throughput demand</div>
                     <div className={styles.formula}>
-                      target: <span className={styles.em}>{result.demand?.targetRps ?? demandRate} req/s</span><br />
+                      target: <span className={styles.em}>{result.demand?.targetRps ?? resultDemandRate} req/s</span><br />
                       sustained: <span className={styles.em}>
                         {result.demand?.achievedRps != null ? `${result.demand.achievedRps.toFixed(2)} req/s` : 'not measured'}
                       </span><br />
@@ -1060,7 +1070,7 @@ export default function Sizing() {
                   </>
                 }
               />
-            ) : requestLatency != null ? (
+            ) : resultRequestLatency != null ? (
               <FlipTile
                 front={
                   <>
@@ -1069,7 +1079,7 @@ export default function Sizing() {
                       {e2eLatencyMs.toLocaleString()}<span className={styles.tileUnit}>ms</span>
                     </span>
                     <span className={styles.tileSub}>
-                      {result.performance.requestLatencyMs <= requestLatency ? (
+                      {result.performance.requestLatencyMs <= resultRequestLatency ? (
                         <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
                       ) : (
                         <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
@@ -1081,9 +1091,9 @@ export default function Sizing() {
                   <>
                     <div className={styles.backTitle}>End-to-end latency</div>
                     <div className={styles.formula}>
-                      target: <span className={styles.em}>{requestLatency.toLocaleString()} ms</span><br />
+                      target: <span className={styles.em}>{resultRequestLatency.toLocaleString()} ms</span><br />
                       estimated: <span className={styles.em}>{result.performance.requestLatencyMs.toFixed(1)} ms</span><br />
-                      headroom: <span className={styles.em}>{(requestLatency - result.performance.requestLatencyMs).toFixed(1)} ms</span>
+                      headroom: <span className={styles.em}>{(resultRequestLatency - result.performance.requestLatencyMs).toFixed(1)} ms</span>
                     </div>
                   </>
                 }
@@ -1097,7 +1107,7 @@ export default function Sizing() {
                       {ttftMs}<span className={styles.tileUnit}>ms</span>
                     </span>
                     <span className={styles.tileSub}>
-                      {result.performance.ttftLatencyMs <= ttft ? (
+                      {result.performance.ttftLatencyMs <= resultTtft ? (
                         <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
                       ) : (
                         <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
@@ -1109,9 +1119,9 @@ export default function Sizing() {
                   <>
                     <div className={styles.backTitle}>Time to first token</div>
                     <div className={styles.formula}>
-                      target: <span className={styles.em}>{ttft.toLocaleString()} ms</span><br />
+                      target: <span className={styles.em}>{resultTtft.toLocaleString()} ms</span><br />
                       estimated: <span className={styles.em}>{result.performance.ttftLatencyMs.toFixed(1)} ms</span><br />
-                      headroom: <span className={styles.em}>{(ttft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(resultTtft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
                       TPOT: <span className={styles.em}>{result.performance.tpotMs.toFixed(1)} ms</span>
                     </div>
                   </>
@@ -1128,8 +1138,8 @@ export default function Sizing() {
                     {tpsVal}<span className={styles.tileUnit}>tok/s</span>
                   </span>
                   <span className={styles.tileSub}>
-                    {isDemand
-                      ? `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ≈ ${Math.round(demandOutputTokPerSecond).toLocaleString()} demanded tok/s`
+                    {resultIsDemand
+                      ? `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ≈ ${Math.round(resultDemandOutputTokPerSecond).toLocaleString()} demanded tok/s`
                       : `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ${result.throughput.tokensPerSecondPerUser.toFixed(2)}/user`}
                   </span>
                 </>

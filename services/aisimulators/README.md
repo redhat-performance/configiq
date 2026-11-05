@@ -195,7 +195,7 @@ search.
 | `objective` | `sla_mode` | Load input | Result |
 |---|---|---|---|
 | `min_gpus` (default) | `enforce` | exactly one of `target_request_rate` / `target_concurrency` | fewest GPUs that clears the latency SLA |
-| `throughput_demand` | `none` | `target_request_rate` only | fewest GPUs that sustains the offered rate; no latency target |
+| `throughput_demand` | `none` | `target_request_rate` only | fewest GPUs among evaluated candidates that sustains the offered rate; no latency target |
 | `pareto` | `enforce` or `none` | none; the sweep drives load itself | every sampled candidate plus a frontier view |
 
 With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
@@ -252,9 +252,12 @@ be misattributed.
 For a Pareto result:
 
 - `candidates` contains every evaluated candidate, including infeasible,
-  unsupported, timed-out, failed, and resource-limited records. Fields are
-  copied verbatim from the SDK record; the service does not synthesize topology,
-  transfer, or performance values.
+  unsupported, timed-out, failed, and resource-limited records. SDK-provided raw
+  fields such as `topology`, `metrics`, and `objectives` are copied verbatim;
+  the service does not synthesize topology, transfer, or performance values.
+  Service-derived fields are added alongside them: `mode`, `provenance_sources`,
+  and `transfer_delay_modeled` are computed (or combined from request and
+  candidate data) by the service, not passed through from the SDK.
 - `views.pareto_front` and `views.top_n` are SDK-computed candidate-ID lists.
   `pareto_front` is authoritative for the simulator's own objectives
   (throughput per user vs throughput per GPU). Clients may recompute dominance
