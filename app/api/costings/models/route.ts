@@ -58,13 +58,14 @@ export async function GET(req: NextRequest) {
     }
 
     const data = await res.json()
+    const cacheable = Array.isArray(data.models) && data.models.length > 0 && data.stale === false
     return NextResponse.json(data, {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
-        // Mirrors the useCostings client-side cache TTL (1 hour).
-        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=7200',
+        // Do not let an intermediary retain an empty cold-start catalogue.
+        'Cache-Control': cacheable ? 'public, s-maxage=3600, stale-while-revalidate=7200' : 'no-store',
       },
     })
   } catch (err: unknown) {

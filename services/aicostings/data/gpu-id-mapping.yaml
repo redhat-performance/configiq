@@ -23,11 +23,19 @@
 "Standard_ND96amsr_A100_v4": a100_sxm
 "Standard_ND96asr_v4": a100_sxm
 "p4d.24xlarge": a100_sxm
+"p4de.24xlarge": a100_sxm
 "a2-highgpu-8g": a100_sxm
 
 # NVIDIA L40S
 "L40S": l40s
 "L40s": l40s
+"g6e.xlarge": l40s
+"g6e.12xlarge": l40s
+"g6e.48xlarge": l40s
+
+# Full 80 GB / 141 GB configurations, used by the configuration-level feed.
+"p5e.48xlarge": h200_sxm
+"p5en.48xlarge": h200_sxm
 
 # NVIDIA B200
 "B200": b200_sxm
