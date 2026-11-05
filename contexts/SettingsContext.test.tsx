@@ -11,7 +11,7 @@ vi.mock('@/lib/app-config', () => ({
     defaultOpenModel: 'Qwen/Qwen3-32B',
     defaultFrontierModel: 'claude-fable-5',
     defaultBackend: 'vllm',
-    testedModels: [],
+    approvedModels: [],
     huggingFaceModels: [],
     suggestedModelNames: [],
     modelRequestUrl: '',

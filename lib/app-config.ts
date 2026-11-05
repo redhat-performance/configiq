@@ -6,7 +6,7 @@ export interface AppConfig {
   defaultOpenModel: string;
   defaultFrontierModel: string;
   defaultBackend: string;
-  testedModels: string[];
+  approvedModels: string[];
   huggingFaceModels: string[];
   suggestedModelNames: string[];
   modelRequestUrl: string;
@@ -20,7 +20,7 @@ const FALLBACK: AppConfig = {
   defaultOpenModel: 'Qwen/Qwen3-32B',
   defaultFrontierModel: 'claude-fable-5',
   defaultBackend: 'vllm',
-  testedModels: [],
+  approvedModels: [],
   huggingFaceModels: [],
   suggestedModelNames: [],
   modelRequestUrl: '',
@@ -41,9 +41,9 @@ export async function loadAppConfig(): Promise<AppConfig> {
       defaultOpenModel: data.defaultOpenModel ?? FALLBACK.defaultOpenModel,
       defaultFrontierModel: data.defaultFrontierModel ?? FALLBACK.defaultFrontierModel,
       defaultBackend: data.defaultBackend ?? FALLBACK.defaultBackend,
-      testedModels: Array.isArray(data.testedModels)
-        ? data.testedModels.filter((model): model is string => typeof model === 'string')
-        : FALLBACK.testedModels,
+      approvedModels: Array.isArray(data.approvedModels)
+        ? data.approvedModels.filter((model): model is string => typeof model === 'string')
+        : FALLBACK.approvedModels,
       huggingFaceModels: data.huggingFaceModels ?? FALLBACK.huggingFaceModels,
       suggestedModelNames: data.suggestedModelNames ?? FALLBACK.suggestedModelNames,
       modelRequestUrl: data.modelRequestUrl ?? FALLBACK.modelRequestUrl,

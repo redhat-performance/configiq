@@ -48,6 +48,30 @@ describe('parseRegistry', () => {
     expect(registry.pairs[1].classifier).toBeUndefined()
   })
 
+  it('keeps split warnings and the selection basis on diagnostics', () => {
+    const registry = parseRegistry({
+      schemaVersion: 2,
+      gate,
+      approvedModels: ['org/model'],
+      pairs: [{
+        ...measuredPair,
+        diagnostics: {
+          trainingStatus: 'trained',
+          reasons: ['test_auc_unavailable'],
+          warnings: ['test_single_class'],
+          selectionBasis: 'train_fallback',
+        },
+      }],
+    })
+
+    expect(registry.pairs[0].diagnostics).toEqual({
+      trainingStatus: 'trained',
+      reasons: ['test_auc_unavailable'],
+      warnings: ['test_single_class'],
+      selectionBasis: 'train_fallback',
+    })
+  })
+
   it('downgrades a legacy pair unless its recorded test metrics clear the gate', () => {
     const registry = parseRegistry({
       schemaVersion: 1,

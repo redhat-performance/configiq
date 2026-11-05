@@ -18,7 +18,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   localStorage.clear()
   vi.mocked(useSettings).mockReturnValue({
-    hydrated: true, defaultModel: '', testedModels: [], hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
+    hydrated: true, defaultModel: '', hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: false, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(), setBackendVersion: vi.fn(),
     setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(), setPricingSource: vi.fn(),
