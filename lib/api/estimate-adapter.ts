@@ -83,87 +83,6 @@ export function isMoeConfig(config: Record<string, unknown> | null | undefined):
   return counts.some(count => typeof count === 'number' && count > 1)
 }
 
-/**
- * Resolve the MoE width dimensions sent to /predict.
- *
- * AISimulate requires `moe_tp_size * moe_ep_size` to equal
- * `tp_size * attention_dp_size` (attention DP is always 1 here). Leaving both
- * unset makes the service fall back to 1 x 1, which fails that invariant for
- * any TP > 1. This applies to dense models too: Gemma 4's wide MLP is sized by
- * the same dimensions, so a dense Gemma 4 needs `moe_ep_size=1` and
- * `moe_tp_size=tp_size`.
- *
- * The baseline is therefore tensor-sharding the MLP across the TP group with
- * no expert parallelism. Explicit caller values are honored; a fetched dense
- * config wins over explicit values because expert parallelism does not apply.
- * When only one width is supplied, the other is derived from the TP width so
- * the product invariant holds.
- */
-export function resolveMoeWidths(input: {
-  tp_size: number
-  moe_ep_size?: number
-  moe_tp_size?: number
-  hf_model_config?: Record<string, unknown> | null
-}): { moe_ep_size: number; moe_tp_size: number } {
-  const tp = Number.isSafeInteger(input.tp_size) && input.tp_size > 0 ? input.tp_size : 1
-  const ep = isPositiveInt(input.moe_ep_size) ? input.moe_ep_size : null
-  const etp = isPositiveInt(input.moe_tp_size) ? input.moe_tp_size : null
-
-  if (input.hf_model_config != null && !isMoeConfig(input.hf_model_config)) {
-    return { moe_ep_size: 1, moe_tp_size: tp }
-  }
-
-  if (ep == null && etp == null) {
-    return { moe_ep_size: 1, moe_tp_size: tp }
-  }
-
-  // Mirror the supplied width onto the TP group when the split is exact. A
-  // non-divisible split cannot satisfy the invariant, so keep 1 and let the
-  // service report the genuine configuration error.
-  if (etp == null) {
-    return { moe_ep_size: ep!, moe_tp_size: tp % ep! === 0 ? tp / ep! : 1 }
-  }
-  if (ep == null) {
-    return { moe_ep_size: tp % etp === 0 ? tp / etp : 1, moe_tp_size: etp }
-  }
-  return { moe_ep_size: ep, moe_tp_size: etp }
-}
-
-function isPositiveInt(value: number | undefined): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
-}
-
-/**
- * The MoE widths a request actually puts on the wire.
- *
- * Mirrors the simulator split in `buildPredictRequestBody` so callers that
- * report or replay a request (the classifier snapshot and "Copy API request")
- * agree with what was submitted.
- */
-export function resolvePredictMoeWidths(input: {
-  simulator?: 'aisimulate' | 'blis'
-  tp_size: number
-  moe_ep_size?: number
-  moe_tp_size?: number
-  hf_model_config?: Record<string, unknown> | null
-}): { moe_ep_size?: number; moe_tp_size?: number } {
-  if ((input.simulator ?? 'aisimulate') !== 'blis') {
-    return resolveMoeWidths(input)
-  }
-
-  // BLIS has no width invariant; only explicit values are sent, apart from
-  // its existing MoE default of sharding experts across the TP group.
-  if (input.moe_ep_size != null || input.moe_tp_size != null) {
-    return {
-      ...(input.moe_ep_size != null && { moe_ep_size: input.moe_ep_size }),
-      ...(input.moe_tp_size != null && { moe_tp_size: input.moe_tp_size }),
-    }
-  }
-  if (isMoeConfig(input.hf_model_config)) return { moe_ep_size: input.tp_size }
-  return {}
-}
-
-
 function deriveBottleneck(ttft: number, tpot: number) {
   if (ttft > 2000) {
     return {
@@ -246,12 +165,11 @@ export function buildPredictRequestBody(input: EstimateAdapterInput): Record<str
     body.decode_batch_size = input.decode.batch
   }
 
-  // MoE widths. AISimulate validates that moe_tp_size * moe_ep_size equals the
-  // attention width, so always send a valid pair rather than letting both
-  // default to 1. BLIS has no such invariant; keep its explicit-only behavior.
-  const moe = resolvePredictMoeWidths(input)
-  if (moe.moe_ep_size != null) body.moe_ep_size = moe.moe_ep_size
-  if (moe.moe_tp_size != null) body.moe_tp_size = moe.moe_tp_size
+  // Forward only widths the caller actually chose. When they are omitted the
+  // API supplies the layout default (FFN tensor-sharded across the attention
+  // width, no expert parallelism) and reports the resolved pair back.
+  if (input.moe_ep_size != null) body.moe_ep_size = input.moe_ep_size
+  if (input.moe_tp_size != null) body.moe_tp_size = input.moe_tp_size
 
   return body
 }
@@ -337,6 +255,8 @@ export async function fetchEstimateAsInferenceResult(
       pp_size: ppv,
       batch_size: (wc?.batch_size as number) ?? fallback.batch,
       memory_gb: (wc?.memory_gb as number | null) ?? null,
+      moe_tp_size: (wc?.moe_tp as number | null | undefined) ?? null,
+      moe_ep_size: (wc?.moe_ep as number | null | undefined) ?? null,
     }
   }
   const isDisagg = data.mode === 'disagg' && !!input.prefill && !!input.decode
@@ -378,6 +298,8 @@ export async function fetchEstimateAsInferenceResult(
     memory_available: memoryAvailable,
     mode: isDisagg ? 'disagg' : 'agg',
     disagg,
+    moe_tp_size: isDisagg ? null : (data.moe_tp as number | null | undefined) ?? null,
+    moe_ep_size: isDisagg ? null : (data.moe_ep as number | null | undefined) ?? null,
     memory_analysis: {
       weight_gb: weightGb,
       weight_gb_per_gpu: weightGb / shardCount,

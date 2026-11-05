@@ -27,7 +27,7 @@ import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
 import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
-import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, resolvePredictMoeWidths, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
+import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
@@ -84,14 +84,14 @@ function resolveActualWeightPrecision(hfConfig: HFModelConfig | null, fallback: 
   return fallback;
 }
 
-function classifierPhase(value: EstimatePhase | undefined, moeTp: number | null, moeEp: number | null): ClassifierPhaseInput | null {
+function classifierPhase(value: EstimatePhase | undefined): ClassifierPhaseInput | null {
   return value ? {
     tp_size: value.tp_size,
     pp_size: value.pp_size,
     dp_size: 1,
     cp_size: 1,
-    moe_tp_size: moeTp,
-    moe_ep_size: moeEp,
+    moe_tp_size: value.moe_tp_size,
+    moe_ep_size: value.moe_ep_size,
     workers: value.workers,
     batch_size: value.batch_size,
   } : null;
@@ -564,14 +564,6 @@ export default function Performance() {
         setDebugStatus(null);
         setDebugDuration(null);
 
-        const requestedMoe = resolvePredictMoeWidths({
-          simulator: estimateInput.simulator,
-          tp_size: estimateInput.tp_size,
-          moe_ep_size: estimateInput.moe_ep_size,
-          moe_tp_size: estimateInput.moe_tp_size,
-          hf_model_config: estimateInput.hf_model_config,
-        });
-
         const response = await fetchEstimateAsInferenceResult(estimateInput, true);
 
         const result = 'result' in response ? response.result : response;
@@ -591,8 +583,8 @@ export default function Performance() {
             pp_size: result.parallelism_strategy.pp_size || 1,
             dp_size: 1,
             cp_size: 1,
-            moe_tp_size: isMoe ? requestedMoe.moe_tp_size ?? null : null,
-            moe_ep_size: isMoe ? requestedMoe.moe_ep_size ?? null : null,
+            moe_tp_size: result.moe_tp_size ?? null,
+            moe_ep_size: result.moe_ep_size ?? null,
             shared_prefix_tokens: estimateInput.prefix ?? 0,
             prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
             weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
@@ -605,8 +597,8 @@ export default function Performance() {
             chunked_prefill_enabled: result.vllm_config.enable_chunked_prefill,
             serving_mode: result.mode === 'disagg' ? 'disagg' : 'agg',
             replicas: result.memory_analysis.replicas,
-            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, isMoe ? requestedMoe.moe_tp_size ?? null : null, isMoe ? requestedMoe.moe_ep_size ?? null : null),
-            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, isMoe ? requestedMoe.moe_tp_size ?? null : null, isMoe ? requestedMoe.moe_ep_size ?? null : null),
+            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined),
+            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined),
             encode: null,
           },
           request: {

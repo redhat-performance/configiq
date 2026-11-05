@@ -495,6 +495,8 @@ class EstimateResponse(BaseModel):
     tp: int | None = None
     pp: int | None = None
     dp: int | None = None
+    moe_tp: int | None = None
+    moe_ep: int | None = None
     system: str | None = None
     backend: str | None = None
     backend_version: str | None = None
@@ -1064,6 +1066,43 @@ def _aisimulate_recommendation_config(
     return CoreRecommendationConfig.model_validate(raw)
 
 
+def _resolve_moe_widths(
+    tp: int | None,
+    attention_dp: int | None,
+    moe_tp: int | None,
+    moe_ep: int | None,
+) -> tuple[int, int]:
+    """Resolve the FFN/expert width pair for one worker role.
+
+    AISimulate requires ``tp * attention_dp * cp == moe_tp * moe_ep`` for every
+    model family that can host MoE layers, including dense variants of those
+    families (dense Gemma 4 is one). Treating two omitted widths as ``1 x 1``
+    therefore fails at any attention width greater than one.
+
+    When the caller supplies neither width, state the default layout
+    explicitly: tensor-shard the FFN/expert block across the attention group
+    with no expert parallelism. Explicit values are preserved. When only one
+    width is supplied, derive the other when it divides the attention width;
+    otherwise keep 1 so the SDK reports the precise invariant error rather than
+    a validation failure.
+    """
+    attention_width = (tp or 1) * (attention_dp or 1)
+    if moe_tp is None and moe_ep is None:
+        return attention_width, 1
+    if moe_tp is None:
+        assert moe_ep is not None
+        return (
+            attention_width // moe_ep if attention_width % moe_ep == 0 else 1,
+            moe_ep,
+        )
+    if moe_ep is None:
+        return (
+            moe_tp,
+            attention_width // moe_tp if attention_width % moe_tp == 0 else 1,
+        )
+    return moe_tp, moe_ep
+
+
 def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
     from aisimulate.config.cli import CorePredictionConfig
 
@@ -1087,14 +1126,17 @@ def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
             context = (
                 req.prefill_max_seq_len if role == "prefill" else req.decode_max_seq_len
             ) or req.max_seq_len or req.isl + req.osl
+        tp = tp or req.tp_size
+        dp = dp or req.attention_dp_size
+        moe_tp, moe_ep = _resolve_moe_widths(tp, dp, moe_tp, moe_ep)
         result = {
             "parallelism": {
                 "replicas": (req.prefill_num_workers if role == "prefill" else req.decode_num_workers) or 1,
-                "tensor": tp or req.tp_size,
+                "tensor": tp,
                 "pipeline": pp or req.pp_size,
-                "attention_data": dp or req.attention_dp_size,
-                "moe_tensor": moe_tp or 1,
-                "moe_expert": moe_ep or 1,
+                "attention_data": dp,
+                "moe_tensor": moe_tp,
+                "moe_expert": moe_ep,
             },
             "scheduler": {"max_sequences": req.max_num_seqs or batch or req.batch_size},
         }
@@ -2745,6 +2787,13 @@ def post_predict(
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
     if req.simulator == "aisimulate":
+        # Resolve the width pair the API asks the simulator to use, so the
+        # response reports exactly the layout that was evaluated.
+        p_moe_tp, p_moe_ep = _resolve_moe_widths(p_tp, req.attention_dp_size, p_moe_tp, p_moe_ep)
+        d_moe_tp, d_moe_ep = _resolve_moe_widths(d_tp, req.attention_dp_size, d_moe_tp, d_moe_ep)
+        agg_moe_tp, agg_moe_ep = _resolve_moe_widths(
+            req.tp_size, req.attention_dp_size, req.moe_tp_size, req.moe_ep_size
+        )
         try:
             prediction, fell_back_from = _run_with_version_fallback(
                 req, lambda: _run_aisimulate_prediction(req, _parse_include(include))
@@ -2752,6 +2801,9 @@ def post_predict(
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
     else:
+        # BLIS has no width invariant and consumes only the values it was
+        # given, so report those back unchanged.
+        agg_moe_tp, agg_moe_ep = req.moe_tp_size, req.moe_ep_size
         fell_back_from = None
         try:
             prediction = _blis_estimate(req)
@@ -2789,6 +2841,8 @@ def post_predict(
         tp=None if is_disagg else req.tp_size,
         pp=None if is_disagg else req.pp_size,
         dp=None if is_disagg else req.attention_dp_size,
+        moe_tp=None if is_disagg else agg_moe_tp,
+        moe_ep=None if is_disagg else agg_moe_ep,
         system=req.system,
         backend=req.backend,
         backend_version=req.backend_version,
@@ -2880,7 +2934,7 @@ def post_predict(
                 req.tp_size, req.pp_size, req.isl, req.osl, req.batch_size,
                 req.gemm_quant_mode if req.gemm_quant_mode and req.gemm_quant_mode != "half" else None,
                 req.kvcache_quant_mode if req.kvcache_quant_mode and req.kvcache_quant_mode != "half" else None,
-                req.moe_tp_size, req.moe_ep_size, max_seq_len=req.max_seq_len,
+                agg_moe_tp, agg_moe_ep, max_seq_len=req.max_seq_len,
                 memory_fraction=req.gpu_memory_utilization,
             )
 
