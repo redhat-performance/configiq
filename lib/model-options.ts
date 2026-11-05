@@ -26,10 +26,10 @@ export function buildModelItems(
 ): ComboBoxItem[] {
   const config = getAppConfig()
   const catalog = new Set(catalogModels)
-  // `testedModels` in config is the approved-for-measurement list, not the
+  // `approvedModels` in config is the approved-for-measurement list, not the
   // registry's validated list. Keep those concepts separate: only registry
   // IDs earn the "tested" badge, while approved models stay selectable.
-  const approvedValues = config.testedModels
+  const approvedValues = config.approvedModels
   const testedValues = validatedModels
 
   const seen = new Set<string>()

@@ -59,7 +59,7 @@ beforeEach(async () => {
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
-    hydrated: true, defaultModel: 'Qwen/Qwen3-8B', testedModels: [],
+    hydrated: true, defaultModel: 'Qwen/Qwen3-8B',
     hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: true, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
@@ -140,7 +140,6 @@ describe('Hybrid model configuration readiness', () => {
   }
   beforeEach(() => {
     vi.useFakeTimers()
-    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), testedModels: [testedModel, 'tested/other'] })
     vi.mocked(useCostings).mockReturnValue({
       ...vi.mocked(useCostings)(true),
       models: [...models, ...[testedModel, 'tested/other'].map(id => ({ ...models[0], id, name: id }))],
