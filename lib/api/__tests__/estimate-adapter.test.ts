@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchEstimateAsInferenceResult, resolveMoeWidths, type EstimateAdapterInput, EstimateError } from '../estimate-adapter'
+import {
+  buildPredictRequestBody,
+  fetchEstimateAsInferenceResult,
+  isMoeConfig,
+  resolveMoeWidths,
+  resolvePredictMoeWidths,
+  type EstimateAdapterInput,
+  EstimateError,
+} from '../estimate-adapter'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -572,6 +580,48 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
   it('keeps a non-divisible split visible as a configuration error', () => {
     expect(resolveMoeWidths({ tp_size: 4, moe_ep_size: 3 }))
       .toEqual({ moe_ep_size: 3, moe_tp_size: 1 })
+  })
+
+  it('does not let a low expert count mask a higher one', () => {
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_experts: 128 } })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, num_local_experts: 64 })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_local_experts: 8 } })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_experts: 1 } })).toBe(false)
+    expect(resolveMoeWidths({
+      tp_size: 4,
+      moe_ep_size: 4,
+      hf_model_config: { num_experts: 1, text_config: { num_experts: 128 } },
+    })).toEqual({ moe_ep_size: 4, moe_tp_size: 1 })
+  })
+
+  it('reports the widths BLIS actually sends', () => {
+    expect(resolvePredictMoeWidths({
+      simulator: 'blis',
+      tp_size: 4,
+      hf_model_config: { text_config: { num_experts: 128 } },
+    })).toEqual({ moe_ep_size: 4 })
+    expect(resolvePredictMoeWidths({
+      simulator: 'blis',
+      tp_size: 4,
+      moe_ep_size: 2,
+      moe_tp_size: 2,
+    })).toEqual({ moe_ep_size: 2, moe_tp_size: 2 })
+    expect(resolvePredictMoeWidths({ simulator: 'blis', tp_size: 4 })).toEqual({})
+    expect(resolvePredictMoeWidths({ simulator: 'aisimulate', tp_size: 4 }))
+      .toEqual({ moe_ep_size: 1, moe_tp_size: 4 })
+  })
+
+  it('builds the same body that is submitted', () => {
+    const input: EstimateAdapterInput = {
+      ...VALID_INPUT,
+      tp_size: 4,
+      hf_model_config: { text_config: { num_experts: 128 } },
+    }
+    const body = buildPredictRequestBody(input)
+    expect(body).toHaveProperty('moe_ep_size', 1)
+    expect(body).toHaveProperty('moe_tp_size', 4)
+    expect(body).toHaveProperty('model_config', input.hf_model_config)
+    expect(body).not.toHaveProperty('hf_model_config')
   })
 
   it('includes include=config,memory in query params', async () => {

@@ -59,17 +59,28 @@ export interface EstimatePhaseInput {
   batch: number
 }
 
-function isMoeConfig(config: Record<string, unknown> | null | undefined): boolean {
+/**
+ * Whether a model config describes a mixture-of-experts model.
+ *
+ * Expert counts live at the top level for most families and under
+ * `text_config` for Gemma 4. Take the largest count rather than the first
+ * non-nullish one: a top-level `1` must not mask a nested `128`.
+ */
+export function isMoeConfig(config: Record<string, unknown> | null | undefined): boolean {
   if (!config) return false
   const textConfig = config.text_config && typeof config.text_config === 'object'
     ? config.text_config as Record<string, unknown>
     : null
-  const experts =
-    config.num_experts ??
-    config.num_local_experts ??
-    textConfig?.num_experts ??
-    textConfig?.num_local_experts
-  return typeof experts === 'number' && experts > 1
+
+  if (config.enable_moe_block === true || textConfig?.enable_moe_block === true) return true
+
+  const counts = [
+    config.num_experts,
+    config.num_local_experts,
+    textConfig?.num_experts,
+    textConfig?.num_local_experts,
+  ]
+  return counts.some(count => typeof count === 'number' && count > 1)
 }
 
 /**
@@ -122,6 +133,36 @@ function isPositiveInt(value: number | undefined): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
+/**
+ * The MoE widths a request actually puts on the wire.
+ *
+ * Mirrors the simulator split in `buildPredictRequestBody` so callers that
+ * report or replay a request (the classifier snapshot and "Copy API request")
+ * agree with what was submitted.
+ */
+export function resolvePredictMoeWidths(input: {
+  simulator?: 'aisimulate' | 'blis'
+  tp_size: number
+  moe_ep_size?: number
+  moe_tp_size?: number
+  hf_model_config?: Record<string, unknown> | null
+}): { moe_ep_size?: number; moe_tp_size?: number } {
+  if ((input.simulator ?? 'aisimulate') !== 'blis') {
+    return resolveMoeWidths(input)
+  }
+
+  // BLIS has no width invariant; only explicit values are sent, apart from
+  // its existing MoE default of sharding experts across the TP group.
+  if (input.moe_ep_size != null || input.moe_tp_size != null) {
+    return {
+      ...(input.moe_ep_size != null && { moe_ep_size: input.moe_ep_size }),
+      ...(input.moe_tp_size != null && { moe_tp_size: input.moe_tp_size }),
+    }
+  }
+  if (isMoeConfig(input.hf_model_config)) return { moe_ep_size: input.tp_size }
+  return {}
+}
+
 
 function deriveBottleneck(ttft: number, tpot: number) {
   if (ttft > 2000) {
@@ -153,18 +194,13 @@ export interface EstimateWithDebug {
   debugDuration: number
 }
 
-export function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug: true
-): Promise<EstimateWithDebug>
-export function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug?: false
-): Promise<InferenceConfigResult>
-export async function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug: boolean = false
-): Promise<EstimateWithDebug | InferenceConfigResult> {
+/**
+ * Build the /api/predict body for an adapter input.
+ *
+ * Exported so replay surfaces (the debug panel and "Copy API request") use the
+ * exact payload that is submitted instead of reconstructing it.
+ */
+export function buildPredictRequestBody(input: EstimateAdapterInput): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model_path: input.model_path,
     system: input.system,
@@ -213,22 +249,26 @@ export async function fetchEstimateAsInferenceResult(
   // MoE widths. AISimulate validates that moe_tp_size * moe_ep_size equals the
   // attention width, so always send a valid pair rather than letting both
   // default to 1. BLIS has no such invariant; keep its explicit-only behavior.
-  if ((input.simulator ?? 'aisimulate') !== 'blis') {
-    const moe = resolveMoeWidths({
-      tp_size: input.tp_size,
-      moe_ep_size: input.moe_ep_size,
-      moe_tp_size: input.moe_tp_size,
-      hf_model_config: input.hf_model_config,
-    })
-    body.moe_ep_size = moe.moe_ep_size
-    body.moe_tp_size = moe.moe_tp_size
-  } else if (input.moe_ep_size != null) {
-    body.moe_ep_size = input.moe_ep_size
-  } else if (input.moe_tp_size != null) {
-    body.moe_tp_size = input.moe_tp_size
-  } else if (isMoeConfig(input.hf_model_config)) {
-    body.moe_ep_size = input.tp_size
-  }
+  const moe = resolvePredictMoeWidths(input)
+  if (moe.moe_ep_size != null) body.moe_ep_size = moe.moe_ep_size
+  if (moe.moe_tp_size != null) body.moe_tp_size = moe.moe_tp_size
+
+  return body
+}
+
+export function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug: true
+): Promise<EstimateWithDebug>
+export function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug?: false
+): Promise<InferenceConfigResult>
+export async function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug: boolean = false
+): Promise<EstimateWithDebug | InferenceConfigResult> {
+  const body = buildPredictRequestBody(input)
 
   const startTime = performance.now()
   const res = await fetch('/api/predict?include=config,memory', {

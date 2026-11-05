@@ -27,7 +27,7 @@ import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
 import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
-import { fetchEstimateAsInferenceResult, EstimateError, resolveMoeWidths, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
+import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, resolvePredictMoeWidths, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
@@ -56,8 +56,7 @@ function modelSuggestions(): string {
 
 function detectMoe(spec: ModelSpec | undefined, hfConfig: HFModelConfig | null): boolean {
   const catalogExperts = spec?.num_experts ?? 0;
-  const hfExperts = (hfConfig?.text_config?.num_experts as number) ?? (hfConfig?.num_experts as number) ?? (hfConfig?.num_local_experts as number) ?? 0;
-  return catalogExperts > 1 || hfExperts > 1;
+  return catalogExperts > 1 || isMoeConfig(hfConfig);
 }
 
 type WeightPrecision = 'FP16' | 'FP8' | 'INT8' | 'INT4' | 'MXFP4' | 'NVFP4'
@@ -565,7 +564,8 @@ export default function Performance() {
         setDebugStatus(null);
         setDebugDuration(null);
 
-        const requestedMoe = resolveMoeWidths({
+        const requestedMoe = resolvePredictMoeWidths({
+          simulator: estimateInput.simulator,
           tp_size: estimateInput.tp_size,
           moe_ep_size: estimateInput.moe_ep_size,
           moe_tp_size: estimateInput.moe_tp_size,
@@ -591,8 +591,8 @@ export default function Performance() {
             pp_size: result.parallelism_strategy.pp_size || 1,
             dp_size: 1,
             cp_size: 1,
-            moe_tp_size: isMoe ? requestedMoe.moe_tp_size : null,
-            moe_ep_size: isMoe ? requestedMoe.moe_ep_size : null,
+            moe_tp_size: isMoe ? requestedMoe.moe_tp_size ?? null : null,
+            moe_ep_size: isMoe ? requestedMoe.moe_ep_size ?? null : null,
             shared_prefix_tokens: estimateInput.prefix ?? 0,
             prefix_caching_enabled: result.vllm_config.enable_prefix_caching,
             weight_precision: resolveActualWeightPrecision(hfConfig, testWeightPrecision),
@@ -605,8 +605,8 @@ export default function Performance() {
             chunked_prefill_enabled: result.vllm_config.enable_chunked_prefill,
             serving_mode: result.mode === 'disagg' ? 'disagg' : 'agg',
             replicas: result.memory_analysis.replicas,
-            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, isMoe ? requestedMoe.moe_tp_size : null, isMoe ? requestedMoe.moe_ep_size : null),
-            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, isMoe ? requestedMoe.moe_tp_size : null, isMoe ? requestedMoe.moe_ep_size : null),
+            prefill: classifierPhase(result.mode === 'disagg' ? result.disagg?.prefill : undefined, isMoe ? requestedMoe.moe_tp_size ?? null : null, isMoe ? requestedMoe.moe_ep_size ?? null : null),
+            decode: classifierPhase(result.mode === 'disagg' ? result.disagg?.decode : undefined, isMoe ? requestedMoe.moe_tp_size ?? null : null, isMoe ? requestedMoe.moe_ep_size ?? null : null),
             encode: null,
           },
           request: {
@@ -848,24 +848,23 @@ export default function Performance() {
     const spec = modelSpecs.get(model);
     const isMoe = detectMoe(spec, hfConfig);
 
-    return {
+    const input: EstimateAdapterInput = {
       model_path: model || '(select model)',
       system: gpu || '(select GPU)',
       backend: inferenceBackend,
       simulator,
-       ...(servingMode === 'disagg' && fabricRequired && selectedNetworkFabric && { fabric: selectedNetworkFabric }),
       isl: testISL,
       osl: testOSL,
+      batch_size: testConcurrentUsers,
+      tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
+      pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
+      vram_gb: currentCatalogGpu?.vramGb ?? null,
       ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
       ...(prefillMaxSeqLen != null && { prefill_max_seq_len: prefillMaxSeqLen }),
       ...(decodeMaxSeqLen != null && { decode_max_seq_len: decodeMaxSeqLen }),
       ...(gpuMemoryUtilization != null && { gpu_memory_utilization: gpuMemoryUtilization }),
       ...(vllmOverride && vllmManualMaxNumSeqs != null && { max_num_seqs: vllmManualMaxNumSeqs }),
       ...(vllmOverride && vllmManualChunkedPrefill != null && { enable_chunked_prefill: vllmManualChunkedPrefill }),
-      batch_size: testConcurrentUsers,
-      tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
-      pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
-      vram_gb: currentCatalogGpu?.vramGb ?? null,
       ...(testPrefix > 0 && { prefix: testPrefix }),
       ...(backendVersion && { backend_version: backendVersion }),
       ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
@@ -882,17 +881,14 @@ export default function Performance() {
       ...(isMoe && moeEpSizeInput !== '' && { moe_ep_size: testMoeEpSize }),
       ...(isMoe && moeEtpSizeInput !== '' && { moe_tp_size: testMoeEtpSize }),
       ...(servingMode === 'disagg' && {
-        mode: 'disagg',
-        prefill_tp_size: parsePerfPhase(prefillCfg).tp,
-        prefill_pp_size: parsePerfPhase(prefillCfg).pp,
-        prefill_num_workers: parsePerfPhase(prefillCfg).workers,
-        prefill_batch_size: parsePerfPhase(prefillCfg).batch,
-        decode_tp_size: parsePerfPhase(decodeCfg).tp,
-        decode_pp_size: parsePerfPhase(decodeCfg).pp,
-        decode_num_workers: parsePerfPhase(decodeCfg).workers,
-        decode_batch_size: parsePerfPhase(decodeCfg).batch,
-      })
+        mode: 'disagg' as const,
+        fabric: fabricRequired && selectedNetworkFabric ? selectedNetworkFabric : undefined,
+        prefill: parsePerfPhase(prefillCfg),
+        decode: parsePerfPhase(decodeCfg),
+      }),
     };
+
+    return buildPredictRequestBody(input);
   }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize, moeEpSizeInput, moeEtpSizeInput, simulator, selectedNetworkFabric, fabricRequired]);
 
   // Copy API request body to clipboard
