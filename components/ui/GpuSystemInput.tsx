@@ -20,9 +20,11 @@ interface GpuSystemInputProps {
   gpuOptions: GpuOption[]
   /** Systems with measurements for the selected model; annotated and sorted first. */
   testedSystemIds?: string[]
+  /** When set, prepend an option with an empty value that clears the filter. */
+  allLabel?: string
 }
 
-export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemIds = [] }: GpuSystemInputProps) {
+export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemIds = [], allLabel }: GpuSystemInputProps) {
   const [open, setOpen] = React.useState(false)
   const current = gpuOptions.find(g => g.systemId === value)
   const testedSystems = React.useMemo(() => new Set(testedSystemIds), [testedSystemIds])
@@ -61,9 +63,11 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
   }, [gpuOptions, testedSystems])
 
   const selectedOption = gpuOptions.find(g => g.systemId === value)
-  const selectedLabel = selectedOption
-    ? `${selectedOption.label}${selectedOption.vramGb ? ` — ${selectedOption.vramGb} GB` : ''}`
-    : 'Select GPU system…'
+  const selectedLabel = value === '' && allLabel
+    ? allLabel
+    : selectedOption
+      ? `${selectedOption.label}${selectedOption.vramGb ? ` — ${selectedOption.vramGb} GB` : ''}`
+      : 'Select GPU system…'
 
   const toggle = (tRef: React.RefObject<HTMLButtonElement>) => (
     <MenuToggle
@@ -77,9 +81,9 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
     </MenuToggle>
   )
 
-  const handleSelect = (event: any, val: any) => {
-    if (val) {
-      onChange(String(val))
+  const handleSelect = (_event: React.MouseEvent | undefined, val: string | number | undefined) => {
+    if (typeof val === 'string') {
+      onChange(val)
       setOpen(false)
     }
   }
@@ -97,6 +101,11 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
         popperProps={{ width: 'trigger', maxWidth: 'trigger' }}
       >
         <SelectList className={styles.selectList}>
+          {allLabel && (
+            <SelectOption value="" isSelected={value === ''}>
+              {allLabel}
+            </SelectOption>
+          )}
           {gpuOptions.length === 0 ? (
             <SelectOption isDisabled value="__empty__">
               Loading GPU catalog…

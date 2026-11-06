@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -212,13 +213,22 @@ def build_registry(
 
         registry_pairs.append(entry)
 
-    registry = {
+    registry: dict = {
         "schemaVersion": 2,
         "generatedAt": datetime.now(UTC).isoformat(),
         "gate": gate_thresholds(),
         "approvedModels": approved_models,
         "pairs": registry_pairs,
     }
+    dataset_repo = manifest.get("source")
+    dataset_revision = manifest.get("revision")
+    if (
+        isinstance(dataset_repo, str)
+        and dataset_repo.strip()
+        and isinstance(dataset_revision, str)
+        and re.fullmatch(r"[0-9a-f]{40}", dataset_revision)
+    ):
+        registry["dataset"] = {"repo": dataset_repo, "revision": dataset_revision}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "registry.json").write_text(
         json.dumps(registry, indent=2, sort_keys=True, allow_nan=False) + "\n"

@@ -1,6 +1,11 @@
 import { notFound } from 'next/navigation'
 import { readTestedModelsRegistry } from '@/lib/tested-models/registry'
-import type { PublicRegistryPair, RegistryPair, ValidationGateThresholds } from '@/lib/tested-models/registry-types'
+import type {
+  PublicRegistryPair,
+  RegistryDatasetProvenance,
+  RegistryPair,
+  ValidationGateThresholds,
+} from '@/lib/tested-models/registry-types'
 import { TestedModelPair } from './TestedModelPair'
 
 export const dynamic = 'force-dynamic'
@@ -13,10 +18,12 @@ export default async function TestedModelPairPage({ params }: TestedModelPairPag
   const { pairId } = await params
   let pair: RegistryPair | undefined
   let gate: ValidationGateThresholds | null = null
+  let dataset: RegistryDatasetProvenance | null = null
   try {
     const registry = await readTestedModelsRegistry()
     pair = registry.pairs.find(candidate => candidate.id === pairId)
     gate = registry.gate
+    dataset = registry.dataset ?? null
   } catch {
     notFound()
   }
@@ -32,5 +39,5 @@ export default async function TestedModelPairPage({ params }: TestedModelPairPag
     metrics: pair.metrics,
   }
 
-  return <TestedModelPair pair={publicPair} gate={gate} />
+  return <TestedModelPair pair={publicPair} gate={gate} dataset={dataset} />
 }

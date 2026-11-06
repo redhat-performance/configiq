@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 VALIDATED = "validated"
@@ -47,6 +48,18 @@ def _validate_v2(registry: dict, triton_dir: Path) -> set[str]:
     approved = registry.get("approvedModels")
     if not isinstance(approved, list) or not all(isinstance(model, str) for model in approved):
         raise ValueError("registry approvedModels must be a string array")
+
+    # Optional for bundles built before provenance was recorded.
+    dataset = registry.get("dataset")
+    if dataset is not None:
+        if not isinstance(dataset, dict):
+            raise TypeError("registry dataset provenance must be an object")
+        repo = dataset.get("repo")
+        revision = dataset.get("revision")
+        if not isinstance(repo, str) or not repo.strip():
+            raise ValueError("registry dataset repo must be a non-empty string")
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError("registry dataset revision must be a full 40-character commit SHA")
 
     pairs = registry.get("pairs")
     if not isinstance(pairs, list) or not pairs:

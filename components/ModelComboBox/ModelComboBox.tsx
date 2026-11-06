@@ -49,6 +49,8 @@ interface ComboBoxProps {
   label?: string
   portalMenu?: boolean
   preserveOrder?: boolean
+  /** When set, prepend an option with an empty value that clears the filter. */
+  allLabel?: string
 }
 
 interface GroupedItems {
@@ -127,7 +129,7 @@ function RowMeta({ item }: { item: ComboBoxItem }) {
   )
 }
 
-export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false }: ComboBoxProps) {
+export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel }: ComboBoxProps) {
   const [open, setOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
   const [supportedOnly, setSupportedOnly] = React.useState(false)
@@ -161,8 +163,6 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     }
   }
 
-  const selectedItem = activeItems.find(i => i.value === value)
-
   const isSearching = filter.trim().length > 0
   const modelSearch = activeItems.every(isModelItem)
   const filtered = React.useMemo(() => {
@@ -173,19 +173,27 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
       .some(text => text?.toLowerCase().includes(query)))
   }, [activeItems, filter])
 
+  const allItem = React.useMemo<ComboBoxItem | null>(
+    () => (allLabel ? { value: '', label: allLabel, group: '' } : null),
+    [allLabel],
+  )
+  const selectedItem = allItem && value === '' ? allItem : activeItems.find(i => i.value === value)
+
   /**
    * Browsing groups by vendor. Searching returns one relevance-ranked list —
-   * regrouping a ranked set would sort the best match back under "Q".
+   * regrouping a ranked set would sort the best match back under "Q". The
+   * "all" option is only offered while browsing.
    */
   const groups = React.useMemo<GroupedItems[]>(
     () => {
-      if (!isSearching || !modelSearch) return groupItems(filtered, preserveOrder)
+      const visible = allItem && !isSearching ? [allItem, ...filtered] : filtered
+      if (!isSearching || !modelSearch) return groupItems(visible, preserveOrder)
       // A single unlabelled group, and none at all when nothing matched, so
       // the "No matches" row below still renders.
-      if (filtered.length === 0) return []
-      return [{ group: '', items: filtered }]
+      if (visible.length === 0) return []
+      return [{ group: '', items: visible }]
     },
-    [filtered, isSearching, modelSearch, preserveOrder],
+    [allItem, filtered, isSearching, modelSearch, preserveOrder],
   )
 
   const flatItems = React.useMemo(() => groups.flatMap(g => g.items), [groups])

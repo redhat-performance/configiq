@@ -89,18 +89,25 @@ plain upstream vLLM release (`vLLM-<major>.<minor>.<patch>`). Productized Red
 Hat AI Inference Server builds and pre-release labels are dropped, and the
 import manifest records the kept and dropped counts.
 
-The scheduled GitHub Actions workflow consumes a pinned revision of the public
+The scheduled GitHub Actions workflow consumes the public
 `redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.
 It uploads only the sanitized registry/Triton/dashboard bundle as a workflow
 artifact. Raw parquet files, source identifiers, and training work files are
 not published by that workflow.
 
+By default the workflow follows the dataset's default branch. The download step
+resolves that mutable ref once to a full 40-character commit SHA, downloads only
+that SHA, and records it in `dataset-manifest.json`; `registry.json` records the
+same repository and revision under `dataset` so a deployed bundle can be traced
+back to immutable input. Pass a commit SHA, branch, or tag to pin a build
+explicitly (`--revision` on the script, or the `revision` input on the
+`tested-models.yml` workflow dispatch).
+
 That dataset is the upstream-only subset: it retains rows whose serving stack
 is a plain upstream vLLM release and excludes productized Red Hat AI Inference
-Server builds. At the current pinned revision it holds 13 model/hardware pairs
-and 1,556 aggregate rows, so a model can be approved for testing without having
-a trained performance envelope yet. Do not read absence from this dataset as
-"not tested".
+Server builds. It grows as new measurements are published, so a model can be
+approved for testing without having a trained performance envelope yet. Do not
+read absence from this dataset as "not tested".
 
 `registry.json` lists every measured pair in this build, with its validation
 status. It is a catalog of measured coverage, not the approved-model list. A
@@ -110,6 +117,10 @@ without having a validated envelope. Neither case is classifier-tested.
 The workflow reads the repository variable `TESTED_DATASET_REPO` when it is set,
 and otherwise falls back to the dataset above. Set it to move the pipeline to a
 renamed or republished dataset without a code change.
+
+The former `TESTED_DATASET_REVISION` repository variable is no longer read.
+Builds follow the dataset automatically; use the workflow dispatch `revision`
+input when a specific revision must be rebuilt.
 
 ## Production workflow
 
@@ -123,6 +134,15 @@ with the public Hugging Face dataset. It runs at 00:00 Monday in
 variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
 only prepare and compare. A manual run on `main` publishes only when its
 `publish` input is selected. Unchanged content is never uploaded.
+
+When an upload succeeds, the publish workflow dispatches `tested-models.yml`
+with the new dataset commit SHA, so new ground truth retrains the classifiers
+without a manual revision bump. The build workflow also runs on its Monday
+09:17 UTC fallback schedule and on relevant code changes. It appends a
+Markdown comparison of the new registry against the deployed registry (when
+`https://configiq.dev/api/tested-models` is reachable) to the workflow job
+summary, including added/removed pairs and validated-to-measured transitions.
+That report is advisory: it never fails the build or installs the bundle.
 
 Preparation applies the upstream-only version filter and refuses to publish when
 the prepared set would delete pairs that exist only in the remote dataset. Run
@@ -148,18 +168,20 @@ uv run --group tested-models python scripts/tested_models/extract_datasets.py
 uv run --group tested-models python scripts/tested_models/publish_ground_truth.py
 ```
 
-Set the resulting Hugging Face revision as the GitHub repository variable
-`TESTED_DATASET_REVISION`. If the data is published to a repository other than
-the default one above, set `TESTED_DATASET_REPO` as well. Do not commit the
-dataset or its source credentials.
+The publish workflow dispatches the tested-model build automatically with the
+new Hugging Face commit SHA, so no revision variable needs updating. To rebuild
+a specific published revision, dispatch `tested-models.yml` with its `revision`
+input. If the data is published to a repository other than the default one
+above, set the `TESTED_DATASET_REPO` repository variable as well. Do not commit
+the dataset or its source credentials.
 
 ### 2. Build and validate the bundle
 
 The repeatable build is `.github/workflows/tested-models.yml`. It runs the
-regression tests, downloads the pinned dataset, creates grouped leakage-safe
-splits, fits labels from training rows, trains XGBoost classifiers, exports
-Triton FIL repositories, builds dashboard payloads for every measured pair, and
-validates the registry. `build_dashboard.py` must run before
+regression tests, downloads the current dataset revision, creates grouped
+leakage-safe splits, fits labels from training rows, trains XGBoost classifiers,
+exports Triton FIL repositories, builds dashboard payloads for every measured
+pair, and validates the registry. `build_dashboard.py` must run before
 `build_registry.py`, because the registry requires a dashboard payload for each
 pair it publishes.
 
@@ -167,7 +189,7 @@ Run the same sequence locally when debugging:
 
 ```bash
 uv run --group tested-models pytest scripts/tested_models/tests -q
-uv run --group tested-models python scripts/tested_models/download_ground_truth.py --revision "$TESTED_DATASET_REVISION"
+uv run --group tested-models python scripts/tested_models/download_ground_truth.py
 uv run --group tested-models python scripts/tested_models/split_dataset.py
 uv run --group tested-models python scripts/tested_models/label_data.py
 uv run --group tested-models python scripts/tested_models/train_classifiers.py

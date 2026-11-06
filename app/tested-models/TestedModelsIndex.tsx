@@ -3,9 +3,20 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { Label, Spinner } from '@patternfly/react-core'
+import { ComboBox } from '@/components/ModelComboBox/ModelComboBox'
+import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
+import { useCatalog, type ModelSpec } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
+import {
+  gpuOptionsForSystems,
+  gpuSystemLabel,
+  modelFacetChips,
+  registryModelItems,
+  shortRevision,
+} from '@/lib/tested-models/display'
 import { testedModelsFilterHref, testedPairHref } from '@/lib/tested-models/links'
 import type { RegistryPair } from '@/lib/tested-models/registry-types'
+import { TestedModelsShell } from './TestedModelsShell'
 import styles from './TestedModels.module.css'
 
 interface TestedModelsIndexProps {
@@ -24,8 +35,19 @@ function pairSort(a: RegistryPair, b: RegistryPair): number {
   return `${a.modelId} ${a.systemId}`.localeCompare(`${b.modelId} ${b.systemId}`)
 }
 
+function ModelChips({ modelId, spec }: { modelId: string; spec?: ModelSpec }) {
+  const chips = modelFacetChips(modelId, spec)
+  if (chips.length === 0) return null
+  return (
+    <div className={styles.chipRow}>
+      {chips.map(chip => <span key={chip} className={styles.chip}>{chip}</span>)}
+    </div>
+  )
+}
+
 export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: TestedModelsIndexProps) {
-  const { pairs, approvedModels, gate, schemaVersion, isLoading, isAvailable } = useTestedModels()
+  const { pairs, approvedModels, gate, schemaVersion, dataset, validatedModelIds, isLoading, isAvailable } = useTestedModels()
+  const { gpuOptions: catalogGpus, modelOptions, modelSpecs } = useCatalog()
   const [modelFilter, setModelFilter] = React.useState(initialModel)
   const [systemFilter, setSystemFilter] = React.useState(initialSystem)
 
@@ -33,9 +55,21 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
     () => [...new Set(pairs.map(pair => pair.systemId))].sort(),
     [pairs],
   )
+  const modelIds = React.useMemo(
+    () => [...new Set([...pairs.map(pair => pair.modelId), ...approvedModels])],
+    [approvedModels, pairs],
+  )
+  const modelItems = React.useMemo(
+    () => registryModelItems(modelIds, modelSpecs, validatedModelIds, modelOptions),
+    [modelIds, modelOptions, modelSpecs, validatedModelIds],
+  )
+  const gpuFilterOptions = React.useMemo(
+    () => gpuOptionsForSystems(systems, catalogGpus),
+    [catalogGpus, systems],
+  )
   const filtered = React.useMemo(
     () => pairs
-      .filter(pair => !modelFilter || pair.modelId.toLowerCase().includes(modelFilter.toLowerCase()))
+      .filter(pair => !modelFilter || pair.modelId === modelFilter)
       .filter(pair => !systemFilter || pair.systemId === systemFilter)
       .toSorted(pairSort),
     [modelFilter, pairs, systemFilter],
@@ -45,18 +79,24 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
     [approvedModels, pairs],
   )
   const validatedCount = pairs.filter(pair => pair.status === 'validated').length
+  const filteredValidated = filtered.filter(pair => pair.status === 'validated').length
+  const measuredModelCount = new Set(pairs.map(pair => pair.modelId)).size
 
   if (isLoading) {
-    return <main className={styles.page}><Spinner aria-label="Loading tested models" /></main>
+    return (
+      <TestedModelsShell>
+        <Spinner aria-label="Loading tested models" />
+      </TestedModelsShell>
+    )
   }
 
   return (
-    <main className={styles.page}>
+    <TestedModelsShell>
       <div className={styles.header}>
         <div>
           <p className={styles.eyebrow}>Measured operating envelopes</p>
-          <h1>Tested performance envelopes</h1>
-          <p>
+          <h1 className={styles.pageTitle}>Tested performance envelopes</h1>
+          <p className={styles.subtitle}>
             Measurements and classifier evidence for approved models. A validated envelope can answer
             classification questions; a measured pair without a validated envelope still exposes its graph.
           </p>
@@ -78,9 +118,49 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
       )}
 
       {isAvailable && (
-        <section className={styles.gate} aria-label="Validation gate">
-          <span className={styles.eyebrow}>Validation gate</span>
-          <p>
+        <div className={styles.summaryGrid}>
+          <section className={styles.card}>
+            <span className={styles.cardLabel}>Measured pairs</span>
+            <strong className={styles.cardValue}>{pairs.length}</strong>
+            <span className={styles.cardSub}>{measuredModelCount} model{measuredModelCount === 1 ? '' : 's'} with data</span>
+          </section>
+          <section className={styles.card}>
+            <span className={styles.cardLabel}>Validated envelopes</span>
+            <strong className={styles.cardValue}>{validatedCount}</strong>
+            <span className={styles.cardSub}>Pass the held-out quality gate</span>
+          </section>
+          <section className={styles.card}>
+            <span className={styles.cardLabel}>Measured only</span>
+            <strong className={styles.cardValue}>{pairs.length - validatedCount}</strong>
+            <span className={styles.cardSub}>Graphs without a classifier verdict</span>
+          </section>
+          <section className={styles.card}>
+            <span className={styles.cardLabel}>Approved, no data</span>
+            <strong className={styles.cardValue}>{approvedWithoutData.length}</strong>
+            <span className={styles.cardSub}>Not tested yet</span>
+          </section>
+        </div>
+      )}
+
+      {isAvailable && (
+        <section className={styles.panel} aria-label="Validation gate">
+          <div className={styles.panelHeader}>
+            <h2 className={styles.panelTitle}>Validation gate</h2>
+            {dataset && (
+              <span className={styles.panelHint}>
+                Dataset{' '}
+                <a
+                  href={`https://huggingface.co/datasets/${dataset.repo}/tree/${dataset.revision}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={styles.inlineLink}
+                >
+                  {dataset.repo}@{shortRevision(dataset.revision)}
+                </a>
+              </span>
+            )}
+          </div>
+          <p className={styles.panelNote}>
             {gate
               ? `At least ${gate.minRecords} records, ${gate.minConcurrencyLevels} concurrency levels, test AUC ≥ ${gate.minTestAuc.toFixed(2)}, and test F1 ≥ ${gate.minTestF1.toFixed(2)}.`
               : 'Legacy registry: only recorded test AUC and F1 are available.'}
@@ -88,40 +168,35 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
         </section>
       )}
 
-      <section className={styles.panel} aria-label="Tested-model filters">
+      <section className={`${styles.card} ${styles.filterCard}`} aria-label="Tested-model filters">
         <div className={styles.filterGrid}>
-          <label className={styles.selectorLabel} htmlFor="tested-model-filter">
-            Model
-            <input
-              id="tested-model-filter"
-              className={styles.selector}
-              value={modelFilter}
-              onChange={event => setModelFilter(event.target.value)}
-              placeholder="Filter by model ID"
-            />
-          </label>
-          <label className={styles.selectorLabel} htmlFor="tested-system-filter">
-            GPU system
-            <select
-              id="tested-system-filter"
-              className={styles.selector}
-              value={systemFilter}
-              onChange={event => setSystemFilter(event.target.value)}
-            >
-              <option value="">All GPU systems</option>
-              {systems.map(system => <option key={system} value={system}>{system}</option>)}
-            </select>
-          </label>
+          <ComboBox
+            id="tested-model-filter"
+            value={modelFilter}
+            onChange={setModelFilter}
+            items={modelItems}
+            label="Model"
+            allLabel="All models"
+            placeholder="Search by name, size, type or precision…"
+          />
+          <GpuSystemInput
+            id="tested-system-filter"
+            value={systemFilter}
+            onChange={setSystemFilter}
+            gpuOptions={gpuFilterOptions}
+            testedSystemIds={systems}
+            allLabel="All GPU systems"
+          />
         </div>
         <p className={styles.resultCount}>
-          {filtered.length} measured pair{filtered.length === 1 ? '' : 's'} · {validatedCount} with a validated envelope
+          {filtered.length} measured pair{filtered.length === 1 ? '' : 's'} · {filteredValidated} with a validated envelope
         </p>
       </section>
 
       {filtered.length === 0 && isAvailable && (
         <div className={styles.empty}>
-          <h2>No measured pairs match these filters</h2>
-          <p>
+          <h2 className={styles.panelTitle}>No measured pairs match these filters</h2>
+          <p className={styles.panelNote}>
             {approvedWithoutData.length > 0
               ? 'Approved models without measurements are listed below. No classifier verdict is available for them.'
               : 'Try a different model or GPU system.'}
@@ -132,8 +207,12 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
       <div className={styles.pairList}>
         {filtered.map(pair => (
           <Link key={pair.id} href={testedPairHref(pair.id)} className={styles.pairRow}>
-            <div>
-              <div className={styles.pairTitle}>{pair.modelId}</div>
+            <div className={styles.pairMain}>
+              <div className={styles.pairTitleRow}>
+                <span className={styles.pairTitle}>{pair.modelId}</span>
+                <span className={styles.gpuLabel}>{gpuSystemLabel(pair.systemId, catalogGpus)}</span>
+              </div>
+              <ModelChips modelId={pair.modelId} spec={modelSpecs.get(pair.modelId)} />
               <div className={styles.pairMeta}>
                 {pair.systemId}
                 {pair.coverage && <> · {pair.coverage.records.toLocaleString()} records · {pair.coverage.concurrencyLevelCount} concurrency levels</>}
@@ -150,8 +229,8 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
       {approvedWithoutData.length > 0 && (
         <section className={styles.panel} aria-label="Approved models without measurements">
           <div className={styles.panelHeader}>
-            <h2>Approved models without measurements</h2>
-            <span>{approvedWithoutData.length} models</span>
+            <h2 className={styles.panelTitle}>Approved models without measurements</h2>
+            <span className={styles.panelHint}>{approvedWithoutData.length} models</span>
           </div>
           <p className={styles.panelNote}>
             These models are approved for measurement but have no published data. They are not classifier-tested.
@@ -165,6 +244,6 @@ export function TestedModelsIndex({ initialModel = '', initialSystem = '' }: Tes
           </div>
         </section>
       )}
-    </main>
+    </TestedModelsShell>
   )
 }

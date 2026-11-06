@@ -16,6 +16,7 @@ describe('GET /api/tested-models', () => {
     mockReadFile.mockResolvedValue(JSON.stringify({
       schemaVersion: 2,
       generatedAt: '2026-01-01T00:00:00Z',
+      dataset: { repo: 'org/ground-truth', revision: 'a'.repeat(40) },
       gate: { minRecords: 100, minTestAuc: 0.7, minTestF1: 0.3, minConcurrencyLevels: 5 },
       approvedModels: ['org/model', 'org/approved-only'],
       pairs: [{
@@ -33,6 +34,7 @@ describe('GET /api/tested-models', () => {
 
     expect(body.status).toBe('available')
     expect(body.schemaVersion).toBe(2)
+    expect(body.dataset).toEqual({ repo: 'org/ground-truth', revision: 'a'.repeat(40) })
     expect(body.approvedModels).toEqual(['org/model', 'org/approved-only'])
     expect(body.pairs[0]).toMatchObject({
       id: 'model__h200',

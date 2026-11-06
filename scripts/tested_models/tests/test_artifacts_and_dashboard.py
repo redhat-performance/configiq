@@ -59,10 +59,14 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
     validated_pair = "model__h200"
     weak_pair = "model__b200"
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"pairs": [
-        {"id": validated_pair, "model_id": "model", "accelerator": "H200", "records": 600},
-        {"id": weak_pair, "model_id": "model", "accelerator": "B200", "records": 600},
-    ]}))
+    manifest.write_text(json.dumps({
+        "source": "org/ground-truth",
+        "revision": "a" * 40,
+        "pairs": [
+            {"id": validated_pair, "model_id": "model", "accelerator": "H200", "records": 600},
+            {"id": weak_pair, "model_id": "model", "accelerator": "B200", "records": 600},
+        ],
+    }))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"approvedModels": ["model", "approved-only"]}))
     labeled_dir = tmp_path / "labeled"
@@ -99,6 +103,7 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
         "minConcurrencyLevels": 5,
     }
     assert registry["approvedModels"] == ["model", "approved-only"]
+    assert registry["dataset"] == {"repo": "org/ground-truth", "revision": "a" * 40}
     by_id = {pair["id"]: pair for pair in registry["pairs"]}
     assert by_id[validated_pair]["status"] == "validated"
     assert by_id[validated_pair]["coverage"]["records"] == 600
@@ -117,6 +122,18 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
     (registry_dir / "triton" / validated_pair / "config.pbtxt").unlink()
     with pytest.raises(FileNotFoundError):
         _run_validator(registry_dir)
+
+
+def test_validator_rejects_non_immutable_dataset_revision(tmp_path) -> None:
+    registry = {
+        "schemaVersion": 2,
+        "gate": {"minRecords": 100, "minTestAuc": 0.7, "minTestF1": 0.3, "minConcurrencyLevels": 5},
+        "approvedModels": [],
+        "dataset": {"repo": "org/data", "revision": "main"},
+        "pairs": [],
+    }
+    with pytest.raises(ValueError, match="40-character"):
+        validate_artifacts._validate_v2(registry, tmp_path)
 
 
 def test_registry_keeps_pairs_that_were_never_trained(tmp_path) -> None:

@@ -177,8 +177,10 @@ podman pull ghcr.io/redhat-performance/configiq:dev
 ## Tested-model bundle releases
 
 Tested-model classifiers are data artifacts, not container-image contents. The
-`tested-models.yml` workflow builds a sanitized bundle from the pinned
-`TESTED_DATASET_REVISION` and uploads it as a workflow artifact. Follow
+`tested-models.yml` workflow builds a sanitized bundle from the ground-truth
+dataset's current default branch (resolved to an immutable commit SHA) and
+uploads it as a workflow artifact. The publish workflow dispatches that build
+when it uploads changed data; manual dispatches can pin a `revision`. Follow
 [`docs/tested-models.md`](tested-models.md) to publish ground truth, reproduce
 the build, and install the bundle with `configiq-deploy/deploy-tested-models.sh`.
 

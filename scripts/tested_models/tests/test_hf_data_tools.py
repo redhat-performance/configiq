@@ -11,13 +11,47 @@ import pytest
 from dataset_common import file_sha256
 
 
-def test_download_rejects_non_immutable_revision(monkeypatch) -> None:
-    monkeypatch.setattr(download_ground_truth, "snapshot_download", lambda **_: pytest.fail("must not download"))
-    monkeypatch.setattr(download_ground_truth, "parse_args", lambda: type("Args", (), {
-        "repo_id": "org/data", "revision": "main", "output_dir": Path("data")
-    })())
+def test_resolve_revision_accepts_immutable_sha_without_network(monkeypatch) -> None:
+    monkeypatch.setattr(download_ground_truth, "HfApi", lambda **_: pytest.fail("must not resolve a SHA"))
+    assert download_ground_truth.resolve_revision("org/data", "a" * 40) == "a" * 40
+
+
+def test_resolve_revision_pins_mutable_ref_to_commit_sha(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeApi:
+        def repo_info(self, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return type("Info", (), {"sha": "b" * 40})()
+
+    monkeypatch.setattr(download_ground_truth, "HfApi", lambda **_: _FakeApi())
+    assert download_ground_truth.resolve_revision("org/data", "main") == "b" * 40
+    assert captured["repo_id"] == "org/data"
+    assert captured["repo_type"] == "dataset"
+    assert captured["revision"] == "main"
+
+
+def test_resolve_revision_uses_default_branch_when_unset(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeApi:
+        def repo_info(self, **kwargs: object) -> object:
+            captured.update(kwargs)
+            return type("Info", (), {"sha": "c" * 40})()
+
+    monkeypatch.setattr(download_ground_truth, "HfApi", lambda **_: _FakeApi())
+    assert download_ground_truth.resolve_revision("org/data", None) == "c" * 40
+    assert captured["revision"] is None
+
+
+def test_resolve_revision_rejects_unresolvable_sha(monkeypatch) -> None:
+    class _FakeApi:
+        def repo_info(self, **_: object) -> object:
+            return type("Info", (), {"sha": "not-a-sha"})()
+
+    monkeypatch.setattr(download_ground_truth, "HfApi", lambda **_: _FakeApi())
     with pytest.raises(SystemExit, match="full 40-character"):
-        download_ground_truth.main()
+        download_ground_truth.resolve_revision("org/data", "main")
 
 
 def test_download_rejects_unsafe_pair_id(tmp_path, monkeypatch) -> None:
@@ -112,6 +146,18 @@ def test_publish_uploads_to_resolved_repo_id(monkeypatch) -> None:
         publish_ground_truth.main()
 
     assert captured["repo_id"] == "org/from-environment"
+
+
+def test_publish_writes_workflow_outputs(tmp_path) -> None:
+    output = tmp_path / "github-output"
+    publish_ground_truth.write_github_output(
+        output, changed="true", revision="a" * 40, check_only="false",
+    )
+    assert output.read_text().splitlines() == [
+        "changed=true",
+        f"revision={'a' * 40}",
+        "check_only=false",
+    ]
 
 
 def test_publish_defaults_to_upstream_dataset(monkeypatch) -> None:

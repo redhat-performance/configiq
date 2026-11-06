@@ -64,9 +64,17 @@ export interface RegistryPair {
   legacy: boolean
 }
 
+/** Immutable dataset revision the bundle was built from. */
+export interface RegistryDatasetProvenance {
+  repo: string
+  revision: string
+}
+
 export interface TestedModelsRegistry {
   schemaVersion: 1 | 2
   generatedAt: string | null
+  /** Optional because bundles built before provenance was recorded omit it. */
+  dataset?: RegistryDatasetProvenance
   gate: ValidationGateThresholds | null
   approvedModels: string[]
   pairs: RegistryPair[]
@@ -107,6 +115,19 @@ function requireString(record: Record<string, unknown>, key: string, label: stri
   const value = stringOrNull(record[key])
   if (value === null) throw new Error(`${label}.${key} must be a non-empty string`)
   return value
+}
+
+function parseDataset(raw: unknown): RegistryDatasetProvenance | undefined {
+  const dataset = asRecord(raw)
+  if (!dataset) return undefined
+  const repo = stringOrNull(dataset.repo)
+  const revision = stringOrNull(dataset.revision)
+  if (repo === null || revision === null || !/^[0-9a-f]{40}$/.test(revision)) {
+    // Provenance is optional display data; a malformed value must not make the
+    // whole registry unreadable.
+    return undefined
+  }
+  return { repo, revision }
 }
 
 function parseGate(raw: unknown): ValidationGateThresholds {
@@ -275,6 +296,7 @@ export function parseRegistry(raw: unknown): TestedModelsRegistry {
     return {
       schemaVersion: 2,
       generatedAt: stringOrNull(registry.generatedAt),
+      dataset: parseDataset(registry.dataset),
       gate: parseGate(registry.gate),
       approvedModels,
       pairs: pairs.map(parseV2Pair),

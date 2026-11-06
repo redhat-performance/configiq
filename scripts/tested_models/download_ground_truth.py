@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download a pinned public ground-truth dataset into the local pipeline layout."""
+"""Download a public ground-truth dataset revision into the local pipeline layout."""
 
 from __future__ import annotations
 
@@ -18,14 +18,40 @@ from dataset_common import (
     resolve_dataset_repo_id,
     validate_public_frame,
 )
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 
 
 def resolve_repo_id(cli_value: str | None) -> str:
     """Backwards-compatible alias for the resolver shared with the publisher."""
     return resolve_dataset_repo_id(cli_value)
+
+
+def resolve_revision(repo_id: str, revision: str | None) -> str:
+    """Resolve a dataset ref to the immutable commit SHA used for the download.
+
+    Scheduled builds should follow the dataset, not a hand-maintained variable.
+    Any mutable ref (``main``, a tag, or the default branch) is resolved once and
+    the resolved SHA is recorded in the local manifest, so an artifact can still
+    be reproduced after the branch moves.
+    """
+    candidate = (revision or "").strip()
+    if COMMIT_SHA_PATTERN.fullmatch(candidate):
+        return candidate
+    try:
+        info = HfApi(token=False).repo_info(
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=candidate or None,
+        )
+    except Exception as exc:
+        raise SystemExit(f"could not resolve dataset revision {candidate or 'default'!r}: {exc}") from exc
+    sha = getattr(info, "sha", None)
+    if not isinstance(sha, str) or not COMMIT_SHA_PATTERN.fullmatch(sha):
+        raise SystemExit("dataset repository did not return a full 40-character commit SHA")
+    return sha
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,7 +61,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"Dataset repository; defaults to ${DATASET_REPO_ENV}, then {DEFAULT_DATASET_REPO}.",
     )
-    parser.add_argument("--revision", required=True)
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Dataset revision (commit SHA, branch, or tag); defaults to the repository default branch.",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("data/tested-models"))
     return parser.parse_args()
 
@@ -94,8 +124,7 @@ def main() -> int:
     args = parse_args()
     args.output_dir = args.output_dir.resolve()
     args.repo_id = resolve_repo_id(args.repo_id)
-    if not re.fullmatch(r"[0-9a-f]{40}", args.revision):
-        raise SystemExit("--revision must be a full 40-character lowercase Hugging Face commit SHA")
+    args.revision = resolve_revision(args.repo_id, args.revision)
     snapshot = Path(snapshot_download(
         repo_id=args.repo_id,
         repo_type="dataset",

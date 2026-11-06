@@ -24,6 +24,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      # Needed to dispatch the tested-model build when new data is published.
+      actions: write
 
     steps:
       - name: Check out source
@@ -63,9 +65,13 @@ jobs:
             --csv "$RUNNER_TEMP/consolidated_dashboard.csv"
 
       - name: Compare with current Hugging Face dataset
-        run: uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py --check-only
+        id: compare
+        run: |
+          uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py \
+            --check-only --github-output "$GITHUB_OUTPUT"
 
       - name: Publish changed data
+        id: publish
         if: >-
           github.ref == 'refs/heads/main' &&
           ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
@@ -76,4 +82,17 @@ jobs:
           HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
           echo "::add-mask::${HF_TOKEN}"
           export HF_TOKEN
-          uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py
+          uv run --locked --group tested-models python scripts/tested_models/publish_ground_truth.py \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Rebuild tested models from published data
+        if: steps.publish.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DATASET_REVISION: ${{ steps.publish.outputs.revision }}
+        run: |
+          gh workflow run tested-models.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f revision="$DATASET_REVISION"
+          echo "Dispatched tested-model build for $DATASET_REVISION" >> "$GITHUB_STEP_SUMMARY"
