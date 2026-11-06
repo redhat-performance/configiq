@@ -661,6 +661,20 @@ describe('Hybrid page composition', () => {
     expect(host.textContent).toContain('Active window')
   })
 
+  it('keeps the selected workload when an average token field is blurred unchanged', async () => {
+    await render(); await click('Adjust')
+    const input = host.querySelector<HTMLInputElement>('#hybrid-average-input')!
+    const output = host.querySelector<HTMLInputElement>('#hybrid-average-output')!
+    const selected = () => host.querySelector<HTMLButtonElement>('#hybrid-profile button[aria-pressed="true"]')!.textContent
+    await act(async () => { input.focus(); input.blur() })
+    await act(async () => { output.focus(); output.blur() })
+    expect(selected()).toBe(DEFAULT_WORKLOAD.label)
+    expect(host.textContent).toContain(`Based on ${DEFAULT_WORKLOAD.label}`)
+    await editNumber('hybrid-average-input', String(DEFAULT_WORKLOAD.isl + 1))
+    expect(host.querySelector('#hybrid-profile button[aria-pressed="true"]')).toBeNull()
+    expect(host.textContent).not.toContain(`Based on ${DEFAULT_WORKLOAD.label}`)
+  })
+
   it('keeps defaults and makes advanced settings secondary', async () => {
     await render()
     expect(host.querySelector('h1')?.textContent).toBe('Hybrid savings')
@@ -696,7 +710,7 @@ describe('Hybrid page composition', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies all shared request settings for $label without changing monthly demand or billing', async preset => {
+  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies ISL/OSL for $label without changing monthly demand, billing, or SLA settings', async preset => {
     await render(); await click('Adjust')
     await editNumber('hybrid-active-hours', '200')
     await editNumber('hybrid-peak', '2')
@@ -704,9 +718,12 @@ describe('Hybrid page composition', () => {
     await click(preset.label)
     for (const [id, value] of [
       ['hybrid-average-input', preset.isl], ['hybrid-average-output', preset.osl],
-      ['hybrid-ttft', preset.ttft], ['hybrid-tpot', preset.tpot],
-      ['hybrid-concurrency', preset.concurrency], ['hybrid-prefix', preset.prefix],
     ] as const) expect(host.querySelector<HTMLInputElement>('#' + id)!.value).toBe(String(value))
+    // Preset no longer overrides SLA / concurrency / prefix — they stay at initial defaults
+    expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('1000')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-tpot')!.value).toBe('30')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('1')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe('0')
     expect(host.querySelector<HTMLInputElement>('#hybrid-active-hours')!.value).toBe('200')
     expect(host.querySelector<HTMLInputElement>('#hybrid-peak')!.value).toBe('2')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('always-on')
@@ -714,12 +731,12 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-output-tokens')!.value).toBe('500,000,000')
     await click('Calculate')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({
-      isl: preset.isl, osl: preset.osl, ttft: preset.ttft, tpot: preset.tpot,
-      target_concurrency: preset.concurrency, prefix: preset.prefix,
+      isl: preset.isl, osl: preset.osl, ttft: 1000, tpot: 30,
+      target_concurrency: 1,
     })
     await click('Data and assumptions')
     const reference = [...host.querySelectorAll('dt')].find(term => term.textContent === 'Capacity reference')!
-    expect(reference.nextElementSibling!.textContent).toBe(`${preset.concurrency.toLocaleString('en-US')} concurrent ${preset.concurrency === 1 ? 'request' : 'requests'}`)
+    expect(reference.nextElementSibling!.textContent).toBe('1 concurrent request')
     expect(host.textContent).toContain('Monthly cost breakdown')
   })
 
@@ -868,7 +885,7 @@ describe('Hybrid page composition', () => {
     vi.mocked(readRecommendStream).mockResolvedValue({
       ...sizing, recommendation: { gpusPerReplica: 8, replicasNeeded: 1 },
     } as RecommendResponse)
-    await click('Agentic / Coding'); await click('Calculate')
+    await click('Coding agent'); await click('Calculate')
     expect(host.querySelector<HTMLInputElement>('#hybrid-rented-configuration')!.value).toContain('Automatic')
   })
 

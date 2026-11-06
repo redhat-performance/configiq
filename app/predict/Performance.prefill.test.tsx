@@ -16,6 +16,12 @@ vi.mock('@/lib/app-config', async (importOriginal) => {
     getAppConfig: () => ({
       ...actual.getAppConfig(),
       defaultSystem: 'retired_gpu',
+      workloadPresets: [
+        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300 },
+      ],
+      concurrencyPresets: [
+        { key: 'small', label: 'Small (100)', concurrency: 100 },
+      ],
     }),
   };
 });
@@ -349,5 +355,39 @@ describe('performance page widget handoff', () => {
 
     expect(container.querySelector('[data-testid="cloud-cost-tile"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="self-hosted-cost-tile"]')).not.toBeNull();
+  });
+});
+
+describe('performance page parameter defaults', () => {
+  it('starts at one concurrent user without pre-selecting a concurrency preset', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const users = container.querySelector<HTMLInputElement>('input[aria-label="Concurrent users"]');
+    expect(users?.value).toBe('1');
+
+    const pressed = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]'))
+      .map((button) => button.textContent);
+    expect(pressed).not.toContain('Small (100)');
+  });
+
+  it('applies a concurrency preset to the concurrent users field', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Small (100)')
+        ?.click();
+    });
+
+    const users = container.querySelector<HTMLInputElement>('input[aria-label="Concurrent users"]');
+    expect(users?.value).toBe('100');
+  });
+
+  it('keeps current values visible on collapsed assumption rows', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const servingToggle = container.querySelector('#acc-serving');
+    expect(servingToggle?.textContent).toContain('Serving policy');
+    expect(servingToggle?.textContent).toContain('context limit');
   });
 });

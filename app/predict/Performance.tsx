@@ -29,6 +29,7 @@ import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-co
 import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
 import { fetchEstimateAsInferenceResult, EstimateError, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
+import { WarningPanel } from '@/components/ui/WarningPanel';
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -43,6 +44,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
@@ -111,37 +113,27 @@ function parsePerfPhase(p: PerfPhaseInput) {
   return { tp: n(p.tp), pp: n(p.pp), workers: n(p.workers), batch: n(p.batch) };
 }
 
-/** Four inputs (TP/PP/Workers/Batch) for one disagg pool. */
-function PerfPhaseFields({ title, cfg, onChange }: {
-  title: string;
-  cfg: PerfPhaseInput;
-  onChange: (c: PerfPhaseInput) => void;
-}) {
-  const digits = (v: string) => v.replace(/[^0-9]/g, '');
-  const field = (label: string, key: keyof PerfPhaseInput) => (
-    <div className={styles.accField}>
-      <label className={styles.accFieldLabel}>{label}</label>
-      <TextInput
-        type="number"
-        value={cfg[key]}
-        aria-label={`${title} ${label}`}
-        onChange={(_, v) => onChange({ ...cfg, [key]: digits(v) })}
-      />
-    </div>
-  );
-  return (
-    <div>
-      <div style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'var(--mono)', color: '#3c3f42', marginBottom: 8 }}>{title}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12 }}>
-        {field('TP', 'tp')}
-        {field('PP', 'pp')}
-        {field('Workers', 'workers')}
-        {field('Batch', 'batch')}
-      </div>
-    </div>
-  );
+/**
+ * Shape of one field rendered inside an assumption section. The section
+ * builders below supply only the members relevant to each field type.
+ */
+interface AccordionField {
+  label: string;
+  value: string | number;
+  term?: string;
+  readonly?: boolean;
+  type?: 'number' | 'select' | 'range';
+  invalid?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<string | { value: string; label: string }>;
+  min?: number;
+  max?: number;
+  step?: number;
+  rangeValue?: number;
+  spacer?: boolean;
+  onChange?: (value: string | number) => void;
 }
-
 
 const QUICK_ESTIMATE_TOUR: TourStep[] = [
   {
@@ -362,15 +354,28 @@ export default function Performance() {
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
+  const invalidPhase = (p: PerfPhaseInput) =>
+    (['tp', 'pp', 'workers', 'batch'] as const).some(k => p[k] === '' || parseInt(p[k], 10) < 1);
+  const invalidParallelism = servingMode === 'disagg'
+    ? invalidPhase(prefillCfg) || invalidPhase(decodeCfg)
+    : invalidTpSize || invalidPpSize;
   const invalidMaxSeqLen = maxSeqLenInput !== '' && parseInt(maxSeqLenInput, 10) < 1;
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && parseInt(prefillMaxSeqLenInput, 10) < 1;
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && parseInt(decodeMaxSeqLenInput, 10) < 1;
+
+  const [isCalculating, setIsCalculating] = React.useState(false);
+  const [inputsDirty, setInputsDirty] = React.useState(false);
+  const markInputsDirty = () => {
+    if (testResult || isCalculating) setInputsDirty(true);
+  };
 
   const handleIslChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestISL(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleOslChange = (raw: string) => {
@@ -378,6 +383,8 @@ export default function Performance() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestOSL(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleSequenceLengthChange = (
@@ -389,6 +396,7 @@ export default function Performance() {
     setInput(digits);
     const value = parseInt(digits, 10);
     setValue(Number.isInteger(value) && value > 0 ? value : null);
+    markInputsDirty();
   };
 
   const handleConcurrentUsersChange = (raw: string) => {
@@ -396,6 +404,8 @@ export default function Performance() {
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestConcurrentUsers(n);
+    setActiveConcurrencyPreset('');
+    markInputsDirty();
   };
 
   const handleTpSizeChange = (raw: string) => {
@@ -403,6 +413,7 @@ export default function Performance() {
     setTpSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestTpSize(n);
+    markInputsDirty();
   };
 
   const handlePpSizeChange = (raw: string) => {
@@ -410,6 +421,7 @@ export default function Performance() {
     setPpSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestPpSize(n);
+    markInputsDirty();
   };
 
   const handlePrefixChange = (raw: string) => {
@@ -417,6 +429,7 @@ export default function Performance() {
     setPrefixInput(digits);
     const n = parseInt(digits, 10);
     setTestPrefix(isNaN(n) ? 0 : n);
+    markInputsDirty();
   };
 
   const handleMoeEpSizeChange = (raw: string) => {
@@ -428,6 +441,7 @@ export default function Performance() {
     } else if (!isNaN(n) && n >= 1) {
       setTestMoeEpSize(n);
     }
+    markInputsDirty();
   };
 
   const handleMoeEtpSizeChange = (raw: string) => {
@@ -439,21 +453,36 @@ export default function Performance() {
     } else if (!isNaN(n) && n >= 1) {
       setTestMoeEtpSize(n);
     }
+    markInputsDirty();
   };
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const calcGenRef = React.useRef(0);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'concurrency' | 'prefix'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+    calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
-    setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
-    setTestPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setTestResult(null);
+    setTestClassifierInput(null)
+    setIsCalculating(false);
+    setInputsDirty(false);
   };
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
 
-  const [isCalculating, setIsCalculating] = React.useState(false);
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
+    markInputsDirty();
+  };
 
   // Fetch HF config when model changes
   React.useEffect(() => {
@@ -510,7 +539,9 @@ export default function Performance() {
 
     if (calcTrigger === 0) return; // don't auto-run on mount
 
+    const gen = calcGenRef.current;
     let cancelled = false;
+    const isStale = () => cancelled || calcGenRef.current !== gen;
     setIsCalculating(true);
     setElapsed(0);
     const elapsedTimer = setInterval(() => setElapsed(e => e + 1), 1000);
@@ -613,7 +644,7 @@ export default function Performance() {
           },
           model_config: estimateInput.hf_model_config ?? null,
         };
-        if (!cancelled) {
+        if (!isStale()) {
           setTestResult(result);
           setTestClassifierInput(submittedClassifierInput);
           setTestError(null);
@@ -626,7 +657,7 @@ export default function Performance() {
           }
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!isStale()) {
           if (error instanceof EstimateError) {
             setTestErrorCode(error.code)
             setTestError(error.message)
@@ -636,9 +667,9 @@ export default function Performance() {
           }
         }
       } finally {
-        if (!cancelled) {
+        clearInterval(elapsedTimer);
+        if (!isStale()) {
           setIsCalculating(false);
-          clearInterval(elapsedTimer);
         }
       }
     }, 0);
@@ -836,6 +867,8 @@ export default function Performance() {
   };
 
   // Build the /api/predict request body from current form state and GPU-specific values
+  const modelNeedsHfConfig = needsHfConfig(model, catalogModels);
+  const currentGpuVramGb = currentCatalogGpu?.vramGb ?? null;
   const buildEstimateRequestBody = React.useCallback(() => {
     const spec = modelSpecs.get(model);
     const isMoe = detectMoe(spec, hfConfig);
@@ -857,7 +890,7 @@ export default function Performance() {
       batch_size: testConcurrentUsers,
       tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
       pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
-      vram_gb: currentCatalogGpu?.vramGb ?? null,
+      vram_gb: currentGpuVramGb,
       ...(testPrefix > 0 && { prefix: testPrefix }),
       ...(backendVersion && { backend_version: backendVersion }),
       ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
@@ -867,7 +900,7 @@ export default function Performance() {
       ...(testWeightPrecision === 'NVFP4' && { gemm_quant_mode: 'nvfp4' }),
       ...(testKVCachePrecision === 'FP8' && { kvcache_quant_mode: 'fp8' }),
       ...(testKVCachePrecision === 'NVFP4' && { kvcache_quant_mode: 'nvfp4' }),
-      hf_model_config: needsHfConfig(model, catalogModels)
+      hf_model_config: modelNeedsHfConfig
         ? (hfConfig as Record<string, unknown> | null)
         : null,
       moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
@@ -884,7 +917,13 @@ export default function Performance() {
         decode_batch_size: parsePerfPhase(decodeCfg).batch,
       })
     };
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers, effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization, vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize, testPpSize, currentCatalogGpu, testPrefix, backendVersion, testWeightPrecision, testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig, catalogModels, testMoeQuantMode, testMoeEpSize, testMoeEtpSize, simulator, selectedNetworkFabric, fabricRequired]);
+  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers,
+    effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization,
+    vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize,
+    testPpSize, currentGpuVramGb, testPrefix, backendVersion, testWeightPrecision,
+    testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig,
+    modelNeedsHfConfig, testMoeQuantMode, testMoeEpSize, testMoeEtpSize, simulator,
+    selectedNetworkFabric, fabricRequired]);
 
   // Copy API request body to clipboard
   const handleCopyAPIRequest = async () => {
@@ -1137,6 +1176,7 @@ export default function Performance() {
           onChange: (val: string) => {
             if (val === 'FP16' || val === 'FP8' || val === 'INT8' || val === 'INT4' || val === 'MXFP4' || val === 'NVFP4') {
               setTestWeightPrecision(val);
+              markInputsDirty();
             }
           }
         },
@@ -1149,6 +1189,7 @@ export default function Performance() {
           onChange: (val: string) => {
             if (val === 'FP16' || val === 'FP8' || val === 'NVFP4') {
               setTestKVCachePrecision(val);
+              markInputsDirty();
             }
           }
         },
@@ -1167,6 +1208,7 @@ export default function Performance() {
             if (val === 'w4a16_mxfp4' || val === 'w4a8_mxfp4_mxfp8' ||
                 val === 'w4a16_mxfp4_cutlass' || val === 'w4a8_mxfp4_mxfp8_trtllm') {
               setTestMoeQuantMode(val);
+              markInputsDirty();
             }
           },
           help: 'W4A16: best quality, H100+. W4A8: ~2× faster on B200. CUTLASS: H100-optimized. TRT-LLM: B200 TRT-LLM variant.'
@@ -1181,7 +1223,7 @@ export default function Performance() {
           max: memoryOverride ? 100 : undefined,
           step: memoryOverride ? 0.5 : undefined,
           rangeValue: memoryOverride && effectiveGpuMemoryUtilization != null ? effectiveGpuMemoryUtilization * 100 : undefined,
-          onChange: memoryOverride ? (val: number) => setGpuMemoryUtilization(val / 100) : undefined,
+          onChange: memoryOverride ? (val: number) => { setGpuMemoryUtilization(val / 100); markInputsDirty(); } : undefined,
           help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISimulate default.',
         },
       ],
@@ -1201,7 +1243,7 @@ export default function Performance() {
     },
     {
       id: 'parallel',
-      title: 'Parallelism',
+      title: servingMode === 'disagg' ? 'Parallelism — Prefill / Decode pools' : 'Parallelism',
       summary: [
         { k: 'TP', v: `${testTpSize}` },
         { k: 'PP', v: `${testPpSize}` },
@@ -1212,49 +1254,66 @@ export default function Performance() {
             ]
           : []),
       ],
-      fields: [
-        {
-          label: 'Tensor parallel size (TP)',
-          value: tpSizeInput,
-          term: 'tensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidTpSize,
-          onChange: (val: string) => handleTpSizeChange(val),
-        },
-        {
-          label: 'Pipeline parallel size (PP)',
-          value: ppSizeInput,
-          term: 'pipelineParallel',
-          readonly: false,
-          type: 'number' as const,
-          invalid: invalidPpSize,
-          onChange: (val: string) => handlePpSizeChange(val),
-        },
-        {
-          label: 'MoE expert parallel (EP)',
-          value: moeEpSizeInput,
-          term: 'moeExpertParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEpSizeChange(val),
-        },
-        {
-          label: 'MoE tensor parallel (ETP)',
-          value: moeEtpSizeInput,
-          term: 'moeTensorParallel',
-          readonly: false,
-          type: 'number' as const,
-          placeholder: 'Optional',
-          onChange: (val: string) => handleMoeEtpSizeChange(val),
-        },
-        {
-          label: 'Total GPUs',
-          value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
-          readonly: true,
-        },
-      ],
+      fields: servingMode === 'disagg'
+        ? [
+            { label: 'Prefill TP', value: prefillCfg.tp, type: 'number' as const, invalid: prefillCfg.tp === '' || parseInt(prefillCfg.tp, 10) < 1, onChange: (val: string) => { setPrefillCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Prefill PP', value: prefillCfg.pp, type: 'number' as const, invalid: prefillCfg.pp === '' || parseInt(prefillCfg.pp, 10) < 1, onChange: (val: string) => { setPrefillCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Prefill workers', value: prefillCfg.workers, type: 'number' as const, invalid: prefillCfg.workers === '' || parseInt(prefillCfg.workers, 10) < 1, onChange: (val: string) => { setPrefillCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Prefill batch', value: prefillCfg.batch, type: 'number' as const, invalid: prefillCfg.batch === '' || parseInt(prefillCfg.batch, 10) < 1, onChange: (val: string) => { setPrefillCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            {
+              label: 'Total GPUs',
+              value: `${parsePerfPhase(prefillCfg).tp * parsePerfPhase(prefillCfg).pp * parsePerfPhase(prefillCfg).workers + parsePerfPhase(decodeCfg).tp * parsePerfPhase(decodeCfg).pp * parsePerfPhase(decodeCfg).workers}`,
+              readonly: true,
+            },
+            { label: 'Decode TP', value: decodeCfg.tp, type: 'number' as const, invalid: decodeCfg.tp === '' || parseInt(decodeCfg.tp, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, tp: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Decode PP', value: decodeCfg.pp, type: 'number' as const, invalid: decodeCfg.pp === '' || parseInt(decodeCfg.pp, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, pp: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, invalid: decodeCfg.workers === '' || parseInt(decodeCfg.workers, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, invalid: decodeCfg.batch === '' || parseInt(decodeCfg.batch, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
+            { label: '', value: '', readonly: true, spacer: true },
+          ]
+        : [
+            {
+              label: 'Tensor parallel size (TP)',
+              value: tpSizeInput,
+              term: 'tensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidTpSize,
+              onChange: (val: string) => handleTpSizeChange(val),
+            },
+            {
+              label: 'Pipeline parallel size (PP)',
+              value: ppSizeInput,
+              term: 'pipelineParallel',
+              readonly: false,
+              type: 'number' as const,
+              invalid: invalidPpSize,
+              onChange: (val: string) => handlePpSizeChange(val),
+            },
+            {
+              label: 'MoE expert parallel (EP)',
+              value: moeEpSizeInput,
+              term: 'moeExpertParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEpSizeChange(val),
+            },
+            {
+              label: 'MoE tensor parallel (ETP)',
+              value: moeEtpSizeInput,
+              term: 'moeTensorParallel',
+              readonly: false,
+              type: 'number' as const,
+              placeholder: 'Optional',
+              onChange: (val: string) => handleMoeEtpSizeChange(val),
+            },
+            {
+              label: 'Total GPUs',
+              value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
+              readonly: true,
+            },
+          ],
     },
     {
       id: 'serving',
@@ -1398,7 +1457,7 @@ export default function Performance() {
             <ComboBox
               id="predict-performance-model"
               value={model}
-              onChange={setModel}
+              onChange={(value) => { setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
@@ -1408,15 +1467,15 @@ export default function Performance() {
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={setGpu} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <Button
             variant="primary"
-            onClick={() => { setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidTpSize || invalidPpSize || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
+            onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
+            isDisabled={!hydrated || isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -1424,61 +1483,7 @@ export default function Performance() {
 
       </div>
 
-      {/* ---------- serving mode ---------- */}
-      <div className={`${styles.card}`} style={{ padding: '14px 18px', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-          <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); }}>Aggregated</Button>
-          <Button
-            variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
-            size="sm"
-            isDisabled={!disaggSupported}
-            onClick={() => { setServingMode('disagg'); setTestResult(null); setTestClassifierInput(null); }}
-          >
-            Disaggregated
-          </Button>
-          {servingMode === 'disagg' && (
-            <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
-          )}
-        </div>
-        {!disaggSupported && (
-          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 8 }}>
-            The selected simulator does not model prefill/decode disaggregation for vLLM {backendVersion || engineBackend?.defaultVersion}. Choose another version, or use aggregated serving.
-          </div>
-        )}
-        {servingMode === 'disagg' && (
-          <>
-            {fabricRequired && (
-              <div style={{ marginTop: 14, maxWidth: 360 }}>
-                <label className={styles.accFieldLabel} htmlFor="predict-network-fabric">Inter-node fabric</label>
-                <FormSelect
-                  id="predict-network-fabric"
-                  value={selectedNetworkFabric}
-                  aria-label="Inter-node fabric"
-                  isDisabled={(networkOptions ?? []).length === 0}
-                  onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); }}
-                >
-                  <FormSelectOption value="" label="Select a fabric" isDisabled />
-                  {(networkOptions ?? []).map(network => (
-                    <FormSelectOption key={network} value={network} label={network} />
-                  ))}
-                </FormSelect>
-                <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                  {networkOptions.length === 0
-                    ? 'No network fabrics were returned by the simulator catalog.'
-                    : selectedNetworkFabric === 'roce-200g' && networkFabric === null
-                      ? 'RoCE 200G is preselected; change it if your cluster uses another fabric.'
-                      : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
-                </div>
-              </div>
-            )}
-            <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-              <PerfPhaseFields title="Prefill pool" cfg={prefillCfg} onChange={setPrefillCfg} />
-              <PerfPhaseFields title="Decode pool" cfg={decodeCfg} onChange={setDecodeCfg} />
-            </div>
-          </>
-        )}
-      </div>
+      {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (
@@ -1493,9 +1498,21 @@ export default function Performance() {
         </div>
       )}
 
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
       <InfoStrip data-tour="warning">
-        Based on your configuration — ISL {testISL}, OSL {testOSL}, {testKVCachePrecision} KV cache,
-        {' '}{testConcurrentUsers} concurrent users.
+        Based on your configuration — ISL: {testISL}, OSL: {testOSL}, {testKVCachePrecision} KV cache,
+        {' '}{testConcurrentUsers} concurrent {testConcurrentUsers === 1 ? 'user' : 'users'}.
         {' '}<InfoStripAction onClick={handleCustomizeClick}>Adjust? (see &lsquo;Want to change assumptions?&rsquo; below)</InfoStripAction>
       </InfoStrip>
 
@@ -2225,114 +2242,200 @@ export default function Performance() {
         transition: 'grid-template-rows 250ms ease-out'
       }}>
         <div style={{ overflow: 'hidden' }}>
-          <p className={styles.assumptionsSub} style={{ marginBottom: 12 }}>
-            Every number above comes from these. Open a section to tune it — closed sections show their current values.
-          </p>
+          <div className={styles.card} style={{ padding: 20, marginBottom: 16 }}>
+          {(() => {
+            const allSections = buildAccordionSections();
+            const alwaysOpenIds = new Set(['workload', 'context-window', 'memory', 'parallel']);
+            const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
+            const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
-          <Accordion asDefinitionList={false}>
-            {buildAccordionSections().map((sec) => (
-              <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
-                <AccordionToggle
-                  id={`acc-${sec.id}`}
-                  onClick={() => toggleAcc(sec.id)}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%' }}>
-                    <span className={styles.cardTitle} style={{ fontSize: 16 }}>{sec.title}</span>
-                    {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
-                    {'hasOverride' in sec && sec.hasOverride && (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          sec.onOverrideToggle?.();
-                        }}
-                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); sec.onOverrideToggle?.(); } }}
-                        style={{ fontSize: '13px', marginLeft: 'auto', padding: '4px 8px', color: 'var(--gc-link)', cursor: 'pointer' }}
-                      >
+            const renderField = (f: AccordionField) => {
+              if (f.spacer) return <div key="spacer" />;
+              return (
+              <div key={f.label} className={styles.accField}>
+                <label className={styles.accFieldLabel}>
+                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                </label>
+                {f.readonly ? (
+                  <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
+                ) : f.type === 'select' ? (
+                  <>
+                    <FormSelect
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    >
+                      {(f.options || [f.value]).map((o: any) => {
+                        const optValue = typeof o === 'string' ? o : o.value;
+                        const optLabel = typeof o === 'string' ? o : o.label;
+                        return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
+                      })}
+                    </FormSelect>
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
+                ) : f.type === 'range' ? (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
+                        {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={f.min}
+                      max={f.max}
+                      step={f.step}
+                      value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
+                      onChange={(e) => f.onChange?.(Number(e.target.value))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                ) : f.type === 'number' ? (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    type="number"
+                    validated={f.invalid ? 'error' : 'default'}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                ) : (
+                  <TextInput
+                    value={String(f.value)}
+                    aria-label={f.label}
+                    onChange={(_, val) => f.onChange?.(val)}
+                  />
+                )}
+              </div>
+            );
+            };
+
+            return (
+              <>
+                {/* Always-visible sections */}
+                {openSections.map((sec, idx) => (
+                  <div key={sec.id}>
+                    <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', ...(idx === 0 ? { marginTop: 4 } : {}) }}>
+                      {sec.title}
+                      {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                      {'hasOverride' in sec && sec.hasOverride && (
+                        <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()} style={{ fontSize: '13px' }}>
                         {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
-                      </span>
-                    )}
-                    {!expanded.includes(sec.id) && (
-                      <span className={styles.accSummary}>
-                        {sec.summary.map((p) => (
-                          <span key={p.k}><span className="k">{p.k}</span> {p.v}</span>
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                </AccordionToggle>
-                <AccordionContent>
-                  <div className={styles.accGrid}>
-                    {sec.fields.map((f: any) => (
-                      <div key={f.label} className={styles.accField}>
-                        <label className={styles.accFieldLabel}>
-                          {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
-                        </label>
-                        {f.readonly ? (
-                          <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
-                        ) : f.type === 'select' ? (
-                          <>
+                        </Button>
+                      )}
+                    </div>
+                    {sec.id === 'parallel' && (
+                      <>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
+                          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+                          <Button
+                            variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
+                            size="sm"
+                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
+                          >
+                            Aggregated
+                          </Button>
+                          <Button
+                            variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+                            size="sm"
+                            isDisabled={!disaggSupported}
+                            onClick={() => {
+                              if (!disaggSupported) return;
+                              setServingMode('disagg');
+                              setTestResult(null);
+                              setTestClassifierInput(null);
+                              setInputsDirty(false);
+                            }}
+                          >
+                            Disaggregated
+                          </Button>
+                          {servingMode === 'disagg' && (
+                            <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+                          )}
+                        </div>
+                        {!disaggSupported && (
+                          <div style={{ fontSize: 13, color: '#3c3f42', marginBottom: 8 }}>
+                            The selected simulator does not model prefill/decode disaggregation for vLLM {backendVersion || engineBackend?.defaultVersion}. Choose another version, or use aggregated serving.
+                          </div>
+                        )}
+                        {servingMode === 'disagg' && fabricRequired && (
+                          <div style={{ marginBottom: 12, maxWidth: 360 }}>
+                            <label className={styles.accFieldLabel} htmlFor="predict-network-fabric">Inter-node fabric</label>
                             <FormSelect
-                              value={String(f.value)}
-                              aria-label={f.label}
-                              isDisabled={f.disabled}
-                              onChange={(_, val) => f.onChange?.(val)}
+                              id="predict-network-fabric"
+                              value={selectedNetworkFabric}
+                              aria-label="Inter-node fabric"
+                              isDisabled={(networkOptions ?? []).length === 0}
+                              onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                             >
-                              {(f.options || [f.value]).map((o: any) => {
-                                const optValue = typeof o === 'string' ? o : o.value;
-                                const optLabel = typeof o === 'string' ? o : o.label;
-                                return <FormSelectOption key={optValue} value={optValue} label={optLabel} />;
-                              })}
+                              <FormSelectOption value="" label="Select a fabric" isDisabled />
+                              {(networkOptions ?? []).map(network => (
+                                <FormSelectOption key={network} value={network} label={network} />
+                              ))}
                             </FormSelect>
-                            {f.help && (
-                              <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
-                                {f.help}
+                            <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                              {networkOptions.length === 0
+                                ? 'No network fabrics were returned by the simulator catalog.'
+                                : selectedNetworkFabric === 'roce-200g' && networkFabric === null
+                                  ? 'RoCE 200G is preselected; change it if your cluster uses another fabric.'
+                                  : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
+                    <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
+                      {(sec.fields as AccordionField[]).map(renderField)}
+                    </div>
+                  </div>
+                ))}
+
+                {/* Collapsible sections */}
+                {accordionSections.length > 0 && (
+                  <Accordion asDefinitionList={false} style={{ marginTop: 16 }}>
+                    {accordionSections.map((sec) => (
+                      <AccordionItem key={sec.id} isExpanded={expanded.includes(sec.id)}>
+                        <AccordionToggle
+                          id={`acc-${sec.id}`}
+                          onClick={() => toggleAcc(sec.id)}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%' }}>
+                            <span className={styles.cardTitle} style={{ fontSize: 16 }}>{sec.title}</span>
+                            {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                            {!expanded.includes(sec.id) && (
+                              <span className={styles.accSummary}>
+                                {sec.summary.map((p) => (
+                                  <span key={p.k}><span className="k">{p.k}</span> {p.v}</span>
+                                ))}
+                              </span>
+                            )}
+                          </span>
+                        </AccordionToggle>
+                        <AccordionContent>
+                          <div style={{ paddingTop: 12 }}>
+                            {'hasOverride' in sec && sec.hasOverride && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                                <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()}>
+                                  {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                                </Button>
                               </div>
                             )}
-                          </>
-                        ) : f.type === 'range' ? (
-                          <div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                              <span style={{ fontSize: '13px', fontWeight: '600', fontFamily: 'var(--mono)' }}>
-                                {f.rangeValue !== undefined ? `${f.rangeValue}%` : f.value}
-                              </span>
+                            <div className={styles.accGrid}>
+                              {(sec.fields as AccordionField[]).map(renderField)}
                             </div>
-                            <input
-                              type="range"
-                              min={f.min}
-                              max={f.max}
-                              step={f.step}
-                              value={f.rangeValue !== undefined ? f.rangeValue : (typeof f.value === 'string' ? parseInt(f.value) : f.value)}
-                              disabled={f.disabled}
-                              onChange={(e) => f.onChange?.(Number(e.target.value))}
-                              style={{ width: '100%' }}
-                            />
                           </div>
-                        ) : f.type === 'number' ? (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            type="number"
-                            validated={f.invalid ? 'error' : 'default'}
-                            isDisabled={f.disabled}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        ) : (
-                          <TextInput
-                            value={String(f.value)}
-                            aria-label={f.label}
-                            isDisabled={f.disabled}
-                            onChange={(_, val) => f.onChange?.(val)}
-                          />
-                        )}
-                      </div>
+                        </AccordionContent>
+                      </AccordionItem>
                     ))}
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
+                  </Accordion>
+                )}
+              </>
+            );
+          })()}
+          </div>
         </div>
       </div>
 
@@ -2361,7 +2464,7 @@ export default function Performance() {
         <Button
           variant="primary"
           onClick={() => setShowSaveModal(true)}
-          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
+          isDisabled={!testResult || inputsDirty || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
           title={isDisagg ? 'Saving currently supports aggregated results only' : !testResult?.memory_available ? 'Saving requires a memory estimate.' : undefined}
         >
           Save estimate{savedCount > 0 && ` (${savedCount})`}
@@ -2425,18 +2528,3 @@ export default function Performance() {
   );
 }
 
-/* ---------- constraint row (unused - kept for future implementation) ---------- */
-type Status = 'ok' | 'watch' | 'bottleneck';
-function ConstraintRow({ label, detail, status, term }: { label: string; detail: string; status: Status; term?: string }) {
-  const dot = status === 'ok' ? styles.conOk : status === 'watch' ? styles.conWatch : styles.conBottleneck;
-  const pill = status === 'ok' ? styles.pillOk : status === 'watch' ? styles.pillWatch : styles.pillBottleneck;
-  const text = status === 'ok' ? 'OK' : status === 'watch' ? 'Watch' : 'Bottleneck';
-  return (
-    <div className={styles.constraint}>
-      <span className={`${styles.conStatus} ${dot}`} />
-      <span className={styles.conLabel}>{label}{term ? <Term k={term as any} /> : null}</span>
-      <span className={styles.conDetail}>{detail}</span>
-      <span className={`${styles.conPill} ${pill}`}>{text}</span>
-    </div>
-  );
-}

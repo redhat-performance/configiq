@@ -4,7 +4,10 @@ import Sizing from "./Sizing";
 
 export default function CalculatorPage() {
   return (
-    <PageSection style={{ padding: 0, background: '#f5f5f5' }}>
+    <PageSection
+      padding={{ default: 'noPadding' }}
+      style={{ backgroundColor: 'var(--gc-bg-2, #f5f5f5)', minHeight: '100vh', padding: 0 }}
+    >
       <Sizing />
     </PageSection>
   );
