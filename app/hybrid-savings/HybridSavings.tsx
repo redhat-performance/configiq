@@ -249,10 +249,10 @@ export default function HybridSavings() {
   const [monthlyOutputTokens, setMonthlyOutputTokens] = React.useState(500_000_000)
   const [averageInputTokens, setAverageInputTokens] = React.useState(DEFAULT_WORKLOAD.isl)
   const [averageOutputTokens, setAverageOutputTokens] = React.useState(DEFAULT_WORKLOAD.osl)
-  const [targetTtftMs, setTargetTtftMs] = React.useState(DEFAULT_WORKLOAD.ttft)
-  const [targetTpotMs, setTargetTpotMs] = React.useState(DEFAULT_WORKLOAD.tpot)
-  const [targetConcurrency, setTargetConcurrency] = React.useState(DEFAULT_WORKLOAD.concurrency)
-  const [prefixTokens, setPrefixTokens] = React.useState(DEFAULT_WORKLOAD.prefix)
+  const [targetTtftMs, setTargetTtftMs] = React.useState(1000)
+  const [targetTpotMs, setTargetTpotMs] = React.useState(30)
+  const [targetConcurrency, setTargetConcurrency] = React.useState(1)
+  const [prefixTokens, setPrefixTokens] = React.useState(0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
   const { assumptions: planningAssumptions, hydrated: assumptionsHydrated } = useCostAssumptions()
@@ -425,10 +425,6 @@ export default function HybridSavings() {
     setProfileId(profile.key)
     setAverageInputTokens(profile.isl)
     setAverageOutputTokens(profile.osl)
-    setTargetTtftMs(profile.ttft)
-    setTargetTpotMs(profile.tpot)
-    setTargetConcurrency(profile.concurrency)
-    setPrefixTokens(profile.prefix)
     setWorkloadAdvancedOpen(true)
   }
 
@@ -559,8 +555,8 @@ export default function HybridSavings() {
               <p className={styles.advancedLead}>Change these values only when you have workload measurements or a clear response target.</p>
               <h3 className={styles.advancedSectionLabel}>Request shape and targets</h3>
               <div className={styles.workloadGrid}>
-                <NumberField id="hybrid-average-input" label="Average input tokens per request" value={averageInputTokens} min={1} onChange={setAverageInputTokens} />
-                <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={setAverageOutputTokens} />
+                <NumberField id="hybrid-average-input" label="Average input tokens per request" value={averageInputTokens} min={1} onChange={value => { setAverageInputTokens(value); if (value !== averageInputTokens) setProfileId('') }} />
+                <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={value => { setAverageOutputTokens(value); if (value !== averageOutputTokens) setProfileId('') }} />
                 <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} onChange={setTargetTtftMs} />
                 <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} onChange={setTargetTpotMs} />
                 <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={setTargetConcurrency} />
@@ -584,7 +580,7 @@ export default function HybridSavings() {
       </Form>
       <InfoStrip>
         <span className={styles.workloadSummary}>
-          <span><strong>Based on {selectedProfile.label}</strong> · {formatter.format(averageInputTokens)} input / {formatter.format(averageOutputTokens)} output tokens per request · {formatter.format(activeHoursPerMonth)} hours/month · {billingModeLabel(assumptions.cloudBillingMode)} · {compactNumber(facts.monthlyTokens)} total tokens/month</span>
+          <span>{profileId && <><strong>Based on {selectedProfile.label}</strong> · </>}{formatter.format(averageInputTokens)} input / {formatter.format(averageOutputTokens)} output tokens per request · {formatter.format(activeHoursPerMonth)} hours/month · {billingModeLabel(assumptions.cloudBillingMode)} · {compactNumber(facts.monthlyTokens)} total tokens/month</span>
           <InfoStripAction onClick={() => setWorkloadAdvancedOpen(true)}>Adjust</InfoStripAction>
         </span>
       </InfoStrip>
