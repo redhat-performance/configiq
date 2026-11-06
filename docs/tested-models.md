@@ -153,7 +153,10 @@ Hugging Face publishing uses a Trusted Publisher on the dataset repository,
 restricted to `redhat-performance/configiq`, branch `main`, and workflow
 `publish-performance-data.yml`. No persistent Hugging Face token is stored in
 GitHub. The AWS read-only role must trust the repository's OIDC subject for
-`main`.
+`main`. If `TESTED_DATASET_REPO` points at another dataset repository, configure
+an equivalent Trusted Publisher there; the workflow derives `HF_OIDC_RESOURCE`
+from that same variable so publishing and dispatched builds target one
+repository.
 
 The earlier API extraction path remains available from an approved data
 environment:
