@@ -25,17 +25,17 @@
   ],
   "modelRequestUrl": "https://github.com/redhat-performance/configiq/issues/new?labels=model-request&title=[Model+Request]+",
   "workloadPresets": [
-    { "key": "interactive-chat",           "label": "Interactive Chat",  "isl":  4000, "osl":   300},
-    { "key": "rag",            "label": "RAG / Search",      "isl": 16384, "osl":   512},
-    { "key": "code-generation", "label": "Coding Gen Agent",  "isl": 160000, "osl":  425},
-    { "key": "deep-research", "label": "Deep Research Agent",  "isl": 45000, "osl":  300},
-    { "key": "batch-summarization-rag",          "label": "Batch Summarization",   "isl": 15000, "osl":  500},
-    { "key": "batch-synthetic-data-generation",          "label": "Synthetic Data Gen",   "isl": 500, "osl":  4000},
-    { "key": "reasoning",          "label": "Deep Thinking",   "isl": 1000, "osl":  8000},
-    { "key": "voice",          "label": "Voice / Real-time", "isl":   512, "osl":   128}
+    { "key": "interactive-chat",           "label": "Interactive chat",  "isl":  4000, "osl":   300},
+    { "key": "rag",            "label": "RAG / search",      "isl": 16384, "osl":   512},
+    { "key": "code-generation", "label": "Coding agent",  "isl": 160000, "osl":  425},
+    { "key": "deep-research", "label": "Deep research agent",  "isl": 45000, "osl":  300},
+    { "key": "batch-summarization-rag",          "label": "Batch summarization",   "isl": 15000, "osl":  500},
+    { "key": "batch-synthetic-data-generation",          "label": "Synthetic data gen",   "isl": 500, "osl":  4000},
+    { "key": "reasoning",          "label": "Deep thinking",   "isl": 1000, "osl":  8000},
+    { "key": "voice",          "label": "Voice / real-time", "isl":   512, "osl":   128}
   ],
   "concurrencyPresets": [
-    { "key": "xsmall",    "label": "X-Small (50)",     "concurrency":    50 },
+    { "key": "xsmall",    "label": "X-small (50)",     "concurrency":    50 },
     { "key": "small", "label": "Small (100)", "concurrency":   100 },
     { "key": "medium",    "label": "Medium (500)",   "concurrency":  500 },
     { "key": "large",   "label": "Large (1000)",  "concurrency":  1000 }

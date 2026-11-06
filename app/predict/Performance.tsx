@@ -113,6 +113,28 @@ function parsePerfPhase(p: PerfPhaseInput) {
   return { tp: n(p.tp), pp: n(p.pp), workers: n(p.workers), batch: n(p.batch) };
 }
 
+/**
+ * Shape of one field rendered inside an assumption section. The section
+ * builders below supply only the members relevant to each field type.
+ */
+interface AccordionField {
+  label: string;
+  value: string | number;
+  term?: string;
+  readonly?: boolean;
+  type?: 'number' | 'select' | 'range';
+  invalid?: boolean;
+  placeholder?: string;
+  help?: string;
+  options?: Array<string | { value: string; label: string }>;
+  min?: number;
+  max?: number;
+  step?: number;
+  rangeValue?: number;
+  spacer?: boolean;
+  onChange?: (value: string | number) => void;
+}
+
 const QUICK_ESTIMATE_TOUR: TourStep[] = [
   {
     target: '[data-tour="model"]',
@@ -278,7 +300,7 @@ export default function Performance() {
   const [toastMessage, setToastMessage] = React.useState('');
 
   // Interactive controls
-  const [testConcurrentUsers, setTestConcurrentUsers] = React.useState(100);
+  const [testConcurrentUsers, setTestConcurrentUsers] = React.useState(1);
   const [testISL, setTestISL] = React.useState(2048);
   const [testOSL, setTestOSL] = React.useState(128);
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
@@ -320,8 +342,7 @@ export default function Performance() {
   const [maxSeqLenInput, setMaxSeqLenInput] = React.useState('');
   const [prefillMaxSeqLenInput, setPrefillMaxSeqLenInput] = React.useState('');
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
-  const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('100');
-  const concurrentUsersUserEdited = React.useRef(false);
+  const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('1');
   const [prefixInput, setPrefixInput] = React.useState('0');
   const [tpSizeInput, setTpSizeInput] = React.useState('1');
   const [ppSizeInput, setPpSizeInput] = React.useState('1');
@@ -379,7 +400,6 @@ export default function Performance() {
   };
 
   const handleConcurrentUsersChange = (raw: string) => {
-    concurrentUsersUserEdited.current = true;
     const digits = raw.replace(/[^0-9]/g, '');
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
@@ -453,15 +473,6 @@ export default function Performance() {
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
 
   const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
-
-  React.useEffect(() => {
-    if (!hydrated || concurrentUsersUserEdited.current) return;
-    const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small');
-    if (!preset) return;
-    setActiveConcurrencyPreset(preset.key);
-    setTestConcurrentUsers(preset.concurrency);
-    setConcurrentUsersInput(String(preset.concurrency));
-  }, [hydrated]);
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     if (activeConcurrencyPreset === p.key) {
@@ -1461,12 +1472,13 @@ export default function Performance() {
         </div>
         
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <button
-            className={styles.calcBtn}
+          <Button
+            variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            disabled={!hydrated || isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}          >
+            isDisabled={!hydrated || isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
+          >
             {isCalculating ? 'Calculating...' : 'Calculate'}
-          </button>
+          </Button>
         </div>
 
       </div>
@@ -1500,7 +1512,7 @@ export default function Performance() {
 
       <InfoStrip data-tour="warning">
         Based on your configuration — ISL: {testISL}, OSL: {testOSL}, {testKVCachePrecision} KV cache,
-        {' '}{testConcurrentUsers} Concurrent Users.
+        {' '}{testConcurrentUsers} concurrent {testConcurrentUsers === 1 ? 'user' : 'users'}.
         {' '}<InfoStripAction onClick={handleCustomizeClick}>Adjust? (see &lsquo;Want to change assumptions?&rsquo; below)</InfoStripAction>
       </InfoStrip>
 
@@ -2237,7 +2249,7 @@ export default function Performance() {
             const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
             const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
-            const renderField = (f: any) => {
+            const renderField = (f: AccordionField) => {
               if (f.spacer) return <div key="spacer" />;
               return (
               <div key={f.label} className={styles.accField}>
@@ -2260,7 +2272,7 @@ export default function Performance() {
                       })}
                     </FormSelect>
                     {f.help && (
-                      <div style={{ fontSize: '12px', color: '#6a6e73', marginTop: '4px', lineHeight: '1.5' }}>
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
                         {f.help}
                       </div>
                     )}
@@ -2322,7 +2334,7 @@ export default function Performance() {
                           <Button
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
-                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); }}
+                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                           >
                             Aggregated
                           </Button>
@@ -2335,6 +2347,7 @@ export default function Performance() {
                               setServingMode('disagg');
                               setTestResult(null);
                               setTestClassifierInput(null);
+                              setInputsDirty(false);
                             }}
                           >
                             Disaggregated
@@ -2356,7 +2369,7 @@ export default function Performance() {
                               value={selectedNetworkFabric}
                               aria-label="Inter-node fabric"
                               isDisabled={(networkOptions ?? []).length === 0}
-                              onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); }}
+                              onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                             >
                               <FormSelectOption value="" label="Select a fabric" isDisabled />
                               {(networkOptions ?? []).map(network => (
@@ -2375,7 +2388,7 @@ export default function Performance() {
                       </>
                     )}
                     <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
-                      {sec.fields.map(renderField)}
+                      {(sec.fields as AccordionField[]).map(renderField)}
                     </div>
                   </div>
                 ))}
@@ -2389,20 +2402,29 @@ export default function Performance() {
                           id={`acc-${sec.id}`}
                           onClick={() => toggleAcc(sec.id)}
                         >
-                          <span style={{ fontWeight: 600 }}>{sec.title}</span>
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', width: '100%' }}>
+                            <span className={styles.cardTitle} style={{ fontSize: 16 }}>{sec.title}</span>
+                            {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                            {!expanded.includes(sec.id) && (
+                              <span className={styles.accSummary}>
+                                {sec.summary.map((p) => (
+                                  <span key={p.k}><span className="k">{p.k}</span> {p.v}</span>
+                                ))}
+                              </span>
+                            )}
+                          </span>
                         </AccordionToggle>
                         <AccordionContent>
                           <div style={{ paddingTop: 12 }}>
                             {'hasOverride' in sec && sec.hasOverride && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                                {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
                                 <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()}>
                                   {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
                                 </Button>
                               </div>
                             )}
                             <div className={styles.accGrid}>
-                              {sec.fields.map(renderField)}
+                              {(sec.fields as AccordionField[]).map(renderField)}
                             </div>
                           </div>
                         </AccordionContent>

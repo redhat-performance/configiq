@@ -885,7 +885,7 @@ describe('Hybrid page composition', () => {
     vi.mocked(readRecommendStream).mockResolvedValue({
       ...sizing, recommendation: { gpusPerReplica: 8, replicasNeeded: 1 },
     } as RecommendResponse)
-    await click('Coding Gen Agent'); await click('Calculate')
+    await click('Coding agent'); await click('Calculate')
     expect(host.querySelector<HTMLInputElement>('#hybrid-rented-configuration')!.value).toContain('Automatic')
   })
 

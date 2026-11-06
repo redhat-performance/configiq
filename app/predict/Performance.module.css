@@ -64,25 +64,6 @@
 
 /* ---------- input row ---------- */
 .inputCard { padding: 18px 20px; margin-bottom: 16px; }
-.calcBtn {
-  height: 42px;
-  padding: 0 28px;
-  background: var(--blue);
-  color: #fff;
-  border: none;
-  border-radius: var(--pf-t--global--border--radius--pill, 999px);
-  font-family: var(--sans);
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 150ms;
-  white-space: nowrap;
-}
-.calcBtn:hover { background: #004d99; }
-.calcBtn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
-}
 .inputRow {
   display: grid;
   grid-template-columns: 1.6fr 1fr;
@@ -555,7 +536,6 @@
 /* ---------- assumptions ---------- */
 .assumptionsHead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 4px 0 12px; flex-wrap: wrap; }
 .assumptionsTitle { font-family: var(--display); font-size: 20px; font-weight: 600; }
-.assumptionsSub { font-size: 14px; color: var(--t2); }
 .accSummary {
   font-family: var(--mono); font-size: 13px; color: var(--t2);
   display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center;

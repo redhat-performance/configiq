@@ -275,7 +275,9 @@ export default function Sizing() {
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [ttft, setTtft] = React.useState(1000);
   const [tpot, setTpot] = React.useState(30);
-  const [targetConcurrency, setTargetConcurrency] = React.useState(100);
+  // Start at a single user so the first estimate sizes the smallest
+  // configuration; see d32b0dd and 0730b07. Users raise this with the presets.
+  const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
 
@@ -297,7 +299,7 @@ export default function Sizing() {
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [ttftInput, setTtftInput] = React.useState('1000');
   const [tpotInput, setTpotInput] = React.useState('30');
-  const [concurrencyInput, setConcurrencyInput] = React.useState('100');
+  const [concurrencyInput, setConcurrencyInput] = React.useState('1');
   const [latencyInput, setLatencyInput] = React.useState('');
   const [prefixInput, setPrefixInput] = React.useState('0');
 
@@ -315,7 +317,6 @@ export default function Sizing() {
   const markInputsDirty = () => {
     if (result || isLoading) setInputsDirty(true);
   };
-    
 
   const handleSequenceLengthChange = (
     raw: string,
@@ -364,7 +365,6 @@ export default function Sizing() {
   };
 
   const handleConcurrencyChange = (raw: string) => {
-    concurrencyInteracted.current = true;
     const digits = raw.replace(/[^0-9]/g, '');
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
@@ -492,12 +492,14 @@ export default function Sizing() {
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     resetRecommend();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
     setActivePreset(p.key);
+    setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
 
@@ -509,19 +511,6 @@ export default function Sizing() {
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
   };
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
-  const concurrencyInteracted = React.useRef(false);
-
-  React.useEffect(() => {
-    if (!hydrated) return;
-    if (concurrencyInteracted.current) return;
-    const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small');
-    if (!preset) return;
-    setActiveConcurrencyPreset(preset.key);
-    setTargetConcurrency(preset.concurrency);
-    setConcurrencyInput(String(preset.concurrency));
-  }, [hydrated]);
-
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     if (activeConcurrencyPreset === p.key) {
       setActiveConcurrencyPreset('');
@@ -532,8 +521,39 @@ export default function Sizing() {
     markInputsDirty();
   };
 
+  // The recommend provider keeps the submitted request and its result across
+  // navigation, but this page's form starts from scratch. Once per mount,
+  // compare the restored form with the submitted request so a stale result is
+  // never presented as matching the visible inputs.
+  const checkedSubmittedParams = React.useRef(false);
+  React.useEffect(() => {
+    if (!hydrated || checkedSubmittedParams.current || !params || !result) return;
+    checkedSubmittedParams.current = true;
+    const submitted = {
+      model: params.model_path,
+      system: params.system,
+      isl: params.isl,
+      osl: params.osl,
+      ttft: params.ttft,
+      tpot: params.tpot ?? 30,
+      concurrency: params.target_concurrency ?? 32,
+      prefix: params.prefix ?? 0,
+    };
+    if (
+      submitted.model !== model ||
+      submitted.system !== gpuSystem ||
+      submitted.isl !== isl ||
+      submitted.osl !== osl ||
+      submitted.ttft !== ttft ||
+      submitted.tpot !== tpot ||
+      submitted.concurrency !== targetConcurrency ||
+      submitted.prefix !== prefix
+    ) {
+      setInputsDirty(true);
+    }
+  }, [hydrated, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix]);
+
   const handleCalculate = () => {
-    concurrencyInteracted.current = true;
     setInputsDirty(false);
     startSizing({
       model_path: model, system: gpuSystem, isl, osl, ttft,
@@ -634,13 +654,13 @@ export default function Sizing() {
 
         {/* Calculate button */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 16 }}>
-          <button
-            className={styles.calcBtn}
+          <Button
+            variant="primary"
             onClick={handleCalculate}
-             disabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading}
+            isDisabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading}
           >
             {isLoading ? 'Calculating...' : 'Calculate'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -674,7 +694,7 @@ export default function Sizing() {
         Based on your configuration — ISL: {isl}, OSL: {osl}, Maximum TTFT: {(() => {
           const sec = (ttft / 1000).toFixed(3);
           return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} Concurrent {targetConcurrency === 1 ? 'User' : 'Users'}.
+        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>

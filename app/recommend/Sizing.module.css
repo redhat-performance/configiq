@@ -183,25 +183,6 @@
 }
 
 /* ---------- calculate button ---------- */
-.calcBtn {
-  height: 42px;
-  padding: 0 28px;
-  background: var(--blue);
-  color: #fff;
-  border: none;
-  border-radius: var(--pf-t--global--border--radius--pill, 999px);
-  font-family: var(--sans);
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 150ms;
-  white-space: nowrap;
-}
-.calcBtn:hover { background: #004d99; }
-.calcBtn:disabled {
-  background: #ccc;
-  cursor: not-allowed;
-}
 
 /* ---------- info strip ---------- */
 

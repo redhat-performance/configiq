@@ -89,7 +89,7 @@ export default function KvCacheCalc() {
 
   const defaultMaxNumTokens = DEFAULT_WORKLOAD.isl + DEFAULT_WORKLOAD.osl
   const [maxNumTokens, setMaxNumTokens] = React.useState(defaultMaxNumTokens)
-  const [maxBatchSize, setMaxBatchSize] = React.useState(100)
+  const [maxBatchSize, setMaxBatchSize] = React.useState(128)
   const [tpSize, setTpSize] = React.useState(1)
   const [ppSize, setPpSize] = React.useState(1)
   const [moeTpSize, setMoeTpSize] = React.useState('')
@@ -117,8 +117,7 @@ export default function KvCacheCalc() {
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null)
 
   const [maxNumTokensInput, setMaxNumTokensInput] = React.useState(String(defaultMaxNumTokens))
-  const maxBatchSizeUserEdited = React.useRef(false)
-  const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('100')
+  const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('128')
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
@@ -140,15 +139,6 @@ export default function KvCacheCalc() {
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD)
 
   const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
-
-  React.useEffect(() => {
-    if (!hydrated || maxBatchSizeUserEdited.current || loading || results.length > 0) return
-    const preset = getAppConfig().concurrencyPresets.find(p => p.key === 'small')
-    if (!preset) return
-    setActiveConcurrencyPreset(preset.key)
-    setMaxBatchSize(preset.concurrency)
-    setMaxBatchSizeInput(String(preset.concurrency))
-  }, [hydrated])
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     if (activeConcurrencyPreset === p.key) {
@@ -208,7 +198,6 @@ export default function KvCacheCalc() {
   
   const handleMaxBatchSizeChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
-    maxBatchSizeUserEdited.current = true;
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
@@ -343,7 +332,7 @@ export default function KvCacheCalc() {
       }
 
       setResults(responses.map(r => ({ label: r.label, result: r.data as KvCacheCalcResult })))
-    } catch (err) {
+    } catch {
       if (controller.signal.aborted) return
       setDebugDuration(Math.round(performance.now() - t0))
       setError('Failed to connect to the server. Please try again.')
@@ -384,14 +373,13 @@ export default function KvCacheCalc() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <button
-            type="button"
-            className={styles.calcBtn}
-            onClick={handleCalculate} 
-            disabled={loading || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
+          <Button
+            variant="primary"
+            onClick={handleCalculate}
+            isDisabled={loading || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
           >
             {loading ? 'Calculating…' : 'Calculate'}
-          </button>
+          </Button>
         </div>
       </div>
         {needsExplicitMemFraction && (
@@ -503,8 +491,8 @@ export default function KvCacheCalc() {
             {/* Serving mode (agg / disagg) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
               <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-              <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); }}>Aggregated</Button>
-              <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); }}>Disaggregated</Button>
+              <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
+              <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
               {servingMode === 'disagg' && (
                 <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
               )}
@@ -558,7 +546,7 @@ export default function KvCacheCalc() {
                 </div>
               </div>
             ) : (
-              <div className={styles.advancedRow5}>
+              <div className={styles.advancedRow4}>
                 <div className={styles.field}>
                   <label htmlFor="kv-p-tp" className={styles.fieldLabel}>Prefill TP</label>
                   <input type="number" id="kv-p-tp" value={prefillPar.tp} min={1}
@@ -581,12 +569,6 @@ export default function KvCacheCalc() {
                   <label htmlFor="kv-p-moe-ep" className={styles.fieldLabel}>Prefill MoE EP</label>
                   <input type="text" id="kv-p-moe-ep" value={prefillPar.moeEp} placeholder="auto"
                     onChange={e => { setPrefillPar(p => ({ ...p, moeEp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
-                    className={styles.numberInput} />
-                </div>
-                <div className={styles.field}>
-                  <label className={styles.fieldLabel}>Total GPUs</label>
-                  <input type="text" disabled
-                    value={`${Math.max(1, parseInt(prefillPar.tp, 10) || 1) * Math.max(1, parseInt(prefillPar.pp, 10) || 1) + Math.max(1, parseInt(decodePar.tp, 10) || 1) * Math.max(1, parseInt(decodePar.pp, 10) || 1)}`}
                     className={styles.numberInput} />
                 </div>
                 <div className={styles.field}>
@@ -613,7 +595,6 @@ export default function KvCacheCalc() {
                     onChange={e => { setDecodePar(p => ({ ...p, moeEp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
                     className={styles.numberInput} />
                 </div>
-                <div />
               </div>
             )}
 
