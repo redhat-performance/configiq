@@ -648,7 +648,7 @@ describe('Hybrid page composition', () => {
         { systemId: 'slow_gpu', label: 'Slow GPU', tdpWatts: 350 } as GpuOption,
       ],
       modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
-      modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, timeoutSeconds: 180,
+      modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
       isLoading: false, error: null,
     })
     vi.mocked(useInfrastructureOffers).mockReturnValue({
@@ -1152,14 +1152,14 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector('#hybrid-owned-configuration')).toBeNull()
   })
 
-  it('requires experimental costings before showing Hybrid or enabling pricing requests', async () => {
+  it('shows the calculator and enables pricing requests with experimental costings off', async () => {
     vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), costingsEnabled: false })
     await render()
-    expect(host.textContent).toContain('Enable experimental costings')
-    expect(host.querySelector('form')).toBeNull()
-    expect(useCostings).toHaveBeenCalledWith(false, 'merged', 'models')
-    expect(useInfrastructureOffers).toHaveBeenCalledWith(false)
-    expect(fetch).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Enable experimental costings')
+    expect(host.querySelector('form')).not.toBeNull()
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false)
+    expect(useCostings).toHaveBeenCalledWith(true, 'merged', 'models')
+    expect(useInfrastructureOffers).toHaveBeenCalledWith(true)
   })
 
   it('disables calculation when the feed has no exact hosted price', async () => {

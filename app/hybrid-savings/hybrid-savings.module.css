@@ -139,7 +139,6 @@
 .appliedValueNote { display: block; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
 .calculationNote { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-muted); }
 .sourceDetailsLink { display: inline-block; margin-top: 12px; color: var(--blue); font-size: 13px; }
-.alertAction { margin-top: 12px; }
 .chartPanel { margin-top: 16px; }
 .chartControls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
 .chartViewSwitch { max-width: 100%; }
