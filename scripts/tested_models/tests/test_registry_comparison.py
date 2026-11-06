@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import compare_registry
@@ -104,3 +105,43 @@ def test_load_baseline_accepts_a_registry_with_pairs(tmp_path: Path) -> None:
 
     assert compare_registry.load_baseline(path) == {"status": "available", "pairs": []}
     assert compare_registry.load_baseline(None) is None
+
+
+def test_load_baseline_rejects_missing_or_unknown_statuses(tmp_path: Path) -> None:
+    unknown = tmp_path / "unknown-status.json"
+    unknown.write_text('{"schemaVersion": 2, "pairs": [{"id": "pair__h200", "status": "bogus"}]}')
+    assert compare_registry.load_baseline(unknown) == {"status": "unavailable"}
+
+    missing = tmp_path / "missing-status.json"
+    missing.write_text('{"schemaVersion": 2, "pairs": [{"id": "pair__h200"}]}')
+    assert compare_registry.load_baseline(missing) == {"status": "unavailable"}
+
+
+def test_load_baseline_derives_legacy_v1_statuses_from_metrics(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps({
+        "schemaVersion": 1,
+        "pairs": [
+            {"id": "strong__h200", "metrics": {"test": {"roc_auc": 0.9, "f1": 0.6}}},
+            {"id": "weak__h200", "metrics": {"test": {"roc_auc": 0.9, "f1": 0.1}}},
+        ],
+    }))
+
+    baseline = compare_registry.load_baseline(path)
+
+    assert baseline is not None
+    assert {pair["id"]: pair["status"] for pair in baseline["pairs"]} == {
+        "strong__h200": "validated",
+        "weak__h200": "measured_no_envelope",
+    }
+
+
+def test_load_baseline_rejects_legacy_v1_pairs_without_metrics(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy-missing-metrics.json"
+    path.write_text('{"schemaVersion": 1, "pairs": [{"id": "pair__h200"}]}')
+
+    assert compare_registry.load_baseline(path) == {"status": "unavailable"}

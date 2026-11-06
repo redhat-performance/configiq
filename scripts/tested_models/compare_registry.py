@@ -59,8 +59,38 @@ def _delta(before: float | None, after: float | None) -> str:
     return f"{change:+.3f}"
 
 
+_VALID_STATUSES = {"validated", "measured_no_envelope"}
+
+# Mirrors DEFAULT_GATE in lib/tested-models/registry-types.ts. Legacy v1
+# bundles stored metrics but no status, so the comparison derives it the same
+# way the UI does.
+_LEGACY_MIN_TEST_AUC = 0.7
+_LEGACY_MIN_TEST_F1 = 0.3
+
+
 def _status(pair: dict[str, Any]) -> str:
     return str(pair.get("status") or "unknown")
+
+
+def _legacy_status(pair: dict[str, Any]) -> str | None:
+    auc = _test_metric(pair, "roc_auc")
+    f1 = _test_metric(pair, "f1")
+    if auc is None or f1 is None:
+        return None
+    return (
+        "validated"
+        if auc >= _LEGACY_MIN_TEST_AUC and f1 >= _LEGACY_MIN_TEST_F1
+        else "measured_no_envelope"
+    )
+
+
+def _resolved_status(pair: dict[str, Any], schema_version: Any) -> str | None:
+    status = pair.get("status")
+    if isinstance(status, str) and status in _VALID_STATUSES:
+        return status
+    if status is None and schema_version == 1:
+        return _legacy_status(pair)
+    return None
 
 
 def _classify(
@@ -182,7 +212,16 @@ def load_baseline(path: Path | None) -> dict[str, Any] | None:
         isinstance(pair, dict) and isinstance(pair.get("id"), str) for pair in pairs
     ):
         return {"status": "unavailable"}
-    return baseline
+    # A malformed status would otherwise surface as an invented "unknown"
+    # status or a bogus transition. Legacy v1 pairs are normalized instead.
+    schema_version = baseline.get("schemaVersion")
+    resolved: list[dict[str, Any]] = []
+    for pair in pairs:
+        status = _resolved_status(pair, schema_version)
+        if status is None:
+            return {"status": "unavailable"}
+        resolved.append({**pair, "status": status})
+    return {**baseline, "pairs": resolved}
 
 
 def main() -> int:
