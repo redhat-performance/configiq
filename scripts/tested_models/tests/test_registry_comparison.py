@@ -101,10 +101,28 @@ def test_load_baseline_rejects_malformed_or_non_registry_payloads(tmp_path: Path
 
 def test_load_baseline_accepts_a_registry_with_pairs(tmp_path: Path) -> None:
     path = tmp_path / "registry.json"
-    path.write_text('{"status": "available", "pairs": []}')
+    path.write_text('{"schemaVersion": 2, "status": "available", "pairs": []}')
 
-    assert compare_registry.load_baseline(path) == {"status": "available", "pairs": []}
+    assert compare_registry.load_baseline(path) == {
+        "schemaVersion": 2,
+        "status": "available",
+        "pairs": [],
+    }
     assert compare_registry.load_baseline(None) is None
+
+
+def test_load_baseline_rejects_missing_or_unsupported_schema_versions(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing-version.json"
+    missing.write_text('{"pairs": [{"id": "pair__h200", "status": "validated"}]}')
+    assert compare_registry.load_baseline(missing) == {"status": "unavailable"}
+
+    unsupported = tmp_path / "unsupported-version.json"
+    unsupported.write_text(
+        '{"schemaVersion": 99, "pairs": [{"id": "pair__h200", "status": "validated"}]}'
+    )
+    assert compare_registry.load_baseline(unsupported) == {"status": "unavailable"}
 
 
 def test_load_baseline_rejects_missing_or_unknown_statuses(tmp_path: Path) -> None:

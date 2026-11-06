@@ -207,6 +207,11 @@ def load_baseline(path: Path | None) -> dict[str, Any] | None:
         return {"status": "unavailable"}
     if not isinstance(baseline, dict):
         return {"status": "unavailable"}
+    # The deployed registry parser only understands these versions; an
+    # incompatible baseline must not be compared as if it were valid.
+    schema_version = baseline.get("schemaVersion")
+    if schema_version not in (1, 2):
+        return {"status": "unavailable"}
     pairs = baseline.get("pairs")
     if not isinstance(pairs, list) or not all(
         isinstance(pair, dict) and isinstance(pair.get("id"), str) for pair in pairs
@@ -214,7 +219,6 @@ def load_baseline(path: Path | None) -> dict[str, Any] | None:
         return {"status": "unavailable"}
     # A malformed status would otherwise surface as an invented "unknown"
     # status or a bogus transition. Legacy v1 pairs are normalized instead.
-    schema_version = baseline.get("schemaVersion")
     resolved: list[dict[str, Any]] = []
     for pair in pairs:
         status = _resolved_status(pair, schema_version)
