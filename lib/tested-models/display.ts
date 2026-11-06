@@ -1,5 +1,6 @@
 import type { ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox'
 import type { GpuOption, ModelSpec } from '@/lib/hooks/useCatalog'
+import { contextChip, paramsChip } from '@/lib/model-chips'
 import { modelFacets } from '@/lib/model-metadata'
 
 /**
@@ -46,30 +47,14 @@ export function gpuSystemSpecs(systemId: string, gpuOptions: GpuOption[]): strin
   return parts.join(' · ')
 }
 
-/** Compact parameter count: 0.6B, 32B, 2.4T. */
-function sizeChip(paramsB: number | null): string | null {
-  if (paramsB === null) return null
-  if (paramsB >= 1_000) return `${Number((paramsB / 1_000).toFixed(2))}T`
-  if (paramsB >= 0.1) return `${Number(paramsB.toFixed(1))}B`
-  return `${Math.round(paramsB * 1_000)}M`
-}
-
-/** Compact context window: 128K, 1M. */
-function contextChip(contextLength: number | null): string | null {
-  if (!contextLength) return null
-  if (contextLength >= 1_048_576) return `${Number((contextLength / 1_048_576).toFixed(1))}M ctx`
-  if (contextLength >= 1_024) return `${Math.round(contextLength / 1_024)}K ctx`
-  return `${contextLength} ctx`
-}
-
 /** Human-readable facts about a model, matching the ComboBox row chips. */
 export function modelFacetChips(modelId: string, spec?: ModelSpec): string[] {
   const facets = modelFacets(modelId, { spec })
   const chips: string[] = []
-  const size = sizeChip(facets.paramsB)
+  const size = paramsChip(facets.paramsB)
   if (size) {
     chips.push(facets.activeParamsB !== null
-      ? `${size} (${sizeChip(facets.activeParamsB)} active)`
+      ? `${size} (${paramsChip(facets.activeParamsB)} active)`
       : size)
   }
   if (facets.types.includes('moe')) chips.push('MoE')

@@ -62,7 +62,7 @@ function useElementWidth<T extends HTMLElement>(): [React.RefObject<T>, number] 
   React.useEffect(() => {
     const element = ref.current
     if (!element) return
-    const update = () => setWidth(Math.max(Math.round(element.clientWidth), 320))
+    const update = () => setWidth(Math.max(Math.round(element.clientWidth), 240))
     update()
     if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(update)
