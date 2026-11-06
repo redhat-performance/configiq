@@ -37,6 +37,7 @@ import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
+import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
@@ -436,6 +437,7 @@ export default function Sizing() {
     setDemandRateInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setDemandRate(n);
+    markInputsDirty();
   };
 
   // Model status check + fetch HF config. Catalog models resolve server-side;
@@ -571,68 +573,43 @@ export default function Sizing() {
   };
 
   // The recommend provider keeps the submitted request and its result across
-  // navigation, but this page's form starts from scratch. Once per mount,
-  // compare the restored form with the submitted request so a stale result is
-  // never presented as matching the visible inputs.
-  const checkedSubmittedParams = React.useRef(false);
+  // navigation, but this page's form starts from scratch. Compare each restored
+  // or newly submitted request with the visible form so a stale result is never
+  // presented as matching the inputs that produced it.
+  const checkedSubmittedParams = React.useRef<typeof params>(null);
   React.useEffect(() => {
-    if (!hydrated || !modelFromSettingsApplied || catalogLoading || checkedSubmittedParams.current || !params || !result) return;
-    checkedSubmittedParams.current = true;
-    // Mirror what handleCalculate would send now. Keep undefined (fabric not
-    // required, so omitted) distinct from null (aggregate-only).
-    const effectiveFabric = fabricRequired
-      ? (disaggSupported ? selectedNetworkFabric || null : null)
-      : undefined;
-    const submitted = {
-      model: params.model_path,
-      system: params.system,
-      isl: params.isl,
-      osl: params.osl,
-      objective: params.objective
-        ?? (params.sla_mode === 'none' ? 'throughput_demand' : 'min_gpus'),
-      ttft: params.ttft,
-      tpot: params.tpot ?? 30,
-      concurrency: params.target_concurrency ?? 32,
-      demandRate: params.target_request_rate ?? null,
-      prefix: params.prefix ?? 0,
-      maxSeqLen: params.max_seq_len ?? null,
-      prefillMaxSeqLen: params.prefill_max_seq_len ?? null,
-      decodeMaxSeqLen: params.decode_max_seq_len ?? null,
-      requestLatency: params.request_latency ?? null,
-      fabric: params.fabric,
-    };
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !result) return;
+    if (checkedSubmittedParams.current === params) return;
+    checkedSubmittedParams.current = params;
     const currentObjective = isCapacity
       ? 'concurrency_capacity'
       : isDemand
         ? 'throughput_demand'
         : 'min_gpus';
-    // Only the fields the submitted objective actually constrains can make the
-    // visible form disagree with its result.
-    const goalFieldsChanged =
-      submitted.objective !== currentObjective ||
-      (submitted.objective === 'min_gpus' && (
-        submitted.ttft !== ttft ||
-        submitted.tpot !== tpot ||
-        submitted.concurrency !== targetConcurrency ||
-        submitted.requestLatency !== requestLatency
-      )) ||
-      (submitted.objective === 'throughput_demand' && submitted.demandRate !== demandRate) ||
-      (submitted.objective === 'concurrency_capacity' && submitted.concurrency !== targetConcurrency);
-    if (
-      submitted.model !== model ||
-      submitted.system !== gpuSystem ||
-      submitted.isl !== isl ||
-      submitted.osl !== osl ||
-      submitted.prefix !== prefix ||
-      submitted.maxSeqLen !== maxSeqLen ||
-      submitted.prefillMaxSeqLen !== prefillMaxSeqLen ||
-      submitted.decodeMaxSeqLen !== decodeMaxSeqLen ||
-      submitted.fabric !== effectiveFabric ||
-      goalFieldsChanged
-    ) {
-      setInputsDirty(true);
-    }
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, fabricRequired, disaggSupported, selectedNetworkFabric]);
+    const matches = submittedInputsMatch(params, {
+      model,
+      system: gpuSystem,
+      isl,
+      osl,
+      objective: currentObjective,
+      ttft,
+      tpot,
+      targetConcurrency,
+      demandRate,
+      requestLatency,
+      prefix,
+      maxSeqLen,
+      prefillMaxSeqLen,
+      decodeMaxSeqLen,
+      effectiveFabric: resolveEffectiveFabric(
+        fabricRequired,
+        aggregateOnlyGoal,
+        disaggSupported,
+        selectedNetworkFabric,
+      ),
+    });
+    if (!matches) setInputsDirty(true);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const handleCalculate = () => {
     setInputsDirty(false);
