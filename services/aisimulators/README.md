@@ -163,7 +163,9 @@ with the same parameter return only the AISimulate IDs and systems BLIS can
 price. The envelopes include `simulator`; `/backends` also reports
 `blis_version`. Each backend entry reports
 `disaggregation_requires_fabric`, so a client knows whether a P/D topology
-needs a fabric selection without matching on the simulator ID. `/backends` also
+needs a fabric selection without matching on the simulator ID. Each entry also
+reports `capacity_options.disaggregated`, which tells a client whether a
+concurrency-capacity run can return disaggregated alternatives. `/backends` also
 returns the simulator's `objectives` list, and clients gate a sizing-goal
 selector on that list rather than on the simulator ID.
 
@@ -282,18 +284,27 @@ The per-sequence context is the peak a resident sequence can occupy:
 credited, because a shorter average prompt does not bound how large a resident
 sequence can grow.
 
-Selection enumerates every aggregated parallel shape the SDK's search space
-allows (the same backend filters, wideEP heuristic, and KV-feasibility rule as
-`min_gpus`) and reads each shape's KV token capacity. For each shape the service
-adds the fewest replicas that reach `target_concurrency × context_tokens` and
-picks the fewest total GPUs, preferring more capacity on a tie. This is
-deterministic and exhaustive, not a sampled sweep: `sweep.algorithm` is
+Selection enumerates the SDK's parallel search space (the same backend filters,
+wideEP heuristic, and KV-feasibility rule as `min_gpus`) and reads each shape's
+KV token capacity. For aggregated shapes the service adds the fewest replicas
+that reach `target_concurrency × context_tokens`. The fewest total GPUs is the
+minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
+pool must hold the resident sequences, while the prefill pool only needs to hold
+one sequence transiently. Because each pool replicates the full weights, a P/D
+deployment is only offered as a larger comparison option, never as the minimum.
+This is deterministic and exhaustive, not a sampled sweep: `sweep.algorithm` is
 `enumerate`, `budget_exhausted` is false, and every enumerated shape counts as
 evaluated and feasible.
 
-Aggregated deployment is the only mode searched. Disaggregation replicates the
-full weights in each pool, so it cannot need fewer GPUs to hold the same weights
-plus KV cache than an aggregated deployment with the same worker shape.
+`configs[0]` remains the single primary recommendation. `capacity_options` is a
+ranked comparison set: rank 1 is the same minimum, followed by up to three
+same-GPU ties, up to two larger aggregated deployments, and up to two
+disaggregated representatives. When `top_n` is omitted the service returns up to
+8 options when disaggregated candidates exist and 6 otherwise; an explicit
+`top_n` overrides the count. Each option carries `option_id`, `rank`, `role`
+(`minimum`, `same_gpus`, `larger`, `disaggregated`, or `shortfall`),
+`gpus_over_minimum`, a complete `config`, and its own `capacity` block, so a
+client can promote any option without re-running the search.
 
 A capacity result carries a `capacity` block:
 
@@ -305,18 +316,23 @@ A capacity result carries a `capacity` block:
 - `shortfall_sequences` / `shortfall_tokens` — missing capacity when `fits` is
   false.
 - `minimum_gpus` — fewest GPUs in the requested window that hold one sequence.
-- `per_rank_tokens`, `replicas`, `attention_dp` — the selected shape's resolved
-  capacity inputs.
+- `per_rank_tokens`, `replicas`, `attention_dp` — resolved capacity inputs. For
+  a disaggregated option these describe the decode pool, which holds resident
+  sequences.
+- `mode` — `agg` or `disagg`.
+- `prefill_replicas`, `decode_replicas`, `prefill_gpus`, `decode_gpus` —
+  per-pool detail for a disaggregated option; null for agg.
 - `evaluated_shapes`, `feasible_shapes`, `exhaustive`.
 - `performance_available`, `performance_unavailable_reason` — whether the
   informational simulation produced timing data.
 
-The winning configuration's `configs[0]` is also simulated at the requested
-concurrency (on the busiest replica), and its throughput, latency, memory,
-power, and cost are reported for informational use. That simulation never gates
-`fits`: when timing data cannot cover the configuration, the response is still
-200, `performance_available` is false, `performance_unavailable_reason` explains
-why, and a warning is added. No performance value is invented.
+Each option is simulated at the requested concurrency. Simulations share one
+wall-clock budget and run at most two at a time, with the primary simulated
+first, then disaggregated representatives, then the remaining alternatives.
+That simulation never gates `fits`: when timing data cannot cover an option, the
+option stays in the comparison set with `performance_available` false,
+`performance_unavailable_reason` explaining why, and a warning on its config. No
+performance value is invented.
 
 When the target does not fit inside the GPU window, the response is still 200:
 the service reports the best achievable deployment inside the window plus the

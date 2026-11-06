@@ -21,6 +21,7 @@ import { useRecommend, type SizingGoal } from '@/contexts/RecommendContext';
 import type { RecommendProgressEvent } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
+import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
@@ -313,7 +314,19 @@ export default function Sizing() {
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, reset } = useRecommend();
+  const { params, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, reset } = useRecommend();
+  // Capacity runs return ranked alternatives. The result panel shows whichever
+  // option is promoted; every other view keeps the primary recommendation so
+  // the search summary and provenance still describe what was submitted.
+  const [selectedCapacityOptionId, setSelectedCapacityOptionId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setSelectedCapacityOptionId(null);
+  }, [primaryResult]);
+  const capacityOptions = primaryResult?.capacityOptions ?? [];
+  const selectedCapacityOption = capacityOptions.find(
+    option => option.optionId === selectedCapacityOptionId,
+  ) ?? null;
+  const result = selectedCapacityOption?.result ?? primaryResult;
   // The result outlives a remount, but the input goal does not. Derive the
   // result's objective from the request that produced it so returning to
   // /recommend does not relabel a demand or capacity result as a latency one.
@@ -358,7 +371,7 @@ export default function Sizing() {
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
 
   const markInputsDirty = () => {
-    if (result || isLoading) setInputsDirty(true);
+    if (primaryResult || isLoading) setInputsDirty(true);
   };
 
   const handleSequenceLengthChange = (
@@ -578,7 +591,7 @@ export default function Sizing() {
   // presented as matching the inputs that produced it.
   const checkedSubmittedParams = React.useRef<typeof params>(null);
   React.useEffect(() => {
-    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !result) return;
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !primaryResult) return;
     if (checkedSubmittedParams.current === params) return;
     checkedSubmittedParams.current = params;
     const currentObjective = isCapacity
@@ -609,7 +622,7 @@ export default function Sizing() {
       ),
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, primaryResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const handleCalculate = () => {
     setInputsDirty(false);
@@ -1108,15 +1121,15 @@ export default function Sizing() {
           </div>
         ) : undefined}
       >
-        {result && (result.searchSummary || !result.memoryAvailable) && (
+        {primaryResult && (primaryResult.searchSummary || !primaryResult.memoryAvailable) && (
           <div style={{ fontSize: 13, color: '#3c3f42' }}>
-            {result.searchSummary && (
+            {primaryResult.searchSummary && (
               <span>
-                Search: {result.searchSummary.strategy.replaceAll('_', ' ')} · {result.searchSummary.modes_searched?.join(' + ') ?? result.simulator} · tested {result.searchSummary.evaluated_configurations ?? result.searchSummary.evaluated_gpus.length} configurations across {result.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {result.searchSummary.effective_max_gpus} (configured {result.searchSummary.configured_max_gpus}, hardware {result.searchSummary.hardware_max_gpus}) · {result.searchSummary.time_budget_seconds}s{result.searchSummary.budget_exhausted ? ' budget reached' : ''}.
+                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' budget reached' : ''}.
               </span>
             )}
-            {!result.memoryAvailable && (
-              <div style={{ marginTop: result.searchSummary ? 4 : 0 }}>
+            {!primaryResult.memoryAvailable && (
+              <div style={{ marginTop: primaryResult.searchSummary ? 4 : 0 }}>
                 This simulator does not provide memory estimates; the memory tile is hidden.
               </div>
             )}
@@ -1144,7 +1157,7 @@ export default function Sizing() {
                   </span>
                   <span className={styles.tileSub}>
                     {result.mode === 'disagg'
-                      ? `${result.recommendation.replicasNeeded} replicas × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
+                      ? `${result.recommendation.replicasNeeded} ${result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
                       : `${parallelLabel(result.recommendation)} · ${
                           resultIsDemand
                             ? `${result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'} observed concurrent`
@@ -1178,7 +1191,7 @@ export default function Sizing() {
                           .map(p => p.workers * p.gpusPerWorker)
                           .join(' + '))} = {result.recommendation.gpusPerReplica}
                       </span><br />
-                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} replicas = {result.recommendation.gpusNeeded} GPUs</span>
+                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} {result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} = {result.recommendation.gpusNeeded} GPUs</span>
                     </div>
                   </>
                 ) : (
@@ -1195,7 +1208,7 @@ export default function Sizing() {
                       {result.recommendation.moeTensorParallelSize != null && result.recommendation.moeTensorParallelSize > 1 &&
                         <>expert tensor parallel (ETP) = <span className={styles.em}>{result.recommendation.moeTensorParallelSize}</span><br /></>}
                       gpus/worker = <span className={styles.em}>{result.recommendation.gpusPerReplica}</span><br />
-                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} replicas = {result.recommendation.gpusNeeded} GPUs</span>
+                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} {result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} = {result.recommendation.gpusNeeded} GPUs</span>
                     </div>
                   </>
                 )
@@ -1566,8 +1579,18 @@ export default function Sizing() {
         </>
       )}
 
+      {/* ─── Capacity comparison (promote any option to the result above) ─── */}
+      {resultIsCapacity && capacityOptions.length > 0 && (
+        <CapacityOptionsPanel
+          options={capacityOptions}
+          selectedOptionId={selectedCapacityOption?.optionId ?? null}
+          gpuLabel={currentGpuOption?.label ?? gpuSystem}
+          onSelect={setSelectedCapacityOptionId}
+        />
+      )}
+
       {/* ─── Pareto frontier (companion scan, never replaces the primary result) ─── */}
-      {result && (
+      {primaryResult && (
         <FrontierPanel
           state={frontier}
           gpuLabel={currentGpuOption?.label ?? gpuSystem}

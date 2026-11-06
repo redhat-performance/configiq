@@ -60,6 +60,55 @@ const CAPACITY_OUTCOME = {
   simulator: 'aisimulate',
 }
 
+const CAPACITY_OPTION_OUTCOME = {
+  ...CAPACITY_OUTCOME,
+  mode: 'disagg',
+  prefill_replicas: 1,
+  decode_replicas: 2,
+  prefill_gpus: 2,
+  decode_gpus: 4,
+  replicas: 2,
+}
+
+const CAPACITY_OPTIONS_RESPONSE = {
+  ...EXTERNAL_RESPONSE,
+  capacity: CAPACITY_OUTCOME,
+  capacity_options: [
+    {
+      option_id: 'agg-t2-d1-mt2-me1-r2',
+      rank: 1,
+      role: 'minimum',
+      gpus_over_minimum: 0,
+      config: { ...EXTERNAL_RESPONSE.configs[0] },
+      capacity: CAPACITY_OUTCOME,
+    },
+    {
+      option_id: 'disagg-pt2-pd1-pr1-dt2-dd1-dr2-me1',
+      rank: 2,
+      role: 'disaggregated',
+      gpus_over_minimum: 2,
+      config: {
+        total_gpus_needed: 6,
+        replicas_needed: 1,
+        num_total_gpus: 6,
+        bs: 64,
+        ttft: 700,
+        tpot: 20,
+        request_latency: 1980,
+        concurrency: 64,
+        tokens_per_second: 1200,
+        tokens_per_second_per_gpu: 200,
+        tokens_per_second_per_user: 18.75,
+        memory: 50,
+        mode: 'disagg',
+        prefill_config: { tp: 2, pp: 1, dp: 1, num_workers: 1, batch_size: 64 },
+        decode_config: { tp: 2, pp: 1, dp: 1, num_workers: 2, batch_size: 32 },
+      },
+      capacity: CAPACITY_OPTION_OUTCOME,
+    },
+  ],
+}
+
 const BLIS_EXTERNAL_RESPONSE = {
   ...EXTERNAL_RESPONSE,
   simulator: 'blis',
@@ -600,8 +649,20 @@ describe('callRecommend', () => {
     expect(sentBody.target_concurrency).toBe(32)
     expect(sentBody.tpot).toBe(30)
     expect(sentBody.database_mode).toBe('HYBRID')
+    expect(sentBody.top_n).toBe(5)
     expect(sentBody).not.toHaveProperty('username')
     expect(sentBody).not.toHaveProperty('password')
+  })
+
+  it('omits top_n when the caller did not choose one', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+    const { top_n, ...request } = VALID_REQUEST
+
+    await callRecommend(request)
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody).not.toHaveProperty('top_n')
   })
 
   it('forwards model_config to the upstream request when present', async () => {
@@ -766,6 +827,48 @@ describe('callRecommend', () => {
     expect(body).not.toHaveProperty('tpot')
     expect(body).not.toHaveProperty('min_candidate_gpus')
     expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
+  it('parses ranked capacity options and their promotable configs', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(CAPACITY_OPTIONS_RESPONSE))
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.capacityOptions?.map(option => [
+      option.optionId,
+      option.rank,
+      option.role,
+      option.gpusOverMinimum,
+    ])).toEqual([
+      ['agg-t2-d1-mt2-me1-r2', 1, 'minimum', 0],
+      ['disagg-pt2-pd1-pr1-dt2-dd1-dr2-me1', 2, 'disaggregated', 2],
+    ])
+
+    const disagg = result.capacityOptions?.[1]
+    expect(disagg?.capacity.mode).toBe('disagg')
+    expect(disagg?.capacity.prefillGpus).toBe(2)
+    expect(disagg?.capacity.decodeGpus).toBe(4)
+    expect(disagg?.result.mode).toBe('disagg')
+    expect(disagg?.result.recommendation.gpusNeeded).toBe(6)
+    expect(disagg?.result.capacityOptions).toBeUndefined()
+  })
+
+  it('does not parse capacity options for a non-capacity request', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(CAPACITY_OPTIONS_RESPONSE))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.capacityOptions).toBeUndefined()
   })
 
   it('forwards context window limits to the upstream request', async () => {

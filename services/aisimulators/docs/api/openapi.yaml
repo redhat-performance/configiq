@@ -66,9 +66,19 @@ paths:
           latency target. It requires `sla_mode=none`, a positive whole
           `target_concurrency`, and no `target_request_rate`; any `ttft`, `tpot`,
           or `request_latency` is rejected. Selection is a deterministic
-          enumeration of the aggregated parallel search space, not a sampled
-          sweep; disaggregation cannot beat aggregation on footprint because it
-          replicates weights in each pool. A result reports a `capacity` block.
+          enumeration of the parallel search space, not a sampled sweep.
+          `configs[0]` is the fewest-GPU recommendation; `capacity_options`
+          returns a ranked comparison set that starts with that same minimum and
+          adds same-GPU ties, larger aggregated deployments, and disaggregated
+          deployments where the backend advertises them. A disaggregated
+          deployment replicates weights in each pool, so it is only offered as a
+          larger option, never as the minimum. When `top_n` is omitted the
+          service returns up to 8 options when disaggregated candidates exist and
+          6 otherwise; an explicit `top_n` overrides that count. Each option
+          carries its own config and capacity block and can be used as the
+          primary result. Performance is simulated for a bounded set of options
+          under one shared budget; options that do not complete remain valid
+          capacity answers with `performance_available=false` and a reason.
           When the target does not fit inside the GPU window, the response is
           still 200 with `capacity.fits=false`, the best achievable
           configuration, and the shortfall. A window that cannot schedule any
@@ -559,7 +569,11 @@ components:
           default: HYBRID
         top_n:
           type: integer
-          description: Number of top configurations to return.
+          description: |
+            Number of configurations to return. Omit to let the service use its
+            goal-specific default (5). For objective=concurrency_capacity the
+            default comparison set is 8 options when disaggregated candidates
+            exist and 6 otherwise; an explicit value overrides it.
           default: 5
           minimum: 1
           maximum: 20
@@ -637,6 +651,18 @@ components:
             objective=concurrency_capacity, including when the target could not
             fit (200 with fits=false). The fit is decided by the KV-cache
             estimate, not by the informational performance simulation.
+        capacity_options:
+          type: array
+          description: |
+            Ranked deployment alternatives for objective=concurrency_capacity.
+            `capacity_options[0]` is the primary recommendation and matches
+            `configs[0]`. Empty for every other objective. Each entry is a
+            complete alternative with its own config and capacity outcome, so a
+            client can promote it without re-running the search. Options that
+            could not be simulated remain present with
+            `capacity.performance_available=false`.
+          items:
+            $ref: '#/components/schemas/CapacityOption'
         sweep:
           allOf:
             - $ref: '#/components/schemas/SweepMeta'
@@ -758,13 +784,43 @@ components:
           description: Fewest GPUs inside the requested window that hold one sequence.
         per_rank_tokens:
           type: integer
-          description: KV-cache tokens held by one attention rank of the selected shape.
+          description: |
+            KV-cache tokens held by one attention rank of the capacity-bearing
+            pool. For a disaggregated option this is the decode pool.
         replicas:
           type: integer
-          description: Replicas of the selected aggregated worker shape.
+          description: |
+            Replicas of the selected worker shape. For a disaggregated option
+            this is the decode replica count; prefill is reported separately.
         attention_dp:
           type: integer
-          description: Attention data-parallel width of the selected worker shape. Each DP rank contributes its own KV budget.
+          description: |
+            Attention data-parallel width of the capacity-bearing worker shape.
+            Each DP rank contributes its own KV budget. For a disaggregated
+            option this describes the decode pool.
+        mode:
+          type: string
+          enum: [agg, disagg]
+          description: Serving mode of this capacity option.
+        prefill_replicas:
+          type: integer
+          nullable: true
+          description: Prefill replicas for a disaggregated option; null for agg.
+        decode_replicas:
+          type: integer
+          nullable: true
+          description: Decode replicas for a disaggregated option; null for agg.
+        prefill_gpus:
+          type: integer
+          nullable: true
+          description: Total prefill-pool GPUs for a disaggregated option; null for agg.
+        decode_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Total decode-pool GPUs for a disaggregated option. The decode pool
+            holds the resident sequences; prefill only holds one transiently.
+            Null for agg.
         evaluated_shapes:
           type: integer
           description: Aggregated shapes the KV estimate evaluated.
@@ -787,6 +843,31 @@ components:
           type: string
           enum: [aisimulate]
           description: Simulator that produced the KV estimate.
+
+    CapacityOption:
+      type: object
+      required: [option_id, rank, role, gpus_over_minimum, config, capacity]
+      properties:
+        option_id:
+          type: string
+          description: Stable identifier for this alternative within the response.
+        rank:
+          type: integer
+          description: 1-based rank. Rank 1 is the primary recommendation.
+        role:
+          type: string
+          enum: [minimum, same_gpus, larger, disaggregated, shortfall]
+          description: |
+            Why the option is in the comparison set: the fewest-GPU minimum,
+            a same-GPU tie, a larger deployment, a disaggregated deployment, or
+            the best-effort deployment when the target does not fit.
+        gpus_over_minimum:
+          type: integer
+          description: GPUs above the fewest-GPU minimum; 0 for the minimum.
+        config:
+          $ref: '#/components/schemas/RecommendConfig'
+        capacity:
+          $ref: '#/components/schemas/CapacityOutcome'
 
     SweepMeta:
       type: object
@@ -1631,6 +1712,19 @@ components:
             Whether a prefill/decode topology needs an inter-node fabric selected
             before the request is sent. BLIS prices the KV transfer through a named
             fabric; AISimulate's P/D search takes none.
+        capacity_options:
+          type: object
+          description: |
+            Which comparison options a concurrency-capacity run can return for
+            this backend. Clients gate disaggregated option presentation on
+            these flags instead of inferring support from the simulator name.
+          properties:
+            disaggregated:
+              type: boolean
+              description: |
+                Whether capacity runs can include disaggregated alternatives.
+                AISimulate reports true; BLIS reports false because it does not
+                implement the capacity objective.
         version_support:
           type: object
           description: Per-version capabilities. Present when simulator=blis.

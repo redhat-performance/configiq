@@ -20,7 +20,21 @@ describe('mapBackendOption', () => {
       memoryFraction: null,
       memoryFractionKind: 'of_total',
       disaggregationRequiresFabric: false,
+      capacityOptions: { disaggregated: false },
     })
+  })
+
+  it('reports whether capacity runs can include disaggregated options', () => {
+    expect(mapBackendOption({
+      id: 'vllm',
+      versions: ['0.31.0'],
+      capacity_options: { disaggregated: true },
+    })?.capacityOptions.disaggregated).toBe(true)
+    expect(mapBackendOption({
+      id: 'vllm',
+      versions: ['0.31.0'],
+      capacity_options: { disaggregated: 'yes' },
+    })?.capacityOptions.disaggregated).toBe(false)
   })
 
   it('reports whether a P/D topology needs a fabric', () => {

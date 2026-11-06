@@ -1422,8 +1422,8 @@ class TestCapacityContextTokens:
 
 
 class TestSelectCapacity:
-    def _select(self, shapes, *, target=100, context=1000, lower=1, upper=8):
-        return app_module._select_capacity(
+    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+        return app_module._capacity_aggregate_candidates(
             shapes,
             target_concurrency=target,
             context_tokens=context,
@@ -1431,12 +1431,25 @@ class TestSelectCapacity:
             upper_gpus=upper,
         )
 
+    def _select(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+        fitting, best_effort, minimum = self._aggregate(
+            shapes, target=target, context=context, lower=lower, upper=upper
+        )
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=6,
+        )
+        return selected, minimum
+
     def test_picks_the_fewest_gpus_that_hold_the_target(self):
-        winner, minimum = self._select([
+        selected, minimum = self._select([
             _capacity_shape(tp=1, per_rank_tokens=100_000),
             _capacity_shape(tp=2, per_rank_tokens=300_000),
         ])
-        assert winner is not None
+        role, winner = selected[0]
+        assert role == "minimum"
         assert winner.shape.tp == 1
         assert winner.replicas == 1
         assert winner.total_gpus == 1
@@ -1451,20 +1464,20 @@ class TestSelectCapacity:
         assert candidate.capacity_sequences == 240
 
     def test_adds_replicas_to_reach_the_target(self):
-        winner, minimum = self._select(
+        selected, minimum = self._select(
             [_capacity_shape(tp=2, per_rank_tokens=40_000)], upper=16
         )
-        assert winner is not None
+        winner = selected[0][1]
         assert winner.replicas == 3
         assert winner.total_gpus == 6
         assert winner.capacity_sequences == 120
         assert minimum == 2
 
     def test_lower_bound_is_met_with_replicas_not_a_bigger_shape(self):
-        winner, minimum = self._select(
+        selected, minimum = self._select(
             [_capacity_shape(tp=1, per_rank_tokens=100_000)], lower=8, upper=8
         )
-        assert winner is not None
+        winner = selected[0][1]
         # The shape stays a one-GPU worker; only the replica count grows.
         assert winner.shape.gpus_per_worker == 1
         assert winner.replicas == 8
@@ -1472,19 +1485,18 @@ class TestSelectCapacity:
         assert minimum == 8
 
     def test_target_miss_reports_the_largest_deployment_inside_the_window(self):
-        winner, minimum = self._select(
+        _fitting, best_effort, minimum = self._aggregate(
             [_capacity_shape(tp=1, per_rank_tokens=10_000)], upper=4
         )
-        assert winner is not None
+        winner = min(best_effort, key=app_module._capacity_shortfall_order)
         assert winner.total_gpus == 4
         assert winner.capacity_sequences == 40
         assert minimum == 1
 
     def test_returns_none_when_the_window_cannot_fit_any_shape(self):
-        winner, minimum = self._select(
+        _fitting, _best_effort, minimum = self._aggregate(
             [_capacity_shape(tp=2, per_rank_tokens=100_000)], target=10, lower=3, upper=3
         )
-        assert winner is None
         assert minimum is None
 
     def test_selection_does_not_depend_on_shape_order(self):
@@ -1493,14 +1505,20 @@ class TestSelectCapacity:
             _capacity_shape(tp=2, per_rank_tokens=60_000),
             _capacity_shape(tp=4, per_rank_tokens=160_000),
         ]
-        forward, forward_minimum = self._select(shapes, upper=16)
-        backward, backward_minimum = self._select(list(reversed(shapes)), upper=16)
 
+        def selection(order):
+            selected, minimum = self._select(order, upper=16)
+            return [
+                (role, candidate.shape.tp, candidate.replicas, candidate.total_gpus)
+                for role, candidate in selected
+            ], minimum
+
+        forward, forward_minimum = selection(shapes)
+        backward, backward_minimum = selection(list(reversed(shapes)))
+
+        assert forward == backward
         # The 4-GPU tie is broken by more capacity per replica, not list order.
-        assert forward.shape.tp == 4
-        assert backward.shape.tp == 4
-        assert forward.replicas == backward.replicas == 1
-        assert forward.total_gpus == backward.total_gpus == 4
+        assert forward[0] == ("minimum", 4, 1, 4)
         assert forward_minimum == backward_minimum == 1
 
 
@@ -1557,10 +1575,150 @@ class TestCapacityConfig:
         assert config.power_w is None
 
 
+class TestCapacityOptionSelection:
+    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=16):
+        return app_module._capacity_aggregate_candidates(
+            shapes,
+            target_concurrency=target,
+            context_tokens=context,
+            lower_gpus=lower,
+            upper_gpus=upper,
+        )
+
+    def test_ranks_minimum_ties_and_larger_options(self):
+        shapes = [
+            _capacity_shape(tp=2, per_rank_tokens=100_000),
+            _capacity_shape(tp=1, dp=2, per_rank_tokens=50_000),
+        ]
+        fitting, best_effort, minimum = self._aggregate(shapes)
+        assert minimum == 2
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=6,
+        )
+        roles = [role for role, _candidate in selected]
+        assert roles[0] == "minimum"
+        assert "same_gpus" in roles
+        assert "larger" in roles
+        assert selected[0][1].total_gpus == 2
+        assert len(selected) <= 6
+
+    def test_option_count_limits_the_comparison(self):
+        shapes = [_capacity_shape(tp=1, per_rank_tokens=100_000)]
+        fitting, best_effort, _minimum = self._aggregate(shapes)
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=2,
+        )
+        assert len(selected) == 2
+
+    def test_disaggregated_options_are_added_as_larger_alternatives(self):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        fitting, best_effort, _minimum = self._aggregate(shapes)
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=1000,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=1000,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[disagg],
+            option_count=8,
+        )
+        roles = [role for role, _candidate in selected]
+        assert "disaggregated" in roles
+        disagg_index = roles.index("disaggregated")
+        assert selected[disagg_index][1].total_gpus == 6
+        assert roles[0] == "minimum"
+
+    def test_best_effort_is_used_when_the_target_does_not_fit(self):
+        shapes = [_capacity_shape(tp=1, per_rank_tokens=10_000)]
+        fitting, best_effort, minimum = self._aggregate(shapes, upper=4)
+        assert fitting == []
+        assert minimum == 1
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=4,
+        )
+        assert [role for role, _candidate in selected] == ["shortfall"]
+        assert selected[0][1].total_gpus == 4
+
+
+class TestCapacityDisaggOutcome:
+    def _candidate(self):
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=1000,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=1000,
+        )
+        return app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+
+    def test_outcome_reports_the_decode_pool_as_the_resident_side(self):
+        outcome = app_module._capacity_option_outcome(
+            candidate=self._candidate(),
+            context_tokens=1000,
+            target_concurrency=100,
+            minimum_gpus=2,
+            evaluated_shapes=2,
+            feasible_shapes=2,
+            prediction=MagicMock(),
+            unavailable_reason=None,
+        )
+        assert outcome.mode == "disagg"
+        assert outcome.prefill_gpus == 2
+        assert outcome.decode_gpus == 4
+        assert outcome.prefill_replicas == 1
+        assert outcome.decode_replicas == 2
+        assert outcome.replicas == 2
+        assert outcome.per_rank_tokens == 200_000
+        assert outcome.fits is True
+
+    def test_disagg_config_sums_pool_gpus_and_keeps_one_scalable_unit(self):
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+        config = app_module._capacity_disagg_config(
+            request,
+            backend_version="0.24.0",
+            candidate=self._candidate(),
+            target_concurrency=100,
+            prediction=None,
+        )
+        assert config.mode == "disagg"
+        assert config.total_gpus_needed == 6
+        assert config.num_total_gpus == 6
+        assert config.replicas_needed == 1
+        assert config.prefill_config is not None
+        assert config.decode_config is not None
+        assert config.prefill_config.num_workers == 1
+        assert config.decode_config.num_workers == 2
+        assert config.prefill_config.tp == 2
+        assert config.decode_config.tp == 2
+
+
 class TestRunCapacityRecommendation:
-    def _run(self, monkeypatch, shapes, *, prediction=None, reason=None, **overrides):
+    def _run(self, monkeypatch, shapes, *, prediction=None, reason=None, disagg=None, **overrides):
         _stub_capacity_sdk(monkeypatch)
         monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: shapes)
+        monkeypatch.setattr(
+            app_module, "_capacity_disagg_candidates", lambda *args, **kwargs: disagg or []
+        )
         monkeypatch.setattr(
             app_module, "_capacity_prediction", lambda *args, **kwargs: (prediction, reason)
         )
@@ -1576,7 +1734,7 @@ class TestRunCapacityRecommendation:
         return prediction
 
     def test_capacity_is_decided_by_kv_residency_not_the_simulation(self, monkeypatch):
-        config, capacity, _sweep = self._run(
+        config, capacity, _sweep, options = self._run(
             monkeypatch,
             [_capacity_shape(tp=1, per_rank_tokens=100_000)],
             prediction=self._available_prediction(),
@@ -1591,9 +1749,11 @@ class TestRunCapacityRecommendation:
         assert config.total_gpus_needed == 1
         assert config.replicas_needed == 1
         assert config.tokens_per_second == 250.0
+        assert options[0].role == "minimum"
+        assert options[0].config is config
 
     def test_target_miss_is_still_200_shaped_data_with_a_shortfall(self, monkeypatch):
-        config, capacity, _sweep = self._run(
+        config, capacity, _sweep, _options = self._run(
             monkeypatch,
             [_capacity_shape(tp=1, per_rank_tokens=25_000)],
             prediction=self._available_prediction(),
@@ -1610,7 +1770,7 @@ class TestRunCapacityRecommendation:
         assert config.replicas_needed == 4
 
     def test_performance_gap_keeps_the_capacity_answer_and_adds_a_warning(self, monkeypatch):
-        config, capacity, _sweep = self._run(
+        config, capacity, _sweep, options = self._run(
             monkeypatch,
             [_capacity_shape(tp=1, per_rank_tokens=100_000)],
             prediction=None,
@@ -1625,13 +1785,43 @@ class TestRunCapacityRecommendation:
             "Performance simulation was unavailable" in warning
             for warning in config.warnings
         )
+        assert options[0].capacity.performance_available is False
+        assert options[0].capacity.performance_unavailable_reason == "no timing coverage"
+
+    def test_disaggregated_candidates_become_larger_options(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, _sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+        )
+        assert [option.role for option in options][0] == "minimum"
+        disagg_option = next(option for option in options if option.role == "disaggregated")
+        assert disagg_option.capacity.mode == "disagg"
+        assert disagg_option.config.mode == "disagg"
+        assert disagg_option.gpus_over_minimum > 0
 
     def test_sweep_reports_an_exhaustive_deterministic_enumeration(self, monkeypatch):
         shapes = [
             _capacity_shape(tp=1, per_rank_tokens=100_000),
             _capacity_shape(tp=2, per_rank_tokens=300_000),
         ]
-        _config, _capacity, sweep = self._run(monkeypatch, shapes, max_candidate_gpus=8)
+        _config, _capacity, sweep, _options = self._run(
+            monkeypatch, shapes, max_candidate_gpus=8
+        )
         assert sweep.algorithm == "enumerate"
         assert sweep.evaluated == 2
         assert sweep.feasible == 2
@@ -1664,22 +1854,24 @@ class TestRunCapacityRecommendation:
 class TestRecommendCapacityEndpoint:
     @patch("tools.api_service.app._run_capacity_recommendation")
     def test_capacity_is_200_with_a_capacity_block_and_enumeration_sweep(self, mock_run):
+        config = app_module.RecommendConfig(total_gpus_needed=4, replicas_needed=2)
+        capacity = app_module.CapacityOutcome(
+            target_concurrency=32,
+            context_per_sequence_tokens=2176,
+            capacity_tokens=500_000,
+            capacity_sequences=229,
+            fits=True,
+            minimum_gpus=2,
+            per_rank_tokens=125_000,
+            replicas=2,
+            attention_dp=1,
+            evaluated_shapes=3,
+            feasible_shapes=3,
+            performance_available=True,
+        )
         mock_run.return_value = (
-            app_module.RecommendConfig(total_gpus_needed=4, replicas_needed=2),
-            app_module.CapacityOutcome(
-                target_concurrency=32,
-                context_per_sequence_tokens=2176,
-                capacity_tokens=500_000,
-                capacity_sequences=229,
-                fits=True,
-                minimum_gpus=2,
-                per_rank_tokens=125_000,
-                replicas=2,
-                attention_dp=1,
-                evaluated_shapes=3,
-                feasible_shapes=3,
-                performance_available=True,
-            ),
+            config,
+            capacity,
             app_module.SweepMeta(
                 algorithm="enumerate",
                 max_trials=3,
@@ -1689,6 +1881,16 @@ class TestRecommendCapacityEndpoint:
                 budget_exhausted=False,
                 strict_sla=False,
             ),
+            [
+                app_module.CapacityOption(
+                    option_id="agg-t2-d1-mt2-me1-r2",
+                    rank=1,
+                    role="minimum",
+                    gpus_over_minimum=0,
+                    config=config,
+                    capacity=capacity,
+                )
+            ],
         )
 
         response = client.post("/recommend", json=VALID_CAPACITY_BODY)
@@ -1701,6 +1903,9 @@ class TestRecommendCapacityEndpoint:
         assert data["configs"][0]["total_gpus_needed"] == 4
         assert data["sweep"]["algorithm"] == "enumerate"
         assert data["demand"] is None
+        assert data["capacity_options"][0]["option_id"] == "agg-t2-d1-mt2-me1-r2"
+        assert data["capacity_options"][0]["role"] == "minimum"
+        assert data["capacity_options"][0]["capacity"]["capacity_sequences"] == 229
 
     def test_capacity_rejects_blis_before_running(self):
         response = client.post(
@@ -1712,7 +1917,16 @@ class TestRecommendCapacityEndpoint:
 
 class TestBackendObjectives:
     def test_aisimulate_advertises_every_implemented_sizing_goal(self, monkeypatch):
-        monkeypatch.setattr(app_module, "get_supported_databases", dict)
+        backend = MagicMock()
+        backend.get_default_free_gpu_memory_fraction.return_value = 0.9
+        backend.memory_fraction_of_free.return_value = True
+        monkeypatch.setattr(app_module, "get_supported_databases", lambda: {
+            "h200_sxm": {"vllm": ["0.24.0"]},
+        })
+        monkeypatch.setattr(app_module, "get_backend", lambda _id: backend)
+        monkeypatch.setattr(
+            app_module, "get_version_slots", lambda _system, _sdk: {"0.24.0": object()}
+        )
         data = client.get("/backends").json()
         assert data["objectives"] == [
             "min_gpus",
@@ -1720,11 +1934,13 @@ class TestBackendObjectives:
             "pareto",
             "concurrency_capacity",
         ]
+        assert data["backends"][0]["capacity_options"] == {"disaggregated": True}
 
     def test_blis_does_not_advertise_capacity(self):
         data = client.get("/backends?simulator=blis").json()
         assert "concurrency_capacity" not in data["objectives"]
         assert "throughput_demand" in data["objectives"]
+        assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
 
 
 # ─── /memory tests ───────────────────────────────────────────────────────────

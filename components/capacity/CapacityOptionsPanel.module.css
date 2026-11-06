@@ -1,0 +1,221 @@
+.section {
+  --t1: var(--gc-text, #151515);
+  --display: var(--gc-font-display, "Red Hat Display", system-ui, sans-serif);
+  --mono: var(--gc-font-mono, "Red Hat Mono", ui-monospace, monospace);
+  margin-bottom: 24px;
+}
+
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 12px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--t1);
+}
+
+.subtitle {
+  font-size: 13px;
+  color: #3c3f42;
+}
+
+.bodyGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr);
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.chartColumn,
+.detailColumn {
+  min-width: 0;
+}
+
+.chartWrap {
+  width: 100%;
+}
+
+.emptyChart {
+  margin: 0;
+  padding: 24px;
+  border: 1px dashed #d2d2d2;
+  font-size: 13px;
+  color: #3c3f42;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: #3c3f42;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.legendDot,
+.legendSelected {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.legendSelected {
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #3c3f42;
+}
+
+.detailHeading {
+  margin: 0 0 8px;
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t1);
+}
+
+.detail {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.detail > div {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.detail dt {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #3c3f42;
+}
+
+.detail dd {
+  margin: 0;
+  font-size: 13px;
+  color: #151515;
+  overflow-wrap: anywhere;
+}
+
+.tableScroll {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  color: #151515;
+  font-variant-numeric: tabular-nums;
+}
+
+.tableCaption {
+  caption-side: top;
+  padding: 0 0 8px;
+  text-align: left;
+  font-size: 12.5px;
+  color: #3c3f42;
+}
+
+.table th {
+  padding: 8px 10px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #3c3f42;
+  border-bottom: 1px solid #d2d2d2;
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  vertical-align: top;
+}
+
+.table tbody tr {
+  cursor: pointer;
+}
+
+.table tbody tr:hover {
+  background: #f5f8fb;
+}
+
+.rowSelected {
+  background: #e7f1fa;
+}
+
+.rowSelected:hover {
+  background: #e7f1fa;
+}
+
+.numeric {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.rowButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: #0066cc;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rowButton:hover {
+  text-decoration: underline;
+}
+
+.rowButton:focus-visible {
+  outline: 2px solid #0066cc;
+  outline-offset: 2px;
+}
+
+.selectedLabel {
+  margin-left: 2px;
+}
+
+.okIcon {
+  margin-left: 5px;
+  color: #3e8635;
+  vertical-align: -1px;
+}
+
+.warnIcon {
+  margin-left: 5px;
+  color: #c58c00;
+  vertical-align: -1px;
+}
+
+@media (max-width: 900px) {
+  .bodyGrid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -9,6 +9,7 @@ See docs/api/openapi.yaml for the full spec.
 """
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -455,10 +456,11 @@ class DemandOutcome(BaseModel):
 class CapacityOutcome(BaseModel):
     """Memory-residency outcome of a concurrency-capacity sizing run.
 
-    Capacity is decided by the KV-cache estimate for the selected aggregated
-    deployment, not by a replay. The performance fields on ``configs[0]`` are a
-    separate informational simulation at the requested concurrency; they never
-    gate ``fits``.
+    Capacity is decided by the KV-cache estimate for the selected deployment,
+    not by a replay. For a disaggregated option the decode pool holds the
+    resident sequences and the prefill pool only holds one transiently. The
+    performance fields on the option config are a separate informational
+    simulation at the requested concurrency; they never gate ``fits``.
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
@@ -482,6 +484,14 @@ class CapacityOutcome(BaseModel):
     exhaustive: bool = True
     performance_available: bool = False
     performance_unavailable_reason: str | None = None
+    #: Serving mode the option uses. For disagg, ``replicas``,
+    #: ``attention_dp``, and ``per_rank_tokens`` describe the decode pool;
+    #: prefill only needs to hold one sequence transiently.
+    mode: Literal["agg", "disagg"] = "agg"
+    prefill_replicas: int | None = None
+    decode_replicas: int | None = None
+    prefill_gpus: int | None = None
+    decode_gpus: int | None = None
     simulator: Literal["aisimulate"] = "aisimulate"
 
 
@@ -547,6 +557,21 @@ class RecommendConfig(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CapacityOption(BaseModel):
+    """One ranked deployment alternative for a concurrency-capacity run.
+
+    The first option is the primary recommendation and is also returned as
+    ``configs[0]``. ``configs`` remains a single-item list so clients that do
+    not understand options keep their existing behaviour.
+    """
+    option_id: str
+    rank: int
+    role: Literal["minimum", "same_gpus", "larger", "disaggregated", "shortfall"]
+    gpus_over_minimum: int
+    config: RecommendConfig
+    capacity: CapacityOutcome
+
+
 class RecommendResponse(BaseModel):
     configs: list[RecommendConfig]
     chosen_mode: str
@@ -556,6 +581,7 @@ class RecommendResponse(BaseModel):
     views: CandidateViews | None = None
     demand: DemandOutcome | None = None
     capacity: CapacityOutcome | None = None
+    capacity_options: list[CapacityOption] = Field(default_factory=list)
     sweep: SweepMeta | None = None
 
 
@@ -1839,6 +1865,15 @@ def _gpu_window_label(lower: int, upper: int) -> str:
     return str(lower) if lower == upper else f"{lower}-{upper}"
 
 
+#: Capacity comparisons share a wall-clock budget across all performance
+#: simulations. Capacity itself is already known from the KV estimate, so an
+#: option that misses this budget stays promotable with an explicit reason.
+_CAPACITY_OPTION_SIMULATION_BUDGET_S = 40
+_CAPACITY_OPTION_SIMULATION_WORKERS = 2
+_CAPACITY_OPTION_DEFAULT_COUNT = 8
+_CAPACITY_OPTION_DEFAULT_COUNT_NO_DISAGG = 6
+
+
 @dataclass(frozen=True)
 class _CapacityShape:
     """One aggregated worker shape and its per-rank KV token capacity."""
@@ -1880,6 +1915,30 @@ class _CapacityCandidate:
     @property
     def capacity_sequences(self) -> int:
         return self.capacity_tokens // self.context_tokens
+
+
+@dataclass(frozen=True)
+class _DisaggCapacityCandidate:
+    """A prefill/decode pair whose decode pool holds the requested sequences.
+
+    Prefill holds one sequence transiently, so it contributes GPUs but not
+    resident capacity. The decode pool is the capacity-bearing side.
+    """
+
+    prefill: _CapacityCandidate
+    decode: _CapacityCandidate
+
+    @property
+    def total_gpus(self) -> int:
+        return self.prefill.total_gpus + self.decode.total_gpus
+
+    @property
+    def capacity_tokens(self) -> int:
+        return self.decode.capacity_tokens
+
+    @property
+    def capacity_sequences(self) -> int:
+        return self.decode.capacity_sequences
 
 
 def _capacity_shapes(
@@ -1946,6 +2005,350 @@ def _capacity_shapes(
     ]
 
 
+def _capacity_aggregate_candidates(
+    shapes: list[_CapacityShape],
+    *,
+    target_concurrency: int,
+    context_tokens: int,
+    lower_gpus: int,
+    upper_gpus: int,
+) -> tuple[list[_CapacityCandidate], list[_CapacityCandidate], int | None]:
+    """Enumerate aggregate deployments around the minimum for each shape.
+
+    Returns ``(fitting, best_effort, minimum_gpus)``. ``fitting`` includes the
+    smallest deployment that holds the target plus nearby larger ones, so the
+    comparison keeps same-GPU ties and larger alternatives without enumerating
+    every replica count. ``best_effort`` is the largest deployment of each
+    shape inside the window, used only when nothing holds the target.
+    """
+    needed_tokens = target_concurrency * context_tokens
+    minimum_gpus: int | None = None
+    fitting: list[_CapacityCandidate] = []
+    best_effort: list[_CapacityCandidate] = []
+
+    for shape in shapes:
+        per_worker = shape.gpus_per_worker
+        if per_worker <= 0 or per_worker > upper_gpus:
+            continue
+        min_replicas = max(1, math.ceil(lower_gpus / per_worker))
+        if per_worker * min_replicas > upper_gpus:
+            continue
+        single_gpus = per_worker * min_replicas
+        if minimum_gpus is None or single_gpus < minimum_gpus:
+            minimum_gpus = single_gpus
+
+        max_replicas = upper_gpus // per_worker
+        needed_replicas = max(1, math.ceil(needed_tokens / shape.tokens_per_replica))
+        first_fitting = max(min_replicas, needed_replicas)
+        if first_fitting <= max_replicas:
+            # Keep the minimum and the next two replica counts, plus the largest
+            # deployment in the window. This gives larger options even when a
+            # single shape is feasible.
+            for replicas in sorted({first_fitting, first_fitting + 1, first_fitting + 2, max_replicas}):
+                if first_fitting <= replicas <= max_replicas:
+                    fitting.append(_CapacityCandidate(shape, replicas, context_tokens))
+        if max_replicas >= min_replicas:
+            best_effort.append(_CapacityCandidate(shape, max_replicas, context_tokens))
+
+    # Collapse duplicate shape/replica pairs while preserving deterministic order.
+    fitting = list(dict.fromkeys(fitting))
+    best_effort = list(dict.fromkeys(best_effort))
+    return fitting, best_effort, minimum_gpus
+
+
+def _capacity_disagg_candidates(
+    req: RecommendRequest,
+    model_path: str,
+    *,
+    backend: str,
+    backend_version: str,
+    context_tokens: int,
+    target_concurrency: int,
+    lower_gpus: int,
+    upper_gpus: int,
+    minimum_gpus: int | None,
+) -> list[_DisaggCapacityCandidate]:
+    """Enumerate disaggregated options from the SDK's P/D search space.
+
+    The SDK enumerates prefill/decode shapes and replica counts together; this
+    keeps the pairs whose decode pool holds the requested resident sequences.
+    Prefill only needs to hold one sequence transiently, so its KV capacity is
+    estimated at batch size 1. Weights are replicated per pool, so a P/D pair is
+    only offered as an option larger than the aggregated minimum.
+    """
+    from aisimulate.sweeper.kv_estimate import feasible_shape_tokens
+    from aisimulate.sweeper.model_hw import resolve_model_hardware
+    from aisimulate.sweeper.parallel_enum import enumerate_disagg_configs
+
+    try:
+        facts = resolve_model_hardware(model_path, req.system, backend=backend)
+        pairs = enumerate_disagg_configs(
+            is_moe=facts.is_moe,
+            backend=backend,
+            gpu_budget=upper_gpus,
+            min_gpu_budget=lower_gpus,
+            min_gpus_per_worker=1,
+            enable_wideep=facts.enable_wideep,
+            allow_moe_pure_tp=True,
+        )
+        if not pairs:
+            return []
+        prefill_shapes = list(dict.fromkeys(pair.prefill.shape for pair in pairs))
+        decode_shapes = list(dict.fromkeys(pair.decode.shape for pair in pairs))
+        memory_fraction = _backend_memory_fraction(req.backend, backend_version)
+        prefill_tokens = feasible_shape_tokens(
+            prefill_shapes,
+            model_name=model_path,
+            hardware_sku=req.system,
+            backend=backend,
+            backend_version=backend_version,
+            max_seq_len=context_tokens,
+            max_num_tokens=context_tokens,
+            # Prefill only needs to hold one sequence transiently.
+            max_batch_size=1,
+            memory_fraction=memory_fraction,
+        )
+        decode_tokens = feasible_shape_tokens(
+            decode_shapes,
+            model_name=model_path,
+            hardware_sku=req.system,
+            backend=backend,
+            backend_version=backend_version,
+            max_seq_len=context_tokens,
+            max_num_tokens=context_tokens,
+            max_batch_size=max(1, target_concurrency),
+            memory_fraction=memory_fraction,
+        )
+    except Exception as error:  # disagg is an optional comparison set
+        logger.warning(
+            "Disaggregated capacity options unavailable for %s on %s: %s",
+            req.model_path,
+            req.system,
+            error,
+        )
+        return []
+
+    if not prefill_tokens or not decode_tokens:
+        return []
+
+    needed_tokens = target_concurrency * context_tokens
+
+    def candidate_for(worker: Any, tokens: dict[Any, int]) -> _CapacityCandidate:
+        shape = worker.shape
+        return _CapacityCandidate(
+            shape=_CapacityShape(
+                tp=shape.tp,
+                dp=shape.dp,
+                moe_tp=shape.moe_tp,
+                moe_ep=shape.moe_ep,
+                per_rank_tokens=tokens[shape],
+            ),
+            replicas=worker.replicas,
+            context_tokens=context_tokens,
+        )
+
+    candidates: list[_DisaggCapacityCandidate] = []
+    seen: set[tuple[int, int, int, int, int, int]] = set()
+    for pair in pairs:
+        if pair.prefill.shape not in prefill_tokens or pair.decode.shape not in decode_tokens:
+            continue
+        prefill = candidate_for(pair.prefill, prefill_tokens)
+        decode = candidate_for(pair.decode, decode_tokens)
+        if decode.capacity_tokens < needed_tokens:
+            continue
+        total = prefill.total_gpus + decode.total_gpus
+        if total > upper_gpus or total < lower_gpus:
+            continue
+        if minimum_gpus is not None and total <= minimum_gpus:
+            continue
+        key = (
+            prefill.shape.tp,
+            prefill.shape.dp,
+            prefill.replicas,
+            decode.shape.tp,
+            decode.shape.dp,
+            decode.replicas,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(_DisaggCapacityCandidate(prefill, decode))
+    return candidates
+
+
+def _disagg_capacity_order(candidate: _DisaggCapacityCandidate) -> tuple[int, ...]:
+    prefill = candidate.prefill.shape
+    decode = candidate.decode.shape
+    return (
+        candidate.total_gpus,
+        -candidate.capacity_sequences,
+        -decode.per_rank_tokens,
+        candidate.prefill.total_gpus,
+        prefill.tp,
+        prefill.dp,
+        decode.tp,
+        decode.dp,
+        candidate.decode.replicas,
+    )
+
+
+def _agg_candidate_signature(candidate: _CapacityCandidate) -> tuple[int, int, int, int, int]:
+    shape = candidate.shape
+    return (shape.tp, shape.dp, shape.moe_tp, shape.moe_ep, candidate.replicas)
+
+
+def _disagg_candidate_signature(
+    candidate: _DisaggCapacityCandidate,
+) -> tuple[int, int, int, int, int, int, int]:
+    prefill = candidate.prefill.shape
+    decode = candidate.decode.shape
+    return (
+        prefill.tp,
+        prefill.dp,
+        prefill.moe_tp,
+        prefill.moe_ep,
+        decode.tp,
+        decode.dp,
+        candidate.decode.replicas,
+    )
+
+
+def _select_disagg_representatives(
+    candidates: list[_DisaggCapacityCandidate],
+    *,
+    limit: int = 2,
+) -> list[_DisaggCapacityCandidate]:
+    """Pick the smallest P/D option plus one at a larger GPU count."""
+    if not candidates or limit <= 0:
+        return []
+    ordered = sorted(candidates, key=_disagg_capacity_order)
+    selected = [ordered[0]]
+    for candidate in ordered[1:]:
+        if len(selected) >= limit:
+            break
+        if candidate.total_gpus > selected[0].total_gpus:
+            selected.append(candidate)
+    if len(selected) < limit:
+        for candidate in ordered[1:]:
+            if len(selected) >= limit:
+                break
+            if candidate not in selected:
+                selected.append(candidate)
+    return selected[:limit]
+
+
+def _select_capacity_options(
+    *,
+    aggregate_fitting: list[_CapacityCandidate],
+    aggregate_best_effort: list[_CapacityCandidate],
+    disagg_candidates: list[_DisaggCapacityCandidate],
+    option_count: int,
+) -> list[tuple[str, _CapacityCandidate | _DisaggCapacityCandidate]]:
+    """Build the ranked option list: minimum, ties, larger, then P/D."""
+    if option_count <= 0:
+        return []
+    if not aggregate_fitting:
+        ordered = sorted(aggregate_best_effort, key=_capacity_shortfall_order)
+        return [("shortfall", candidate) for candidate in ordered[:option_count]]
+
+    minimum = min(aggregate_fitting, key=_capacity_order)
+    selected: list[tuple[str, _CapacityCandidate | _DisaggCapacityCandidate]] = [
+        ("minimum", minimum)
+    ]
+    chosen_agg = {_agg_candidate_signature(minimum)}
+    minimum_gpus = minimum.total_gpus
+
+    ties = [
+        candidate
+        for candidate in aggregate_fitting
+        if candidate.total_gpus == minimum_gpus
+        and _agg_candidate_signature(candidate) not in chosen_agg
+    ]
+    for candidate in sorted(ties, key=_capacity_order)[:3]:
+        selected.append(("same_gpus", candidate))
+        chosen_agg.add(_agg_candidate_signature(candidate))
+
+    larger_source = sorted(
+        (
+            candidate
+            for candidate in aggregate_fitting
+            if candidate.total_gpus > minimum_gpus
+            and _agg_candidate_signature(candidate) not in chosen_agg
+        ),
+        key=_capacity_order,
+    )
+    larger: list[_CapacityCandidate] = []
+    seen_gpu_counts: set[int] = set()
+    for candidate in larger_source:
+        if len(larger) >= 2:
+            break
+        if candidate.total_gpus in seen_gpu_counts:
+            continue
+        larger.append(candidate)
+        seen_gpu_counts.add(candidate.total_gpus)
+    if len(larger) < 2:
+        for candidate in larger_source:
+            if len(larger) >= 2:
+                break
+            if candidate in larger:
+                continue
+            larger.append(candidate)
+    for candidate in larger:
+        selected.append(("larger", candidate))
+        chosen_agg.add(_agg_candidate_signature(candidate))
+
+    disagg_selected = _select_disagg_representatives(disagg_candidates)
+    for candidate in disagg_selected:
+        selected.append(("disaggregated", candidate))
+
+    if len(selected) < option_count:
+        for candidate in sorted(aggregate_fitting, key=_capacity_order):
+            if len(selected) >= option_count:
+                break
+            signature = _agg_candidate_signature(candidate)
+            if signature in chosen_agg:
+                continue
+            role = "same_gpus" if candidate.total_gpus == minimum_gpus else "larger"
+            selected.append((role, candidate))
+            chosen_agg.add(signature)
+    if len(selected) < option_count:
+        chosen_disagg = {_disagg_candidate_signature(candidate) for candidate in disagg_selected}
+        for candidate in sorted(disagg_candidates, key=_disagg_capacity_order):
+            if len(selected) >= option_count:
+                break
+            if _disagg_candidate_signature(candidate) in chosen_disagg:
+                continue
+            selected.append(("disaggregated", candidate))
+            chosen_disagg.add(_disagg_candidate_signature(candidate))
+    return selected[:option_count]
+
+
+def _capacity_option_id(
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
+    *,
+    used: set[str],
+) -> str:
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        prefill = candidate.prefill.shape
+        decode = candidate.decode.shape
+        base = (
+            f"disagg-pt{prefill.tp}-pd{prefill.dp}-pr{candidate.prefill.replicas}"
+            f"-dt{decode.tp}-dd{decode.dp}-dr{candidate.decode.replicas}"
+            f"-me{decode.moe_ep}"
+        )
+    else:
+        shape = candidate.shape
+        base = f"agg-t{shape.tp}-d{shape.dp}-mt{shape.moe_tp}-me{shape.moe_ep}-r{candidate.replicas}"
+    option_id = base
+    suffix = 2
+    while option_id in used:
+        option_id = f"{base}-{suffix}"
+        suffix += 1
+    used.add(option_id)
+    return option_id
+
+
+
 def _capacity_order(candidate: _CapacityCandidate) -> tuple[int, ...]:
     shape = candidate.shape
     return (
@@ -1976,97 +2379,77 @@ def _capacity_shortfall_order(candidate: _CapacityCandidate) -> tuple[int, ...]:
     )
 
 
-def _select_capacity(
-    shapes: list[_CapacityShape],
-    *,
-    target_concurrency: int,
-    context_tokens: int,
-    lower_gpus: int,
-    upper_gpus: int,
-) -> tuple[_CapacityCandidate | None, int | None]:
-    """Choose the capacity deployment deterministically.
-
-    Returns ``(winner, minimum_gpus)``. ``minimum_gpus`` is the fewest GPUs in
-    the requested window that hold one sequence; ``winner`` is the fewest GPUs
-    that hold the target. When nothing holds the target, the winner is the
-    highest-capacity deployment inside the window so the caller can report the
-    shortfall at 200. ``(None, None)`` means the window cannot hold even one
-    sequence.
-    """
-    needed_tokens = target_concurrency * context_tokens
-    minimum_gpus: int | None = None
-    fitting: list[_CapacityCandidate] = []
-    best_effort: list[_CapacityCandidate] = []
-
-    for shape in shapes:
-        per_worker = shape.gpus_per_worker
-        if per_worker <= 0 or per_worker > upper_gpus:
-            continue
-        # Honour an explicit lower bound by adding replicas, never by pretending
-        # the shape consumes more GPUs than it does.
-        min_replicas = max(1, math.ceil(lower_gpus / per_worker))
-        if per_worker * min_replicas > upper_gpus:
-            continue
-        if minimum_gpus is None or per_worker * min_replicas < minimum_gpus:
-            minimum_gpus = per_worker * min_replicas
-
-        per_replica_tokens = shape.tokens_per_replica
-        needed_replicas = max(1, math.ceil(needed_tokens / per_replica_tokens))
-        replicas = max(min_replicas, needed_replicas)
-        if per_worker * replicas <= upper_gpus:
-            fitting.append(_CapacityCandidate(shape, replicas, context_tokens))
-
-        # Largest deployment of this shape inside the window, used only when
-        # the target cannot be met.
-        max_replicas = upper_gpus // per_worker
-        if max_replicas >= min_replicas:
-            best_effort.append(_CapacityCandidate(shape, max_replicas, context_tokens))
-
-    if minimum_gpus is None:
-        return None, None
-    if fitting:
-        return min(fitting, key=_capacity_order), minimum_gpus
-    return min(best_effort, key=_capacity_shortfall_order), minimum_gpus
-
-
 def _capacity_prediction(
     req: RecommendRequest,
     model_path: str,
     *,
     backend_version: str,
-    candidate: _CapacityCandidate,
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
     target_concurrency: int,
 ) -> tuple[Any | None, str | None]:
-    """Simulate the winning deployment once, at its busiest replica.
+    """Simulate one capacity option at the requested concurrency.
 
     Capacity does not depend on this replay, so a coverage gap in the timing
     data must not fail the sizing answer. The caller reports the capacity block
-    with ``performance_available=false`` and a warning instead.
+    with ``performance_available=false`` and a reason instead.
     """
-    replicas = candidate.replicas
-    per_replica = max(1, math.ceil(target_concurrency / replicas))
-    prediction_req = EstimateRequest(
-        model_path=model_path,
-        system=req.system,
-        backend=req.backend,
-        backend_version=backend_version,
-        isl=req.isl,
-        osl=req.osl,
-        max_seq_len=req.max_seq_len,
-        max_num_seqs=per_replica,
-        tp_size=candidate.shape.tp,
-        pp_size=1,
-        attention_dp_size=candidate.shape.dp,
-        moe_tp_size=candidate.shape.moe_tp,
-        moe_ep_size=candidate.shape.moe_ep,
-        batch_size=per_replica,
-        # One request per concurrency slot is enough to measure steady state;
-        # the /predict default stops after a single total request instead.
-        requests_per_load_unit=_demand_requests_per_load_unit(),
-        database_mode=req.database_mode,
-        gpu_memory_utilization=_backend_memory_fraction(req.backend, backend_version),
-        simulator="aisimulate",
-    )
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        prefill = candidate.prefill
+        decode = candidate.decode
+        prediction_req = EstimateRequest(
+            model_path=model_path,
+            system=req.system,
+            backend=req.backend,
+            backend_version=backend_version,
+            isl=req.isl,
+            osl=req.osl,
+            max_seq_len=req.max_seq_len,
+            max_num_seqs=max(1, math.ceil(target_concurrency / decode.replicas)),
+            mode="disagg",
+            prefill_tp_size=prefill.shape.tp,
+            prefill_pp_size=1,
+            prefill_moe_tp_size=prefill.shape.moe_tp,
+            prefill_moe_ep_size=prefill.shape.moe_ep,
+            prefill_num_workers=prefill.replicas,
+            prefill_batch_size=max(1, math.ceil(target_concurrency / prefill.replicas)),
+            decode_tp_size=decode.shape.tp,
+            decode_pp_size=1,
+            decode_moe_tp_size=decode.shape.moe_tp,
+            decode_moe_ep_size=decode.shape.moe_ep,
+            decode_num_workers=decode.replicas,
+            decode_batch_size=max(1, math.ceil(target_concurrency / decode.replicas)),
+            attention_dp_size=decode.shape.dp,
+            batch_size=target_concurrency,
+            requests_per_load_unit=_demand_requests_per_load_unit(),
+            database_mode=req.database_mode,
+            gpu_memory_utilization=_backend_memory_fraction(req.backend, backend_version),
+            simulator="aisimulate",
+        )
+    else:
+        replicas = candidate.replicas
+        per_replica = max(1, math.ceil(target_concurrency / replicas))
+        prediction_req = EstimateRequest(
+            model_path=model_path,
+            system=req.system,
+            backend=req.backend,
+            backend_version=backend_version,
+            isl=req.isl,
+            osl=req.osl,
+            max_seq_len=req.max_seq_len,
+            max_num_seqs=per_replica,
+            tp_size=candidate.shape.tp,
+            pp_size=1,
+            attention_dp_size=candidate.shape.dp,
+            moe_tp_size=candidate.shape.moe_tp,
+            moe_ep_size=candidate.shape.moe_ep,
+            batch_size=per_replica,
+            # One request per concurrency slot is enough to measure steady state;
+            # the /predict default stops after a single total request instead.
+            requests_per_load_unit=_demand_requests_per_load_unit(),
+            database_mode=req.database_mode,
+            gpu_memory_utilization=_backend_memory_fraction(req.backend, backend_version),
+            simulator="aisimulate",
+        )
     try:
         return _run_aisimulate_prediction(prediction_req, set()), None
     except Exception as error:  # capacity does not gate on timing data
@@ -2138,17 +2521,322 @@ def _capacity_config(
     )
 
 
+def _capacity_disagg_config(
+    req: RecommendRequest,
+    *,
+    backend_version: str,
+    candidate: _DisaggCapacityCandidate,
+    target_concurrency: int,
+    prediction: Any | None,
+) -> RecommendConfig:
+    summary = prediction.summary if prediction is not None else {}
+    total_gpus = candidate.total_gpus
+    throughput = _metric(summary, "output_throughput_tok_s", "tokens_per_second")
+    power = _metric(summary, "power_w", "mean_power_w")
+    gemm = summary.get("gemm") or summary.get("gemm_quant_mode")
+    kvcache = summary.get("kvcache") or summary.get("kvcache_quant_mode")
+    prefill_batch = max(1, math.ceil(target_concurrency / candidate.prefill.replicas))
+    decode_batch = max(1, math.ceil(target_concurrency / candidate.decode.replicas))
+    return RecommendConfig(
+        total_gpus_needed=total_gpus,
+        # A P/D deployment is one scalable unit; its prefill and decode pools
+        # are sized independently and are not replicated as a single block.
+        replicas_needed=1,
+        num_total_gpus=total_gpus,
+        bs=target_concurrency,
+        ttft=_metric(summary, "ttft_ms", "mean_ttft_ms"),
+        tpot=_metric(summary, "tpot_ms", "mean_tpot_ms", "itl_ms"),
+        request_latency=_metric(summary, "e2e_latency_ms", "mean_e2e_latency_ms"),
+        concurrency=target_concurrency,
+        tokens_per_second=throughput,
+        tokens_per_second_per_gpu=(
+            throughput / total_gpus if throughput is not None and total_gpus > 0 else None
+        ),
+        tokens_per_second_per_user=(
+            throughput / target_concurrency
+            if throughput is not None and target_concurrency > 0
+            else None
+        ),
+        memory=_metric(summary, "memory_gb", "memory", "peak_memory_gb"),
+        power_w=power,
+        model=req.model_path,
+        system=req.system,
+        backend=req.backend,
+        backend_version=backend_version,
+        gemm=str(gemm) if gemm is not None else None,
+        kvcache=str(kvcache) if kvcache is not None else None,
+        mode="disagg",
+        prefill_config=WorkerConfig(
+            tp=candidate.prefill.shape.tp,
+            pp=1,
+            dp=candidate.prefill.shape.dp,
+            cp=1,
+            moe_tp=candidate.prefill.shape.moe_tp,
+            moe_ep=candidate.prefill.shape.moe_ep,
+            num_workers=candidate.prefill.replicas,
+            batch_size=prefill_batch,
+            backend_version=backend_version,
+        ),
+        decode_config=WorkerConfig(
+            tp=candidate.decode.shape.tp,
+            pp=1,
+            dp=candidate.decode.shape.dp,
+            cp=1,
+            moe_tp=candidate.decode.shape.moe_tp,
+            moe_ep=candidate.decode.shape.moe_ep,
+            num_workers=candidate.decode.replicas,
+            batch_size=decode_batch,
+            backend_version=backend_version,
+        ),
+        simulator="aisimulate",
+    )
+
+
+def _capacity_option_config(
+    req: RecommendRequest,
+    *,
+    backend_version: str,
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
+    target_concurrency: int,
+    prediction: Any | None,
+) -> RecommendConfig:
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        config = _capacity_disagg_config(
+            req,
+            backend_version=backend_version,
+            candidate=candidate,
+            target_concurrency=target_concurrency,
+            prediction=prediction,
+        )
+    else:
+        config = _capacity_config(
+            req,
+            backend_version=backend_version,
+            candidate=candidate,
+            target_concurrency=target_concurrency,
+            prediction=prediction,
+        )
+    if prediction is not None:
+        config.warnings.extend(str(w) for w in getattr(prediction, "warnings", []) or [])
+    if req.inclusive_tpot:
+        config.tpot = _inclusive_tpot(config.ttft, config.tpot, req.osl)
+    return config
+
+
+def _capacity_option_outcome(
+    *,
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
+    context_tokens: int,
+    target_concurrency: int,
+    minimum_gpus: int | None,
+    evaluated_shapes: int,
+    feasible_shapes: int,
+    prediction: Any | None,
+    unavailable_reason: str | None,
+) -> CapacityOutcome:
+    needed_tokens = target_concurrency * context_tokens
+    fits = candidate.capacity_tokens >= needed_tokens
+    common = dict(
+        target_concurrency=target_concurrency,
+        context_per_sequence_tokens=context_tokens,
+        capacity_tokens=candidate.capacity_tokens,
+        capacity_sequences=candidate.capacity_sequences,
+        fits=fits,
+        shortfall_sequences=(
+            None if fits else max(0, target_concurrency - candidate.capacity_sequences)
+        ),
+        shortfall_tokens=(
+            None if fits else max(0, needed_tokens - candidate.capacity_tokens)
+        ),
+        minimum_gpus=minimum_gpus,
+        evaluated_shapes=evaluated_shapes,
+        feasible_shapes=feasible_shapes,
+        exhaustive=True,
+        performance_available=prediction is not None,
+        performance_unavailable_reason=unavailable_reason,
+        simulator="aisimulate",
+    )
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        return CapacityOutcome(
+            **common,
+            mode="disagg",
+            # The decode pool holds resident sequences; the prefill pool only
+            # holds one sequence transiently.
+            per_rank_tokens=candidate.decode.shape.per_rank_tokens,
+            replicas=candidate.decode.replicas,
+            attention_dp=candidate.decode.shape.dp,
+            prefill_replicas=candidate.prefill.replicas,
+            decode_replicas=candidate.decode.replicas,
+            prefill_gpus=candidate.prefill.total_gpus,
+            decode_gpus=candidate.decode.total_gpus,
+        )
+    return CapacityOutcome(
+        **common,
+        per_rank_tokens=candidate.shape.per_rank_tokens,
+        replicas=candidate.replicas,
+        attention_dp=candidate.shape.dp,
+    )
+
+
+def _attach_capacity_config_extras(
+    req: RecommendRequest,
+    model_path: str,
+    *,
+    config: RecommendConfig,
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
+    backend_version: str,
+    target_concurrency: int,
+    include: set[str],
+) -> None:
+    """Add optional serving-config and memory detail to one capacity option."""
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        if "memory" in include:
+            for worker, context_length in (
+                (config.prefill_config, req.prefill_max_seq_len or req.max_seq_len),
+                (config.decode_config, req.decode_max_seq_len or req.max_seq_len),
+            ):
+                if worker and worker.tp:
+                    worker.memory_breakdown = _build_memory_breakdown(
+                        model_path,
+                        req.system,
+                        req.backend,
+                        backend_version,
+                        worker.tp,
+                        worker.pp or 1,
+                        req.isl,
+                        req.osl,
+                        worker.batch_size or 1,
+                        moe_tp=worker.moe_tp,
+                        moe_ep=worker.moe_ep,
+                        max_seq_len=context_length,
+                        memory_fraction=_backend_memory_fraction(req.backend, backend_version),
+                        attention_dp=worker.dp or 1,
+                    )
+            if config.memory is None:
+                config.memory = max(
+                    (
+                        memory_gb
+                        for worker in (config.prefill_config, config.decode_config)
+                        if worker is not None
+                        for memory_gb in [_memory_breakdown_gb(worker.memory_breakdown)]
+                        if memory_gb is not None
+                    ),
+                    default=None,
+                )
+        return
+
+    if "config" in include:
+        config.serving_config = _build_serving_config(
+            req.backend,
+            candidate.shape.tp,
+            req.isl,
+            req.osl,
+            target_concurrency,
+            config.gemm,
+            req.prefix,
+            max_seq_len=req.max_seq_len,
+            backend_version=backend_version,
+            max_num_seqs=target_concurrency,
+        )
+    if "memory" in include:
+        config.memory_breakdown = _build_memory_breakdown(
+            model_path,
+            req.system,
+            req.backend,
+            backend_version,
+            candidate.shape.tp,
+            1,
+            req.isl,
+            req.osl,
+            target_concurrency,
+            moe_tp=candidate.shape.moe_tp,
+            moe_ep=candidate.shape.moe_ep,
+            max_seq_len=req.max_seq_len,
+            attention_dp=candidate.shape.dp,
+        )
+        if config.memory is None:
+            config.memory = _memory_breakdown_gb(config.memory_breakdown)
+
+
+def _simulate_capacity_option_predictions(
+    req: RecommendRequest,
+    model_path: str,
+    *,
+    backend_version: str,
+    candidates: list[_CapacityCandidate | _DisaggCapacityCandidate],
+    target_concurrency: int,
+) -> dict[int, tuple[Any | None, str | None]]:
+    """Simulate options in priority order under one shared wall-clock budget.
+
+    Capacity is already decided, so missing a simulation is not an error. The
+    primary option is submitted first, then the P/D representatives, then the
+    remaining alternatives. At most two simulations run concurrently.
+    """
+    if not candidates:
+        return {}
+    deadline = time.monotonic() + _CAPACITY_OPTION_SIMULATION_BUDGET_S
+    results: dict[int, tuple[Any | None, str | None]] = {}
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_CAPACITY_OPTION_SIMULATION_WORKERS
+    )
+    pending: dict[concurrent.futures.Future[tuple[Any | None, str | None]], int] = {}
+    next_index = 0
+    try:
+        while next_index < len(candidates) or pending:
+            while next_index < len(candidates) and len(pending) < _CAPACITY_OPTION_SIMULATION_WORKERS:
+                if time.monotonic() >= deadline:
+                    break
+                index = next_index
+                next_index += 1
+                future = executor.submit(
+                    _capacity_prediction,
+                    req,
+                    model_path,
+                    backend_version=backend_version,
+                    candidate=candidates[index],
+                    target_concurrency=target_concurrency,
+                )
+                pending[future] = index
+            if not pending:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, _ = concurrent.futures.wait(
+                pending,
+                timeout=remaining,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for future in done:
+                index = pending.pop(future)
+                try:
+                    results[index] = future.result()
+                except Exception as error:  # a failed option must not fail the run
+                    reason = str(error) or error.__class__.__name__
+                    results[index] = (None, reason[:500])
+    finally:
+        # Do not block the response on a simulation that outlived the budget.
+        executor.shutdown(wait=False, cancel_futures=True)
+    for index in range(len(candidates)):
+        results.setdefault(
+            index,
+            (None, "The shared performance-simulation budget ended before this option ran."),
+        )
+    return results
+
+
 def _run_capacity_recommendation(
     req: RecommendRequest,
     *,
     include: set[str],
-) -> tuple[RecommendConfig, CapacityOutcome, SweepMeta]:
-    """Size an aggregated deployment for ``target_concurrency`` sequences.
+) -> tuple[RecommendConfig, CapacityOutcome, SweepMeta, list[CapacityOption]]:
+    """Size a deployment for ``target_concurrency`` sequences and rank options.
 
-    Selection is a deterministic enumeration of the SDK's aggregated search
-    space (``algorithm="enumerate"``), not a sampled sweep: an SLA-free
-    minimum-GPU question has no sweep objective, and sampling could miss the
-    true minimum.
+    Selection is a deterministic enumeration of the SDK's search space
+    (``algorithm="enumerate"``), not a sampled sweep: an SLA-free residency
+    question has no sweep objective, and sampling could miss the true minimum.
+    ``configs[0]`` remains the primary recommendation; the comparison set is
+    returned separately as ``capacity_options``.
     """
     from aisimulate.sweeper.kv_estimate import resolve_backend_version
 
@@ -2156,6 +2844,8 @@ def _run_capacity_recommendation(
     target_concurrency = int(req.target_concurrency or 0)
     context_tokens = _capacity_context_tokens(req)
     lower_gpus, upper_gpus = _effective_gpu_window(req)
+    explicit_top_n = "top_n" in getattr(req, "model_fields_set", set())
+    option_count = int(req.top_n) if explicit_top_n else _CAPACITY_OPTION_DEFAULT_COUNT
 
     with _with_model_config(req.model_path, req.model_config_data) as model_path:
         backend_version = req.backend_version or resolve_backend_version(req.system, backend)
@@ -2177,14 +2867,14 @@ def _run_capacity_recommendation(
                     f"({req.backend} KV-cache estimate)."
                 ),
             )
-        candidate, minimum_gpus = _select_capacity(
+        aggregate_fitting, aggregate_best_effort, minimum_gpus = _capacity_aggregate_candidates(
             shapes,
             target_concurrency=target_concurrency,
             context_tokens=context_tokens,
             lower_gpus=lower_gpus,
             upper_gpus=upper_gpus,
         )
-        if candidate is None:
+        if minimum_gpus is None:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -2195,85 +2885,106 @@ def _run_capacity_recommendation(
                 ),
             )
 
-        prediction, unavailable_reason = _capacity_prediction(
+        disagg_candidates = _capacity_disagg_candidates(
+            req,
+            model_path,
+            backend=backend,
+            backend_version=backend_version,
+            context_tokens=context_tokens,
+            target_concurrency=target_concurrency,
+            lower_gpus=lower_gpus,
+            upper_gpus=upper_gpus,
+            minimum_gpus=minimum_gpus,
+        )
+        if not explicit_top_n and not disagg_candidates:
+            option_count = min(option_count, _CAPACITY_OPTION_DEFAULT_COUNT_NO_DISAGG)
+        selected = _select_capacity_options(
+            aggregate_fitting=aggregate_fitting,
+            aggregate_best_effort=aggregate_best_effort,
+            disagg_candidates=disagg_candidates,
+            option_count=option_count,
+        )
+        if not selected:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{req.model_path} on {req.system}: no capacity deployment fits within "
+                    f"{_gpu_window_label(lower_gpus, upper_gpus)} GPUs "
+                    f"({req.backend} KV-cache estimate)."
+                ),
+            )
+
+        # Simulate the primary first, then the P/D representatives, then the
+        # remaining alternatives, under one shared budget. The response keeps
+        # the comparison ranking; only simulation priority changes.
+        priority = (
+            [0]
+            + [index for index, (role, _candidate) in enumerate(selected) if role == "disaggregated"]
+            + [
+                index
+                for index, (role, _candidate) in enumerate(selected)
+                if index != 0 and role != "disaggregated"
+            ]
+        )
+        priority_results = _simulate_capacity_option_predictions(
             req,
             model_path,
             backend_version=backend_version,
-            candidate=candidate,
+            candidates=[selected[index][1] for index in priority],
             target_concurrency=target_concurrency,
         )
-        config = _capacity_config(
-            req,
-            backend_version=backend_version,
-            candidate=candidate,
-            target_concurrency=target_concurrency,
-            prediction=prediction,
-        )
-        if prediction is not None:
-            config.warnings.extend(str(w) for w in getattr(prediction, "warnings", []) or [])
+        predictions = {
+            selected_index: priority_results[position]
+            for position, selected_index in enumerate(priority)
+        }
 
-        if "config" in include:
-            config.serving_config = _build_serving_config(
-                req.backend,
-                candidate.shape.tp,
-                req.isl,
-                req.osl,
-                target_concurrency,
-                config.gemm,
-                req.prefix,
-                max_seq_len=req.max_seq_len,
+        options: list[CapacityOption] = []
+        used_ids: set[str] = set()
+        for index, (role, candidate) in enumerate(selected):
+            prediction, unavailable_reason = predictions[index]
+            config = _capacity_option_config(
+                req,
                 backend_version=backend_version,
-                max_num_seqs=target_concurrency,
+                candidate=candidate,
+                target_concurrency=target_concurrency,
+                prediction=prediction,
             )
-        if "memory" in include:
-            config.memory_breakdown = _build_memory_breakdown(
+            if unavailable_reason is not None:
+                config.warnings.append(
+                    "Performance simulation was unavailable for this configuration; "
+                    "the capacity result does not depend on it."
+                )
+            _attach_capacity_config_extras(
+                req,
                 model_path,
-                req.system,
-                req.backend,
-                backend_version,
-                candidate.shape.tp,
-                1,
-                req.isl,
-                req.osl,
-                target_concurrency,
-                moe_tp=candidate.shape.moe_tp,
-                moe_ep=candidate.shape.moe_ep,
-                max_seq_len=req.max_seq_len,
-                attention_dp=candidate.shape.dp,
+                config=config,
+                candidate=candidate,
+                backend_version=backend_version,
+                target_concurrency=target_concurrency,
+                include=include,
             )
-            if config.memory is None:
-                config.memory = _memory_breakdown_gb(config.memory_breakdown)
-
-        if unavailable_reason is not None:
-            config.warnings.append(
-                "Performance simulation was unavailable for this configuration; "
-                "the capacity result does not depend on it."
+            outcome = _capacity_option_outcome(
+                candidate=candidate,
+                context_tokens=context_tokens,
+                target_concurrency=target_concurrency,
+                minimum_gpus=minimum_gpus,
+                evaluated_shapes=len(shapes),
+                feasible_shapes=len(shapes),
+                prediction=prediction,
+                unavailable_reason=unavailable_reason,
+            )
+            options.append(
+                CapacityOption(
+                    option_id=_capacity_option_id(candidate, used=used_ids),
+                    rank=index + 1,
+                    role=role,  # type: ignore[arg-type]
+                    gpus_over_minimum=max(0, candidate.total_gpus - minimum_gpus),
+                    config=config,
+                    capacity=outcome,
+                )
             )
 
-        fits = candidate.capacity_tokens >= target_concurrency * context_tokens
-        capacity = CapacityOutcome(
-            target_concurrency=target_concurrency,
-            context_per_sequence_tokens=context_tokens,
-            capacity_tokens=candidate.capacity_tokens,
-            capacity_sequences=candidate.capacity_sequences,
-            fits=fits,
-            shortfall_sequences=(
-                None if fits else max(0, target_concurrency - candidate.capacity_sequences)
-            ),
-            shortfall_tokens=(
-                None if fits else max(0, target_concurrency * context_tokens - candidate.capacity_tokens)
-            ),
-            minimum_gpus=minimum_gpus,
-            per_rank_tokens=candidate.shape.per_rank_tokens,
-            replicas=candidate.replicas,
-            attention_dp=candidate.shape.dp,
-            evaluated_shapes=len(shapes),
-            feasible_shapes=len(shapes),
-            exhaustive=True,
-            performance_available=prediction is not None,
-            performance_unavailable_reason=unavailable_reason,
-            simulator="aisimulate",
-        )
+        primary = options[0]
         sweep = SweepMeta(
             algorithm="enumerate",
             # Every enumerated shape was evaluated by the KV estimate; the
@@ -2287,7 +2998,7 @@ def _run_capacity_recommendation(
             window_min_gpus=lower_gpus,
             window_max_gpus=upper_gpus,
         )
-        return config, capacity, sweep
+        return primary.config, primary.capacity, sweep, options
 
 
 def _run_aisimulate_recommendation(
@@ -2872,6 +3583,9 @@ def _blis_backends() -> dict[str, Any]:
                 # A P/D run transfers KV between pools, and BLIS prices that
                 # transfer through a named fabric, so the request must choose one.
                 "disaggregation_requires_fabric": True,
+                # BLIS cannot run the capacity objective, so it has no
+                # disaggregated capacity comparison options either.
+                "capacity_options": {"disaggregated": False},
                 "version_support": {
                     version: dict(support) for version, support in ENGINE_VERSION_SUPPORT.items()
                 },
@@ -2951,6 +3665,8 @@ def get_backends(
             },
             # AISimulate's P/D search takes no fabric; no extra input is needed.
             "disaggregation_requires_fabric": False,
+            # Capacity runs can compare aggregated and disaggregated options.
+            "capacity_options": {"disaggregated": True},
         })
     return {
         "simulator": "aisimulate",
@@ -3050,8 +3766,9 @@ def post_recommend(
         )
     demand: DemandOutcome | None = None
     capacity: CapacityOutcome | None = None
+    capacity_options: list[CapacityOption] = []
     result = None
-    capacity_result: tuple[RecommendConfig, CapacityOutcome, SweepMeta] | None = None
+    capacity_result: tuple[RecommendConfig, CapacityOutcome, SweepMeta, list[CapacityOption]] | None = None
     fell_back_from: str | None = None
     demand_records: list[Any] = []
     sweep: SweepMeta | None = None
@@ -3111,6 +3828,7 @@ def post_recommend(
         configs = [capacity_result[0]]
         capacity = capacity_result[1]
         sweep = capacity_result[2]
+        capacity_options = capacity_result[3]
     else:
         assert result is not None
         candidates = result.selected_candidates[: req.top_n]
@@ -3207,6 +3925,7 @@ def post_recommend(
         views=pareto_views,
         demand=demand,
         capacity=capacity,
+        capacity_options=capacity_options,
         sweep=sweep,
     )
 

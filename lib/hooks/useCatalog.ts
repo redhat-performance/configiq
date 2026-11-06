@@ -67,6 +67,11 @@ export interface BackendOption {
    * simulator reports this so the client does not infer it from its ID.
    */
   disaggregationRequiresFabric: boolean
+  /**
+   * Which comparison options a capacity run can return. The client gates the
+   * disaggregated option presentation on this, never on a simulator ID.
+   */
+  capacityOptions: { disaggregated: boolean }
 }
 
 /** Per-version capabilities reported by a simulator that models them itself. */
@@ -171,6 +176,12 @@ export function mapBackendOption(backend: Record<string, unknown>): BackendOptio
     systemDefaults,
     versionSupport: mapVersionSupport(backend.version_support),
     disaggregationRequiresFabric: backend.disaggregation_requires_fabric === true,
+    capacityOptions: {
+      disaggregated:
+        backend.capacity_options != null &&
+        typeof backend.capacity_options === 'object' &&
+        (backend.capacity_options as Record<string, unknown>).disaggregated === true,
+    },
   }
 }
 

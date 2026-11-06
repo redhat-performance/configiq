@@ -281,6 +281,7 @@ describe('Hybrid page composition', () => {
         id: 'vllm', aisimulateId: 'vllm', versions: ['0.11.0'], defaultVersion: '0.11.0',
         systems: { l40s: ['0.11.0'] }, systemDefaults: {}, versionSupport: {},
         memoryFraction: null, memoryFractionKind: 'of_free', runtimeField: null, disaggregationRequiresFabric: true,
+        capacityOptions: { disaggregated: false },
       }],
       objectives: [],
     } } })

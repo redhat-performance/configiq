@@ -45,7 +45,7 @@ export const RecommendRequestSchema = z.object({
   request_latency: z.number().positive().nullish(),
   prefix: z.number().int().min(0).default(0),
   database_mode: z.enum(['HYBRID', 'SILICON', 'EMPIRICAL', 'SOL']).default('HYBRID'),
-  top_n: z.number().int().min(1).max(20).default(5),
+  top_n: z.number().int().min(1).max(20).optional(),
   // HF config.json for models AISimulators can't resolve from its catalog (nullish = resolve from HF).
   model_config: z.record(z.string(), z.unknown()).nullish(),
   simulator: z.enum(['aisimulate', 'blis']).default('aisimulate'),
@@ -195,8 +195,9 @@ export const RecommendRequestSchema = z.object({
 
 /**
  * Caller-facing request shape. Fields with schema defaults (`objective`,
- * `sla_mode`, `top_n`, `database_mode`) stay optional at the call site and are
- * filled by `RecommendRequestSchema.parse` at the API boundary.
+ * `sla_mode`, `database_mode`) stay optional at the call site and are filled
+ * by `RecommendRequestSchema.parse` at the API boundary. `top_n` is optional
+ * because the service chooses a goal-specific default when it is omitted.
  */
 export type RecommendRequest = z.input<typeof RecommendRequestSchema>
 

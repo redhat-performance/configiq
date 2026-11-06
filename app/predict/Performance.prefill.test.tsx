@@ -55,6 +55,7 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
           systemDefaults: {},
           versionSupport: {},
           disaggregationRequiresFabric: true,
+          capacityOptions: { disaggregated: false },
         }],
         objectives: [],
       },

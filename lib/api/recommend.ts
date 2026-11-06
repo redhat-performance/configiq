@@ -82,7 +82,32 @@ export interface RecommendCapacityOutcome {
   exhaustive: boolean
   performanceAvailable: boolean
   performanceUnavailableReason: string | null
+  /** Serving mode for this option. For disagg, the pool fields describe P/D. */
+  mode: ServingMode
+  /** Prefill/decode detail (disagg only; the decode pool holds resident KV). */
+  prefillReplicas: number | null
+  decodeReplicas: number | null
+  prefillGpus: number | null
+  decodeGpus: number | null
   simulator: 'aisimulate'
+}
+
+export type CapacityOptionRole =
+  | 'minimum'
+  | 'same_gpus'
+  | 'larger'
+  | 'disaggregated'
+  | 'shortfall'
+
+/** One ranked deployment alternative from a capacity run. */
+export interface RecommendCapacityOption {
+  optionId: string
+  rank: number
+  role: CapacityOptionRole
+  gpusOverMinimum: number
+  capacity: RecommendCapacityOutcome
+  /** Parsed option config, shaped like a single-config recommendation. */
+  result: RecommendResult
 }
 
 export interface RecommendSweepMeta {
@@ -108,6 +133,8 @@ export interface RecommendResult {
   demand?: RecommendDemandOutcome
   /** Residency outcome of a concurrency-capacity run (capacity objective only). */
   capacity?: RecommendCapacityOutcome
+  /** Ranked alternatives for a capacity run; `configs[0]` is also rank 1. */
+  capacityOptions?: RecommendCapacityOption[]
   /** Run-control facts for the sweep that produced the candidates. */
   sweep?: RecommendSweepMeta
   /** Serving mode the recommender chose. Disagg splits prefill/decode pools. */
@@ -269,9 +296,9 @@ function baseRequestPayload(request: RecommendRequest): Record<string, unknown> 
     isl: request.isl,
     osl: request.osl,
     database_mode: request.database_mode ?? 'HYBRID',
-    top_n: request.top_n ?? 5,
     sla_mode: request.sla_mode ?? 'enforce',
   }
+  if (request.top_n != null) externalPayload.top_n = request.top_n
 
   const slaMode = request.sla_mode ?? 'enforce'
   if (slaMode === 'enforce' && request.request_latency == null) {
@@ -402,6 +429,21 @@ export async function callRecommend(
     return makeError(requestId, 'AISIM_INVALID_RESPONSE', 'AISimulators API returned non-JSON response')
   }
 
+  return parseRecommendPayload(rawData, request, requestId, startTime, true)
+}
+
+/**
+ * Parse one AISimulators recommend payload. Capacity options are parsed by
+ * synthesizing a single-config payload for each alternative and reusing this
+ * parser, so an option is validated exactly like the primary result.
+ */
+function parseRecommendPayload(
+  rawData: Record<string, unknown>,
+  request: RecommendRequest,
+  requestId: string,
+  startTime: number,
+  includeCapacityOptions: boolean,
+): RecommendResponse {
   const responseSimulator = rawData.simulator === 'aisimulate' || rawData.simulator === 'blis'
     ? rawData.simulator
     : null
@@ -500,6 +542,11 @@ export async function callRecommend(
         performanceUnavailableReason: typeof capacityRaw.performance_unavailable_reason === 'string'
           ? capacityRaw.performance_unavailable_reason
           : null,
+        mode: capacityRaw.mode === 'disagg' ? 'disagg' : 'agg',
+        prefillReplicas: typeof capacityRaw.prefill_replicas === 'number' ? capacityRaw.prefill_replicas : null,
+        decodeReplicas: typeof capacityRaw.decode_replicas === 'number' ? capacityRaw.decode_replicas : null,
+        prefillGpus: typeof capacityRaw.prefill_gpus === 'number' ? capacityRaw.prefill_gpus : null,
+        decodeGpus: typeof capacityRaw.decode_gpus === 'number' ? capacityRaw.decode_gpus : null,
         simulator: 'aisimulate',
       }
     : undefined
@@ -653,6 +700,9 @@ export async function callRecommend(
     searchSummary,
     demand,
     capacity,
+    capacityOptions: includeCapacityOptions
+      ? parseCapacityOptions(rawData, request, requestId, startTime)
+      : undefined,
     sweep,
     mode,
     recommendation: {
@@ -700,6 +750,63 @@ export async function callRecommend(
           .map(message => ({ code: 'SIMULATOR_WARNING', message }))
       : [],
   }
+}
+
+function parseCapacityOptions(
+  rawData: Record<string, unknown>,
+  request: RecommendRequest,
+  requestId: string,
+  startTime: number,
+): RecommendCapacityOption[] | undefined {
+  if (request.objective !== 'concurrency_capacity') return undefined
+  const rawOptions = rawData.capacity_options
+  if (!Array.isArray(rawOptions)) return undefined
+
+  const roles = new Set<CapacityOptionRole>([
+    'minimum',
+    'same_gpus',
+    'larger',
+    'disaggregated',
+    'shortfall',
+  ])
+  const options: RecommendCapacityOption[] = []
+  rawOptions.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object') return
+    const entry = raw as Record<string, unknown>
+    const config = entry.config
+    const rawCapacity = entry.capacity
+    if (!config || typeof config !== 'object' || !rawCapacity || typeof rawCapacity !== 'object') return
+    const parsed = parseRecommendPayload(
+      {
+        configs: [config],
+        chosen_mode:
+          typeof (config as Record<string, unknown>).mode === 'string'
+            ? (config as Record<string, unknown>).mode
+            : 'agg',
+        simulator: rawData.simulator,
+        capacity: rawCapacity,
+      },
+      request,
+      requestId,
+      startTime,
+      false,
+    )
+    if (parsed.status !== 'completed' || parsed.capacity == null) return
+    const roleValue = entry.role
+    const role: CapacityOptionRole =
+      typeof roleValue === 'string' && roles.has(roleValue as CapacityOptionRole)
+        ? (roleValue as CapacityOptionRole)
+        : 'larger'
+    options.push({
+      optionId: typeof entry.option_id === 'string' ? entry.option_id : `option-${index + 1}`,
+      rank: typeof entry.rank === 'number' ? entry.rank : index + 1,
+      role,
+      gpusOverMinimum: typeof entry.gpus_over_minimum === 'number' ? entry.gpus_over_minimum : 0,
+      capacity: parsed.capacity,
+      result: parsed,
+    })
+  })
+  return options.length > 0 ? options : undefined
 }
 
 // ─── Pareto sweep ────────────────────────────────────────────────────────────
