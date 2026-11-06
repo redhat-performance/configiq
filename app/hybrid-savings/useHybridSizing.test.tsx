@@ -56,6 +56,20 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals() })
 
 describe('Hybrid live sizing orchestration', () => {
+  it.each([
+    { throughput: { tokensPerSecond: NaN } }, { throughput: { tokensPerSecond: 0 } },
+    { recommendation: { gpusPerReplica: 1.5, replicasNeeded: 1 } },
+    { recommendation: { gpusPerReplica: 1, replicasNeeded: 0 } },
+    { performance: { ttftLatencyMs: Infinity, tpotMs: 20 } },
+    { performance: { ttftLatencyMs: 5001, tpotMs: 20 } },
+    { performance: { ttftLatencyMs: 100, tpotMs: 61 } },
+  ])('does not price incomplete results or missed latency targets: %j', async invalid => {
+    vi.mocked(readRecommendStream).mockResolvedValue({ ...result, ...invalid } as RecommendResponse)
+    await act(async () => hook.runSizing(input))
+    expect(hook.candidates).toEqual([])
+    expect(hook.failedSystems).toBe(1)
+    expect(hook.sizingError).not.toBeNull()
+  })
   it('forwards simulator/version and rejects results from a different simulator', async () => {
     await act(async () => hook.runSizing({ ...input, simulator: 'blis', backendVersion: '0.11.0' }))
     expect(JSON.parse(fetchMock.mock.calls[0][1]!.body as string)).toMatchObject({ simulator: 'blis', backend_version: '0.11.0' })

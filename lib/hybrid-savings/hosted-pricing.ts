@@ -1,4 +1,5 @@
 import type { FrontierModel } from '@/lib/hooks/useCostings'
+import type { HostedPrice } from './calc'
 
 export interface HostedPricingResolution {
   selected: FrontierModel | null
@@ -151,16 +152,62 @@ function hasUsablePrice(model: FrontierModel): boolean {
     model.price_per_m_output >= 0
 }
 
-/** Token charges only; excludes fixed fees, staffing and implementation. */
+export interface HostedRequestShape {
+  averageInputTokens: number
+  averageOutputTokens: number
+}
+
+/** Standard synchronous, uncached text tariff. No guessed cache-hit discounts. */
+export function hostedPriceForWorkload(
+  model: FrontierModel,
+  shape?: HostedRequestShape,
+): HostedPrice | null {
+  if (!hasUsablePrice(model) || model.billing?.unsupported.length) return null
+  const price: HostedPrice = {
+    modelId: model.id, label: model.name,
+    inputPerMillion: model.price_per_m_input,
+    outputPerMillion: model.price_per_m_output,
+    requestPerRequest: model.billing?.request_price ?? 0,
+  }
+  if (!shape) return price.requestPerRequest || model.billing?.overrides.length ? null : price
+  const { averageInputTokens: input, averageOutputTokens: output } = shape
+  if (![input, output].every(value => Number.isSafeInteger(value) && value > 0)) return null
+  // Legacy context_window has different source semantics. Prefer explicit
+  // limits; LiteLLM's legacy value describes input, not total context.
+  const maxInput = model.max_input_tokens ?? (model.source === 'litellm' ? model.context_window : null)
+  const maxContext = model.max_context_tokens ?? (model.source !== 'litellm' ? model.context_window : null)
+  if ((maxInput != null && input > maxInput) ||
+      (model.max_output_tokens != null && output > model.max_output_tokens) ||
+      (maxContext != null && input + output > maxContext)) return null
+  for (const tier of model.billing?.overrides ?? []) {
+    // OpenRouter's threshold is strictly greater than, not greater-or-equal.
+    if (input <= tier.min_prompt_tokens) continue
+    price.inputPerMillion = tier.input_per_million ?? price.inputPerMillion
+    price.outputPerMillion = tier.output_per_million ?? price.outputPerMillion
+    price.requestPerRequest = tier.request_price ?? price.requestPerRequest
+  }
+  return price
+}
+
+/** An author namespace is not a serving endpoint identity. */
+export function hostedProviderIdentity(model: FrontierModel): string {
+  return model.serving_provider?.trim() || (model.source === 'openrouter' ? 'OpenRouter' : model.provider.trim())
+}
+
+/** Usage charges, including request fees; excludes fixed fees and operations. */
 export function hostedTokenUsageCost(
   model: FrontierModel,
   monthlyInputTokens: number,
   monthlyOutputTokens: number,
+  shape?: HostedRequestShape,
 ): number {
   const inputTokens = Number.isFinite(monthlyInputTokens) ? Math.max(monthlyInputTokens, 0) : 0
   const outputTokens = Number.isFinite(monthlyOutputTokens) ? Math.max(monthlyOutputTokens, 0) : 0
-  return inputTokens / 1_000_000 * model.price_per_m_input +
-    outputTokens / 1_000_000 * model.price_per_m_output
+  const price = hostedPriceForWorkload(model, shape)
+  if (!price) return Number.POSITIVE_INFINITY
+  const requests = shape ? Math.max(inputTokens / shape.averageInputTokens, outputTokens / shape.averageOutputTokens) : 0
+  return inputTokens / 1_000_000 * price.inputPerMillion +
+    outputTokens / 1_000_000 * price.outputPerMillion + requests * (price.requestPerRequest ?? 0)
 }
 
 /**
@@ -177,6 +224,7 @@ export function resolveHostedPricing(
   prices: FrontierModel[],
   monthlyInputTokens: number,
   monthlyOutputTokens: number,
+  shape?: HostedRequestShape,
 ): HostedPricingResolution {
   const requestedSegment = finalModelSegment(modelId)
   if (!requestedSegment) {
@@ -186,12 +234,12 @@ export function resolveHostedPricing(
   const aliases = hostedPricingAliases(modelId)
   const requestedId = normalizeModelId(modelId)
   const matches = prices.filter(price =>
-    hasUsablePrice(price) && isExactCheckpointOffer(aliases, price),
+    hostedPriceForWorkload(price, shape) !== null && isExactCheckpointOffer(aliases, price),
   )
 
   const ranked = [...matches].sort((left, right) => {
-    const costDifference = hostedTokenUsageCost(left, monthlyInputTokens, monthlyOutputTokens) -
-      hostedTokenUsageCost(right, monthlyInputTokens, monthlyOutputTokens)
+    const costDifference = hostedTokenUsageCost(left, monthlyInputTokens, monthlyOutputTokens, shape) -
+      hostedTokenUsageCost(right, monthlyInputTokens, monthlyOutputTokens, shape)
     if (Math.abs(costDifference) > Number.EPSILON) return costDifference
 
     const exactDifference =
@@ -203,7 +251,7 @@ export function resolveHostedPricing(
   })
   const seenProviders = new Set<string>()
   const providerMatches = ranked.filter(offer => {
-    const provider = `${offer.provider.trim().toLowerCase()}::${offer.source ?? ''}`
+    const provider = `${hostedProviderIdentity(offer).toLowerCase()}::${offer.source ?? ''}`
     if (seenProviders.has(provider)) return false
     seenProviders.add(provider)
     return true

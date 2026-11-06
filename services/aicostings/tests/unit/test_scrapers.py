@@ -109,6 +109,48 @@ class TestInferProvider:
 
 
 class TestParseOpenRouterModel:
+    def test_preserves_standard_billing_conditions_limits_and_provider_identity(self):
+        result = _parse_openrouter_model({
+            "id": "owner/model", "name": "Model", "context_length": 200000,
+            "top_provider": {"context_length": 160000, "max_completion_tokens": 32000},
+            "pricing": {"prompt": "0.000001", "completion": "0.000002", "request": "0.01",
+                        "input_cache_read": "0.0000001", "input_cache_write": "0.00000125",
+                        "overrides": [{"min_prompt_tokens": 128000, "prompt": "0.000003"},
+                                      {"min_prompt_tokens": 128000, "completion": "0.000004"}]},
+        })
+        assert result["provider"] == "Owner"  # Compatibility for other consumers.
+        assert result["model_author"] == "Owner"
+        assert result["serving_provider"] is None
+        assert result["max_context_tokens"] == 160000
+        assert result["max_output_tokens"] == 32000
+        assert result["billing"] == {
+            "currency": "USD", "request_price": 0.01,
+            "input_cache_read_per_million": 0.1, "input_cache_write_per_million": 1.25,
+            "overrides": [{"min_prompt_tokens": 128000, "input_per_million": 3},
+                          {"min_prompt_tokens": 128000, "output_per_million": 4}], "unsupported": [],
+        }
+
+    @pytest.mark.parametrize("pricing", [
+        {"request": -1}, {"request": "NaN"}, {"input_cache_read": True}, {"internal_reasoning": "0.000001"},
+        {"overrides": {}}, {"overrides": [None]},
+        {"overrides": [{"min_prompt_tokens": -1, "prompt": "0.000002"}]},
+        {"overrides": [{"min_prompt_tokens": 100, "prompt": "bad"}]},
+        {"overrides": [{"prompt": "0.000002", "utc_start": "12:00", "utc_end": "14:00"}]},
+        {"overrides": [{"prompt": "0.000002", "unknown_condition": True}]},
+        {"unknown_surcharge": "0.01"},
+    ])
+    def test_flags_unsupported_tariffs_without_altering_legacy_base_prices(self, pricing):
+        result = _parse_openrouter_model({"id": "owner/model", "name": "Model",
+            "pricing": {"prompt": "0.000001", "completion": "0.000002", **pricing}})
+        assert result["price_per_m_input"] == 1
+        assert result["billing"]["unsupported"]
+
+    def test_non_text_output_is_not_eligible_for_standard_text_comparison(self):
+        result = _parse_openrouter_model({"id": "owner/model", "name": "Model",
+            "architecture": {"output_modalities": ["audio"]},
+            "pricing": {"prompt": "0.000001", "completion": "0.000002"}})
+        assert "No text output modality" in result["billing"]["unsupported"]
+
     def test_preserves_checkpoint_identity_without_replacing_offer_id(self):
         result = _parse_openrouter_model({
             "id": "qwen/qwen3-coder", "name": "Qwen3 Coder",
@@ -269,6 +311,41 @@ class TestFetchLiteLLMModels:
 
 
 class TestTokenPriceValidation:
+    def test_preserves_small_rates_instead_of_rounding_them_to_free(self):
+        result = _parse_openrouter_model({"id": "owner/model", "name": "Model",
+            "pricing": {"prompt": "0.00000000001", "completion": "0.00000000002"}})
+        assert result["price_per_m_input"] == 0.00001
+        assert result["price_per_m_output"] == 0.00002
+
+    def test_litellm_normalizes_standard_tiers_once_and_keeps_input_output_limits_distinct(self):
+        result = _parse_litellm_model("provider/model", {
+            "mode": "chat", "litellm_provider": "provider", "max_input_tokens": 200000,
+            "max_output_tokens": 64000, "max_tokens": 64000,
+            "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002,
+            "input_cost_per_request": 0.01, "cache_read_input_token_cost": 0.0000001,
+            "input_cost_per_token_above_128k_tokens": 0.000003,
+            "output_cost_per_token_above_128k_tokens": 0.000004,
+            "input_cost_per_token_batches": 0.0000005,
+            "input_cost_per_token_above_128k_tokens_batches": 0.0000015,
+        })
+        assert result["max_input_tokens"] == 200000
+        assert result["max_output_tokens"] == 64000
+        assert "max_context_tokens" not in result  # max_tokens is not an unambiguous context limit.
+        assert result["billing"]["request_price"] == 0.01
+        assert result["billing"]["overrides"] == [{"min_prompt_tokens": 128000, "input_per_million": 3,
+                                                    "output_per_million": 4}]
+        assert not result["billing"]["unsupported"]
+
+    @pytest.mark.parametrize("extra", [
+        {"input_cost_per_token_above_128k_tokens": "NaN"},
+        {"input_cost_per_token_above_unknown": 0.000002},
+        {"input_cost_per_request": -1}, {"output_cost_per_reasoning_token": 0.000001},
+    ])
+    def test_litellm_marks_invalid_or_unmodeled_extra_charges(self, extra):
+        result = _parse_litellm_model("provider/model", {"mode": "chat", "litellm_provider": "provider",
+            "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002, **extra})
+        assert result["billing"]["unsupported"]
+
     @pytest.mark.parametrize("invalid", [None, True, False, -1, "NaN", "Infinity", float("inf"), "bad", {}, 1e308])
     def test_both_collectors_reject_invalid_rates(self, invalid):
         assert _parse_openrouter_model({
