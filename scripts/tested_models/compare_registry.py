@@ -210,7 +210,11 @@ def load_baseline(path: Path | None) -> dict[str, Any] | None:
     # The deployed registry parser only understands these versions; an
     # incompatible baseline must not be compared as if it were valid.
     schema_version = baseline.get("schemaVersion")
-    if schema_version not in (1, 2):
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version not in (1, 2)
+    ):
         return {"status": "unavailable"}
     pairs = baseline.get("pairs")
     if not isinstance(pairs, list) or not all(

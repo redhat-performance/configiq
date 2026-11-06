@@ -124,6 +124,12 @@ def test_load_baseline_rejects_missing_or_unsupported_schema_versions(
     )
     assert compare_registry.load_baseline(unsupported) == {"status": "unavailable"}
 
+    boolean = tmp_path / "boolean-version.json"
+    boolean.write_text(
+        '{"schemaVersion": true, "pairs": [{"id": "pair__h200", "status": "validated"}]}'
+    )
+    assert compare_registry.load_baseline(boolean) == {"status": "unavailable"}
+
 
 def test_load_baseline_rejects_missing_or_unknown_statuses(tmp_path: Path) -> None:
     unknown = tmp_path / "unknown-status.json"
