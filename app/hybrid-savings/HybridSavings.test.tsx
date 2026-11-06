@@ -876,7 +876,7 @@ describe('Hybrid page composition', () => {
     const rented = host.querySelector<HTMLInputElement>('#hybrid-rented-configuration')!
     await chooseComboOption('hybrid-rented-configuration', 'EC2 g6e.xlarge')
     const pin = rented.value
-    await click('RAG / Search')
+    await click('RAG / search')
     expect(host.textContent).toContain('Inputs changed')
     expect(host.querySelector('#hybrid-rented-configuration')).toBeNull()
     await click('Calculate')
