@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import compare_registry
 
 
@@ -69,3 +71,24 @@ def test_compare_handles_measured_only_pairs_without_metrics() -> None:
     })
 
     assert "| `weak__h200` | measured_no_envelope | 23 | — | — |  |" in report
+
+
+def test_load_baseline_rejects_malformed_or_non_registry_payloads(tmp_path: Path) -> None:
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("<html>not json</html>")
+    assert compare_registry.load_baseline(malformed) == {"status": "unavailable"}
+
+    missing_pairs = tmp_path / "missing-pairs.json"
+    missing_pairs.write_text('{"status": "available"}')
+    assert compare_registry.load_baseline(missing_pairs) == {"status": "unavailable"}
+
+    missing = tmp_path / "absent.json"
+    assert compare_registry.load_baseline(missing) == {"status": "unavailable"}
+
+
+def test_load_baseline_accepts_a_registry_with_pairs(tmp_path: Path) -> None:
+    path = tmp_path / "registry.json"
+    path.write_text('{"status": "available", "pairs": []}')
+
+    assert compare_registry.load_baseline(path) == {"status": "available", "pairs": []}
+    assert compare_registry.load_baseline(None) is None

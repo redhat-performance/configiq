@@ -163,6 +163,23 @@ def summarize(current: dict[str, Any], baseline: dict[str, Any] | None = None) -
     return note + "\n".join(lines)
 
 
+def load_baseline(path: Path | None) -> dict[str, Any] | None:
+    """Load a deployed registry, or None when it cannot be used as a baseline.
+
+    The comparison is advisory, so an unreachable, HTML, or malformed response
+    must fall back to the new-bundle summary instead of failing the build.
+    """
+    if path is None:
+        return None
+    try:
+        baseline = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"status": "unavailable"}
+    if not isinstance(baseline, dict) or not isinstance(baseline.get("pairs"), list):
+        return {"status": "unavailable"}
+    return baseline
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--current", type=Path, required=True, help="Newly built registry.json.")
@@ -170,8 +187,7 @@ def main() -> int:
     args = parser.parse_args()
 
     current = json.loads(args.current.read_text())
-    baseline = json.loads(args.baseline.read_text()) if args.baseline is not None else None
-    print(summarize(current, baseline))
+    print(summarize(current, load_baseline(args.baseline)))
     return 0
 
 

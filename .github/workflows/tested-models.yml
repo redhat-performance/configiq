@@ -96,6 +96,8 @@ jobs:
 
       - name: Summarize registry changes
         if: always()
+        # Advisory only: never let the comparison block the artifact upload.
+        continue-on-error: true
         env:
           BASELINE_URL: ${{ vars.TESTED_MODELS_BASELINE_URL || 'https://configiq.dev/api/tested-models' }}
           DATASET_REVISION: ${{ steps.dataset.outputs.revision }}
