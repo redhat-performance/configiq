@@ -85,6 +85,18 @@ def test_load_baseline_rejects_malformed_or_non_registry_payloads(tmp_path: Path
     missing = tmp_path / "absent.json"
     assert compare_registry.load_baseline(missing) == {"status": "unavailable"}
 
+    binary = tmp_path / "binary.json"
+    binary.write_bytes(b"\xff\xfe\x00")
+    assert compare_registry.load_baseline(binary) == {"status": "unavailable"}
+
+    bad_pair = tmp_path / "bad-pair.json"
+    bad_pair.write_text('{"pairs": ["not-an-object"]}')
+    assert compare_registry.load_baseline(bad_pair) == {"status": "unavailable"}
+
+    missing_id = tmp_path / "missing-id.json"
+    missing_id.write_text('{"pairs": [{"status": "validated"}]}')
+    assert compare_registry.load_baseline(missing_id) == {"status": "unavailable"}
+
 
 def test_load_baseline_accepts_a_registry_with_pairs(tmp_path: Path) -> None:
     path = tmp_path / "registry.json"

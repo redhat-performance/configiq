@@ -173,9 +173,14 @@ def load_baseline(path: Path | None) -> dict[str, Any] | None:
         return None
     try:
         baseline = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {"status": "unavailable"}
-    if not isinstance(baseline, dict) or not isinstance(baseline.get("pairs"), list):
+    if not isinstance(baseline, dict):
+        return {"status": "unavailable"}
+    pairs = baseline.get("pairs")
+    if not isinstance(pairs, list) or not all(
+        isinstance(pair, dict) and isinstance(pair.get("id"), str) for pair in pairs
+    ):
         return {"status": "unavailable"}
     return baseline
 
