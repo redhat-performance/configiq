@@ -91,6 +91,13 @@ _CHANGE_LABEL = {
 
 
 def summarize(current: dict[str, Any], baseline: dict[str, Any] | None = None) -> str:
+    # The deployed API answers 200 with status "unavailable" when it has no
+    # bundle. Treat that as no baseline instead of comparing against zero pairs,
+    # which would report every current pair as new and hide removals.
+    note = ""
+    if isinstance(baseline, dict) and baseline.get("status") == "unavailable":
+        baseline = None
+        note = "Baseline registry unavailable; reporting the new bundle only.\n\n"
     current_pairs = _pair_map(current)
     baseline_pairs = _pair_map(baseline) if baseline is not None else {}
 
@@ -153,7 +160,7 @@ def summarize(current: dict[str, Any], baseline: dict[str, Any] | None = None) -
             f"{'; '.join(flags)} |"
         )
 
-    return "\n".join(lines)
+    return note + "\n".join(lines)
 
 
 def main() -> int:

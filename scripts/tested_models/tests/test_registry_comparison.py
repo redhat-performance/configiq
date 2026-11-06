@@ -52,6 +52,17 @@ def test_compare_without_baseline_summarizes_the_new_bundle() -> None:
     assert "| `only__h200` | validated | 200 | 0.850 | 0.600 |  |" in report
 
 
+def test_compare_treats_an_unavailable_api_response_as_no_baseline() -> None:
+    report = compare_registry.summarize(
+        {"pairs": [_pair("only__h200")]},
+        {"status": "unavailable", "pairs": []},
+    )
+
+    assert report.startswith("Baseline registry unavailable; reporting the new bundle only.")
+    assert "1 pairs: 1 validated, 0 measured-only." in report
+    assert "new pair" not in report
+
+
 def test_compare_handles_measured_only_pairs_without_metrics() -> None:
     report = compare_registry.summarize({
         "pairs": [_pair("weak__h200", status="measured_no_envelope", records=23, auc=None, f1=None)],

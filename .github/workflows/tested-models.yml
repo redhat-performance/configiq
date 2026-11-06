@@ -23,7 +23,10 @@ on:
       - '.github/workflows/tested-models.yml'
 
 concurrency:
-  group: tested-models-${{ github.ref }}
+  # GitHub keeps only one pending run per group. Include the requested revision
+  # so a publisher dispatch for a new SHA cannot replace a pending build for a
+  # different SHA; scheduled and push builds still share the "latest" group.
+  group: tested-models-${{ github.ref }}-${{ inputs.revision || 'latest' }}
   cancel-in-progress: false
 
 jobs:
