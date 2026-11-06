@@ -35,9 +35,9 @@
     { "key": "voice",          "label": "Voice / Real-time", "isl":   512, "osl":   128}
   ],
   "concurrencyPresets": [
-    { "key": "xsmall",    "label": "X-small (50)",     "concurrency":    50 },
-    { "key": "small", "label": "Small (100)", "concurrency":   100 },
-    { "key": "medium",    "label": "Medium (500)",   "concurrency":  500 },
-    { "key": "large",   "label": "Large (1000)",  "concurrency":  1000 }
+    { "key": "xsmall",    "label": "X-Small (2)",     "concurrency":    2 },
+    { "key": "small", "label": "Small (10)", "concurrency":   10 },
+    { "key": "medium",    "label": "Medium (25)",   "concurrency":  25 },
+    { "key": "large",   "label": "Large (100)",  "concurrency":  100 }
   ]
 }

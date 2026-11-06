@@ -673,30 +673,6 @@ export default function Sizing() {
         <p className={styles.subtitle}>
           Start with just a model name — we fill the rest, then let you tune every assumption.
         </p>
-        <div className={styles.goalRow}>
-          <span className={styles.goalLabel}>Sizing goal</span>
-          <ToggleGroup aria-label="Sizing goal">
-            <ToggleGroupItem
-              text="Latency SLO"
-              isSelected={!isDemand}
-              onChange={() => {
-                if (isDemand) { reset(); setGoal('latency'); }
-              }}
-            />
-            <ToggleGroupItem
-              text="Throughput demand"
-              isSelected={isDemand}
-              onChange={() => {
-                if (!isDemand) { reset(); setGoal('demand'); }
-              }}
-            />
-          </ToggleGroup>
-          <span className={styles.goalHint}>
-            {isDemand
-              ? 'Find the fewest GPUs that sustain an arrival rate. No latency target is applied.'
-              : 'Find the fewest GPUs that meet TTFT/TPOT (or end-to-end) latency targets.'}
-          </span>
-        </div>
       </div>
 
       {/* ─── Input card ─── */}
@@ -787,6 +763,32 @@ export default function Sizing() {
           ))}
         </div>
       )}
+
+      {/* ---------- sizing goal ---------- */}
+      <div className={styles.goalRow}>
+        <span className={styles.goalLabel}>Sizing goal</span>
+        <ToggleGroup aria-label="Sizing goal">
+          <ToggleGroupItem
+            text="Latency SLO"
+            isSelected={!isDemand}
+            onChange={() => {
+              if (isDemand) { reset(); setGoal('latency'); }
+            }}
+          />
+          <ToggleGroupItem
+            text="Throughput demand"
+            isSelected={isDemand}
+            onChange={() => {
+              if (!isDemand) { reset(); setGoal('demand'); }
+            }}
+          />
+        </ToggleGroup>
+        <span className={styles.goalHint}>
+          {isDemand
+            ? 'Find the fewest GPUs that sustain an arrival rate. No latency target is applied.'
+            : 'Find the fewest GPUs that meet TTFT/TPOT (or end-to-end) latency targets.'}
+        </span>
+      </div>
 
       <InfoStrip>
         {isDemand ? (
