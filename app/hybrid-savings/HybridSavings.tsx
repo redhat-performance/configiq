@@ -235,7 +235,6 @@ export default function HybridSavings() {
     inferenceBackend,
     simulator,
     backendVersion,
-    costingsEnabled,
     preferredCloudProvider,
     pricingSource,
     hfToken,
@@ -260,8 +259,8 @@ export default function HybridSavings() {
       : selectedBackend?.systems[gpu.systemId]?.includes(backendVersion)))),
   [allGpuOptions, support, selectedBackend, backendVersion])
   const backendUnavailable = !!support && !selectedBackend
-  const costings = useCostings(costingsEnabled, pricingSource, 'models')
-  const infrastructure = useInfrastructureOffers(costingsEnabled)
+  const costings = useCostings(hydrated, pricingSource, 'models')
+  const infrastructure = useInfrastructureOffers(hydrated)
   const hostedSources = React.useMemo(
     () => Object.entries(costings.health?.sources ?? {})
       .filter(([source]) => pricingSource === 'merged' ? source.startsWith('models.') : source === `models.${pricingSource}`),
@@ -584,23 +583,6 @@ export default function HybridSavings() {
   const canCalculate = assumptionsHydrated && !backendUnavailable && !invalidWorkload && !!hostedPrice && !!model && gpuOptions.length > 0 &&
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
     (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
-
-  if (hydrated && !costingsEnabled) {
-    return (
-      <div className={styles.page}>
-        <header className={styles.header}>
-          <div>
-            <h1 className={styles.pageTitle}>Hybrid savings</h1>
-            <p className={styles.subtitle}>Compare hosted API, rented GPU and purchased hardware costs for one workload.</p>
-          </div>
-        </header>
-        <Alert title="Enable experimental costings" variant="info" isInline>
-          Hybrid Savings uses the shared costing catalogue. Enable experimental costings in Settings, then return here.
-          <div className={styles.alertAction}><Button component="a" href="/settings" variant="link" isInline>Open Settings</Button></div>
-        </Alert>
-      </div>
-    )
-  }
 
   return (
     <div className={styles.page}>

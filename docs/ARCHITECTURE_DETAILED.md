@@ -83,12 +83,13 @@ GPU sizing formulas or call external service URLs directly from the browser.
 2. The catalog route fetches `/systems`, `/models`, `/backends`, and `/networks`
    from AISimulators and combines them into one browser response. The network
    list supplies fabrics for BLIS P/D predictions; AISimulate does not consume it.
-3. When experimental costings are enabled, `useCostings` calls `/api/costings/models`,
-   `/api/costings/systems`, and `/api/costings/health`. Hybrid Savings uses its
-   models-only scope, omitting the legacy systems-pricing request. Caches are
-   isolated by pricing source and scope. All costings pages remain behind the
-   experimental toggle in Settings. Empty/stale startup data retries after
-   one minute, while healthy data retains the usual one-hour cache lifetime.
+3. `useCostings` calls `/api/costings/models`, `/api/costings/systems`, and
+   `/api/costings/health`. Hybrid Savings is available without the Experimental
+   toggle and loads prices once settings are ready. It uses the models-only
+   scope, omitting the legacy systems-pricing request. Other costings views keep
+   their existing Experimental guards. Caches are isolated by pricing source
+   and scope. Empty/stale startup data retries after one minute, while healthy
+   data retains the usual one-hour cache lifetime.
 4. Those routes proxy the aicostings service; pricing data is not part of the
    AISimulators sizing response.
 5. Hybrid Savings separately reads `/api/costings/offers` → aicostings `/offers`.

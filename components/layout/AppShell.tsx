@@ -215,7 +215,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               isActive={pathname === "/validation/compare"}
             />
 
-            {costingsEnabled && <>
             <div style={groupLabelStyle}>COSTINGS</div>
 
             <NavItemWithIcon
@@ -224,19 +223,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/hybrid-savings"
               isActive={pathname === "/hybrid-savings"}
             />
-            <NavItemWithIcon
-              icon={CubesIcon}
-              label="Cluster cost"
-              href="/cluster-cost"
-              isActive={pathname === "/cluster-cost"}
-            />
-            <NavItemWithIcon
-              icon={RouteIcon}
-              label="Routing economics"
-              href="/routing"
-              isActive={pathname === "/routing"}
-            />
-            </>}
+            {costingsEnabled && (
+              <>
+                <NavItemWithIcon
+                  icon={CubesIcon}
+                  label="Cluster cost"
+                  href="/cluster-cost"
+                  isActive={pathname === "/cluster-cost"}
+                />
+                <NavItemWithIcon
+                  icon={RouteIcon}
+                  label="Routing economics"
+                  href="/routing"
+                  isActive={pathname === "/routing"}
+                />
+              </>
+            )}
 
             <div style={groupLabelStyle}>SYSTEM</div>
 
