@@ -18,7 +18,14 @@ import type { FrontierState } from '@/lib/types/pareto';
 const FRONTIER_MIN_WINDOW = 32;
 const FRONTIER_WINDOW_MULTIPLIER = 2;
 
-export type SizingGoal = 'latency' | 'demand';
+export type SizingGoal = 'latency' | 'demand' | 'capacity';
+
+/** Objective sent to AISimulators; derived from the sizing goal. */
+export type RecommendObjective =
+  | 'min_gpus'
+  | 'throughput_demand'
+  | 'pareto'
+  | 'concurrency_capacity';
 
 interface RecommendParams {
   model_path: string;
@@ -28,8 +35,10 @@ interface RecommendParams {
   max_seq_len?: number;
   prefill_max_seq_len?: number;
   decode_max_seq_len?: number;
-  /** `enforce` applies the latency SLA; `none` is a throughput-demand run. */
+  /** `enforce` applies the latency SLA; `none` is a demand or capacity run. */
   sla_mode: 'enforce' | 'none';
+  /** Explicit sizing objective. Omitted callers fall back to the sla_mode mapping. */
+  objective?: RecommendObjective;
   ttft?: number;
   tpot?: number;
   backend?: string;
@@ -85,16 +94,26 @@ const RecommendContext = React.createContext<RecommendState>({
 });
 
 function requestBodyFor(p: RecommendParams): Record<string, unknown> {
+  const objective: RecommendObjective = p.objective
+    ?? (p.sla_mode === 'enforce' ? 'min_gpus' : 'throughput_demand');
   const body: Record<string, unknown> = {
     model_path: p.model_path,
     system: p.system,
     isl: p.isl,
     osl: p.osl,
     sla_mode: p.sla_mode,
+    objective,
   };
 
-  if (p.sla_mode === 'enforce') {
-    body.objective = 'min_gpus';
+  if (objective === 'concurrency_capacity') {
+    // Capacity is a design input: N sequences at the per-sequence context
+    // length. It carries no latency bound and no arrival rate.
+    body.target_concurrency = p.target_concurrency;
+  } else if (objective === 'throughput_demand') {
+    // A demand run measures an arrival rate. It carries no latency target and
+    // no concurrency target, so the service cannot fabricate an SLA for it.
+    body.target_request_rate = p.target_request_rate;
+  } else {
     if (p.request_latency != null) body.request_latency = p.request_latency;
     else {
       if (p.ttft != null) body.ttft = p.ttft;
@@ -102,11 +121,6 @@ function requestBodyFor(p: RecommendParams): Record<string, unknown> {
     }
     if (p.target_request_rate != null) body.target_request_rate = p.target_request_rate;
     else body.target_concurrency = p.target_concurrency ?? 32;
-  } else {
-    // A demand run measures an arrival rate. It carries no latency target and
-    // no concurrency target, so the service cannot fabricate an SLA for it.
-    body.objective = 'throughput_demand';
-    body.target_request_rate = p.target_request_rate;
   }
 
   if (p.max_seq_len != null) body.max_seq_len = p.max_seq_len;
@@ -168,6 +182,13 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
 
   const launchFrontier = React.useCallback(
     (body: Record<string, unknown>, primaryGpus: number, simulator: string | undefined) => {
+      if (body.objective === 'concurrency_capacity') {
+        setFrontier({
+          status: 'unavailable',
+          reason: 'Concurrency-capacity sizing answers a residency question, not a throughput/latency trade-off, so no Pareto frontier is run.',
+        });
+        return;
+      }
       if (simulator === 'blis') {
         setFrontier({
           status: 'unavailable',

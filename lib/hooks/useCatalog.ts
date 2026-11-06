@@ -84,6 +84,11 @@ export interface SimulatorSupport {
   /** GPU system IDs this simulator can price. */
   systems: string[]
   backends: BackendOption[]
+  /**
+   * Sizing objectives this simulator advertises. The client gates its goal
+   * selector on this list rather than on the simulator's ID.
+   */
+  objectives: string[]
 }
 
 /** Capabilities for one engine version, if the simulator scopes support that way. */
@@ -107,6 +112,11 @@ export interface Catalog {
    * entry narrows the models, systems, and versions it can price.
    */
   simulatorSupport: Record<string, SimulatorSupport>
+  /**
+   * Sizing objectives the default simulator (the top-level catalog) advertises.
+   * Empty when an older API does not report them.
+   */
+  objectives: string[]
   /** Effective AISimulators request timeout (seconds) reported by the server; falls back
    *  to DEFAULT_GATEWAY_TIMEOUT_SECONDS until the catalog resolves. */
   timeoutSeconds: number
@@ -221,6 +231,9 @@ function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
       models,
       systems,
       backends,
+      objectives: Array.isArray(entry.objectives)
+        ? entry.objectives.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
+        : [],
     }
   }
   return support
@@ -252,6 +265,7 @@ let cachedModelSpecs: Map<string, ModelSpec> | null = null
 let cachedBackends: BackendOption[] | null = null
 let cachedNetworks: string[] | null = null
 let cachedSimulatorSupport: Record<string, SimulatorSupport> = {}
+let cachedObjectives: string[] = []
 let cachedTimeoutSeconds: number = DEFAULT_GATEWAY_TIMEOUT_SECONDS
 let cacheTimestamp: number | null = null
 let fetchPromise: Promise<void> | null = null
@@ -270,6 +284,7 @@ export function useCatalog(): Catalog {
   const [simulatorSupport, setSimulatorSupport] = useState<Record<string, SimulatorSupport>>(
     isCacheValid() ? cachedSimulatorSupport : {},
   )
+  const [objectives, setObjectives] = useState<string[]>(isCacheValid() ? cachedObjectives : [])
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(cachedTimeoutSeconds)
   const [isLoading, setIsLoading] = useState(!isCacheValid())
   const [error, setError] = useState<string | null>(null)
@@ -282,6 +297,7 @@ export function useCatalog(): Catalog {
       setBackendOptions(cachedBackends!)
       setNetworkOptions(cachedNetworks!)
       setSimulatorSupport(cachedSimulatorSupport)
+      setObjectives(cachedObjectives)
       setTimeoutSeconds(cachedTimeoutSeconds)
       setIsLoading(false)
       return
@@ -336,6 +352,9 @@ export function useCatalog(): Catalog {
           cachedBackends = backends
           cachedNetworks = networks
           cachedSimulatorSupport = mapSimulatorSupport(data.simulatorSupport)
+          cachedObjectives = Array.isArray(data.objectives)
+            ? data.objectives.filter((objective: unknown): objective is string => typeof objective === 'string' && objective.trim().length > 0)
+            : []
           if (typeof data.timeoutSeconds === 'number' && data.timeoutSeconds > 0) {
             cachedTimeoutSeconds = data.timeoutSeconds
           }
@@ -352,6 +371,7 @@ export function useCatalog(): Catalog {
           setBackendOptions(cachedBackends!)
           setNetworkOptions(cachedNetworks!)
           setSimulatorSupport(cachedSimulatorSupport)
+          setObjectives(cachedObjectives)
           setTimeoutSeconds(cachedTimeoutSeconds)
           if (cachedBackends!.length === 0) {
             setError('AISimulators returned no serving backends. Retrying the catalog.')
@@ -380,5 +400,5 @@ export function useCatalog(): Catalog {
     }
   }, [])
 
-  return { gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds, isLoading, error }
+  return { gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions, simulatorSupport, objectives, timeoutSeconds, isLoading, error }
 }

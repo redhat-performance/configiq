@@ -22,9 +22,10 @@ function catalogResponse(
   backends: unknown[],
   networks: string[],
   simulatorSupport: unknown,
+  objectives: string[],
 ) {
   return NextResponse.json(
-    { systems, models, backends, networks, simulatorSupport, timeoutSeconds: gatewayTimeoutSeconds() },
+    { systems, models, backends, networks, simulatorSupport, objectives, timeoutSeconds: gatewayTimeoutSeconds() },
     {
       status: 200,
       headers: {
@@ -84,6 +85,7 @@ async function simulatorCapabilities(
       backends,
       models,
       systems,
+      objectives: catalogObjectives(backendsData),
     }
   } catch {
     return null
@@ -94,6 +96,15 @@ function catalogList(data: unknown, key: 'systems' | 'models' | 'backends' | 'ne
   if (!data || typeof data !== 'object') return null
   const value = (data as Record<string, unknown>)[key]
   return Array.isArray(value) ? value : null
+}
+
+/** Sizing goals a simulator advertises through its /backends envelope. */
+function catalogObjectives(data: unknown): string[] {
+  if (!data || typeof data !== 'object') return []
+  const value = (data as Record<string, unknown>).objectives
+  return Array.isArray(value)
+    ? value.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
+    : []
 }
 
 function hasUsableId(value: unknown): boolean {
@@ -193,7 +204,9 @@ export async function GET(request: Request) {
       if (!systems || !models || !validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
       const rawSupport = (catalogData as Record<string, unknown>).simulatorSupport
       const simulatorSupport = rawSupport && typeof rawSupport === 'object' ? rawSupport : {}
-      return catalogResponse(systems, models, backends, networks, simulatorSupport)
+      return catalogResponse(
+        systems, models, backends, networks, simulatorSupport, catalogObjectives(catalogData),
+      )
     }
 
     const [systemsRes, modelsRes, backendsResult, networksResult, blisSupport] = await Promise.all([
@@ -273,7 +286,9 @@ export async function GET(request: Request) {
     const backends = catalogList(backendsData, 'backends') ?? []
     if (!systems || !models || !validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
     const simulatorSupport = blisSupport ? { blis: blisSupport } : {}
-    return catalogResponse(systems, models, backends, networks, simulatorSupport)
+    return catalogResponse(
+      systems, models, backends, networks, simulatorSupport, catalogObjectives(backendsData),
+    )
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       recordErrorCode('/api/catalog', 'AISIM_TIMEOUT', 504)

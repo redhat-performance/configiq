@@ -40,6 +40,26 @@ const EXTERNAL_RESPONSE = {
   chosen_mode: 'agg',
 }
 
+const CAPACITY_OUTCOME = {
+  target_concurrency: 64,
+  context_per_sequence_tokens: 2176,
+  capacity_tokens: 150000,
+  capacity_sequences: 68,
+  fits: true,
+  shortfall_sequences: null,
+  shortfall_tokens: null,
+  minimum_gpus: 2,
+  per_rank_tokens: 75000,
+  replicas: 2,
+  attention_dp: 1,
+  evaluated_shapes: 5,
+  feasible_shapes: 5,
+  exhaustive: true,
+  performance_available: true,
+  performance_unavailable_reason: null,
+  simulator: 'aisimulate',
+}
+
 const BLIS_EXTERNAL_RESPONSE = {
   ...EXTERNAL_RESPONSE,
   simulator: 'blis',
@@ -160,6 +180,65 @@ describe('RecommendRequestSchema', () => {
       objective: 'throughput_demand',
       sla_mode: 'none',
       target_request_rate: 10,
+      ttft: 1000,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a concurrency-capacity request without latency bounds', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a capacity request that enforces a latency SLA', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'enforce',
+      ttft: 1000,
+      tpot: 30,
+      target_concurrency: 64,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request that carries an arrival rate', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+      target_request_rate: 10,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request with a fractional sequence target', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64.5,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request that carries a latency bound', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
       ttft: 1000,
     })
     expect(result.success).toBe(false)
@@ -650,6 +729,45 @@ describe('callRecommend', () => {
     expect(body).not.toHaveProperty('max_candidate_gpus')
   })
 
+  it('runs a capacity request once instead of replaying GPU windows', async () => {
+    const fetchMock = mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      capacity: CAPACITY_OUTCOME,
+      sweep: {
+        algorithm: 'enumerate',
+        max_trials: 5,
+        evaluated: 5,
+        feasible: 5,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const events = []
+
+    for await (const event of incrementalRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })) {
+      events.push(event)
+    }
+
+    expect(events.map(event => event.type)).toEqual(['completed'])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('concurrency_capacity')
+    expect(body.sla_mode).toBe('none')
+    expect(body.target_concurrency).toBe(64)
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
   it('forwards context window limits to the upstream request', async () => {
     const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
@@ -955,6 +1073,88 @@ describe('callRecommend', () => {
 
     expect(result.status).toBe('completed')
     expect(result.demand).toMatchObject({ met: false, achievedRps: 4, bestObservedRps: 4 })
+  })
+
+  it('parses a concurrency-capacity outcome without requiring timing values', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        tokens_per_second: null,
+        tokens_per_second_per_gpu: null,
+        tokens_per_second_per_user: null,
+        ttft: null,
+        tpot: null,
+        request_latency: null,
+      }],
+      capacity: CAPACITY_OUTCOME,
+      sweep: {
+        algorithm: 'enumerate',
+        max_trials: 5,
+        evaluated: 5,
+        feasible: 5,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    }))
+
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    }) as RecommendResult
+
+    expect(result.status).toBe('completed')
+    expect(result.capacity).toMatchObject({
+      targetConcurrency: 64,
+      contextPerSequenceTokens: 2176,
+      capacitySequences: 68,
+      fits: true,
+      shortfallSequences: null,
+      minimumGpus: 2,
+      replicas: 2,
+      attentionDp: 1,
+      exhaustive: true,
+      performanceAvailable: true,
+      simulator: 'aisimulate',
+    })
+    expect(result.sweep).toMatchObject({ algorithm: 'enumerate', evaluated: 5 })
+  })
+
+  it('reports an unmet capacity target as a completed 200 result', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      capacity: {
+        ...CAPACITY_OUTCOME,
+        capacity_tokens: 87040,
+        capacity_sequences: 40,
+        fits: false,
+        shortfall_sequences: 24,
+        shortfall_tokens: 52224,
+        performance_available: false,
+        performance_unavailable_reason: 'no timing coverage',
+      },
+    }))
+
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    }) as RecommendResult
+
+    expect(result.status).toBe('completed')
+    expect(result.capacity).toMatchObject({
+      fits: false,
+      capacitySequences: 40,
+      shortfallSequences: 24,
+      shortfallTokens: 52224,
+      performanceAvailable: false,
+      performanceUnavailableReason: 'no timing coverage',
+    })
   })
 })
 

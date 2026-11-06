@@ -154,6 +154,59 @@ describe('RecommendContext request construction', () => {
     expect(body).not.toHaveProperty('request_latency')
   })
 
+  it('builds a concurrency-capacity request without latency or rate targets', async () => {
+    await render()
+
+    await act(async () => {
+      startSizing({
+        model_path: 'org/model',
+        system: 'h200_sxm',
+        isl: 2048,
+        osl: 128,
+        sla_mode: 'none',
+        objective: 'concurrency_capacity',
+        target_concurrency: 64,
+        simulator: 'aisimulate',
+      })
+      await Promise.resolve()
+    })
+
+    const fetchMock = vi.mocked(fetch)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('concurrency_capacity')
+    expect(body.sla_mode).toBe('none')
+    expect(body.target_concurrency).toBe(64)
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('request_latency')
+  })
+
+  it('never launches a frontier for a capacity result', async () => {
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'completed',
+      recommendation: { gpusNeeded: 4 },
+    } as never)
+    await render()
+
+    await act(async () => {
+      startSizing({
+        model_path: 'org/model',
+        system: 'h200_sxm',
+        isl: 2048,
+        osl: 128,
+        sla_mode: 'none',
+        objective: 'concurrency_capacity',
+        target_concurrency: 64,
+        simulator: 'aisimulate',
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(fetchFrontier)).not.toHaveBeenCalled()
+  })
+
   it('sizes the companion scan from the primary result and names the window in API fields', async () => {
     vi.mocked(readRecommendStream).mockResolvedValueOnce({
       status: 'completed',

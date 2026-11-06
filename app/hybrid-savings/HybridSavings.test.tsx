@@ -59,7 +59,7 @@ beforeEach(async () => {
   vi.mocked(useCatalog).mockReturnValue({
     gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
     modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
-    modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, timeoutSeconds: 180,
+    modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
@@ -282,6 +282,7 @@ describe('Hybrid page composition', () => {
         systems: { l40s: ['0.11.0'] }, systemDefaults: {}, versionSupport: {},
         memoryFraction: null, memoryFractionKind: 'of_free', runtimeField: null, disaggregationRequiresFabric: true,
       }],
+      objectives: [],
     } } })
     vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'blis', backendVersion: '0.11.0' })
     vi.mocked(readRecommendStream).mockResolvedValue({ ...sizing, simulator: 'blis' } as RecommendResponse)

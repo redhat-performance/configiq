@@ -55,16 +55,19 @@ export const RecommendRequestSchema = z.object({
   /**
    * Optimization objective. `pareto` returns a candidate ledger and the
    * simulator-computed frontier views; `throughput_demand` finds the fewest
-   * GPUs that sustain `target_request_rate` with no latency target; the normal
-   * `min_gpus` path sizes subject to the latency SLA. Pareto and demand are
-   * AISimulate-only; the service rejects them for BLIS rather than
-   * substituting a simulator.
+   * GPUs that sustain `target_request_rate` with no latency target;
+   * `concurrency_capacity` finds the fewest GPUs whose weights plus KV cache
+   * hold `target_concurrency` sequences at the per-sequence context length;
+   * the normal `min_gpus` path sizes subject to the latency SLA. Pareto, demand
+   * and capacity are AISimulate-only; the service rejects them for BLIS rather
+   * than substituting a simulator.
    */
-  objective: z.enum(['min_gpus', 'throughput_demand', 'pareto']).default('min_gpus'),
+  objective: z.enum(['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity']).default('min_gpus'),
   /**
    * Whether latency targets constrain the result. `enforce` requires a latency
    * bound and is required by `min_gpus`; `none` rejects any latency bound, is
-   * required by `throughput_demand`, and is optional for `pareto`.
+   * required by `throughput_demand` and `concurrency_capacity`, and is optional
+   * for `pareto`.
    */
   sla_mode: z.enum(['enforce', 'none']).default('enforce'),
   /**
@@ -137,6 +140,33 @@ export const RecommendRequestSchema = z.object({
       ctx.addIssue({
         code: 'custom',
         message: 'throughput_demand does not accept ttft, tpot, or request_latency',
+      })
+    }
+    return
+  }
+
+  if (data.objective === 'concurrency_capacity') {
+    // Capacity is a memory-residency question: a whole number of sequences
+    // must fit at the per-sequence context length. It has no latency target
+    // and no arrival rate, so both are rejected rather than reinterpreted.
+    if (data.sla_mode !== 'none') {
+      ctx.addIssue({ code: 'custom', message: 'concurrency_capacity requires sla_mode=none' })
+    }
+    if (data.target_concurrency == null || data.target_request_rate != null) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'concurrency_capacity requires target_concurrency and no target_request_rate',
+      })
+    } else if (!Number.isInteger(data.target_concurrency)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'concurrency_capacity requires a whole number of concurrent sequences',
+      })
+    }
+    if (hasLatency || hasTokenLatency) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'concurrency_capacity does not accept ttft, tpot, or request_latency',
       })
     }
     return

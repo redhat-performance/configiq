@@ -163,7 +163,9 @@ with the same parameter return only the AISimulate IDs and systems BLIS can
 price. The envelopes include `simulator`; `/backends` also reports
 `blis_version`. Each backend entry reports
 `disaggregation_requires_fabric`, so a client knows whether a P/D topology
-needs a fabric selection without matching on the simulator ID.
+needs a fabric selection without matching on the simulator ID. `/backends` also
+returns the simulator's `objectives` list, and clients gate a sizing-goal
+selector on that list rather than on the simulator ID.
 
 Simulator provenance includes the requested and resolved model, hardware,
 engine version, and any model-configuration relation reported by the selected
@@ -219,6 +221,7 @@ search.
 |---|---|---|---|
 | `min_gpus` (default) | `enforce` | exactly one of `target_request_rate` / `target_concurrency` | fewest GPUs that clears the latency SLA |
 | `throughput_demand` | `none` | `target_request_rate` only | fewest GPUs among evaluated candidates that sustains the offered rate; no latency target |
+| `concurrency_capacity` | `none` | `target_concurrency` only | fewest GPUs whose weights plus KV cache hold N sequences at the per-sequence context length; no latency target |
 | `pareto` | `enforce` or `none` | none; the sweep drives load itself | every sampled candidate plus a frontier view |
 
 With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
@@ -265,6 +268,64 @@ met, the effective ceiling is reached, or the whole-search budget
 hold the model is skipped. An explicit `max_candidate_gpus` pins a single
 window. Each window's trial/timeout budget is reduced to the time that remains,
 so the ladder stays inside the gateway timeout.
+
+### Concurrency-capacity sizing
+
+`objective=concurrency_capacity` answers a residency question: how few GPUs
+hold weights plus KV cache for `target_concurrency` sequences with no latency
+target. `target_concurrency` is a design input, not a derived demand; it must
+be a positive whole number. `sla_mode` must be `none`, and `target_request_rate`,
+`ttft`, `tpot`, and `request_latency` are rejected rather than reinterpreted.
+
+The per-sequence context is the peak a resident sequence can occupy:
+`max_seq_len` when supplied, otherwise `isl + osl`. Prefix caching is not
+credited, because a shorter average prompt does not bound how large a resident
+sequence can grow.
+
+Selection enumerates every aggregated parallel shape the SDK's search space
+allows (the same backend filters, wideEP heuristic, and KV-feasibility rule as
+`min_gpus`) and reads each shape's KV token capacity. For each shape the service
+adds the fewest replicas that reach `target_concurrency × context_tokens` and
+picks the fewest total GPUs, preferring more capacity on a tie. This is
+deterministic and exhaustive, not a sampled sweep: `sweep.algorithm` is
+`enumerate`, `budget_exhausted` is false, and every enumerated shape counts as
+evaluated and feasible.
+
+Aggregated deployment is the only mode searched. Disaggregation replicates the
+full weights in each pool, so it cannot need fewer GPUs to hold the same weights
+plus KV cache than an aggregated deployment with the same worker shape.
+
+A capacity result carries a `capacity` block:
+
+- `target_concurrency` — sequences requested.
+- `context_per_sequence_tokens` — `max_seq_len` or `isl + osl`.
+- `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`.
+- `capacity_sequences` — whole sequences that fit.
+- `fits` — `capacity_sequences >= target_concurrency`.
+- `shortfall_sequences` / `shortfall_tokens` — missing capacity when `fits` is
+  false.
+- `minimum_gpus` — fewest GPUs in the requested window that hold one sequence.
+- `per_rank_tokens`, `replicas`, `attention_dp` — the selected shape's resolved
+  capacity inputs.
+- `evaluated_shapes`, `feasible_shapes`, `exhaustive`.
+- `performance_available`, `performance_unavailable_reason` — whether the
+  informational simulation produced timing data.
+
+The winning configuration's `configs[0]` is also simulated at the requested
+concurrency (on the busiest replica), and its throughput, latency, memory,
+power, and cost are reported for informational use. That simulation never gates
+`fits`: when timing data cannot cover the configuration, the response is still
+200, `performance_available` is false, `performance_unavailable_reason` explains
+why, and a warning is added. No performance value is invented.
+
+When the target does not fit inside the GPU window, the response is still 200:
+the service reports the best achievable deployment inside the window plus the
+sequence and token shortfall, so a client can show how far the budget is from
+the request. When no aggregated shape can be scheduled in the window at all
+(for example, an explicit `min_candidate_gpus` that no worker shape plus
+replicas can reach), the service returns 422 naming the window. It never claims
+that one GPU is always feasible and never silently substitutes another
+simulator; BLIS rejects this objective with 422.
 
 ### Pareto frontier provenance and availability
 

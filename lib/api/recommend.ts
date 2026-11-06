@@ -58,6 +58,33 @@ export interface RecommendDemandOutcome {
   simulator: 'aisimulate' | 'blis'
 }
 
+/**
+ * Memory-residency outcome of a concurrency-capacity run. `fits` is decided by
+ * the KV-cache estimate for the selected aggregated shape, never by the
+ * informational performance simulation; when the target does not fit the API
+ * still returns a usable best-effort shape plus the shortfall.
+ */
+export interface RecommendCapacityOutcome {
+  targetConcurrency: number
+  contextPerSequenceTokens: number
+  capacityTokens: number
+  capacitySequences: number
+  fits: boolean
+  shortfallSequences: number | null
+  shortfallTokens: number | null
+  /** Fewest GPUs in the requested window that hold one sequence. */
+  minimumGpus: number | null
+  perRankTokens: number
+  replicas: number
+  attentionDp: number
+  evaluatedShapes: number
+  feasibleShapes: number
+  exhaustive: boolean
+  performanceAvailable: boolean
+  performanceUnavailableReason: string | null
+  simulator: 'aisimulate'
+}
+
 export interface RecommendSweepMeta {
   runId: string | null
   algorithm: string | null
@@ -79,6 +106,8 @@ export interface RecommendResult {
   searchSummary?: RecommendSearchSummary
   /** Measured outcome of a throughput-demand run (demand objective only). */
   demand?: RecommendDemandOutcome
+  /** Residency outcome of a concurrency-capacity run (capacity objective only). */
+  capacity?: RecommendCapacityOutcome
   /** Run-control facts for the sweep that produced the candidates. */
   sweep?: RecommendSweepMeta
   /** Serving mode the recommender chose. Disagg splits prefill/decode pools. */
@@ -446,6 +475,34 @@ export async function callRecommend(
         simulator: demandRaw.simulator === 'blis' ? 'blis' : 'aisimulate',
       }
     : undefined
+  const capacityRaw = rawData.capacity && typeof rawData.capacity === 'object'
+    ? rawData.capacity as Record<string, unknown>
+    : null
+  const capacity: RecommendCapacityOutcome | undefined = capacityRaw
+    ? {
+        targetConcurrency: typeof capacityRaw.target_concurrency === 'number' ? capacityRaw.target_concurrency : 0,
+        contextPerSequenceTokens: typeof capacityRaw.context_per_sequence_tokens === 'number'
+          ? capacityRaw.context_per_sequence_tokens
+          : 0,
+        capacityTokens: typeof capacityRaw.capacity_tokens === 'number' ? capacityRaw.capacity_tokens : 0,
+        capacitySequences: typeof capacityRaw.capacity_sequences === 'number' ? capacityRaw.capacity_sequences : 0,
+        fits: capacityRaw.fits === true,
+        shortfallSequences: typeof capacityRaw.shortfall_sequences === 'number' ? capacityRaw.shortfall_sequences : null,
+        shortfallTokens: typeof capacityRaw.shortfall_tokens === 'number' ? capacityRaw.shortfall_tokens : null,
+        minimumGpus: typeof capacityRaw.minimum_gpus === 'number' ? capacityRaw.minimum_gpus : null,
+        perRankTokens: typeof capacityRaw.per_rank_tokens === 'number' ? capacityRaw.per_rank_tokens : 0,
+        replicas: typeof capacityRaw.replicas === 'number' ? capacityRaw.replicas : 1,
+        attentionDp: typeof capacityRaw.attention_dp === 'number' ? capacityRaw.attention_dp : 1,
+        evaluatedShapes: typeof capacityRaw.evaluated_shapes === 'number' ? capacityRaw.evaluated_shapes : 0,
+        feasibleShapes: typeof capacityRaw.feasible_shapes === 'number' ? capacityRaw.feasible_shapes : 0,
+        exhaustive: capacityRaw.exhaustive !== false,
+        performanceAvailable: capacityRaw.performance_available === true,
+        performanceUnavailableReason: typeof capacityRaw.performance_unavailable_reason === 'string'
+          ? capacityRaw.performance_unavailable_reason
+          : null,
+        simulator: 'aisimulate',
+      }
+    : undefined
   const sweepRaw = rawData.sweep && typeof rawData.sweep === 'object'
     ? rawData.sweep as Record<string, unknown>
     : null
@@ -552,15 +609,19 @@ export async function callRecommend(
     : memoryFromBreakdown
   const memoryAvailable = typeof best.memory === 'number' || memoryBreakdown != null
 
+  const isCapacityObjective = request.objective === 'concurrency_capacity'
   const requiredValues = [
     totalGpusNeeded,
     gpusPerReplica,
     replicasNeeded,
-    clusterTokensPerSecond,
   ]
-  // A demand run has no latency SLA, so latency columns are informational and
-  // must not make an otherwise usable sizing result fail validation.
-  if ((request.sla_mode ?? 'enforce') === 'enforce') {
+  // Capacity is decided by the KV estimate, not by a replay. Its performance
+  // fields are informational and may legitimately be absent.
+  if (!isCapacityObjective) requiredValues.push(clusterTokensPerSecond)
+  // A demand or capacity run has no latency SLA, so latency columns are
+  // informational and must not make an otherwise usable sizing result fail
+  // validation.
+  if ((request.sla_mode ?? 'enforce') === 'enforce' && !isCapacityObjective) {
     requiredValues.push(ttftLatencyMs, tpotMs)
   }
   if (requiredValues.some(value => !Number.isFinite(value) || value <= 0)) {
@@ -591,6 +652,7 @@ export async function callRecommend(
     simulator,
     searchSummary,
     demand,
+    capacity,
     sweep,
     mode,
     recommendation: {
@@ -792,11 +854,10 @@ export async function* incrementalRecommend(
   if ((request.sla_mode ?? 'enforce') === 'none') {
     if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
     const totalTimeoutSeconds = gatewayTimeoutSeconds()
-    // Demand sizing is one bounded sweep over the full GPU window: the service
-    // itself selects the fewest GPUs that sustain the rate, or the best
-    // observed rate when none do. Replaying it as shrinking windows would
-    // repeat the same sweep and could return an unmet window before a larger
-    // one was ever tried.
+    // Demand and capacity sizing are each one bounded call over the full GPU
+    // window: the service itself selects the fewest GPUs that meet the goal.
+    // Replaying them as shrinking windows would repeat the same search and
+    // could return an unmet window before a larger one was ever tried.
     const response = await callRecommend(request, {
       timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),
       signal,
