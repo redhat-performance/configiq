@@ -1019,25 +1019,37 @@ export default function Sizing() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={params?.model_path ?? model} systemId={params?.system ?? gpuSystem} />
-
-      {/* ─── Result tiles ─── */}
-      {result && (
-        <>
-          <div className={styles.card} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px' }}>
+      <TestedPerformanceFeedback
+        prediction={classifierPrediction}
+        isLoading={classifierLoading}
+        modelId={params?.model_path ?? model}
+        systemId={params?.system ?? gpuSystem}
+        headerRight={result ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
             <SimulatorBadge simulator={result.simulator} />
             <span style={{ fontSize: 13, color: '#3c3f42' }}>Sizing recommendation</span>
+          </div>
+        ) : undefined}
+      >
+        {result && (result.searchSummary || !result.memoryAvailable) && (
+          <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {result.searchSummary && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+              <span>
                 Search: {result.searchSummary.strategy.replaceAll('_', ' ')} · {result.searchSummary.modes_searched?.join(' + ') ?? result.simulator} · tested {result.searchSummary.evaluated_configurations ?? result.searchSummary.evaluated_gpus.length} configurations across {result.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {result.searchSummary.effective_max_gpus} (configured {result.searchSummary.configured_max_gpus}, hardware {result.searchSummary.hardware_max_gpus}) · {result.searchSummary.time_budget_seconds}s{result.searchSummary.budget_exhausted ? ' budget reached' : ''}.
               </span>
             )}
             {!result.memoryAvailable && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+              <div style={{ marginTop: result.searchSummary ? 4 : 0 }}>
                 This simulator does not provide memory estimates; the memory tile is hidden.
-              </span>
+              </div>
             )}
           </div>
+        )}
+      </TestedPerformanceFeedback>
+
+      {/* ─── Result tiles ─── */}
+      {result && (
+        <>
           <div className={styles.tilesGrid}>
             {/* GPUs Required */}
             <FlipTile
