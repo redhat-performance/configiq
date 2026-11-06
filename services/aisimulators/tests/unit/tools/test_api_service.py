@@ -10,6 +10,7 @@ requiring the Rust native extension or performance databases.
 from __future__ import annotations
 
 import sys
+import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1752,6 +1753,20 @@ class TestRunCapacityRecommendation:
         assert options[0].role == "minimum"
         assert options[0].config is config
 
+    def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
+        _config, capacity, _sweep, options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=20_000)],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=8,
+        )
+        # One GPU holds a single 2_176-token sequence, but the target needs four.
+        assert capacity.minimum_gpus == 1
+        assert options[0].role == "minimum"
+        assert options[0].config.total_gpus_needed == 4
+        assert options[0].gpus_over_minimum == 0
+        assert any(option.gpus_over_minimum > 0 for option in options[1:])
+
     def test_target_miss_is_still_200_shaped_data_with_a_shortfall(self, monkeypatch):
         config, capacity, _sweep, _options = self._run(
             monkeypatch,
@@ -1851,6 +1866,46 @@ class TestRunCapacityRecommendation:
         assert "3 GPUs" in excinfo.value.detail
 
 
+class TestCapacitySimulationBudget:
+    def test_abandoned_simulation_holds_its_process_slot(self, monkeypatch):
+        slots = threading.BoundedSemaphore(2)
+        monkeypatch.setattr(app_module, "_CAPACITY_SIMULATION_SLOTS", slots)
+        monkeypatch.setattr(app_module, "_CAPACITY_OPTION_SIMULATION_BUDGET_S", 0.5)
+        started = threading.Semaphore(0)
+        release = threading.Event()
+
+        def blocking_prediction(*_args, **_kwargs):
+            started.release()
+            assert release.wait(timeout=10)
+            return (None, None)
+
+        monkeypatch.setattr(app_module, "_capacity_prediction", blocking_prediction)
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+
+        results = app_module._simulate_capacity_option_predictions(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidates=[MagicMock() for _ in range(3)],
+            target_concurrency=32,
+        )
+
+        assert started.acquire(timeout=2)
+        assert started.acquire(timeout=2)
+        # The response budget expired and the request returned, but both
+        # abandoned simulations still occupy their process-wide slots.
+        assert slots.acquire(blocking=False) is False
+        assert slots.acquire(blocking=False) is False
+        assert all(reason is not None for _prediction, reason in results.values())
+
+        release.set()
+        # Slots are only returned once the abandoned simulations finish.
+        assert slots.acquire(timeout=10)
+        slots.release()
+        assert slots.acquire(timeout=10)
+        slots.release()
+
+
 class TestRecommendCapacityEndpoint:
     @patch("tools.api_service.app._run_capacity_recommendation")
     def test_capacity_is_200_with_a_capacity_block_and_enumeration_sweep(self, mock_run):
@@ -1906,6 +1961,63 @@ class TestRecommendCapacityEndpoint:
         assert data["capacity_options"][0]["option_id"] == "agg-t2-d1-mt2-me1-r2"
         assert data["capacity_options"][0]["role"] == "minimum"
         assert data["capacity_options"][0]["capacity"]["capacity_sequences"] == 229
+
+    @patch("tools.api_service.app._run_capacity_recommendation")
+    def test_capacity_inclusive_tpot_is_not_transformed_twice(self, mock_run):
+        config = app_module.RecommendConfig(
+            total_gpus_needed=4,
+            replicas_needed=2,
+            ttft=100.0,
+            tpot=20.0,
+        )
+        capacity = app_module.CapacityOutcome(
+            target_concurrency=32,
+            context_per_sequence_tokens=2176,
+            capacity_tokens=500_000,
+            capacity_sequences=229,
+            fits=True,
+            minimum_gpus=2,
+            per_rank_tokens=125_000,
+            replicas=2,
+            attention_dp=1,
+            evaluated_shapes=3,
+            feasible_shapes=3,
+            performance_available=True,
+        )
+        mock_run.return_value = (
+            config,
+            capacity,
+            app_module.SweepMeta(
+                algorithm="enumerate",
+                max_trials=3,
+                evaluated=3,
+                feasible=3,
+                timed_out=0,
+                budget_exhausted=False,
+                strict_sla=False,
+            ),
+            [
+                app_module.CapacityOption(
+                    option_id="agg-t2-d1-mt2-me1-r2",
+                    rank=1,
+                    role="minimum",
+                    gpus_over_minimum=0,
+                    config=config,
+                    capacity=capacity,
+                )
+            ],
+        )
+
+        response = client.post(
+            "/recommend", json={**VALID_CAPACITY_BODY, "inclusive_tpot": True}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # `_run_capacity_recommendation` already applied the transform to the
+        # shared config, so a second pass would report 20.625 instead of 20.0.
+        assert data["configs"][0]["tpot"] == pytest.approx(20.0)
+        assert data["capacity_options"][0]["config"]["tpot"] == pytest.approx(20.0)
 
     def test_capacity_rejects_blis_before_running(self):
         response = client.post(

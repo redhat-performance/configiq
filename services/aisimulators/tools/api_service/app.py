@@ -1870,6 +1870,10 @@ def _gpu_window_label(lower: int, upper: int) -> str:
 #: option that misses this budget stays promotable with an explicit reason.
 _CAPACITY_OPTION_SIMULATION_BUDGET_S = 40
 _CAPACITY_OPTION_SIMULATION_WORKERS = 2
+#: One process-wide budget for capacity simulations. A simulation that outlives
+#: its request keeps its slot until it actually returns, so abandoned work
+#: cannot multiply across requests and saturate the CPU.
+_CAPACITY_SIMULATION_SLOTS = threading.BoundedSemaphore(_CAPACITY_OPTION_SIMULATION_WORKERS)
 _CAPACITY_OPTION_DEFAULT_COUNT = 8
 _CAPACITY_OPTION_DEFAULT_COUNT_NO_DISAGG = 6
 
@@ -2784,17 +2788,31 @@ def _simulate_capacity_option_predictions(
     try:
         while next_index < len(candidates) or pending:
             while next_index < len(candidates) and len(pending) < _CAPACITY_OPTION_SIMULATION_WORKERS:
-                if time.monotonic() >= deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                # Hold a process-wide slot until this simulation actually
+                # finishes, even if the response budget expires first. New
+                # requests cannot start work the abandoned simulation is still
+                # consuming CPU for.
+                if not _CAPACITY_SIMULATION_SLOTS.acquire(timeout=remaining):
                     break
                 index = next_index
                 next_index += 1
-                future = executor.submit(
-                    _capacity_prediction,
-                    req,
-                    model_path,
-                    backend_version=backend_version,
-                    candidate=candidates[index],
-                    target_concurrency=target_concurrency,
+                try:
+                    future = executor.submit(
+                        _capacity_prediction,
+                        req,
+                        model_path,
+                        backend_version=backend_version,
+                        candidate=candidates[index],
+                        target_concurrency=target_concurrency,
+                    )
+                except BaseException:
+                    _CAPACITY_SIMULATION_SLOTS.release()
+                    raise
+                future.add_done_callback(
+                    lambda _future: _CAPACITY_SIMULATION_SLOTS.release()
                 )
                 pending[future] = index
             if not pending:
@@ -2940,6 +2958,11 @@ def _run_capacity_recommendation(
 
         options: list[CapacityOption] = []
         used_ids: set[str] = set()
+        # Rank 1 is the fewest-GPU option that holds the target, which can need
+        # more GPUs than the fewest that hold a single sequence. Measure "over
+        # minimum" from rank 1 when the target fits, so the primary reports 0.
+        # A shortfall still measures from the single-sequence minimum.
+        baseline_gpus = selected[0][1].total_gpus if aggregate_fitting else minimum_gpus
         for index, (role, candidate) in enumerate(selected):
             prediction, unavailable_reason = predictions[index]
             config = _capacity_option_config(
@@ -2978,7 +3001,7 @@ def _run_capacity_recommendation(
                     option_id=_capacity_option_id(candidate, used=used_ids),
                     rank=index + 1,
                     role=role,  # type: ignore[arg-type]
-                    gpus_over_minimum=max(0, candidate.total_gpus - minimum_gpus),
+                    gpus_over_minimum=max(0, candidate.total_gpus - baseline_gpus),
                     config=config,
                     capacity=outcome,
                 )
@@ -3850,13 +3873,15 @@ def post_recommend(
         for cfg in configs:
             cfg.warnings.insert(0, fallback_warning)
     for cfg in configs:
-        if req.inclusive_tpot:
-            cfg.tpot = _inclusive_tpot(cfg.ttft, cfg.tpot, req.osl)
         if req.objective == "concurrency_capacity":
             # `_run_capacity_recommendation` already built the winning shape's
-            # extras. Rebuilding them here would drop attention-DP and MoE
-            # widths and could disagree with the capacity the shape reports.
+            # extras, including `inclusive_tpot`. Rebuilding them here would
+            # drop attention-DP and MoE widths, disagree with the capacity
+            # block, and apply the TPOT transform twice to the primary config,
+            # which is shared with `capacity_options[0].config`.
             continue
+        if req.inclusive_tpot:
+            cfg.tpot = _inclusive_tpot(cfg.ttft, cfg.tpot, req.osl)
         if cfg.prefill_config is not None or cfg.decode_config is not None:
             for worker, context_length in (
                 (cfg.prefill_config, req.prefill_max_seq_len or req.max_seq_len),
