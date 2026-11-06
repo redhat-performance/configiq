@@ -187,8 +187,8 @@ class EstimateRequest(BaseModel):
     moe_quant_mode: str | None = Field(default=None)
     kvcache_quant_mode: str | None = Field(default=None)
     fmha_quant_mode: str | None = Field(default=None)
-    moe_tp_size: int | None = Field(default=None)
-    moe_ep_size: int | None = Field(default=None)
+    moe_tp_size: int | None = Field(default=None, gt=0)
+    moe_ep_size: int | None = Field(default=None, gt=0)
     attention_dp_size: int = Field(default=1)
     # Serving mode. When 'disagg', the prefill_*/decode_* fields below drive
     # separate prefill and decode pools; the top-level tp/pp/batch fields act
@@ -197,14 +197,14 @@ class EstimateRequest(BaseModel):
     decode_system: str | None = Field(default=None, description="GPU system for disagg decode workers; defaults to `system`.")
     prefill_tp_size: int | None = Field(default=None)
     prefill_pp_size: int | None = Field(default=None)
-    prefill_moe_tp_size: int | None = Field(default=None)
-    prefill_moe_ep_size: int | None = Field(default=None)
+    prefill_moe_tp_size: int | None = Field(default=None, gt=0)
+    prefill_moe_ep_size: int | None = Field(default=None, gt=0)
     prefill_batch_size: int | None = Field(default=None)
     prefill_num_workers: int | None = Field(default=None)
     decode_tp_size: int | None = Field(default=None)
     decode_pp_size: int | None = Field(default=None)
-    decode_moe_tp_size: int | None = Field(default=None)
-    decode_moe_ep_size: int | None = Field(default=None)
+    decode_moe_tp_size: int | None = Field(default=None, gt=0)
+    decode_moe_ep_size: int | None = Field(default=None, gt=0)
     decode_batch_size: int | None = Field(default=None)
     decode_num_workers: int | None = Field(default=None)
     inclusive_tpot: bool = Field(
@@ -1261,6 +1261,7 @@ def _build_memory_breakdown(
     moe_ep: int | None = None,
     max_seq_len: int | None = None,
     memory_fraction: float | None = None,
+    attention_dp: int = 1,
 ) -> MemoryBreakdown | None:
     try:
         raw = estimate_kv_cache(
@@ -1274,6 +1275,7 @@ def _build_memory_breakdown(
             memory_fraction_value=memory_fraction or _backend_memory_fraction(backend, backend_version),
             tp_size=tp,
             pp_size=pp,
+            attention_dp_size=attention_dp,
             moe_tp_size=moe_tp,
             moe_ep_size=moe_ep,
             gemm_quant_mode=gemm_quant if gemm_quant and gemm_quant != "half" else None,
@@ -2011,6 +2013,7 @@ def post_predict(
                             or req.max_seq_len,
                             memory_fraction=(req.prefill_gpu_memory_utilization if worker is resp.prefill_config else req.decode_gpu_memory_utilization)
                             or req.gpu_memory_utilization,
+                            attention_dp=req.attention_dp_size,
                         )
         return resp
 
@@ -2032,6 +2035,7 @@ def post_predict(
                 req.kvcache_quant_mode if req.kvcache_quant_mode and req.kvcache_quant_mode != "half" else None,
                 agg_moe_tp, agg_moe_ep, max_seq_len=req.max_seq_len,
                 memory_fraction=req.gpu_memory_utilization,
+                attention_dp=req.attention_dp_size,
             )
 
     return resp

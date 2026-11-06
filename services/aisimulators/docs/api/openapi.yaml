@@ -848,10 +848,12 @@ components:
         prefill_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
           description: MoE tensor width for the prefill pool. Falls back to `moe_tp_size`, then to `(prefill_tp_size * attention_dp_size)`.
         prefill_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
           description: MoE expert width for the prefill pool. Falls back to `moe_ep_size`, then to 1.
         prefill_batch_size:
           type: integer
@@ -868,10 +870,12 @@ components:
         decode_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
           description: MoE tensor width for the decode pool. Falls back to `moe_tp_size`, then to `(decode_tp_size * attention_dp_size)`.
         decode_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
           description: MoE expert width for the decode pool. Falls back to `moe_ep_size`, then to 1.
         decode_batch_size:
           type: integer
@@ -914,6 +918,7 @@ components:
           type: integer
           nullable: true
           default: null
+          minimum: 1
           description: |
             MoE/FFN tensor width. When both `moe_tp_size` and `moe_ep_size` are
             omitted, the API resolves the pair to
@@ -926,6 +931,7 @@ components:
           type: integer
           nullable: true
           default: null
+          minimum: 1
           description: |
             MoE/FFN expert width. Omitted alongside `moe_tp_size`, it resolves
             to 1; supplied alone, `moe_tp_size` is inferred from the attention

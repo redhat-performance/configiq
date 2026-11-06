@@ -1272,6 +1272,37 @@ class TestEstimate:
         assert resp.json()["serving_config"] is not None
         assert resp.json()["memory_breakdown"] is not None
 
+    def test_zero_moe_width_is_rejected(self):
+        for name in ("moe_tp_size", "moe_ep_size"):
+            resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, name: 0})
+            assert resp.status_code == 422
+
+    def test_zero_pool_moe_width_is_rejected(self):
+        for name in (
+            "prefill_moe_tp_size",
+            "prefill_moe_ep_size",
+            "decode_moe_tp_size",
+            "decode_moe_ep_size",
+        ):
+            resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, name: 0})
+            assert resp.status_code == 422
+
+    @patch("tools.api_service.app.estimate_kv_cache")
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_include_memory_uses_resolved_attention_width(self, mock_estimate, mock_kv):
+        mock_estimate.return_value = make_mock_estimate_result()
+        mock_kv.return_value = MOCK_KV_CACHE_RESULT
+        resp = client.post(
+            "/estimate?include=memory",
+            json={**VALID_ESTIMATE_BODY, "tp_size": 2, "attention_dp_size": 2},
+        )
+        assert resp.status_code == 200
+        kwargs = mock_kv.call_args.kwargs
+        assert kwargs["tp_size"] == 2
+        assert kwargs["attention_dp_size"] == 2
+        assert kwargs["moe_tp_size"] == 4
+        assert kwargs["moe_ep_size"] == 1
+
     @patch("tools.api_service.app._run_aisimulate_prediction")
     def test_calls_sdk_with_correct_params(self, mock_estimate):
         mock_estimate.return_value = make_mock_estimate_result()
