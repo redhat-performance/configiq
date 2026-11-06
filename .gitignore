@@ -43,3 +43,6 @@ next-env.d.ts
 # Generated tested-model datasets and manifests
 data/tested-models/
 __pycache__/
+
+# Local-only dev scratch (container runner, logs)
+.local-dev/

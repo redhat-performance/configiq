@@ -13,8 +13,8 @@ import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
 // match against a representative local list.
 const presets: readonly WorkloadPreset[] = [
   DEFAULT_WORKLOAD,
-  { key: 'rag', label: 'RAG / Search', isl: 6_144, osl: 256, ttft: 800, tpot: 40, concurrency: 8, prefix: 1_024 },
-  { key: 'agentic', label: 'Agentic / Coding', isl: 12_288, osl: 1_024, ttft: 1_500, tpot: 25, concurrency: 4, prefix: 2_048 },
+  { key: 'rag', label: 'RAG / Search', isl: 6_144, osl: 256 },
+  { key: 'agentic', label: 'Coding agent', isl: 12_288, osl: 1_024 },
 ]
 
 function workload(overrides: Partial<HybridWorkload> = {}): HybridWorkload {
@@ -37,10 +37,6 @@ describe('analyzeRequestMix', () => {
     expect(matchRequestShapePreset({
       averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
       averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
-      targetTtftMs: DEFAULT_HYBRID_WORKLOAD.targetTtftMs,
-      targetTpotMs: DEFAULT_HYBRID_WORKLOAD.targetTpotMs,
-      targetConcurrency: DEFAULT_HYBRID_WORKLOAD.targetConcurrency,
-      prefixTokens: DEFAULT_HYBRID_WORKLOAD.prefixTokens,
     }, [DEFAULT_WORKLOAD])).toBe(DEFAULT_WORKLOAD)
     expect(mix.aligned).toBe(true)
     expect(mix.monthlyInputTokens + mix.monthlyOutputTokens).toBe(2_550_000_000)
@@ -221,58 +217,10 @@ describe('proposeRequestMixAlignment', () => {
 })
 
 describe('matchRequestShapePreset', () => {
-  it('matches the default preset exactly on all six fields', () => {
-    const preset = matchRequestShapePreset({
-      averageInputTokens: DEFAULT_WORKLOAD.isl,
-      averageOutputTokens: DEFAULT_WORKLOAD.osl,
-      targetTtftMs: DEFAULT_WORKLOAD.ttft,
-      targetTpotMs: DEFAULT_WORKLOAD.tpot,
-      targetConcurrency: DEFAULT_WORKLOAD.concurrency,
-      prefixTokens: DEFAULT_WORKLOAD.prefix,
-    }, presets)
-    expect(preset?.key).toBe(DEFAULT_WORKLOAD.key)
-  })
-
-  it('returns null when any of the six preset-controlled fields differs', () => {
-    const exact = {
-      averageInputTokens: DEFAULT_WORKLOAD.isl,
-      averageOutputTokens: DEFAULT_WORKLOAD.osl,
-      targetTtftMs: DEFAULT_WORKLOAD.ttft,
-      targetTpotMs: DEFAULT_WORKLOAD.tpot,
-      targetConcurrency: DEFAULT_WORKLOAD.concurrency,
-      prefixTokens: DEFAULT_WORKLOAD.prefix,
-    }
-    const singleFieldEdits: Array<[keyof typeof exact, number]> = [
-      ['averageInputTokens', DEFAULT_WORKLOAD.isl + 1],
-      ['averageOutputTokens', DEFAULT_WORKLOAD.osl + 1],
-      ['targetTtftMs', DEFAULT_WORKLOAD.ttft + 1],
-      ['targetTpotMs', DEFAULT_WORKLOAD.tpot + 1],
-      ['targetConcurrency', DEFAULT_WORKLOAD.concurrency + 1],
-      ['prefixTokens', DEFAULT_WORKLOAD.prefix + 1],
-    ]
-    for (const [field, value] of singleFieldEdits) {
-      expect(matchRequestShapePreset({ ...exact, [field]: value }, presets), field).toBeNull()
-    }
-    // Every other preset is matched by its own exact shape, and a single-field
-    // edit away from any of them is also Custom (no preset shares the other
-    // five fields with another, so the +1 can never complete a different
-    // preset's shape).
-    for (const preset of presets) {
-      const shape = {
-        averageInputTokens: preset.isl,
-        averageOutputTokens: preset.osl,
-        targetTtftMs: preset.ttft,
-        targetTpotMs: preset.tpot,
-        targetConcurrency: preset.concurrency,
-        prefixTokens: preset.prefix,
-      }
-      expect(matchRequestShapePreset(shape, presets)?.key, preset.key).toBe(preset.key)
-      for (const [field] of singleFieldEdits) {
-        expect(matchRequestShapePreset(
-          { ...shape, [field]: shape[field] + 1 },
-          presets,
-        ), `${preset.key} ${field}`).toBeNull()
-      }
-    }
+  it.each(presets)('matches $label only when both token lengths match', preset => {
+    const shape = { averageInputTokens: preset.isl, averageOutputTokens: preset.osl }
+    expect(matchRequestShapePreset(shape, presets)).toBe(preset)
+    expect(matchRequestShapePreset({ ...shape, averageInputTokens: preset.isl + 1 }, presets)).toBeNull()
+    expect(matchRequestShapePreset({ ...shape, averageOutputTokens: preset.osl + 1 }, presets)).toBeNull()
   })
 })

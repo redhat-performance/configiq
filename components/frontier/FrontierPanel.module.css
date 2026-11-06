@@ -1,0 +1,330 @@
+/* Pareto frontier companion panel — token-driven, PatternFly card inside. */
+
+.section {
+  --t: var(--gc-text, #151515);
+  --t2: var(--gc-text-2, #3c3f42);
+  --t3: var(--gc-text-3, #54585c);
+  --line: var(--gc-border, #d2d2d2);
+  --bg2: var(--gc-bg-2, #f5f5f5);
+  --blue: var(--gc-link, #0066cc);
+  --display: var(--gc-font-display, "Red Hat Display", system-ui, sans-serif);
+  --sans: var(--gc-font-sans, "Red Hat Text", system-ui, sans-serif);
+  --mono: var(--gc-font-mono, "Red Hat Mono", ui-monospace, monospace);
+  margin-bottom: 24px;
+}
+
+.titleRow {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--t);
+}
+
+.subtitle {
+  font-size: 13px;
+  color: var(--t2);
+}
+
+/* ---------- states ---------- */
+.loading {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 10px 2px;
+}
+
+.loadingTitle {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--t);
+}
+
+.loadingHint {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--t2);
+  max-width: 70ch;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #f0ab00;
+  border-radius: 6px;
+  background: var(--bg2);
+}
+
+.noticeIcon {
+  color: #b98400;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.noticeTitle {
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--t);
+}
+
+.noticeBody {
+  margin-top: 2px;
+  font-size: 13.5px;
+  color: var(--t2);
+  max-width: 80ch;
+}
+
+.retryButton {
+  margin-top: 10px;
+}
+
+/* ---------- toolbar ---------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.axisControl {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.axisLabel {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+}
+
+.sweepMeta {
+  font-size: 12.5px;
+  color: var(--t2);
+  font-variant-numeric: tabular-nums;
+}
+
+.axisNote {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--t2);
+}
+
+/* ---------- body ---------- */
+.bodyGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(240px, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .bodyGrid { grid-template-columns: 1fr; }
+}
+
+.chartColumn {
+  min-width: 0;
+}
+
+.chartWrap {
+  position: relative;
+  min-height: 340px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+  padding-left: 8px;
+}
+
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--t2);
+}
+
+.legendDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.legendSelected {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.detailColumn {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+  background: var(--bg2);
+}
+
+.detailHeading {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+}
+
+.detailEmpty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--t2);
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.detail > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+
+.detail > div:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.detail dt {
+  font-size: 12.5px;
+  color: var(--t2);
+}
+
+.detail dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--t);
+  text-align: right;
+}
+
+/* ---------- candidate table ---------- */
+.tableScroll {
+  margin-top: 18px;
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.tableCaption {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: 8px;
+  font-size: 12.5px;
+  color: var(--t2);
+}
+
+.table th {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--t2);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--t2);
+  vertical-align: middle;
+}
+
+.table tbody tr {
+  cursor: pointer;
+}
+
+.table tbody tr:hover {
+  background: var(--bg2);
+}
+
+.numeric {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rowSelected {
+  background: #e7f1fa;
+}
+
+.rowSelected:hover {
+  background: #e7f1fa;
+}
+
+.rowButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rowButton:hover,
+.rowButton:focus-visible {
+  text-decoration: underline;
+}
+
+.rowButton:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.frontierLabel {
+  margin-left: 2px;
+}

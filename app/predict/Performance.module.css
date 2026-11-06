@@ -536,7 +536,6 @@
 /* ---------- assumptions ---------- */
 .assumptionsHead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin: 4px 0 12px; flex-wrap: wrap; }
 .assumptionsTitle { font-family: var(--display); font-size: 20px; font-weight: 600; }
-.assumptionsSub { font-size: 14px; color: var(--t2); }
 .accSummary {
   font-family: var(--mono); font-size: 13px; color: var(--t2);
   display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center;
@@ -544,10 +543,20 @@
 }
 .accSummary > span { white-space: nowrap; }
 .accSummary .k { color: var(--t3); }
-.accGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; padding: 6px 4px 4px; }
-@media (max-width: 760px) { .accGrid { grid-template-columns: 1fr; } }
+.accGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px 20px; padding: 6px 4px 4px; }
+.accGrid5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px 20px; padding: 6px 4px 4px; }
+@media (max-width: 900px) { .accGrid, .accGrid5 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .accGrid, .accGrid5 { grid-template-columns: 1fr; } }
 .accField { display: flex; flex-direction: column; gap: 6px; }
 .accFieldLabel { font-size: 13px; color: var(--t); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.sectionLabel {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t);
+  margin-top: 20px;
+  margin-bottom: 8px;
+}
 
 /* ---------- footer actions ---------- */
 .footerRow { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; align-items: center; }

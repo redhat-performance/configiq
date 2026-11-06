@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent, FormSelect, FormSelectOption } from '@patternfly/react-core';
+import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent, FormSelect, FormSelectOption, ToggleGroup, ToggleGroupItem } from '@patternfly/react-core';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
 import MemoryIcon from '@patternfly/react-icons/dist/esm/icons/memory-icon';
 import ClockIcon from '@patternfly/react-icons/dist/esm/icons/clock-icon';
@@ -12,6 +12,7 @@ import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/excl
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import DollarSignIcon from '@patternfly/react-icons/dist/esm/icons/dollar-sign-icon';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
+import { WarningPanel } from '@/components/ui/WarningPanel';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 
 import styles from './Sizing.module.css';
@@ -19,6 +20,7 @@ import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { useRecommend } from '@/contexts/RecommendContext';
 import type { RecommendProgressEvent } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
+import { FrontierPanel } from '@/components/frontier/FrontierPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
@@ -26,6 +28,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -35,13 +38,18 @@ import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeed
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 
-function modelSuggestions(): string {
-  const names = getAppConfig().suggestedModelNames;
-  return names.length > 0 ? names.join(', ') : 'Nemotron, DeepSeek V4, Gemma 4, Kimi';
-}
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
 import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
+
+/** Offered rate a demand run starts from; the UI labels it as the default. */
+const DEFAULT_DEMAND_RATE = 10;
+
+/** Render a millisecond latency bound in seconds, dropping a trailing `.000`. */
+function formatLatencyBound(ms: number): string {
+  const sec = (ms / 1000).toFixed(3);
+  return sec.endsWith('000') ? (ms / 1000).toFixed(0) : parseFloat(sec).toString();
+}
 
 
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
@@ -254,12 +262,16 @@ export default function Sizing() {
   const [model, setModel] = React.useState('');
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
 
-  // Set model from settings after context has loaded from localStorage
+  // Set model from settings after context has loaded from localStorage.
+  // Track readiness separately from the value: an intentionally empty saved
+  // default is a valid, settled state.
   const modelFromSettings = React.useRef(false);
+  const [modelFromSettingsApplied, setModelFromSettingsApplied] = React.useState(false);
   React.useEffect(() => {
     if (!hydrated || modelFromSettings.current) return;
     modelFromSettings.current = true;
     setModel(settingsDefaultModel);
+    setModelFromSettingsApplied(true);
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
   const testedSystemsForModel = React.useMemo(
@@ -277,16 +289,35 @@ export default function Sizing() {
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [ttft, setTtft] = React.useState(1000);
   const [tpot, setTpot] = React.useState(30);
+  // Start at a single user so the first estimate sizes the smallest
+  // configuration; see d32b0dd and 0730b07. Users raise this with the presets.
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
+  // Two sizing goals share one Calculate flow. `latency` enforces the TTFT/TPOT
+  // (or E2E) SLA; `demand` asks how many GPUs sustain an arrival rate with no
+  // latency target.
+  const [goal, setGoal] = React.useState<'latency' | 'demand'>('latency');
+  const [demandRate, setDemandRate] = React.useState(DEFAULT_DEMAND_RATE);
+  const isDemand = goal === 'demand';
 
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
+  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, reset } = useRecommend();
+  // The result outlives a remount, but the input goal does not. Derive the
+  // result's mode and targets from the request that produced it so returning
+  // to /recommend does not relabel a demand result as a latency result.
+  const resultIsDemand = params?.sla_mode === 'none';
+  const resultDemandRate = params?.target_request_rate ?? demandRate;
+  const resultRequestLatency = params?.request_latency ?? null;
+  const resultTtft = params?.ttft ?? ttft;
+  const resultDemandOutputTokPerSecond = resultIsDemand
+    ? resultDemandRate * (params?.osl ?? osl)
+    : 0;
   const [debugOpen, setDebugOpen] = React.useState(false);
+  const [inputsDirty, setInputsDirty] = React.useState(false);
 
   // Additional constraints accordion
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -301,6 +332,7 @@ export default function Sizing() {
   const [concurrencyInput, setConcurrencyInput] = React.useState('1');
   const [latencyInput, setLatencyInput] = React.useState('');
   const [prefixInput, setPrefixInput] = React.useState('0');
+  const [demandRateInput, setDemandRateInput] = React.useState(String(DEFAULT_DEMAND_RATE));
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
@@ -308,10 +340,15 @@ export default function Sizing() {
   const invalidTpot = tpotInput === '' || !Number.isFinite(Number(tpotInput)) || Number(tpotInput) <= 0;
   const invalidConcurrency = concurrencyInput === '' || parseInt(concurrencyInput, 10) < 1;
   const invalidLatency = latencyInput !== '' && (!Number.isFinite(Number(latencyInput)) || Number(latencyInput) <= 0);
+  const invalidDemandRate = demandRateInput === '' || !Number.isFinite(Number(demandRateInput)) || Number(demandRateInput) <= 0;
   const validSequenceLength = (value: string) => /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
   const invalidMaxSeqLen = maxSeqLenInput !== '' && !validSequenceLength(maxSeqLenInput);
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && !validSequenceLength(prefillMaxSeqLenInput);
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
+
+  const markInputsDirty = () => {
+    if (result || isLoading) setInputsDirty(true);
+  };
 
   const handleSequenceLengthChange = (
     raw: string,
@@ -322,6 +359,7 @@ export default function Sizing() {
     setInput(value);
     const n = Number(value);
     setValue(validSequenceLength(value) ? n : null);
+    markInputsDirty();
   };
 
   const handleIslChange = (raw: string) => {
@@ -329,6 +367,8 @@ export default function Sizing() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setIsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleOslChange = (raw: string) => {
@@ -336,6 +376,8 @@ export default function Sizing() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setOsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleTtftChange = (raw: string) => {
@@ -343,6 +385,7 @@ export default function Sizing() {
     setTtftInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTtft(n);
+    markInputsDirty();
   };
 
   const handleTpotChange = (raw: string) => {
@@ -350,6 +393,7 @@ export default function Sizing() {
     setTpotInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTpot(n);
+    markInputsDirty();
   };
 
   const handleConcurrencyChange = (raw: string) => {
@@ -357,6 +401,8 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
+    setActiveConcurrencyPreset('');
+    markInputsDirty();
   };
 
   const handleLatencyChange = (raw: string) => {
@@ -364,6 +410,7 @@ export default function Sizing() {
     setLatencyInput(cleaned);
     const n = Number(cleaned);
     setRequestLatency(cleaned === '' ? null : (Number.isFinite(n) && n > 0 ? n : null));
+    markInputsDirty();
   };
 
   const handlePrefixChange = (raw: string) => {
@@ -371,6 +418,14 @@ export default function Sizing() {
     setPrefixInput(digits);
     const n = parseInt(digits, 10);
     setPrefix(isNaN(n) ? 0 : n);
+    markInputsDirty();
+  };
+
+  const handleDemandRateChange = (raw: string) => {
+    const cleaned = raw.replace(/[^0-9.]/g, '');
+    setDemandRateInput(cleaned);
+    const n = Number(cleaned);
+    if (Number.isFinite(n) && n > 0) setDemandRate(n);
   };
 
   // Model status check + fetch HF config. Catalog models resolve server-side;
@@ -476,15 +531,14 @@ export default function Sizing() {
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
 
-  const applyPreset = (p: WorkloadPreset) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+    reset();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
-    setTtft(p.ttft); setTtftInput(String(p.ttft));
-    setTpot(p.tpot); setTpotInput(String(p.tpot));
-    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
 
@@ -496,22 +550,96 @@ export default function Sizing() {
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
   };
 
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
+    markInputsDirty();
+  };
+
+  // The recommend provider keeps the submitted request and its result across
+  // navigation, but this page's form starts from scratch. Once per mount,
+  // compare the restored form with the submitted request so a stale result is
+  // never presented as matching the visible inputs.
+  const checkedSubmittedParams = React.useRef(false);
+  React.useEffect(() => {
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || checkedSubmittedParams.current || !params || !result) return;
+    checkedSubmittedParams.current = true;
+    // Mirror what handleCalculate would send now. Keep undefined (fabric not
+    // required, so omitted) distinct from null (aggregate-only).
+    const effectiveFabric = fabricRequired
+      ? (disaggSupported ? selectedNetworkFabric || null : null)
+      : undefined;
+    const submitted = {
+      model: params.model_path,
+      system: params.system,
+      isl: params.isl,
+      osl: params.osl,
+      ttft: params.ttft,
+      tpot: params.tpot ?? 30,
+      concurrency: params.target_concurrency ?? 32,
+      prefix: params.prefix ?? 0,
+      maxSeqLen: params.max_seq_len ?? null,
+      prefillMaxSeqLen: params.prefill_max_seq_len ?? null,
+      decodeMaxSeqLen: params.decode_max_seq_len ?? null,
+      requestLatency: params.request_latency ?? null,
+      fabric: params.fabric,
+    };
+    if (
+      submitted.model !== model ||
+      submitted.system !== gpuSystem ||
+      submitted.isl !== isl ||
+      submitted.osl !== osl ||
+      submitted.ttft !== ttft ||
+      submitted.tpot !== tpot ||
+      submitted.concurrency !== targetConcurrency ||
+      submitted.prefix !== prefix ||
+      submitted.maxSeqLen !== maxSeqLen ||
+      submitted.prefillMaxSeqLen !== prefillMaxSeqLen ||
+      submitted.decodeMaxSeqLen !== decodeMaxSeqLen ||
+      submitted.requestLatency !== requestLatency ||
+      submitted.fabric !== effectiveFabric
+    ) {
+      setInputsDirty(true);
+    }
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, fabricRequired, disaggSupported, selectedNetworkFabric]);
+
   const handleCalculate = () => {
+    setInputsDirty(false);
     startSizing({
-      model_path: model, system: gpuSystem, isl, osl, ttft,
-      tpot, target_concurrency: targetConcurrency, prefix,
+      model_path: model,
+      system: gpuSystem,
+      isl,
+      osl,
+      sla_mode: isDemand ? 'none' : 'enforce',
+      ...(isDemand
+        ? { target_request_rate: demandRate }
+        : {
+            target_concurrency: targetConcurrency,
+            // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
+            // request schema rejects sending both shapes at once.
+            ...(requestLatency != null
+              ? { request_latency: requestLatency }
+              : { ttft, tpot }),
+          }),
+      prefix,
       ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
       ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
       ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
-      ...(requestLatency != null ? { request_latency: requestLatency } : {}),
       backend: inferenceBackend,
       ...(backendVersion ? { backend_version: backendVersion } : {}),
       // Send the HF config for models AISimulators can't resolve from its catalog.
       ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
       simulator,
       // A release without P/D modelling can only search aggregated candidates,
-      // so do not send a fabric that asks for a disaggregated topology.
-      ...(fabricRequired ? { fabric: disaggSupported ? selectedNetworkFabric || null : null } : {}),
+      // so do not send a fabric that asks for a disaggregated topology. A
+      // demand run is aggregate-only regardless of the selected fabric.
+      ...(fabricRequired && !isDemand
+        ? { fabric: disaggSupported ? selectedNetworkFabric || null : null }
+        : {}),
     });
   };
 
@@ -519,6 +647,7 @@ export default function Sizing() {
   // Animated values
   const gpuCount = useCountUp(result?.recommendation.gpusNeeded ?? 0);
   const ttftMs = useCountUp(result?.performance.ttftLatencyMs ?? 0, 750, 0);
+  const e2eLatencyMs = useCountUp(result?.performance.requestLatencyMs ?? 0, 750, 0);
   const tpsVal = useCountUp(result?.throughput.tokensPerSecond ?? 0, 750, 0);
   const memVal = useCountUp(result?.memory.value ?? 0, 750, 1);
 
@@ -534,6 +663,7 @@ export default function Sizing() {
   // (replicas × gpus/replica), not per-replica/per-worker.
   const numGpus = result?.recommendation.gpusNeeded ?? 0;
   const monthlyCost = pricePerHour != null ? numGpus * pricePerHour * HOURS_PER_MONTH : null;
+  const demandOutputTokPerSecond = isDemand ? demandRate * osl : 0;
 
   return (
     <div className={styles.page}>
@@ -553,7 +683,7 @@ export default function Sizing() {
             <ComboBox
               id="adv-model"
               value={model}
-              onChange={setModel}
+              onChange={(value) => { setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
@@ -562,7 +692,7 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
         {fabricRequired && (
@@ -572,8 +702,8 @@ export default function Sizing() {
               id="recommend-network-fabric"
               value={selectedNetworkFabric}
               aria-label="Inter-node fabric"
-              isDisabled={networkOptions.length === 0 || !disaggSupported}
-              onChange={(_, value) => setNetworkFabric(value)}
+              isDisabled={networkOptions.length === 0 || !disaggSupported || isDemand}
+              onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
               {networkOptions.map(network => (
@@ -581,7 +711,9 @@ export default function Sizing() {
               ))}
             </FormSelect>
             <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-              {!disaggSupported
+              {isDemand
+                ? 'Throughput-demand sizing is aggregate-only, so the fabric selection does not affect this run.'
+                : !disaggSupported
                 ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}; only aggregate candidates are searched.`
                 : networkOptions.length === 0
                   ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
@@ -596,15 +728,17 @@ export default function Sizing() {
 
         {/* Calculate button */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 16 }}>
-          <button
-            className={styles.calcBtn}
+          <Button
+            variant="primary"
             onClick={handleCalculate}
-             disabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading}
+            isDisabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading ? 'Calculating...' : 'Calculate'}
-          </button>
+          </Button>
         </div>
       </div>
+
+      {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
 
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -618,11 +752,64 @@ export default function Sizing() {
         </div>
       )}
 
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- sizing goal ---------- */}
+      <div className={styles.goalRow}>
+        <span className={styles.goalLabel}>Sizing goal</span>
+        <ToggleGroup aria-label="Sizing goal">
+          <ToggleGroupItem
+            text="Latency SLO"
+            isSelected={!isDemand}
+            onChange={() => {
+              if (isDemand) { reset(); setGoal('latency'); }
+            }}
+          />
+          <ToggleGroupItem
+            text="Throughput demand"
+            isSelected={isDemand}
+            onChange={() => {
+              if (!isDemand) { reset(); setGoal('demand'); }
+            }}
+          />
+        </ToggleGroup>
+        <span className={styles.goalHint}>
+          {isDemand
+            ? 'Find the fewest GPUs that sustain an arrival rate. No latency target is applied.'
+            : 'Find the fewest GPUs that meet TTFT/TPOT (or end-to-end) latency targets.'}
+        </span>
+      </div>
+
       <InfoStrip>
-        Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {(() => {
-          const sec = (ttft / 1000).toFixed(3);
-          return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
+        {isDemand ? (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, Demand: {demandRate} req/s
+            {demandRate === DEFAULT_DEMAND_RATE && (
+              <span style={{ color: 'var(--t2)' }}> (default — adjust)</span>
+            )}
+            {' '}(≈ {Math.round(demandOutputTokPerSecond).toLocaleString()} output tok/s at OSL {osl}), no latency target.
+          </>
+        ) : requestLatency != null ? (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, E2E target: {formatLatencyBound(requestLatency)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
+          </>
+        ) : (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, Maximum TTFT: {formatLatencyBound(ttft)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
+          </>
+        )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
@@ -654,15 +841,32 @@ export default function Sizing() {
                 />
               </div>
               <div>
-                <label className={styles.fieldLabel}>Max TTFT (ms) <Term k="ttft" /></label>
-                <input
-                  type="number"
-                  className={invalidTTFT ? styles.paramInputInvalid : styles.paramInput}
-                  value={ttftInput}
-                  onChange={e => handleTtftChange(e.target.value)}
-                  min={0.1}
-                  step={0.1}
-                />
+                <label className={styles.fieldLabel}>
+                  {isDemand ? 'Demand (req/s)' : <>Max TTFT (ms) <Term k="ttft" /></>}
+                </label>
+                {isDemand ? (
+                  <>
+                    <input
+                      type="number"
+                      className={invalidDemandRate ? styles.paramInputInvalid : styles.paramInput}
+                      value={demandRateInput}
+                      onChange={e => handleDemandRateChange(e.target.value)}
+                      min={0.1}
+                      step={0.1}
+                      placeholder="10"
+                    />
+                    <div className={styles.helperText}>Default 10 req/s — adjust for your workload.</div>
+                  </>
+                ) : (
+                  <input
+                    type="number"
+                    className={invalidTTFT ? styles.paramInputInvalid : styles.paramInput}
+                    value={ttftInput}
+                    onChange={e => handleTtftChange(e.target.value)}
+                    min={0.1}
+                    step={0.1}
+                  />
+                )}
               </div>
               <div>
                 <label className={styles.fieldLabel}>Shared prefix tokens <Term k="prefix" /></label>
@@ -676,40 +880,63 @@ export default function Sizing() {
               </div>
             </div>
 
-            <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(3, 1fr)' }}>
-              <div>
-                <label className={styles.fieldLabel}>Target concurrency <Term k="concurrent" /></label>
-                <input
-                  type="number"
-                  className={invalidConcurrency ? styles.paramInputInvalid : styles.paramInput}
-                  value={concurrencyInput}
-                  onChange={e => handleConcurrencyChange(e.target.value)}
-                  min={1}
-                />
+            {isDemand ? (
+              <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                <div>
+                  <div className={styles.fieldLabel}>Derived output throughput</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    {Math.round(demandOutputTokPerSecond).toLocaleString()} tok/s
+                  </div>
+                  <div className={styles.helperText}>
+                    {demandRate} req/s × {osl} output tokens per request
+                  </div>
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>Latency targets</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    Not applied
+                  </div>
+                  <div className={styles.helperText}>
+                    Throughput demand mode sizes for the arrival rate only. Switch to Latency SLO to enforce TTFT, TPOT, or end-to-end targets.
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className={styles.fieldLabel}>Max TPOT (ms) <Term k="tpot" /></label>
-                <input
-                  type="number"
-                  className={invalidTpot ? styles.paramInputInvalid : styles.paramInput}
-                  value={tpotInput}
-                  onChange={e => handleTpotChange(e.target.value)}
-                  min={0.1}
-                  step={0.1}
-                />
+            ) : (
+              <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                <div>
+                  <label className={styles.fieldLabel}>Target concurrency <Term k="concurrent" /></label>
+                  <input
+                    type="number"
+                    className={invalidConcurrency ? styles.paramInputInvalid : styles.paramInput}
+                    value={concurrencyInput}
+                    onChange={e => handleConcurrencyChange(e.target.value)}
+                    min={1}
+                  />
+                </div>
+                <div>
+                  <label className={styles.fieldLabel}>Max TPOT (ms) <Term k="tpot" /></label>
+                  <input
+                    type="number"
+                    className={invalidTpot ? styles.paramInputInvalid : styles.paramInput}
+                    value={tpotInput}
+                    onChange={e => handleTpotChange(e.target.value)}
+                    min={0.1}
+                    step={0.1}
+                  />
+                </div>
+                <div>
+                  <label className={styles.fieldLabel}>Max E2E latency (ms) <Term k="requestLatency" /></label>
+                  <input
+                    type="number"
+                    className={invalidLatency ? styles.paramInputInvalid : styles.paramInput}
+                    value={latencyInput}
+                    onChange={e => handleLatencyChange(e.target.value)}
+                    placeholder="Auto"
+                    min={1}
+                  />
+                </div>
               </div>
-              <div>
-                <label className={styles.fieldLabel}>Max E2E latency (ms) <Term k="requestLatency" /></label>
-                <input
-                  type="number"
-                  className={invalidLatency ? styles.paramInputInvalid : styles.paramInput}
-                  value={latencyInput}
-                  onChange={e => handleLatencyChange(e.target.value)}
-                  placeholder="Auto"
-                  min={1}
-                />
-              </div>
-            </div>
+            )}
 
             <Accordion style={{ marginTop: 16 }}>
               <AccordionItem isExpanded={expanded.includes('context-window')}>
@@ -792,25 +1019,37 @@ export default function Sizing() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={params?.model_path ?? model} systemId={params?.system ?? gpuSystem} />
-
-      {/* ─── Result tiles ─── */}
-      {result && (
-        <>
-          <div className={styles.card} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px' }}>
+      <TestedPerformanceFeedback
+        prediction={classifierPrediction}
+        isLoading={classifierLoading}
+        modelId={params?.model_path ?? model}
+        systemId={params?.system ?? gpuSystem}
+        headerRight={result ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
             <SimulatorBadge simulator={result.simulator} />
             <span style={{ fontSize: 13, color: '#3c3f42' }}>Sizing recommendation</span>
+          </div>
+        ) : undefined}
+      >
+        {result && (result.searchSummary || !result.memoryAvailable) && (
+          <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {result.searchSummary && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+              <span>
                 Search: {result.searchSummary.strategy.replaceAll('_', ' ')} · {result.searchSummary.modes_searched?.join(' + ') ?? result.simulator} · tested {result.searchSummary.evaluated_configurations ?? result.searchSummary.evaluated_gpus.length} configurations across {result.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {result.searchSummary.effective_max_gpus} (configured {result.searchSummary.configured_max_gpus}, hardware {result.searchSummary.hardware_max_gpus}) · {result.searchSummary.time_budget_seconds}s{result.searchSummary.budget_exhausted ? ' budget reached' : ''}.
               </span>
             )}
             {!result.memoryAvailable && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+              <div style={{ marginTop: result.searchSummary ? 4 : 0 }}>
                 This simulator does not provide memory estimates; the memory tile is hidden.
-              </span>
+              </div>
             )}
           </div>
+        )}
+      </TestedPerformanceFeedback>
+
+      {/* ─── Result tiles ─── */}
+      {result && (
+        <>
           <div className={styles.tilesGrid}>
             {/* GPUs Required */}
             <FlipTile
@@ -829,7 +1068,11 @@ export default function Sizing() {
                   <span className={styles.tileSub}>
                     {result.mode === 'disagg'
                       ? `${result.recommendation.replicasNeeded} replicas × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
-                      : `${parallelLabel(result.recommendation)} · ${result.performance.concurrency} concurrent users`}
+                      : `${parallelLabel(result.recommendation)} · ${
+                          resultIsDemand
+                            ? `${result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'} observed concurrent`
+                            : `${result.performance.concurrency} concurrent users`
+                        }`}
                   </span>
                 </>
               }
@@ -880,35 +1123,116 @@ export default function Sizing() {
               }
             />
 
-            {/* TTFT */}
-            <FlipTile
-              front={
-                <>
-                  <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
-                  <span className={styles.tileValue}>
-                    {ttftMs}<span className={styles.tileUnit}>ms</span>
-                  </span>
-                  <span className={styles.tileSub}>
-                    {result.performance.ttftLatencyMs <= ttft ? (
-                      <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
-                    ) : (
-                      <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
-                    )}
-                  </span>
-                </>
-              }
-              back={
-                <>
-                  <div className={styles.backTitle}>Time to first token</div>
-                  <div className={styles.formula}>
-                    target: <span className={styles.em}>{ttft.toLocaleString()} ms</span><br />
-                    estimated: <span className={styles.em}>{result.performance.ttftLatencyMs.toFixed(1)} ms</span><br />
-                    headroom: <span className={styles.em}>{(ttft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
-                    TPOT: <span className={styles.em}>{result.performance.tpotMs.toFixed(1)} ms</span>
-                  </div>
-                </>
-              }
-            />
+            {/* Demand outcome (demand mode) or TTFT (latency mode) */}
+            {resultIsDemand ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><TachometerAltIcon /> Demand</span>
+                    <span className={styles.tileValue}>
+                      {result.demand?.achievedRps != null
+                        ? result.demand.achievedRps.toFixed(1)
+                        : '—'}<span className={styles.tileUnit}>req/s</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.demand?.met === false ? (
+                        <>
+                          <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>
+                            below target
+                          </Label>
+                          <span> · target {result.demand?.targetRps ?? resultDemandRate} req/s</span>
+                        </>
+                      ) : result.demand?.met ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <span>target {resultDemandRate} req/s</span>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>Throughput demand</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{result.demand?.targetRps ?? resultDemandRate} req/s</span><br />
+                      sustained: <span className={styles.em}>
+                        {result.demand?.achievedRps != null ? `${result.demand.achievedRps.toFixed(2)} req/s` : 'not measured'}
+                      </span><br />
+                      best observed: <span className={styles.em}>
+                        {result.demand?.bestObservedRps != null ? `${result.demand.bestObservedRps.toFixed(2)} req/s` : '—'}
+                      </span><br />
+                      observed concurrency: <span className={styles.em}>
+                        {result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'}
+                      </span><br />
+                      arrival window: <span className={styles.em}>
+                        {result.demand?.windowSeconds != null ? `${result.demand.windowSeconds.toFixed(2)} s` : '—'}
+                      </span>
+                    </div>
+                    <p className={styles.formulaNote}>
+                      Sustained rate excludes the final response drain, so it is directly comparable to
+                      the offered rate.
+                    </p>
+                  </>
+                }
+              />
+            ) : resultRequestLatency != null ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><ClockIcon /> E2E latency</span>
+                    <span className={styles.tileValue}>
+                      {e2eLatencyMs.toLocaleString()}<span className={styles.tileUnit}>ms</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.performance.requestLatencyMs <= resultRequestLatency ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>End-to-end latency</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{resultRequestLatency.toLocaleString()} ms</span><br />
+                      estimated: <span className={styles.em}>{result.performance.requestLatencyMs.toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(resultRequestLatency - result.performance.requestLatencyMs).toFixed(1)} ms</span>
+                    </div>
+                  </>
+                }
+              />
+            ) : (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
+                    <span className={styles.tileValue}>
+                      {ttftMs}<span className={styles.tileUnit}>ms</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.performance.ttftLatencyMs <= resultTtft ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>Time to first token</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{resultTtft.toLocaleString()} ms</span><br />
+                      estimated: <span className={styles.em}>{result.performance.ttftLatencyMs.toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(resultTtft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
+                      TPOT: <span className={styles.em}>{result.performance.tpotMs.toFixed(1)} ms</span>
+                    </div>
+                  </>
+                }
+              />
+            )}
 
             {/* Throughput */}
             <FlipTile
@@ -919,7 +1243,9 @@ export default function Sizing() {
                     {tpsVal}<span className={styles.tileUnit}>tok/s</span>
                   </span>
                   <span className={styles.tileSub}>
-                    {result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · {result.throughput.tokensPerSecondPerUser.toFixed(2)}/user
+                    {resultIsDemand
+                      ? `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ≈ ${Math.round(resultDemandOutputTokPerSecond).toLocaleString()} demanded tok/s`
+                      : `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ${result.throughput.tokensPerSecondPerUser.toFixed(2)}/user`}
                   </span>
                 </>
               }
@@ -1100,6 +1426,15 @@ export default function Sizing() {
         </>
       )}
 
+      {/* ─── Pareto frontier (companion scan, never replaces the primary result) ─── */}
+      {result && (
+        <FrontierPanel
+          state={frontier}
+          gpuLabel={currentGpuOption?.label ?? gpuSystem}
+          onRetry={handleCalculate}
+        />
+      )}
+
       {/* ─── Debug panel ─── */}
       <DebugPanel
         request={debugRequest}
@@ -1112,13 +1447,6 @@ export default function Sizing() {
       />
     </div>
   );
-}
-
-// ─── Status chip ─────────────────────────────────────────────────────────────
-
-function StatusChip({ status }: { status: string }) {
-  if (status === 'idle') return null;
-  return null; // Chip is rendered inside the input wrapper instead
 }
 
 function recommendProgressMessages(progressHistory: RecommendProgressEvent[]): string[] {

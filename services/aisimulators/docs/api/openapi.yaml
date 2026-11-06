@@ -44,8 +44,37 @@ paths:
         The BLIS path generates a temporary Scenario and Deployment and runs the
         image-pinned BLIS CLI.
 
-        Exactly one of `target_request_rate` or `target_concurrency` must be
-        provided.
+        `objective` selects what is being sized:
+        - `min_gpus` (default) finds the fewest GPUs that clear the latency SLA.
+          Requires `sla_mode=enforce` (the default) and exactly one of
+          `target_request_rate` or `target_concurrency`.
+        - `throughput_demand` finds the fewest GPUs that sustain
+          `target_request_rate` with no latency target. It requires
+          `sla_mode=none`, `target_request_rate`, and no `target_concurrency`;
+          any `ttft`, `tpot`, or `request_latency` is rejected rather than
+          silently dropped. A demand result reports a `demand` block. When no
+          sampled configuration meets the rate, the response is still 200 with
+          `demand.met=false` and the best observed rate. Compliance uses the
+          rate sustained over the arrival window (excluding the final response
+          drain), not `completed / duration`. AISimulate grows its GPU window
+          from 8 GPUs (default) until the rate is met, the ceiling is reached,
+          or the demand search budget is spent; an explicit
+          `max_candidate_gpus` pins one window.
+        - `pareto` (AISimulate only) sweeps the throughput-per-user vs
+          throughput-per-gpu frontier and returns every evaluated candidate in
+          `candidates` plus SDK-computed `views`. `sla_mode=enforce` restricts the
+          frontier to SLA-compliant candidates; `sla_mode=none` sweeps capacity
+          without an SLA. BLIS rejects `objective=pareto` with 422 and never
+          substitutes AISimulate.
+
+        With `sla_mode=enforce`, provide either `request_latency` (end-to-end ms)
+        or both `ttft` and `tpot`; sending an end-to-end bound together with
+        token-level bounds is rejected.
+
+        BLIS supports `throughput_demand` on its pinned release by replaying
+        open-loop traffic with `--rate` and a request count scaled from the
+        rate. BLIS demand results are aggregate-only and report
+        `demand.simulator="blis"`.
 
         Use the `include` query parameter to enrich each config with optional
         detail sections:
@@ -428,12 +457,52 @@ components:
         target_request_rate:
           type: number
           nullable: true
-          description: Target request rate in req/s. Set exactly one of this or target_concurrency.
+          description: |
+            Offered request rate in req/s. With objective=min_gpus this is a
+            minimum-goodput constraint; set exactly one of this or
+            target_concurrency. With objective=throughput_demand it is the
+            arrival rate the cluster must sustain and is required.
           default: null
         target_concurrency:
           type: number
           nullable: true
-          description: Target concurrent users. Set exactly one of this or target_request_rate.
+          description: Target concurrent users (closed-loop load). Rejected with objective=throughput_demand.
+          default: null
+        objective:
+          type: string
+          enum: [min_gpus, throughput_demand, pareto]
+          default: min_gpus
+          description: Optimization objective. See the endpoint description for the supported request shape per objective.
+        sla_mode:
+          type: string
+          enum: [enforce, none]
+          default: enforce
+          description: |
+            Whether latency targets constrain the result. enforce requires a
+            TTFT/TPOT or end-to-end bound, and is required by
+            objective=min_gpus. none rejects every latency bound; it is
+            required by objective=throughput_demand and optional for
+            objective=pareto (an SLA-free capacity sweep).
+        min_candidate_gpus:
+          type: integer
+          nullable: true
+          description: Lower bound of the searched GPU window.
+          minimum: 1
+          default: null
+        max_candidate_gpus:
+          type: integer
+          nullable: true
+          description: Upper bound of the searched GPU window; clamped to the service candidate ceiling.
+          minimum: 1
+          default: null
+        kv_transfer_bandwidth_gb_per_second:
+          type: number
+          nullable: true
+          description: |
+            P/D KV transfer bandwidth to model with objective=pareto. Omit to
+            apply AISimulate's default of no modeled transfer delay; omission is
+            not a fabric default. A non-null value for any other objective is
+            rejected with 422 rather than silently ignored.
           default: null
         isl:
           type: integer
@@ -445,16 +514,18 @@ components:
           default: 1000
         ttft:
           type: number
-          description: Time to first token target (ms).
-          default: 2000.0
+          nullable: true
+          description: Time to first token target (ms). Required with sla_mode=enforce unless request_latency is set.
+          default: null
         tpot:
           type: number
-          description: Time per output token target (ms).
-          default: 30.0
+          nullable: true
+          description: Time per output token target (ms). Required with sla_mode=enforce unless request_latency is set.
+          default: null
         request_latency:
           type: number
           nullable: true
-          description: End-to-end request latency target (ms). Optional.
+          description: End-to-end request latency target (ms). Mutually exclusive with ttft/tpot. Optional.
           default: null
         prefix:
           type: integer
@@ -527,6 +598,157 @@ components:
             modes_searched: { type: array, items: { type: string, enum: [agg, disagg] } }
             candidate_configurations: { type: integer }
             evaluated_configurations: { type: integer }
+        demand:
+          allOf:
+            - $ref: '#/components/schemas/DemandOutcome'
+          nullable: true
+          description: |
+            Measured throughput-demand outcome. Present only with
+            objective=throughput_demand, including when the target was not met
+            (200 with met=false). Values come from the selected candidate's
+            replay metrics, not from the requested target.
+        sweep:
+          allOf:
+            - $ref: '#/components/schemas/SweepMeta'
+          nullable: true
+          description: Run-control facts for the search that produced this result.
+        candidates:
+          type: array
+          description: |
+            Every evaluated candidate from an objective=pareto sweep, including
+            infeasible and timed-out records. Empty for other objectives. Values
+            are copied verbatim from the selected simulator; unsupported detail
+            stays unavailable rather than being synthesized.
+          items:
+            $ref: '#/components/schemas/CandidateResponse'
+        views:
+          allOf:
+            - $ref: '#/components/schemas/CandidateViews'
+          nullable: true
+          description: |
+            Candidate-ID lists computed by the simulator. Present for
+            objective=pareto. `pareto_front` is authoritative for the
+            simulator's own objectives; clients must not substitute a locally
+            computed frontier for it.
+
+    DemandOutcome:
+      type: object
+      required: [target_rps, met, simulator]
+      properties:
+        target_rps:
+          type: number
+          description: Offered request rate the run was asked to sustain (req/s).
+        achieved_rps:
+          type: number
+          nullable: true
+          description: |
+            Request rate sustained over the arrival window of the selected
+            candidate (req/s). A replay is timed to its final completion, so
+            `completed / duration` includes one response drain; this value
+            subtracts the mean E2E latency instead and is directly comparable
+            to `target_rps`.
+        met:
+          type: boolean
+          description: |
+            True when the selected candidate sustained target_rps within a small
+            relative tolerance. This is the best of the evaluated candidates,
+            not a capacity guarantee.
+        observed_concurrency:
+          type: number
+          nullable: true
+          description: Little's-law estimate, achieved_rps x mean E2E latency / 1000. Omitted when the run completed no work.
+        window_seconds:
+          type: number
+          nullable: true
+          description: |
+            Arrival window in seconds: the replay duration minus one mean E2E
+            latency. Excludes the final response drain.
+        completed_requests:
+          type: integer
+          nullable: true
+          description: Requests completed during the replay window.
+        evaluated_configurations:
+          type: integer
+          nullable: true
+          description: Number of candidates with a usable rate measurement.
+        best_observed_rps:
+          type: number
+          nullable: true
+          description: Highest sustained arrival-window rate across evaluated candidates, reported when the target is unmet.
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+          description: Simulator that produced the measurement.
+
+    SweepMeta:
+      type: object
+      properties:
+        run_id: { type: string, nullable: true }
+        algorithm:
+          type: string
+          nullable: true
+          example: random
+          description: |
+            Sampler used by AISimulate (`random` or `bayesian`). BLIS enumerates
+            its candidate grid and reports `enumerate`.
+        seed: { type: integer, nullable: true }
+        max_trials: { type: integer, nullable: true, description: Total trial budget, split across searched deployment modes. }
+        evaluated: { type: integer, nullable: true }
+        feasible: { type: integer, nullable: true }
+        timed_out: { type: integer, nullable: true }
+        budget_exhausted:
+          type: boolean
+          description: True when the trial budget was spent. Never implies the search was exhaustive.
+        strict_sla: { type: boolean, nullable: true }
+        window_min_gpus: { type: integer, nullable: true }
+        window_max_gpus: { type: integer, nullable: true }
+
+    CandidateResponse:
+      type: object
+      required: [candidate_id, status, mode, topology, simulator]
+      description: One evaluated candidate from an AISimulate pareto sweep, copied verbatim from the SDK record.
+      properties:
+        candidate_id: { type: string }
+        status:
+          type: string
+          enum: [feasible, infeasible, unsupported, timed_out, failed, resource_limited]
+        reason_category: { type: string, nullable: true }
+        mode: { type: string, example: agg }
+        topology:
+          type: object
+          description: SDK flat parallelism keys (deployment_mode, tp, pp, prefill_tp, decode_tp, …), verbatim.
+          additionalProperties: true
+        used_gpus: { type: integer, nullable: true }
+        metrics:
+          type: object
+          additionalProperties: { type: number, nullable: true }
+          description: Measured replay metrics for this candidate.
+        objectives:
+          type: object
+          nullable: true
+          additionalProperties: { type: number }
+          description: SDK objective values, e.g. throughput_per_user and throughput_per_gpu.
+        transfer_delay_modeled:
+          type: boolean
+          description: True only when a P/D transfer delay was actually modeled for this candidate.
+        provenance_sources:
+          type: array
+          items: { type: string }
+        simulator:
+          type: string
+          enum: [aisimulate]
+
+    CandidateViews:
+      type: object
+      description: Candidate-ID lists computed by the selected simulator. IDs must exist in `candidates`.
+      properties:
+        pareto_front:
+          type: array
+          items: { type: string }
+          description: Non-dominated candidate IDs for the simulator's own objectives.
+        top_n:
+          type: array
+          items: { type: string }
 
     RecommendConfig:
       type: object
@@ -682,11 +904,11 @@ components:
         moe_tp:
           type: integer
           nullable: true
-          description: MoE tensor parallel size.
+          description: Resolved MoE/FFN tensor width for this pool.
         moe_ep:
           type: integer
           nullable: true
-          description: MoE expert parallel size.
+          description: Resolved MoE/FFN expert width for this pool.
         num_workers:
           type: integer
           nullable: true
@@ -848,9 +1070,13 @@ components:
         prefill_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE tensor width for the prefill pool. Falls back to `moe_tp_size`, then to `(prefill_tp_size * attention_dp_size)`.
         prefill_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE expert width for the prefill pool. Falls back to `moe_ep_size`, then to 1.
         prefill_batch_size:
           type: integer
           nullable: true
@@ -866,9 +1092,13 @@ components:
         decode_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE tensor width for the decode pool. Falls back to `moe_tp_size`, then to `(decode_tp_size * attention_dp_size)`.
         decode_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE expert width for the decode pool. Falls back to `moe_ep_size`, then to 1.
         decode_batch_size:
           type: integer
           nullable: true
@@ -910,10 +1140,24 @@ components:
           type: integer
           nullable: true
           default: null
+          minimum: 1
+          description: |
+            MoE/FFN tensor width. When both `moe_tp_size` and `moe_ep_size` are
+            omitted, the API resolves the pair to
+            `(tp_size * attention_dp_size, 1)`: the FFN or expert block is
+            tensor-sharded across the attention group with no expert
+            parallelism. This default also applies to dense variants of
+            MoE-capable families, such as dense Gemma 4. When only one width is
+            supplied, the other is inferred from the attention width.
         moe_ep_size:
           type: integer
           nullable: true
           default: null
+          minimum: 1
+          description: |
+            MoE/FFN expert width. Omitted alongside `moe_tp_size`, it resolves
+            to 1; supplied alone, `moe_tp_size` is inferred from the attention
+            width.
         attention_dp_size:
           type: integer
           default: 1
@@ -1001,6 +1245,20 @@ components:
           type: integer
           nullable: true
           description: Data parallel size.
+        moe_tp:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN tensor width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_tp` and
+            `decode_config.moe_tp`.
+        moe_ep:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN expert width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_ep` and
+            `decode_config.moe_ep`.
         system:
           type: string
           nullable: true

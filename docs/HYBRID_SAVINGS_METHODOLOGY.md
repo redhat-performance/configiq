@@ -72,9 +72,9 @@ the user to align the ratios for a tighter estimate.
 Hybrid Savings starts with 2.4B input and 150M output tokens/month (2.55B
 total), matching the shared Default request shape of 2,048 input and 128 output
 tokens. Both monthly volumes imply exactly 1,171,875 requests, so the default
-workload mix is aligned. Applying a different preset or entering measured
-values does not silently rewrite monthly volumes. Shared presets for other tabs
-are unchanged.
+workload mix is aligned. Selecting a shared preset changes only the input and
+output lengths per request. It leaves monthly volumes, latency targets,
+concurrency, and cached prefix unchanged.
 
 ## AISimulators field contract
 

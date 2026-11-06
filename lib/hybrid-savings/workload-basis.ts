@@ -33,26 +33,12 @@ export interface RequestMixAnalysis {
   aligned: boolean
 }
 
-/** The six preset-controlled request-shape fields, used for preset matching. */
-export interface RequestShapeFields {
-  averageInputTokens: number
-  averageOutputTokens: number
-  targetTtftMs: number
-  targetTpotMs: number
-  targetConcurrency: number
-  prefixTokens: number
-}
-
-/** Hybrid demand plus the shared default request shape and performance targets. */
-export const DEFAULT_HYBRID_WORKLOAD: HybridWorkload & RequestShapeFields = {
+/** Hybrid demand aligned with the shared default request shape. */
+export const DEFAULT_HYBRID_WORKLOAD: HybridWorkload = {
   monthlyInputTokens: 2_400_000_000,
   monthlyOutputTokens: 150_000_000,
   averageInputTokens: DEFAULT_WORKLOAD.isl,
   averageOutputTokens: DEFAULT_WORKLOAD.osl,
-  targetTtftMs: DEFAULT_WORKLOAD.ttft,
-  targetTpotMs: DEFAULT_WORKLOAD.tpot,
-  targetConcurrency: DEFAULT_WORKLOAD.concurrency,
-  prefixTokens: DEFAULT_WORKLOAD.prefix,
   activeHoursPerMonth: 730,
   peakToAverage: 1,
 }
@@ -166,19 +152,14 @@ export function proposeRequestMixAlignment(
 }
 
 /**
- * The workload preset exactly matching all six preset-controlled fields, or
- * null when the current request shape is custom.
+ * Presets control only input and output lengths, independently of sizing targets.
  */
 export function matchRequestShapePreset(
-  fields: RequestShapeFields,
+  fields: Pick<HybridWorkload, 'averageInputTokens' | 'averageOutputTokens'>,
   presets: readonly WorkloadPreset[],
 ): WorkloadPreset | null {
   return presets.find(preset =>
     preset.isl === fields.averageInputTokens &&
-    preset.osl === fields.averageOutputTokens &&
-    preset.ttft === fields.targetTtftMs &&
-    preset.tpot === fields.targetTpotMs &&
-    preset.concurrency === fields.targetConcurrency &&
-    preset.prefix === fields.prefixTokens,
+    preset.osl === fields.averageOutputTokens,
   ) ?? null
 }

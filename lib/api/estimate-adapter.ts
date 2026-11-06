@@ -59,12 +59,29 @@ export interface EstimatePhaseInput {
   batch: number
 }
 
-function isMoeConfig(config: Record<string, unknown> | null | undefined): boolean {
+/**
+ * Whether a model config describes a mixture-of-experts model.
+ *
+ * Expert counts live at the top level for most families and under
+ * `text_config` for Gemma 4. Take the largest count rather than the first
+ * non-nullish one: a top-level `1` must not mask a nested `128`.
+ */
+export function isMoeConfig(config: Record<string, unknown> | null | undefined): boolean {
   if (!config) return false
-  const experts = config.num_experts ?? config.num_local_experts
-  return typeof experts === 'number' && experts > 1
-}
+  const textConfig = config.text_config && typeof config.text_config === 'object'
+    ? config.text_config as Record<string, unknown>
+    : null
 
+  if (config.enable_moe_block === true || textConfig?.enable_moe_block === true) return true
+
+  const counts = [
+    config.num_experts,
+    config.num_local_experts,
+    textConfig?.num_experts,
+    textConfig?.num_local_experts,
+  ]
+  return counts.some(count => typeof count === 'number' && count > 1)
+}
 
 function deriveBottleneck(ttft: number, tpot: number) {
   if (ttft > 2000) {
@@ -96,18 +113,13 @@ export interface EstimateWithDebug {
   debugDuration: number
 }
 
-export function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug: true
-): Promise<EstimateWithDebug>
-export function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug?: false
-): Promise<InferenceConfigResult>
-export async function fetchEstimateAsInferenceResult(
-  input: EstimateAdapterInput,
-  captureDebug: boolean = false
-): Promise<EstimateWithDebug | InferenceConfigResult> {
+/**
+ * Build the /api/predict body for an adapter input.
+ *
+ * Exported so replay surfaces (the debug panel and "Copy API request") use the
+ * exact payload that is submitted instead of reconstructing it.
+ */
+export function buildPredictRequestBody(input: EstimateAdapterInput): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model_path: input.model_path,
     system: input.system,
@@ -153,15 +165,28 @@ export async function fetchEstimateAsInferenceResult(
     body.decode_batch_size = input.decode.batch
   }
 
-  // MoE models require at least one of moe_ep_size / moe_tp_size.
-  // Prefer explicit values; fall back to auto-detecting from hf_model_config.
-  if (input.moe_ep_size != null) {
-    body.moe_ep_size = input.moe_ep_size
-  } else if (input.moe_tp_size != null) {
-    body.moe_tp_size = input.moe_tp_size
-  } else if (isMoeConfig(input.hf_model_config)) {
-    body.moe_ep_size = input.tp_size
-  }
+  // Forward only widths the caller actually chose. When they are omitted the
+  // API supplies the layout default (FFN tensor-sharded across the attention
+  // width, no expert parallelism) and reports the resolved pair back.
+  if (input.moe_ep_size != null) body.moe_ep_size = input.moe_ep_size
+  if (input.moe_tp_size != null) body.moe_tp_size = input.moe_tp_size
+
+  return body
+}
+
+export function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug: true
+): Promise<EstimateWithDebug>
+export function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug?: false
+): Promise<InferenceConfigResult>
+export async function fetchEstimateAsInferenceResult(
+  input: EstimateAdapterInput,
+  captureDebug: boolean = false
+): Promise<EstimateWithDebug | InferenceConfigResult> {
+  const body = buildPredictRequestBody(input)
 
   const startTime = performance.now()
   const res = await fetch('/api/predict?include=config,memory', {
@@ -230,6 +255,8 @@ export async function fetchEstimateAsInferenceResult(
       pp_size: ppv,
       batch_size: (wc?.batch_size as number) ?? fallback.batch,
       memory_gb: (wc?.memory_gb as number | null) ?? null,
+      moe_tp_size: (wc?.moe_tp as number | null | undefined) ?? null,
+      moe_ep_size: (wc?.moe_ep as number | null | undefined) ?? null,
     }
   }
   const isDisagg = data.mode === 'disagg' && !!input.prefill && !!input.decode
@@ -271,6 +298,8 @@ export async function fetchEstimateAsInferenceResult(
     memory_available: memoryAvailable,
     mode: isDisagg ? 'disagg' : 'agg',
     disagg,
+    moe_tp_size: isDisagg ? null : (data.moe_tp as number | null | undefined) ?? null,
+    moe_ep_size: isDisagg ? null : (data.moe_ep as number | null | undefined) ?? null,
     memory_analysis: {
       weight_gb: weightGb,
       weight_gb_per_gpu: weightGb / shardCount,

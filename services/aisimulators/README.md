@@ -123,6 +123,29 @@ field. The same 422 class covers a compute shape the selected data never
 measured (`EmpiricalNotImplementedError` inside the replay engine), which
 previously surfaced as a generic 500.
 
+### MoE / FFN width resolution
+
+AISimulate validates that `tp_size * attention_dp_size * cp_size` equals
+`moe_tp_size * moe_ep_size` for model families that can host MoE layers,
+including dense variants such as dense Gemma 4. The service therefore resolves
+an omitted width pair per worker to
+`(tp_size * attention_dp_size, 1)`, meaning the FFN or expert block is
+tensor-sharded across the attention group with no expert parallelism. This
+applies to dense and MoE models alike.
+
+An explicit pair is passed through unchanged. If only one width is supplied,
+the other is inferred when it divides the attention width. Disaggregated
+requests resolve each pool independently from `prefill_moe_tp_size` /
+`prefill_moe_ep_size` and `decode_moe_tp_size` / `decode_moe_ep_size`, falling
+back to the top-level pair, so pools with different TP widths receive matching
+pairs. The response reports the resolved layout: `moe_tp` / `moe_ep` for an
+aggregated prediction, and `prefill_config.moe_tp` / `decode_config.moe_tp`
+(plus the matching `_ep` fields) for a disaggregated one. Clients should send
+only widths they explicitly chose and display the returned values rather than
+reconstructing the default. BLIS has no width invariant: it receives only the
+widths the caller supplied, and its aggregated response reports those explicit
+values (or null).
+
 BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
 `0.31.0`, the newest release that models prefill/decode disaggregation and
 accepts `max_model_len: auto`. `0.32.0` is opt-in and colocated-only: a P/D
@@ -159,7 +182,25 @@ also searches bounded P/D TP and worker-count combinations, with one node per
 pool and DP=PP=1. Send `fabric: null` to request aggregate-only candidates; the
 response then warns that P/D candidates were not searched.
 
-BLIS recommendation requires a concurrency workload. Its candidate ceiling is the same
+BLIS recommendation sizes closed-loop concurrency by default. With
+`objective=throughput_demand` `sla_mode=none` it instead replays open-loop
+traffic: each candidate runs `blis run --rate <target_request_rate>` with
+`num_requests = max(4, round(rate x 5 s))`, so the request count scales with the
+offered rate rather than a fixed concurrency slot. `BLIS_DEMAND_WINDOW_SECONDS`
+(default 5) and `BLIS_DEMAND_MAX_REQUESTS` (default 5000) bound that slice. The
+achieved rate is measured over the arrival window:
+`completed_requests / (vllm_estimated_duration_s - e2e_mean_ms / 1000)`, falling
+back to `responses_per_sec` (then `tokens_per_sec / osl`) when duration is
+missing. BLIS times a run to its last completion, so that subtraction removes
+the final response drain and keeps the measured rate comparable to the offered
+rate. A candidate is compliant only when `dropped_unservable == 0` and
+`completed_requests >= num_requests`; when none comply, the response is 200 with
+`demand.met=false` and the best observed rate. Demand searches are
+aggregate-only, and the scheduler cap equals the run's request count, which is a
+run bound rather than a modeled production queue. Any latency target on a
+demand request is rejected with 422.
+
+BLIS recommendation's candidate ceiling is the same
 `AISIMULATORS_MAX_CANDIDATE_GPUS` service setting used by AISimulate, further
 limited by one node for aggregate-only search or two nodes (one per P/D pool)
 when a fabric is active. A total search budget bounds the individual simulations. The service
@@ -167,6 +208,99 @@ caps that budget at 60 seconds; the web
 gateway may lower it further to leave room before its request deadline. The
 response reports the configured, hardware, and effective ceilings plus the
 actual candidate and evaluated GPU counts.
+
+## Recommendation objectives
+
+`POST /recommend` takes `objective` and `sla_mode`. The pair is validated
+strictly; unsupported combinations return 422 rather than a silently relaxed
+search.
+
+| `objective` | `sla_mode` | Load input | Result |
+|---|---|---|---|
+| `min_gpus` (default) | `enforce` | exactly one of `target_request_rate` / `target_concurrency` | fewest GPUs that clears the latency SLA |
+| `throughput_demand` | `none` | `target_request_rate` only | fewest GPUs among evaluated candidates that sustains the offered rate; no latency target |
+| `pareto` | `enforce` or `none` | none; the sweep drives load itself | every sampled candidate plus a frontier view |
+
+With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
+`tpot`. A demand request (`throughput_demand`) rejects `ttft`, `tpot`, and
+`request_latency`; the service never accepts a bound the search does not apply.
+`pareto` with `sla_mode=none` sweeps capacity without an SLA, while
+`sla_mode=enforce` keeps only SLA-compliant candidates on the frontier.
+
+### Throughput-demand sizing
+
+A demand result carries a `demand` block whose values come from the selected
+candidate's replay report, not from the requested target:
+
+- `met` — the selected candidate sustained `target_rps` within a 0.1% tolerance.
+- `achieved_rps` — request rate sustained over the arrival window. A replay is
+  timed to its final completion, so `completed / duration` appends one response
+  latency; `achieved_rps` uses `completed / (duration - mean_e2e)` instead.
+- `best_observed_rps` — highest sustained rate seen across evaluated candidates;
+  the selected value when the target is unmet.
+- `observed_concurrency` — Little's-law estimate
+  (`achieved_rps x mean_e2e_latency_ms / 1000`), omitted when the run completed
+  no work.
+- `window_seconds` — arrival window (`(duration - mean_e2e) / 1000`), excluding
+  the final response drain.
+- `evaluated_configurations` — candidates with a usable rate measurement.
+
+Selection is: among compliant candidates, fewest GPUs, then highest sustained
+rate, then lowest E2E latency. When none comply, the highest sustained rate wins
+(then fewest GPUs) and the response is still 200 with `met=false`. A request
+that produces no feasible candidate with a rate measurement returns 422.
+
+AISimulate demand runs use `DEMAND_MAX_TRIALS` (default 16),
+`DEMAND_PARALLELISM` (default 4), `DEMAND_CANDIDATE_TIMEOUT_S` (default 15) and
+`DEMAND_REQUESTS_PER_LOAD_UNIT` (default 5). The SDK config uses open-loop
+`constant_rate` traffic and stops after `requests_per_load_unit` units, so the
+replay length grows with the requested rate. The trial budget is split across
+the searched deployment modes; it is a total, not a per-mode count.
+
+`min_gpus` is rejected without an SLA, so the SDK cannot order a demand search
+smallest-first. The service therefore walks a growing GPU window, starting at
+`DEMAND_WINDOW_START_GPUS` (default 8) and doubling until the offered rate is
+met, the effective ceiling is reached, or the whole-search budget
+`DEMAND_SEARCH_BUDGET_S` (default 50 seconds) is spent. A window that cannot
+hold the model is skipped. An explicit `max_candidate_gpus` pins a single
+window. Each window's trial/timeout budget is reduced to the time that remains,
+so the ladder stays inside the gateway timeout.
+
+### Pareto frontier provenance and availability
+
+`objective=pareto` is AISimulate-only. BLIS returns 422 and the service never
+falls back to AISimulate, because a frontier computed by another simulator would
+be misattributed.
+
+For a Pareto result:
+
+- `candidates` contains every evaluated candidate, including infeasible,
+  unsupported, timed-out, failed, and resource-limited records. SDK-provided raw
+  fields such as `topology`, `metrics`, and `objectives` are copied verbatim;
+  the service does not synthesize topology, transfer, or performance values.
+  Service-derived fields are added alongside them: `mode`, `provenance_sources`,
+  and `transfer_delay_modeled` are computed (or combined from request and
+  candidate data) by the service, not passed through from the SDK.
+- `views.pareto_front` and `views.top_n` are SDK-computed candidate-ID lists.
+  `pareto_front` is authoritative for the simulator's own objectives
+  (throughput per user vs throughput per GPU). Clients may recompute dominance
+  only for a different axis or orientation, and must say so in the UI.
+- `transfer_delay_modeled` is true only when a P/D transfer delay was actually
+  modeled for that candidate. Omitting `kv_transfer_bandwidth_gb_per_second`
+  means no modeled transfer delay; it does not imply a fabric default.
+- `sweep` reports the algorithm, seed, trial budget, evaluated/feasible/timed-out
+  counts, and the GPU window. `sweep.budget_exhausted=true` means the trial
+  budget was spent; it never means the search was exhaustive. BLIS enumerates
+  its candidate grid rather than sampling it, so its `sweep.algorithm` is
+  `enumerate`.
+
+Pareto sweeps use `PARETO_MAX_TRIALS` (default 20), `PARETO_PARALLELISM`
+(default 8), `PARETO_CANDIDATE_TIMEOUT_S` (default 8), and
+`PARETO_MAX_CONCURRENCY` (default 2 concurrent sweeps per worker, returning 429
+when exceeded). `PARETO_ALGORITHM` selects `random` (default) or `bayesian`; the
+Bayesian sampler enables JAX x64 process-wide and is not the default. `SWEEP_SEED`
+defaults to 42. A one-GPU total window runs one aggregate trial, since it cannot
+contain a P/D deployment.
 
 The image sets `BLIS_VERSION`, `BLIS_CATALOG`, `BLIS_REGISTRY` and
 `BLIS_SUPPORT`. `BLIS_VERSION` is the release reported by `/backends` and in

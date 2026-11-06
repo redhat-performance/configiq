@@ -19,6 +19,15 @@ The API will be available at `http://localhost:8000` with interactive docs at `h
 ### POST `/recommend`
 Find optimal GPU configuration for a workload.
 
+`objective` selects the search: `min_gpus` (default, honors the latency SLA),
+`throughput_demand` (fewest GPUs sustaining `target_request_rate`, requires
+`sla_mode=none`), or `pareto` (AISimulate-only efficiency frontier). A demand
+result includes a measured `demand` block; an unmet target returns 200 with
+`demand.met=false` and the best observed rate. A Pareto result includes every
+sampled `candidate` and the simulator's `views.pareto_front`. BLIS requests never
+fall back to AISimulate. See the service README and OpenAPI spec for the full
+request/response contract.
+
 **Example:**
 ```bash
 curl -X POST http://localhost:8000/recommend \
@@ -28,7 +37,9 @@ curl -X POST http://localhost:8000/recommend \
     "system": "h100_sxm",
     "target_concurrency": 32,
     "isl": 4000,
-    "osl": 1000
+    "osl": 1000,
+    "ttft": 2000,
+    "tpot": 30
   }'
 ```
 

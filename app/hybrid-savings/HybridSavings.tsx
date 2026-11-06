@@ -282,10 +282,10 @@ export default function HybridSavings() {
   const [monthlyOutputTokens, setMonthlyOutputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens)
   const [averageInputTokens, setAverageInputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.averageInputTokens)
   const [averageOutputTokens, setAverageOutputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.averageOutputTokens)
-  const [targetTtftMs, setTargetTtftMs] = React.useState(DEFAULT_WORKLOAD.ttft)
-  const [targetTpotMs, setTargetTpotMs] = React.useState(DEFAULT_WORKLOAD.tpot)
-  const [targetConcurrency, setTargetConcurrency] = React.useState(DEFAULT_WORKLOAD.concurrency)
-  const [prefixTokens, setPrefixTokens] = React.useState(DEFAULT_WORKLOAD.prefix)
+  const [targetTtftMs, setTargetTtftMs] = React.useState(1000)
+  const [targetTpotMs, setTargetTpotMs] = React.useState(30)
+  const [targetConcurrency, setTargetConcurrency] = React.useState(1)
+  const [prefixTokens, setPrefixTokens] = React.useState(0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
   const { assumptions: planningAssumptions, hydrated: assumptionsHydrated } = useCostAssumptions()
@@ -373,11 +373,7 @@ export default function HybridSavings() {
     value={apiModel} items={apiModelItems} portalMenu
     onChange={value => { setApiModel(value || SAME_API_MODEL); setSelectedHostedOfferKey(null) }} />
   const workloadPresets = hydrated ? [DEFAULT_WORKLOAD, ...getAppConfig().workloadPresets] : [DEFAULT_WORKLOAD]
-  // A preset applies only while all six preset-controlled request fields match
-  // it exactly; processing hours, peak multiplier and billing mode never affect it.
-  const activePreset = matchRequestShapePreset({
-    averageInputTokens, averageOutputTokens, targetTtftMs, targetTpotMs, targetConcurrency, prefixTokens,
-  }, workloadPresets)
+  const activePreset = matchRequestShapePreset({ averageInputTokens, averageOutputTokens }, workloadPresets)
   const workload = React.useMemo<HybridWorkload>(() => ({
     monthlyInputTokens,
     monthlyOutputTokens,
@@ -566,10 +562,6 @@ export default function HybridSavings() {
   const applyProfile = (profile: WorkloadPreset) => {
     setAverageInputTokens(profile.isl)
     setAverageOutputTokens(profile.osl)
-    setTargetTtftMs(profile.ttft)
-    setTargetTpotMs(profile.tpot)
-    setTargetConcurrency(profile.concurrency)
-    setPrefixTokens(profile.prefix)
     setWorkloadAdvancedOpen(true)
   }
 

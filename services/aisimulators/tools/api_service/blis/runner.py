@@ -27,8 +27,13 @@ class RunRequest:
     scenario_directory: str
     isl: int
     osl: int
-    concurrency: int
+    # Closed-loop load. Mutually exclusive with `rate`; BLIS refuses a command
+    # that sets both.
+    concurrency: int | None
     num_requests: int
+    # Open-loop arrival rate (requests/second). When set, BLIS generates the
+    # `num_requests` slice at a constant interval of `1 / rate`.
+    rate: float | None = None
     prefix_tokens: int = 0
     prefill_instances: int = 0
     decode_instances: int = 0
@@ -36,6 +41,8 @@ class RunRequest:
 
 def build_run_command(runtime: BlisRuntime, request: RunRequest) -> list[str]:
     """Build argv only from resolved image paths and validated numeric inputs."""
+    if (request.rate is None) == (request.concurrency is None):
+        raise ValueError("BLIS runs require exactly one of a request rate or a concurrency")
     command = [
         runtime.binary,
         "run",
@@ -51,11 +58,15 @@ def build_run_command(runtime: BlisRuntime, request: RunRequest) -> list[str]:
         str(request.isl),
         "--output-tokens",
         str(request.osl),
-        "--concurrency",
-        str(request.concurrency),
         "--num-requests",
         str(request.num_requests),
     ]
+    if request.rate is not None:
+        # BLIS rejects --concurrency alongside --rate, so open-loop runs send
+        # only the arrival rate.
+        command.extend(["--rate", f"{request.rate:g}"])
+    elif request.concurrency is not None:
+        command.extend(["--concurrency", str(request.concurrency)])
     if request.prefix_tokens > 0:
         command.extend(["--prefix-tokens", str(request.prefix_tokens)])
     if request.prefill_instances or request.decode_instances:

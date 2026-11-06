@@ -18,6 +18,7 @@ import re
 import sys
 import tempfile
 import threading
+import time
 from collections import Counter, OrderedDict
 from collections.abc import Callable
 from pathlib import Path
@@ -85,15 +86,24 @@ class RecommendRequest(BaseModel):
             "422 naming the versions the SDK ships."
         ),
     )
-    target_request_rate: float | None = Field(default=None, examples=[None], description="Target req/s.")
-    target_concurrency: float | None = Field(default=None, examples=[32], description="Target concurrent users.")
+    target_request_rate: float | None = Field(
+        default=None,
+        examples=[None, 10],
+        description=(
+            "Offered request rate in requests/second. With objective='min_gpus' this is a "
+            "minimum-goodput constraint on closed-loop or rate traffic. With "
+            "objective='throughput_demand' it is the open-loop arrival rate the cluster "
+            "must sustain."
+        ),
+    )
+    target_concurrency: float | None = Field(default=None, examples=[32], description="Target concurrent users (closed-loop load).")
     isl: int = Field(default=4000, description="Input sequence length.")
     osl: int = Field(default=1000, description="Output sequence length.")
     max_seq_len: int | None = Field(default=None, gt=0, description="Maximum sequence length for KV cache allocation. Defaults to isl + osl.")
     prefill_max_seq_len: int | None = Field(default=None, gt=0, description="Optional maximum sequence length for disaggregated prefill workers.")
     decode_max_seq_len: int | None = Field(default=None, gt=0, description="Optional maximum sequence length for disaggregated decode workers.")
-    ttft: float = Field(default=2000.0, description="TTFT target (ms).")
-    tpot: float = Field(default=30.0, description="TPOT target (ms).")
+    ttft: float | None = Field(default=None, description="TTFT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
+    tpot: float | None = Field(default=None, description="TPOT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
     request_latency: float | None = Field(default=None, description="E2E latency target (ms).")
     prefix: int = Field(default=0, description="Prefix cache length.")
     database_mode: str = Field(default="HYBRID", description="Perf database mode.")
@@ -123,15 +133,81 @@ class RecommendRequest(BaseModel):
         min_length=1,
         description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. AISimulate does not consume this field.",
     )
+    objective: Literal["min_gpus", "throughput_demand", "pareto"] = Field(
+        default="min_gpus",
+        description=(
+            "Optimization objective. 'min_gpus' sizes subject to the latency SLA. "
+            "'throughput_demand' finds the fewest GPUs that sustain target_request_rate "
+            "with no latency target (sla_mode must be 'none'). 'pareto' sweeps the "
+            "throughput_per_gpu vs throughput_per_user frontier (AISimulate only)."
+        ),
+    )
+    sla_mode: Literal["enforce", "none"] = Field(
+        default="enforce",
+        description=(
+            "Whether latency targets constrain the result. 'enforce' requires a TTFT/TPOT "
+            "or E2E bound and is required by objective='min_gpus'. 'none' rejects any "
+            "latency bound so no SLA is fabricated; it is required by "
+            "objective='throughput_demand' and optional for objective='pareto'."
+        ),
+    )
+    kv_transfer_bandwidth_gb_per_second: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "P/D KV transfer bandwidth to model when objective='pareto'. Omit (or send null) to "
+            "apply AISimulate's default: no modeled P/D transfer delay. Omission is not a fabric "
+            "default; set this only when the topology assumption is intentional."
+        ),
+    )
     model_config = {"populate_by_name": True}
     simulator: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Simulator to use.")
 
     @model_validator(mode="after")
-    def exactly_one_load_target(self):
+    def validate_request(self):
         has_rate = self.target_request_rate is not None
         has_conc = self.target_concurrency is not None
-        if has_rate == has_conc:
-            raise ValueError("Exactly one of target_request_rate or target_concurrency must be provided.")
+        has_latency = self.request_latency is not None
+        token_form = self.ttft is not None or self.tpot is not None
+
+        if self.objective == "pareto" and self.simulator == "blis":
+            raise ValueError("objective='pareto' is not supported by the BLIS simulator; use simulator='aisimulate' or objective='min_gpus'.")
+
+        # A demand run asks whether a cluster can absorb an arrival rate. It has
+        # no latency target, so any latency bound must be rejected rather than
+        # silently dropped: accepting one would imply a constraint the search
+        # never applies.
+        if self.objective == "throughput_demand":
+            if self.sla_mode != "none":
+                raise ValueError("objective='throughput_demand' requires sla_mode='none'.")
+            if has_latency or token_form:
+                raise ValueError("objective='throughput_demand' does not accept ttft, tpot, or request_latency.")
+            if not has_rate or has_conc:
+                raise ValueError("objective='throughput_demand' requires target_request_rate and no target_concurrency.")
+        elif self.objective == "min_gpus":
+            if self.sla_mode != "enforce":
+                raise ValueError("objective='min_gpus' requires sla_mode='enforce'.")
+            if has_rate == has_conc:
+                raise ValueError("Exactly one of target_request_rate or target_concurrency must be provided.")
+        else:
+            # A pareto sweep drives load internally via kv_capacity_fraction.
+            if has_rate or has_conc:
+                raise ValueError("objective='pareto' does not accept target_request_rate or target_concurrency.")
+
+        if self.sla_mode == "none":
+            if has_latency or token_form:
+                raise ValueError("sla_mode='none' does not accept ttft, tpot, or request_latency.")
+        else:
+            if has_latency and token_form:
+                raise ValueError("request_latency is mutually exclusive with ttft and tpot.")
+            if not has_latency and not (self.ttft is not None and self.tpot is not None):
+                raise ValueError("sla_mode='enforce' requires request_latency or both ttft and tpot.")
+
+        # P/D transfer bandwidth is a Pareto sweep input. Accepting it for other
+        # objectives would imply a topology the search does not model.
+        if self.kv_transfer_bandwidth_gb_per_second is not None and self.objective != "pareto":
+            raise ValueError("kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'.")
+
         if (
             self.min_candidate_gpus is not None
             and self.max_candidate_gpus is not None
@@ -187,8 +263,8 @@ class EstimateRequest(BaseModel):
     moe_quant_mode: str | None = Field(default=None)
     kvcache_quant_mode: str | None = Field(default=None)
     fmha_quant_mode: str | None = Field(default=None)
-    moe_tp_size: int | None = Field(default=None)
-    moe_ep_size: int | None = Field(default=None)
+    moe_tp_size: int | None = Field(default=None, gt=0)
+    moe_ep_size: int | None = Field(default=None, gt=0)
     attention_dp_size: int = Field(default=1)
     # Serving mode. When 'disagg', the prefill_*/decode_* fields below drive
     # separate prefill and decode pools; the top-level tp/pp/batch fields act
@@ -197,14 +273,14 @@ class EstimateRequest(BaseModel):
     decode_system: str | None = Field(default=None, description="GPU system for disagg decode workers; defaults to `system`.")
     prefill_tp_size: int | None = Field(default=None)
     prefill_pp_size: int | None = Field(default=None)
-    prefill_moe_tp_size: int | None = Field(default=None)
-    prefill_moe_ep_size: int | None = Field(default=None)
+    prefill_moe_tp_size: int | None = Field(default=None, gt=0)
+    prefill_moe_ep_size: int | None = Field(default=None, gt=0)
     prefill_batch_size: int | None = Field(default=None)
     prefill_num_workers: int | None = Field(default=None)
     decode_tp_size: int | None = Field(default=None)
     decode_pp_size: int | None = Field(default=None)
-    decode_moe_tp_size: int | None = Field(default=None)
-    decode_moe_ep_size: int | None = Field(default=None)
+    decode_moe_tp_size: int | None = Field(default=None, gt=0)
+    decode_moe_ep_size: int | None = Field(default=None, gt=0)
     decode_batch_size: int | None = Field(default=None)
     decode_num_workers: int | None = Field(default=None)
     inclusive_tpot: bool = Field(
@@ -289,6 +365,69 @@ class SimulatorProvenance(BaseModel):
     engine_version: str | None = None
 
 
+class CandidateResponse(BaseModel):
+    """One candidate from an aisimulate pareto sweep — a subset of the SDK CandidateRecord.
+
+    Every field is copied verbatim from the SDK record; nothing is synthesized.
+    `topology` carries the SDK's flat parallelism keys (deployment_mode, tp, pp,
+    prefill_tp, decode_tp, prefill_replicas, …) exactly as emitted.
+    """
+    candidate_id: str
+    status: Literal["feasible", "infeasible", "unsupported", "timed_out", "failed", "resource_limited"]
+    reason_category: str | None = None
+    mode: str
+    topology: dict[str, Any]
+    used_gpus: int | None = None
+    metrics: dict[str, float | None] = Field(default_factory=dict)
+    objectives: dict[str, float] | None = None
+    transfer_delay_modeled: bool = False
+    provenance_sources: list[str] = Field(default_factory=list)
+    simulator: Literal["aisimulate"] = "aisimulate"
+
+
+class CandidateViews(BaseModel):
+    """Candidate-ID lists for SDK-computed views (pareto front, top-N)."""
+    pareto_front: list[str] = Field(default_factory=list)
+    top_n: list[str] = Field(default_factory=list)
+
+
+class DemandOutcome(BaseModel):
+    """Measured outcome of a throughput-demand sizing run.
+
+    Every value is read from the selected candidate's replay report; nothing is
+    inferred from the requested target. `met` is the best of the evaluated
+    candidates, not a guarantee.
+    """
+    target_rps: float
+    achieved_rps: float | None = None
+    met: bool
+    observed_concurrency: float | None = None
+    window_seconds: float | None = None
+    completed_requests: int | None = None
+    evaluated_configurations: int | None = None
+    best_observed_rps: float | None = None
+    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+
+
+class SweepMeta(BaseModel):
+    """Run-control facts for a companion sweep.
+
+    `budget_exhausted` means the configured trial budget was spent; it does not
+    mean the search was exhaustive.
+    """
+    run_id: str | None = None
+    algorithm: str | None = None
+    seed: int | None = None
+    max_trials: int | None = None
+    evaluated: int | None = None
+    feasible: int | None = None
+    timed_out: int | None = None
+    budget_exhausted: bool = False
+    strict_sla: bool | None = None
+    window_min_gpus: int | None = None
+    window_max_gpus: int | None = None
+
+
 class RecommendConfig(BaseModel):
     total_gpus_needed: int | None = None
     replicas_needed: int | None = None
@@ -337,6 +476,10 @@ class RecommendResponse(BaseModel):
     chosen_mode: str
     simulator: Literal["aisimulate", "blis"] = "aisimulate"
     search_summary: dict[str, Any] | None = None
+    candidates: list[CandidateResponse] = Field(default_factory=list)
+    views: CandidateViews | None = None
+    demand: DemandOutcome | None = None
+    sweep: SweepMeta | None = None
 
 
 class EstimateResponse(BaseModel):
@@ -352,6 +495,8 @@ class EstimateResponse(BaseModel):
     tp: int | None = None
     pp: int | None = None
     dp: int | None = None
+    moe_tp: int | None = None
+    moe_ep: int | None = None
     system: str | None = None
     backend: str | None = None
     backend_version: str | None = None
@@ -611,44 +756,217 @@ def _aisimulate_runner_factory():
     return resolve_runner_factory("engine")
 
 
-def _max_candidate_gpus() -> int:
-    raw = os.environ.get("AISIMULATORS_MAX_CANDIDATE_GPUS")
+def _positive_int_env(name: str, default: int) -> int:
+    """Read a positive integer env var, falling back on missing/invalid values.
+
+    A malformed or non-positive setting must not fail every request that reads
+    it (the same contract as AISIMULATORS_MAX_CANDIDATE_GPUS).
+    """
+    raw = os.environ.get(name)
     if raw is None:
-        return _DEFAULT_MAX_CANDIDATE_GPUS
+        return default
     try:
         value = int(raw)
     except ValueError:
-        return _DEFAULT_MAX_CANDIDATE_GPUS
-    return value if value > 0 else _DEFAULT_MAX_CANDIDATE_GPUS
+        return default
+    return value if value > 0 else default
+
+
+def _max_candidate_gpus() -> int:
+    return _positive_int_env("AISIMULATORS_MAX_CANDIDATE_GPUS", _DEFAULT_MAX_CANDIDATE_GPUS)
+
+
+#: Simulated traffic per demand run: `requests_per_load_unit × offered rate`.
+#: The replay window must scale with the rate; a fixed request count would
+#: measure a different (shorter) window at every target.
+_DEMAND_REQUESTS_PER_LOAD_UNIT = 5
+#: Wall-clock budget for the whole demand search. A demand run grows its GPU
+#: window rather than sampling one enormous window, so several bounded sweeps
+#: share this budget. Kept below the gateway timeout so the caller still gets
+#: the best observed result instead of a proxy timeout.
+_DEMAND_SEARCH_BUDGET_S = 50
+#: First window a demand search tries. The window doubles until the offered
+#: rate is met, the effective ceiling is reached, or the time budget is spent.
+#: This is a search starting point, not a GPU cap: the ceiling still applies.
+_DEMAND_WINDOW_START_GPUS = 8
+#: Do not start another demand window with less time than this remaining.
+_DEMAND_MIN_WINDOW_S = 5
+_DEFAULT_SWEEP_SEED = 42
+
+
+def _sweep_algorithm() -> str:
+    """Sweep sampler. `random` is the default: the budgets here are far too
+    small for a GP to learn much, and the local GP designer flips JAX's global
+    float64 setting in a long-lived service process. Override for A/B tests."""
+    raw = os.environ.get("PARETO_ALGORITHM", "").strip().lower()
+    return raw if raw in {"bayesian", "random"} else "random"
+
+
+def _sweep_seed() -> int:
+    raw = os.environ.get("SWEEP_SEED")
+    if raw is None:
+        return _DEFAULT_SWEEP_SEED
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_SWEEP_SEED
+    return value if value >= 0 else _DEFAULT_SWEEP_SEED
+
+
+def _demand_requests_per_load_unit() -> int:
+    return _positive_int_env("DEMAND_REQUESTS_PER_LOAD_UNIT", _DEMAND_REQUESTS_PER_LOAD_UNIT)
+
+
+def _demand_search_budget_seconds() -> int:
+    return _positive_int_env("DEMAND_SEARCH_BUDGET_S", _DEMAND_SEARCH_BUDGET_S)
+
+
+def _demand_start_window_gpus() -> int:
+    return _positive_int_env("DEMAND_WINDOW_START_GPUS", _DEMAND_WINDOW_START_GPUS)
+
+
+def _effective_gpu_window(req: "RecommendRequest") -> tuple[int, int]:
+    server_max = _max_candidate_gpus()
+    window_max = min(req.max_candidate_gpus, server_max) if req.max_candidate_gpus else server_max
+    return req.min_candidate_gpus or 1, window_max
+
+
+def _demand_gpu_windows(req: "RecommendRequest") -> list[tuple[int, int]]:
+    """Windows a demand search tries, smallest first.
+
+    A demand sweep cannot use the SDK's smallest-first ordering: `min_gpus` is
+    rejected without an SLA, so the search is driven by `throughput_per_gpu`
+    and samples the whole GPU range uniformly. Sampling 16 trials from a
+    thousand-shape space effectively randomises the cluster size. Bounding the
+    first window keeps every candidate near the low end, and doubling it only
+    when the rate is unmet grows the search instead of skipping over it.
+
+    An explicit `max_candidate_gpus` pins a single window: the caller has
+    already chosen the range it wants measured.
+    """
+    lower, ceiling = _effective_gpu_window(req)
+    if req.max_candidate_gpus is not None:
+        return [(lower, ceiling)]
+    upper = min(ceiling, max(lower, _demand_start_window_gpus()))
+    windows: list[tuple[int, int]] = []
+    while True:
+        windows.append((lower, upper))
+        if upper >= ceiling:
+            return windows
+        upper = min(ceiling, upper * 2)
+
+
+def _is_no_viable_config(error: Exception) -> bool:
+    """True when a GPU window is simply too small to hold the model."""
+    if isinstance(error, NoFeasibleConfigError) or error.__class__.__name__ == "NoViableParallelConfig":
+        return True
+    message = str(error)
+    return (
+        "NoViableParallelConfig" in message
+        or "no deployment_mode has a viable parallel config" in message
+    )
+
+
+def _recommendation_trial_budget(
+    objective: str,
+    window_max_gpus: int,
+    *,
+    has_requested_max: bool,
+) -> tuple[int, int, int]:
+    """Return `(max_trials, parallelism, candidate_timeout_seconds)`.
+
+    The trial budget is split across the searched deployment modes, so these
+    are totals, not per-mode counts.
+    """
+    narrow_window = window_max_gpus == 1
+    if objective == "pareto":
+        # A one-GPU window has no room for P/D, so the full sweep budget would
+        # only repeat equivalent aggregate trials.
+        return (
+            1 if narrow_window else _positive_int_env("PARETO_MAX_TRIALS", 20),
+            1 if narrow_window else _positive_int_env("PARETO_PARALLELISM", 8),
+            _positive_int_env("PARETO_CANDIDATE_TIMEOUT_S", 8),
+        )
+    if objective == "throughput_demand":
+        # Demand runs replay open-loop traffic, which is heavier per candidate
+        # than a closed-loop sizing trial, so they get their own budget.
+        return (
+            1 if narrow_window else _positive_int_env("DEMAND_MAX_TRIALS", 16),
+            1 if narrow_window else _positive_int_env("DEMAND_PARALLELISM", 4),
+            _positive_int_env("DEMAND_CANDIDATE_TIMEOUT_S", 15),
+        )
+    return (
+        1 if window_max_gpus == 1 else 4 if has_requested_max else 8,
+        1 if window_max_gpus == 1 else 2 if has_requested_max else 4,
+        15 if has_requested_max else 30,
+    )
+
+
+#: Pareto sweeps are synchronous and can outlive the request that started them.
+#: Bound how many run at once per worker process so abandoned sweeps cannot
+#: occupy an unbounded number of threadpool slots. The limit is read lazily so
+#: a deployment (or a test) can change it without a restart.
+_PARETO_SLOT_LOCK = threading.Lock()
+_PARETO_SLOTS: threading.BoundedSemaphore | None = None
+_PARETO_SLOTS_SIZE = 0
+
+
+def _pareto_slots() -> threading.BoundedSemaphore:
+    global _PARETO_SLOTS, _PARETO_SLOTS_SIZE
+    size = _positive_int_env("PARETO_MAX_CONCURRENCY", 2)
+    with _PARETO_SLOT_LOCK:
+        if _PARETO_SLOTS is None or _PARETO_SLOTS_SIZE != size:
+            _PARETO_SLOTS = threading.BoundedSemaphore(size)
+            _PARETO_SLOTS_SIZE = size
+        return _PARETO_SLOTS
 
 
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
     model_path: str | None = None,
-    max_candidate_gpus: int | None = None,
+    max_trials_override: int | None = None,
+    candidate_timeout_override: int | None = None,
 ) -> Any:
     from aisimulate.config.cli import CoreRecommendationConfig
 
     context_length = req.max_seq_len or req.isl + req.osl
-    server_max_gpus = max_candidate_gpus or _max_candidate_gpus()
-    window_max_gpus = min(req.max_candidate_gpus, server_max_gpus) if req.max_candidate_gpus else server_max_gpus
-    if req.min_candidate_gpus is not None and req.min_candidate_gpus > window_max_gpus:
+    window_min_gpus, window_max_gpus = _effective_gpu_window(req)
+    if window_min_gpus > window_max_gpus:
         raise ValueError("min_candidate_gpus cannot exceed the effective max_candidate_gpus.")
     # A one-GPU total window cannot contain a disaggregated deployment: it
     # requires at least one prefill and one decode GPU. Narrow windows also
     # need a small trial budget so incremental search does not spend the full
     # per-window timeout on redundant optimizer trials.
-    modes = ["aggregated"] if window_max_gpus == 1 else ["aggregated", "disaggregated"]
-    max_trials = 1 if window_max_gpus == 1 else 4 if req.max_candidate_gpus is not None else 8
-    parallelism = 1 if window_max_gpus == 1 else 2 if req.max_candidate_gpus is not None else 4
-    candidate_timeout_seconds = 15 if req.max_candidate_gpus is not None else 30
-    concurrency = int(req.target_concurrency or 1)
-    load = (
-        {"type": "constant_rate", "requests_per_second": req.target_request_rate}
-        if req.target_request_rate is not None
-        else {"type": "concurrency", "concurrency": int(req.target_concurrency or 1)}
+    is_pareto = req.objective == "pareto"
+    is_demand = req.objective == "throughput_demand"
+    narrow_window = window_max_gpus == 1
+    modes = ["aggregated"] if narrow_window else ["aggregated", "disaggregated"]
+    max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
+        req.objective,
+        window_max_gpus,
+        has_requested_max=req.max_candidate_gpus is not None,
     )
+    # A demand ladder shares one wall-clock budget across several windows and
+    # shrinks each window's trial budget to fit the time that remains.
+    if max_trials_override is not None:
+        max_trials = max(1, max_trials_override)
+    if candidate_timeout_override is not None:
+        candidate_timeout_seconds = max(1, candidate_timeout_override)
+    concurrency = int(req.target_concurrency or 1)
+    has_rate = req.target_request_rate is not None
+    if is_pareto:
+        load: dict[str, Any] = {"type": "kv_capacity_fraction", "fraction": {"range": {"min": 0.1, "max": 0.9}}}
+        stop: dict[str, Any] = {"requests_per_load_unit": _demand_requests_per_load_unit()}
+    elif has_rate:
+        # Open-loop traffic: the request count must scale with the offered
+        # rate. A concurrency-derived stop sends a fixed handful of requests,
+        # which measures almost nothing at production rates.
+        load = {"type": "constant_rate", "requests_per_second": req.target_request_rate}
+        stop = {"requests_per_load_unit": _demand_requests_per_load_unit()}
+    else:
+        load = {"type": "concurrency", "concurrency": concurrency}
+        stop = {"requests": max(4, min(32, concurrency * 4))}
     workers: dict[str, Any] = {
         "aggregated": {"parallelism": {"preset": "default"}},
     }
@@ -663,6 +981,66 @@ def _aisimulate_recommendation_config(
                 **({"context_length": req.decode_max_seq_len} if req.decode_max_seq_len else {}),
             },
         })
+    engine: dict[str, Any] = {
+        "model": model_path or req.model_path,
+        "hardware": req.system,
+        "backend": _sdk_backend_id(req.backend),
+        "backend_version": req.backend_version,
+        "database_mode": req.database_mode,
+        "context_length": context_length,
+        "mode": {"choices": modes},
+        "workers": workers,
+    }
+    # Omission means AISimulate models no P/D transfer delay. Only add the
+    # engine block when the caller explicitly chose a bandwidth; never invent a
+    # fabric default.
+    if is_pareto and req.kv_transfer_bandwidth_gb_per_second is not None:
+        engine["kv_transfer"] = {
+            "bandwidth_gb_per_second": req.kv_transfer_bandwidth_gb_per_second,
+            "timing_mode": "destination_missing",
+        }
+    optimization: dict[str, Any]
+    if is_pareto:
+        optimization = {
+            "target": "pareto",
+            # SLO-mode frontiers only contain candidates that clear the SLA;
+            # demand-mode frontiers sweep capacity and must not filter on one.
+            "strict_sla": req.sla_mode == "enforce",
+            "constraints": {
+                "min_candidate_gpus": req.min_candidate_gpus,
+                "max_candidate_gpus": window_max_gpus,
+            },
+        }
+    elif is_demand:
+        optimization = {
+            # A fixed offered rate is explored best by efficiency: compliant
+            # configs all report the offered throughput, so treating GPUs as the
+            # denominator ranks the smallest compliant cluster first. The
+            # service still filters the ledger by achieved rate before picking.
+            "target": "throughput_per_gpu",
+            "strict_sla": False,
+            "constraints": {
+                "min_candidate_gpus": req.min_candidate_gpus,
+                "max_candidate_gpus": window_max_gpus,
+            },
+        }
+    else:
+        optimization = {
+            "target": "min_gpus",
+            "strict_sla": True,
+            "constraints": {
+                "min_candidate_gpus": req.min_candidate_gpus,
+                "max_candidate_gpus": window_max_gpus,
+                **({"min_goodput_rps": req.target_request_rate} if req.target_request_rate is not None else {}),
+            },
+        }
+    evaluation: dict[str, Any] = {}
+    if req.sla_mode == "enforce":
+        evaluation["sla"] = (
+            {"e2e_ms": req.request_latency}
+            if req.request_latency is not None
+            else {"ttft_ms": req.ttft, "itl_ms": req.tpot}
+        )
     raw: dict[str, Any] = {
         "traffic": {
             "source": {
@@ -672,41 +1050,57 @@ def _aisimulate_recommendation_config(
                 "cached_prefix_tokens": req.prefix,
             },
             "load": load,
-            "stop": {"requests": max(4, min(32, concurrency * 4))},
+            "stop": stop,
         },
-        "engine": {
-            "model": model_path or req.model_path,
-            "hardware": req.system,
-            "backend": _sdk_backend_id(req.backend),
-            "backend_version": req.backend_version,
-            "database_mode": req.database_mode,
-            "context_length": context_length,
-            "mode": {"choices": modes},
-            "workers": workers,
-        },
-        "evaluation": {
-            "sla": (
-                {"e2e_ms": req.request_latency}
-                if req.request_latency is not None
-                else {"ttft_ms": req.ttft, "itl_ms": req.tpot}
-            ),
-        },
-        "optimization": {
-            "target": "min_gpus",
-            "constraints": {
-                "min_candidate_gpus": req.min_candidate_gpus,
-                "max_candidate_gpus": window_max_gpus,
-                **({"min_goodput_rps": req.target_request_rate} if req.target_request_rate is not None else {}),
-            },
-        },
+        "engine": engine,
+        "evaluation": evaluation,
+        "optimization": optimization,
         "optimizer": {
-            "algorithm": "random",
+            "algorithm": _sweep_algorithm(),
+            "seed": _sweep_seed(),
             "max_trials": max_trials,
             "parallelism": parallelism,
             "candidate_timeout_seconds": candidate_timeout_seconds,
         },
     }
     return CoreRecommendationConfig.model_validate(raw)
+
+
+def _resolve_moe_widths(
+    tp: int | None,
+    attention_dp: int | None,
+    moe_tp: int | None,
+    moe_ep: int | None,
+) -> tuple[int, int]:
+    """Resolve the FFN/expert width pair for one worker role.
+
+    AISimulate requires ``tp * attention_dp * cp == moe_tp * moe_ep`` for every
+    model family that can host MoE layers, including dense variants of those
+    families (dense Gemma 4 is one). Treating two omitted widths as ``1 x 1``
+    therefore fails at any attention width greater than one.
+
+    When the caller supplies neither width, state the default layout
+    explicitly: tensor-shard the FFN/expert block across the attention group
+    with no expert parallelism. Explicit values are preserved. When only one
+    width is supplied, derive the other when it divides the attention width;
+    otherwise keep 1 so the SDK reports the precise invariant error rather than
+    a validation failure.
+    """
+    attention_width = (tp or 1) * (attention_dp or 1)
+    if moe_tp is None and moe_ep is None:
+        return attention_width, 1
+    if moe_tp is None:
+        assert moe_ep is not None
+        return (
+            attention_width // moe_ep if attention_width % moe_ep == 0 else 1,
+            moe_ep,
+        )
+    if moe_ep is None:
+        return (
+            moe_tp,
+            attention_width // moe_tp if attention_width % moe_tp == 0 else 1,
+        )
+    return moe_tp, moe_ep
 
 
 def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
@@ -732,14 +1126,17 @@ def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
             context = (
                 req.prefill_max_seq_len if role == "prefill" else req.decode_max_seq_len
             ) or req.max_seq_len or req.isl + req.osl
+        tp = tp or req.tp_size
+        dp = dp or req.attention_dp_size
+        moe_tp, moe_ep = _resolve_moe_widths(tp, dp, moe_tp, moe_ep)
         result = {
             "parallelism": {
                 "replicas": (req.prefill_num_workers if role == "prefill" else req.decode_num_workers) or 1,
-                "tensor": tp or req.tp_size,
+                "tensor": tp,
                 "pipeline": pp or req.pp_size,
-                "attention_data": dp or req.attention_dp_size,
-                "moe_tensor": moe_tp or 1,
-                "moe_expert": moe_ep or 1,
+                "attention_data": dp,
+                "moe_tensor": moe_tp,
+                "moe_expert": moe_ep,
             },
             "scheduler": {"max_sequences": req.max_num_seqs or batch or req.batch_size},
         }
@@ -814,7 +1211,7 @@ def _recommendation_concurrency(metrics: dict[str, Any], req: RecommendRequest) 
     if reported is not None:
         return reported
 
-    request_rate = _metric(metrics, "request_throughput_rps", "request_rate", "requests_per_second")
+    request_rate = _measured_request_rate(metrics, open_loop=req.target_request_rate is not None)
     request_latency = _metric(metrics, "mean_e2e_latency_ms", "e2e_latency_ms", "request_latency")
     if request_rate is not None and request_latency is not None:
         return max(0, round(request_rate * request_latency / 1000.0))
@@ -919,7 +1316,7 @@ def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> Recom
         tokens_per_second_per_user=_per_user_throughput(metrics, concurrency),
         memory=_metric(metrics, "memory_gb", "memory", "peak_memory_gb"),
         concurrency=concurrency,
-        request_rate=_metric(metrics, "request_rate", "requests_per_second", "request_throughput_rps"),
+        request_rate=_measured_request_rate(metrics, open_loop=req.target_request_rate is not None),
         power_w=_metric(metrics, "power_w", "mean_power_w"),
         gemm=metrics.get("gemm") or engine.get("gemm_quant_mode"),
         kvcache=metrics.get("kvcache") or engine.get("kvcache_quant_mode"),
@@ -933,12 +1330,440 @@ def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> Recom
     return config
 
 
-def _run_aisimulate_recommendation(req: RecommendRequest):
+def _demand_config_from_record(record: Any, req: RecommendRequest) -> RecommendConfig:
+    """Convert a demand winner from the SDK candidate ledger into a config.
+
+    `result.selected_candidates` is ranked by the SDK's own objective, so the
+    service's demand winner is not necessarily in that list. Ledger records
+    carry the deployment shape as a flat `provenance.topology` plus measured
+    metrics; every value below is copied from that record.
+    """
+    topology = (
+        dict(record.provenance.topology)
+        if record.provenance is not None and record.provenance.topology
+        else {}
+    )
+    metrics = record.metrics or {}
+    mode = "disagg" if topology.get("deployment_mode") == "disagg" else "agg"
+    concurrency = _recommendation_concurrency(metrics, req)
+    replicas = int(topology.get("replicas") or 1)
+    config = RecommendConfig(
+        total_gpus_needed=record.used_gpus,
+        replicas_needed=replicas,
+        # One aggregate replica's GPU count; a disaggregated candidate is one
+        # complete multi-pool deployment, so its cluster total is the unit.
+        num_total_gpus=(
+            math.prod(
+                int(topology.get(key) or 1)
+                for key in ("tp", "pp", "attention_dp", "context")
+            )
+            if mode == "agg"
+            else record.used_gpus
+        ),
+        tp=topology.get("tp"),
+        pp=topology.get("pp"),
+        dp=topology.get("attention_dp"),
+        cp=topology.get("context"),
+        moe_tp=topology.get("moe_tp"),
+        moe_ep=topology.get("moe_ep"),
+        ttft=_metric(metrics, "ttft_ms", "mean_ttft_ms"),
+        tpot=_metric(metrics, "tpot_ms", "mean_tpot_ms", "itl_ms"),
+        request_latency=_metric(metrics, "e2e_latency_ms", "mean_e2e_latency_ms"),
+        tokens_per_second=_metric(metrics, "output_throughput_tok_s", "tokens_per_second"),
+        tokens_per_second_per_gpu=_per_gpu_throughput(metrics, record.used_gpus),
+        tokens_per_second_per_user=_per_user_throughput(metrics, concurrency),
+        memory=_metric(metrics, "memory_gb", "memory", "peak_memory_gb"),
+        concurrency=concurrency,
+        request_rate=_measured_request_rate(metrics, open_loop=req.target_request_rate is not None),
+        power_w=_metric(metrics, "power_w", "mean_power_w"),
+        model=req.model_path,
+        system=req.system,
+        backend=req.backend,
+        backend_version=req.backend_version,
+        mode=mode,
+    )
+    if mode == "disagg":
+        config.prefill_config = WorkerConfig(
+            tp=topology.get("prefill_tp"),
+            pp=topology.get("prefill_pp"),
+            dp=topology.get("prefill_attention_dp"),
+            cp=topology.get("prefill_context") or 1,
+            moe_tp=topology.get("prefill_moe_tp"),
+            moe_ep=topology.get("prefill_moe_ep"),
+            num_workers=topology.get("prefill_replicas"),
+            backend_version=req.backend_version,
+        )
+        config.decode_config = WorkerConfig(
+            tp=topology.get("decode_tp"),
+            pp=topology.get("decode_pp"),
+            dp=topology.get("decode_attention_dp"),
+            cp=topology.get("decode_context") or 1,
+            moe_tp=topology.get("decode_moe_tp"),
+            moe_ep=topology.get("decode_moe_ep"),
+            num_workers=topology.get("decode_replicas"),
+            backend_version=req.backend_version,
+        )
+    return config
+
+
+def _candidate_record_to_response(record: Any, *, transfer_delay_modeled: bool) -> CandidateResponse:
+    topology = dict(record.provenance.topology) if record.provenance and record.provenance.topology else {}
+    mode = topology.get("deployment_mode", "agg")
+    perf_data = []
+    if record.provenance and record.provenance.performance_data:
+        perf_data = record.provenance.performance_data
+    # Preserve first-seen order; a set would make the response non-deterministic.
+    provenance_sources = list(dict.fromkeys(
+        str(entry.get("source", "")) for entry in perf_data if entry.get("source")
+    ))
+    return CandidateResponse(
+        candidate_id=record.candidate_id,
+        status=str(record.status.value) if hasattr(record.status, "value") else str(record.status),
+        reason_category=str(record.reason_category.value) if record.reason_category and hasattr(record.reason_category, "value") else (str(record.reason_category) if record.reason_category else None),
+        mode=mode,
+        topology=topology,
+        used_gpus=record.used_gpus,
+        metrics=dict(record.metrics) if record.metrics else {},
+        objectives=dict(record.objectives) if record.objectives else None,
+        transfer_delay_modeled=transfer_delay_modeled,
+        provenance_sources=provenance_sources,
+    )
+
+
+def _finite_metric(metrics: dict[str, float | None], *names: str) -> float | None:
+    """Return the first finite numeric metric, ignoring booleans and nulls."""
+    for name in names:
+        value = metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        number = float(value)
+        if math.isfinite(number):
+            return number
+    return None
+
+
+def _demand_sustained_rate(metrics: dict[str, Any]) -> float | None:
+    """Offered request rate a replay sustained, excluding the final drain tail.
+
+    A replay is timed from the first arrival to the last completion, so a
+    cluster that keeps up still appends one request's latency to the measured
+    window. `completed / duration` consequently reports a rate below the
+    offered one for every candidate with a non-zero latency, and comparing that
+    value with the target marks correctly sized clusters unmet. Removing one
+    mean latency recovers the arrival window. A saturated cluster keeps its
+    queue well past that point, so its sustained rate still falls short.
+    """
+    achieved = _finite_metric(
+        metrics, "request_throughput_rps", "requests_per_second", "request_rate"
+    )
+    completed = _finite_metric(metrics, "completed_requests")
+    if completed is not None and completed <= 0:
+        return None
+    duration_ms = _finite_metric(metrics, "duration_ms")
+    if duration_ms is None:
+        duration_s = _finite_metric(metrics, "vllm_estimated_duration_s")
+        duration_ms = duration_s * 1000.0 if duration_s is not None else None
+    if achieved is None or completed is None or duration_ms is None or duration_ms <= 0:
+        return achieved
+    e2e_ms = _finite_metric(
+        metrics, "mean_e2e_latency_ms", "e2e_latency_ms", "request_latency"
+    ) or 0.0
+    arrival_ms = duration_ms - e2e_ms
+    if arrival_ms <= 0:
+        return achieved
+    return completed * 1000.0 / arrival_ms
+
+
+def _measured_request_rate(metrics: dict[str, Any], *, open_loop: bool) -> float | None:
+    """Request rate for reported configs, preferring the arrival window.
+
+    `completed / duration` includes the final response drain, so using it for
+    the config's `request_rate` (and for Little's-law concurrency) would
+    understate a cluster that kept up. The correction only holds for open-loop
+    traffic, where arrivals are spread over a window; a closed-loop replay
+    starts every request together, so its duration is roughly one wave and
+    subtracting a mean latency would inflate the rate.
+    """
+    if open_loop:
+        sustained = _demand_sustained_rate(metrics)
+        if sustained is not None:
+            return sustained
+    return _metric(
+        metrics, "request_rate", "requests_per_second", "request_throughput_rps"
+    )
+
+
+def _demand_window_seconds(metrics: dict[str, Any]) -> float | None:
+    """Arrival window a demand replay covered, in seconds."""
+    duration = _finite_metric(metrics, "vllm_estimated_duration_s")
+    if duration is not None and duration > 0:
+        duration_ms = duration * 1000.0
+    else:
+        duration_ms = _finite_metric(metrics, "duration_ms")
+    if duration_ms is None or duration_ms <= 0:
+        return None
+    e2e_ms = _finite_metric(
+        metrics, "mean_e2e_latency_ms", "e2e_latency_ms", "request_latency"
+    ) or 0.0
+    arrival_ms = duration_ms - e2e_ms
+    if arrival_ms <= 0:
+        return duration_ms / 1000.0
+    return arrival_ms / 1000.0
+
+
+def _gpu_count_for_ranking(record: Any) -> float:
+    """GPU count for ordering; an unknown count must not look cheapest."""
+    used = getattr(record, "used_gpus", None)
+    if isinstance(used, bool) or not isinstance(used, (int, float)) or used <= 0:
+        return math.inf
+    return float(used)
+
+
+def _demand_record_signature(record: Any) -> str:
+    """Stable identity for a candidate shape across separate demand windows."""
+    topology = getattr(getattr(record, "provenance", None), "topology", None) or {}
+    return json.dumps(
+        [getattr(record, "used_gpus", None), topology], sort_keys=True, default=str
+    )
+
+
+def _candidate_status(record: Any) -> str:
+    status = getattr(record, "status", "")
+    return str(getattr(status, "value", status))
+
+
+def _select_demand_record(
+    records: list[Any],
+    target_rps: float,
+) -> tuple[Any | None, bool, float | None, int]:
+    """Pick the demand winner from the SDK candidate ledger.
+
+    Compliant candidates are ranked by fewest GPUs (matching the SDK's
+    `min_gpus` ordering), then highest sustained rate, then lowest E2E latency.
+    When nothing meets the target, the highest sustained rate is returned
+    instead so the caller can report the shortfall at 200 rather than a bare
+    422. `met` is the best of the evaluated configurations, not a guarantee.
+
+    Compliance uses the sustained arrival-window rate rather than
+    `completed / duration`, which includes the final response drain and would
+    mark every candidate with a non-zero latency as unmet.
+    """
+    measured: list[tuple[Any, float]] = []
+    for record in records:
+        if _candidate_status(record) != "feasible":
+            continue
+        sustained = _demand_sustained_rate(record.metrics or {})
+        if sustained is None:
+            continue
+        measured.append((record, sustained))
+    if not measured:
+        return None, False, None, 0
+
+    # A small relative tolerance absorbs float noise from an exactly-served rate.
+    tolerance = max(target_rps * 1e-3, 1e-9)
+    compliant = [(record, rps) for record, rps in measured if rps + tolerance >= target_rps]
+    if compliant:
+        winner, _ = min(
+            compliant,
+            key=lambda item: (
+                _gpu_count_for_ranking(item[0]),
+                -item[1],
+                _finite_metric(item[0].metrics or {}, "mean_e2e_latency_ms") or math.inf,
+                getattr(item[0], "candidate_id", ""),
+            ),
+        )
+        best = max(rps for _, rps in compliant)
+        return winner, True, best, len(measured)
+
+    winner, best = min(
+        measured,
+        key=lambda item: (
+            -item[1],
+            _gpu_count_for_ranking(item[0]),
+            getattr(item[0], "candidate_id", ""),
+        ),
+    )
+    return winner, False, best, len(measured)
+
+
+def _demand_outcome(
+    record: Any,
+    *,
+    target_rps: float,
+    met: bool,
+    best_observed_rps: float | None,
+    evaluated: int,
+) -> DemandOutcome:
+    """Build the demand block from the selected candidate's replay metrics.
+
+    `achieved_rps` is the rate sustained over the arrival window, so it is the
+    value comparable to `target_rps`. `window_seconds` is that arrival window,
+    excluding the final response drain.
+    """
+    metrics = record.metrics or {}
+    achieved = _demand_sustained_rate(metrics)
+    e2e_ms = _finite_metric(
+        metrics, "mean_e2e_latency_ms", "e2e_latency_ms", "request_latency"
+    )
+    completed = _finite_metric(metrics, "completed_requests")
+    # Little's law: only meaningful on a run that completed work.
+    observed = (
+        achieved * e2e_ms / 1000.0
+        if achieved is not None and e2e_ms is not None and (completed is None or completed > 0)
+        else None
+    )
+    window_seconds = _demand_window_seconds(metrics)
+    return DemandOutcome(
+        target_rps=float(target_rps),
+        achieved_rps=round(achieved, 3) if achieved is not None else None,
+        met=met,
+        observed_concurrency=round(observed, 1) if observed is not None else None,
+        window_seconds=round(window_seconds, 3) if window_seconds is not None else None,
+        completed_requests=int(completed) if completed is not None else None,
+        evaluated_configurations=evaluated,
+        best_observed_rps=(
+            round(best_observed_rps, 3)
+            if best_observed_rps is not None
+            else (round(achieved, 3) if achieved is not None else None)
+        ),
+        simulator="aisimulate",
+    )
+
+
+def _sweep_meta(result: Any, req: RecommendRequest) -> SweepMeta:
+    """Summarise a sweep's run control from SDK counts/provenance."""
+    counts = getattr(result, "counts", None)
+    provenance = getattr(result, "provenance", None)
+    evaluated = getattr(counts, "evaluated", None)
+    if not isinstance(evaluated, int):
+        evaluated = len(getattr(result, "candidates", []) or [])
+    _, window_max_gpus = _effective_gpu_window(req)
+    max_trials, _, _ = _recommendation_trial_budget(
+        req.objective,
+        window_max_gpus,
+        has_requested_max=req.max_candidate_gpus is not None,
+    )
+    return SweepMeta(
+        run_id=getattr(provenance, "run_id", None),
+        algorithm=_sweep_algorithm(),
+        seed=_sweep_seed(),
+        max_trials=max_trials,
+        evaluated=evaluated,
+        feasible=getattr(counts, "feasible", None),
+        timed_out=getattr(counts, "timed_out", None),
+        # The budget being spent means the search stopped at its trial limit,
+        # never that it enumerated the whole space.
+        budget_exhausted=evaluated >= max_trials,
+        strict_sla=req.sla_mode == "enforce",
+        window_min_gpus=max(req.min_candidate_gpus or 1, 1),
+        window_max_gpus=window_max_gpus,
+    )
+
+
+def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
+    """Run the demand GPU-window ladder and merge the measured ledger.
+
+    A window that cannot hold the model is skipped, and the ladder stops as
+    soon as a measured candidate sustains the offered rate or the search budget
+    is spent. Trial and timeout overrides keep each window inside the remaining
+    wall-clock budget, because the SDK's own budget covers one call only.
+    """
+    windows = _demand_gpu_windows(req)
+    max_trials, parallelism, candidate_timeout = _recommendation_trial_budget(
+        req.objective,
+        windows[0][1],
+        has_requested_max=req.max_candidate_gpus is not None,
+    )
+    deadline = time.monotonic() + _demand_search_budget_seconds()
+    target_rps = float(req.target_request_rate or 0.0)
+    records: list[Any] = []
+    seen: set[str] = set()
+    attempted: list[tuple[int, int]] = []
+    searched = False
+    offered_trials = 0
+    evaluated = 0
+    feasible = 0
+    timed_out = 0
+    budget_exhausted = False
+    run_id: str | None = None
+    for lower, upper in windows:
+        remaining = deadline - time.monotonic()
+        if attempted and remaining < _DEMAND_MIN_WINDOW_S:
+            budget_exhausted = True
+            break
+        attempted.append((lower, upper))
+        window_timeout = max(1, min(candidate_timeout, int(remaining)))
+        window_trials = max(
+            1,
+            min(max_trials, max(1, int(remaining // window_timeout)) * parallelism),
+        )
+        window_req = req.model_copy(
+            update={"min_candidate_gpus": lower, "max_candidate_gpus": upper}
+        )
+        offered_trials += window_trials
+        try:
+            result = _run_aisimulate_recommendation(
+                window_req,
+                max_trials_override=window_trials,
+                candidate_timeout_override=window_timeout,
+            )
+        except Exception as exc:
+            # The window is simply below the model's fit; the next, larger
+            # window is the point of the ladder.
+            if _is_no_viable_config(exc):
+                continue
+            raise
+        searched = True
+        counts = getattr(result, "counts", None)
+        window_evaluated = getattr(counts, "evaluated", None)
+        if not isinstance(window_evaluated, int):
+            window_evaluated = len(getattr(result, "candidates", []) or [])
+        evaluated += window_evaluated
+        feasible += int(getattr(counts, "feasible", 0) or 0)
+        timed_out += int(getattr(counts, "timed_out", 0) or 0)
+        budget_exhausted = budget_exhausted or window_evaluated >= window_trials
+        run_id = getattr(getattr(result, "provenance", None), "run_id", None) or run_id
+        for record in getattr(result, "candidates", []) or []:
+            signature = _demand_record_signature(record)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            records.append(record)
+        # Stop growing the window once a measured candidate sustains the rate.
+        if _select_demand_record(records, target_rps)[1]:
+            break
+    last = attempted[-1] if attempted else windows[0]
+    return records, SweepMeta(
+        run_id=run_id,
+        algorithm=_sweep_algorithm(),
+        seed=_sweep_seed(),
+        max_trials=offered_trials or max_trials,
+        evaluated=evaluated,
+        feasible=feasible if searched else None,
+        timed_out=timed_out if searched else None,
+        budget_exhausted=budget_exhausted,
+        strict_sla=False,
+        window_min_gpus=last[0],
+        window_max_gpus=last[1],
+    )
+
+
+def _run_aisimulate_recommendation(
+    req: RecommendRequest,
+    *,
+    max_trials_override: int | None = None,
+    candidate_timeout_override: int | None = None,
+):
     from aisimulate.recommend import run_recommendation
 
     with _with_model_config(req.model_path, req.model_config_data) as effective_path:
         return run_recommendation(
-            _aisimulate_recommendation_config(req, model_path=effective_path),
+            _aisimulate_recommendation_config(
+                req,
+                model_path=effective_path,
+                max_trials_override=max_trials_override,
+                candidate_timeout_override=candidate_timeout_override,
+            ),
             stack="engine",
             runner_factory=_aisimulate_runner_factory(),
             show_progress=False,
@@ -1219,6 +2044,7 @@ def _build_memory_breakdown(
     moe_ep: int | None = None,
     max_seq_len: int | None = None,
     memory_fraction: float | None = None,
+    attention_dp: int = 1,
 ) -> MemoryBreakdown | None:
     try:
         raw = estimate_kv_cache(
@@ -1232,6 +2058,7 @@ def _build_memory_breakdown(
             memory_fraction_value=memory_fraction or _backend_memory_fraction(backend, backend_version),
             tp_size=tp,
             pp_size=pp,
+            attention_dp_size=attention_dp,
             moe_tp_size=moe_tp,
             moe_ep_size=moe_ep,
             gemm_quant_mode=gemm_quant if gemm_quant and gemm_quant != "half" else None,
@@ -1621,26 +2448,117 @@ def post_recommend(
             _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
         if not outcome.configs:
             raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+        # A non-demand BLIS outcome (or a test double) may not carry a demand
+        # block at all.
+        blis_demand = getattr(outcome, "demand", None)
+        demand = (
+            DemandOutcome(
+                target_rps=blis_demand.target_rps,
+                achieved_rps=blis_demand.achieved_rps,
+                met=blis_demand.met,
+                observed_concurrency=blis_demand.observed_concurrency,
+                window_seconds=blis_demand.window_seconds,
+                completed_requests=blis_demand.completed_requests,
+                evaluated_configurations=blis_demand.evaluated_configurations,
+                best_observed_rps=blis_demand.best_observed_rps,
+                simulator="blis",
+            )
+            if blis_demand is not None
+            else None
+        )
+        # BLIS enumerates its candidate grid instead of sampling it. Reporting
+        # that as a sweep keeps `sweep` present for both simulators without
+        # inventing a sampler identity.
+        summary = outcome.search_summary or {}
         return RecommendResponse(
             configs=[RecommendConfig.model_validate(config) for config in outcome.configs],
             chosen_mode=str(outcome.configs[0].get("mode", "agg")),
             simulator="blis",
             search_summary=outcome.search_summary,
+            demand=demand,
+            sweep=SweepMeta(
+                algorithm="enumerate",
+                max_trials=summary.get("candidate_configurations"),
+                evaluated=summary.get("evaluated_configurations"),
+                budget_exhausted=bool(summary.get("budget_exhausted")),
+                strict_sla=req.sla_mode == "enforce",
+                window_min_gpus=req.min_candidate_gpus or 1,
+                window_max_gpus=summary.get("effective_max_gpus"),
+            ),
         )
 
-    try:
-        result, fell_back_from = _run_with_version_fallback(
-            req, lambda: _run_aisimulate_recommendation(req)
+    # A client abort cannot stop a synchronous sweep, so bound how many Pareto
+    # sweeps can occupy threadpool slots at once. Reject rather than queue: a
+    # queued request still holds its own worker thread.
+    pareto_slots = _pareto_slots() if req.objective == "pareto" else None
+    if pareto_slots is not None and not pareto_slots.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="A Pareto sweep is already running on this worker; retry shortly.",
+            headers={"Retry-After": "5"},
         )
+    demand: DemandOutcome | None = None
+    result = None
+    fell_back_from: str | None = None
+    demand_records: list[Any] = []
+    sweep: SweepMeta | None = None
+    try:
+        if req.objective == "throughput_demand":
+            # Demand sizing cannot rely on the SDK's smallest-first search
+            # (min_gpus is rejected without an SLA), so the service walks a
+            # growing GPU window and stops at the first one that sustains
+            # the offered rate.
+            (demand_records, sweep), fell_back_from = _run_with_version_fallback(
+                req, lambda: _run_demand_windows(req)
+            )
+        else:
+            result, fell_back_from = _run_with_version_fallback(
+                req, lambda: _run_aisimulate_recommendation(req)
+            )
     except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
+    finally:
+        if pareto_slots is not None:
+            pareto_slots.release()
 
-    candidates = result.selected_candidates[: req.top_n]
-    if not candidates:
-        raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+    if req.objective == "throughput_demand":
+        # Select the winner from the merged ledger instead of the SDK's
+        # throughput-per-GPU pick: cheapest config that actually sustained the
+        # target, or the best observed rate when none did.
+        target_rps = float(req.target_request_rate or 0.0)
+        winner, met, best_observed, measured = _select_demand_record(
+            demand_records, target_rps
+        )
+        if winner is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No feasible configuration completed the demand traffic.",
+            )
+        demand = _demand_outcome(
+            winner,
+            target_rps=target_rps,
+            met=met,
+            best_observed_rps=best_observed,
+            evaluated=measured,
+        )
+        # The winner is a ledger record, not a `selected_candidates` entry, so
+        # it is converted through its flat `provenance.topology` rather than a
+        # prediction config the SDK may not keep on the ledger.
+        configs = [_demand_config_from_record(winner, req)]
+    else:
+        assert result is not None
+        candidates = result.selected_candidates[: req.top_n]
+        # Pareto returns the frontier via selected_candidates; the full ledger
+        # is in result.candidates. Fail only when the sweep found nothing.
+        if req.objective == "pareto":
+            if not result.candidates:
+                raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+        elif not candidates:
+            raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
+        configs = [_aisimulate_candidate_config(candidate, req) for candidate in candidates]
+        sweep = _sweep_meta(result, req)
 
     includes = _parse_include(include)
-    configs = [_aisimulate_candidate_config(candidate, req) for candidate in candidates]
     if fell_back_from and req.backend_version:
         fallback_warning = (
             f"No performance data for {req.backend} {fell_back_from} on {req.system}; "
@@ -1677,20 +2595,49 @@ def post_recommend(
             if "config" in includes:
                 cfg.serving_config = _build_serving_config(
                     req.backend, cfg.tp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, cfg.gemm, req.prefix,
+                    cfg.bs or req.target_concurrency or cfg.concurrency or 1, cfg.gemm, req.prefix,
                     max_seq_len=req.max_seq_len, backend_version=cfg.backend_version,
                 )
             if "memory" in includes:
                 cfg.memory_breakdown = _build_memory_breakdown(
                     req.model_path, req.system, req.backend, cfg.backend_version,
                     cfg.tp or 1, cfg.pp or 1, req.isl, req.osl,
-                    cfg.bs or req.target_concurrency or 1, max_seq_len=req.max_seq_len,
+                    cfg.bs or req.target_concurrency or cfg.concurrency or 1, max_seq_len=req.max_seq_len,
                 )
                 if cfg.memory is None:
                     cfg.memory = _memory_breakdown_gb(cfg.memory_breakdown)
-    chosen_mode = "disagg" if configs[0].prefill_config is not None else "agg"
-    return RecommendResponse(configs=configs, chosen_mode=chosen_mode, simulator="aisimulate")
-
+    chosen_mode = "disagg" if configs and configs[0].prefill_config is not None else "agg"
+    candidate_responses: list[CandidateResponse] = []
+    pareto_views: CandidateViews | None = None
+    if req.objective == "pareto":
+        transfer_modeled = req.kv_transfer_bandwidth_gb_per_second is not None
+        for record in result.candidates:
+            topology = dict(record.provenance.topology) if record.provenance else {}
+            is_disagg = topology.get("deployment_mode") == "disagg"
+            # Failed/timed-out records keep a disagg topology but have no replay
+            # metrics, so transfer delay was not actually modeled for them.
+            candidate_responses.append(
+                _candidate_record_to_response(
+                    record,
+                    transfer_delay_modeled=is_disagg and transfer_modeled and bool(record.metrics),
+                )
+            )
+        # ResultViews.pareto_front / top_n are plain candidate-ID string lists.
+        # Guard a missing view object: an SDK build may return no views.
+        if result.views is not None:
+            pareto_views = CandidateViews(
+                pareto_front=list(result.views.pareto_front),
+                top_n=list(result.views.top_n),
+            )
+    return RecommendResponse(
+        configs=configs,
+        chosen_mode=chosen_mode,
+        simulator="aisimulate",
+        candidates=candidate_responses,
+        views=pareto_views,
+        demand=demand,
+        sweep=sweep,
+    )
 
 
 def _handle_blis_error(error: Exception) -> None:
@@ -1804,6 +2751,7 @@ def _blis_recommend(req: RecommendRequest):
         max_candidate_gpus=effective_max,
         top_n=req.top_n,
         search_budget_seconds=req.search_budget_seconds,
+        demand=req.objective == "throughput_demand",
         max_seq_len=req.max_seq_len,
         prefill_max_seq_len=req.prefill_max_seq_len,
         decode_max_seq_len=req.decode_max_seq_len,
@@ -1841,6 +2789,13 @@ def post_predict(
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
     if req.simulator == "aisimulate":
+        # Resolve the width pair the API asks the simulator to use, so the
+        # response reports exactly the layout that was evaluated.
+        p_moe_tp, p_moe_ep = _resolve_moe_widths(p_tp, req.attention_dp_size, p_moe_tp, p_moe_ep)
+        d_moe_tp, d_moe_ep = _resolve_moe_widths(d_tp, req.attention_dp_size, d_moe_tp, d_moe_ep)
+        agg_moe_tp, agg_moe_ep = _resolve_moe_widths(
+            req.tp_size, req.attention_dp_size, req.moe_tp_size, req.moe_ep_size
+        )
         try:
             prediction, fell_back_from = _run_with_version_fallback(
                 req, lambda: _run_aisimulate_prediction(req, _parse_include(include))
@@ -1848,6 +2803,9 @@ def post_predict(
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
     else:
+        # BLIS has no width invariant and consumes only the values it was
+        # given, so report those back unchanged.
+        agg_moe_tp, agg_moe_ep = req.moe_tp_size, req.moe_ep_size
         fell_back_from = None
         try:
             prediction = _blis_estimate(req)
@@ -1885,6 +2843,8 @@ def post_predict(
         tp=None if is_disagg else req.tp_size,
         pp=None if is_disagg else req.pp_size,
         dp=None if is_disagg else req.attention_dp_size,
+        moe_tp=None if is_disagg else agg_moe_tp,
+        moe_ep=None if is_disagg else agg_moe_ep,
         system=req.system,
         backend=req.backend,
         backend_version=req.backend_version,
@@ -1957,6 +2917,7 @@ def post_predict(
                             or req.max_seq_len,
                             memory_fraction=(req.prefill_gpu_memory_utilization if worker is resp.prefill_config else req.decode_gpu_memory_utilization)
                             or req.gpu_memory_utilization,
+                            attention_dp=req.attention_dp_size,
                         )
         return resp
 
@@ -1976,8 +2937,9 @@ def post_predict(
                 req.tp_size, req.pp_size, req.isl, req.osl, req.batch_size,
                 req.gemm_quant_mode if req.gemm_quant_mode and req.gemm_quant_mode != "half" else None,
                 req.kvcache_quant_mode if req.kvcache_quant_mode and req.kvcache_quant_mode != "half" else None,
-                req.moe_tp_size, req.moe_ep_size, max_seq_len=req.max_seq_len,
+                agg_moe_tp, agg_moe_ep, max_seq_len=req.max_seq_len,
                 memory_fraction=req.gpu_memory_utilization,
+                attention_dp=req.attention_dp_size,
             )
 
     return resp
