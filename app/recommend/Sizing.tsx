@@ -252,12 +252,16 @@ export default function Sizing() {
   const [model, setModel] = React.useState('');
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
 
-  // Set model from settings after context has loaded from localStorage
+  // Set model from settings after context has loaded from localStorage.
+  // Track readiness separately from the value: an intentionally empty saved
+  // default is a valid, settled state.
   const modelFromSettings = React.useRef(false);
+  const [modelFromSettingsApplied, setModelFromSettingsApplied] = React.useState(false);
   React.useEffect(() => {
     if (!hydrated || modelFromSettings.current) return;
     modelFromSettings.current = true;
     setModel(settingsDefaultModel);
+    setModelFromSettingsApplied(true);
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
   const testedSystemsForModel = React.useMemo(
@@ -527,7 +531,7 @@ export default function Sizing() {
   // never presented as matching the visible inputs.
   const checkedSubmittedParams = React.useRef(false);
   React.useEffect(() => {
-    if (!hydrated || checkedSubmittedParams.current || !params || !result) return;
+    if (!hydrated || !modelFromSettingsApplied || checkedSubmittedParams.current || !params || !result) return;
     checkedSubmittedParams.current = true;
     const submitted = {
       model: params.model_path,
@@ -551,7 +555,7 @@ export default function Sizing() {
     ) {
       setInputsDirty(true);
     }
-  }, [hydrated, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix]);
+  }, [hydrated, modelFromSettingsApplied, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix]);
 
   const handleCalculate = () => {
     setInputsDirty(false);
