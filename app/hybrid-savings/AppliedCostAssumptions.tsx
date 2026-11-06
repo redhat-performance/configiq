@@ -54,7 +54,7 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
     <section className={styles.comparisonBasis} aria-labelledby="hybrid-comparison-basis-heading">
       <h3 id="hybrid-comparison-basis-heading">Comparison basis</h3>
       <dl className={styles.basisList}>
-        <Row label="Cost view">{assumptions.costLens === 'marginal' ? 'Marginal cost' : 'Full TCO'}</Row>
+        <Row label="Cost view">{assumptions.costLens === 'marginal' ? 'Direct running costs' : 'Full TCO'}</Row>
         {inputs(['planningCapacityUsePct', 'analysisMonths', 'loadedMonthlyCostPerFte'])}
       </dl>
     </section>
@@ -92,7 +92,7 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
           </Group>
         </section>
       </div>
-      <p className={styles.calculationNote}>FTE is the share of a full-time person. Implementation is spread over the analysis period; additional installation is added to the catalogue allowance.{assumptions.costLens === 'marginal' && ' Marginal costs exclude acquisition, capital, installation, operations and initial implementation.'} Selected prices and cost breakdowns are on the flip cards.</p>
+      <p className={styles.calculationNote}>FTE is the share of a full-time person. Implementation is spread over the analysis period; additional installation is added to the catalogue allowance.{assumptions.costLens === 'marginal' && ' Direct running costs exclude acquisition, capital, installation, operations and initial implementation.'} Selected prices and cost breakdowns are on the flip cards.</p>
     </section>
   </>
 }

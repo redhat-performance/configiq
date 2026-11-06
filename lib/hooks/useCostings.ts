@@ -3,23 +3,10 @@
 import { useState, useEffect } from 'react'
 import type { PricingSource } from '@/contexts/SettingsContext'
 import { CLIENT_CACHE_TTL_MS } from '@/lib/cache-policy'
+import { parseHostedModels, type FrontierModel } from '@/lib/api/hosted-models'
+export type { FrontierModel } from '@/lib/api/hosted-models'
 
 // ── Types ──────────────────────────────────────────────────────────────────
-
-export interface FrontierModel {
-  id: string
-  name: string
-  provider: string
-  tier: 'fast' | 'balanced' | 'frontier'
-  price_per_m_input: number
-  price_per_m_output: number
-  context_window: number | null
-  updated_at: string | null
-  /** Which feed this model's pricing came from (present in ?source=merged). */
-  source?: 'openrouter' | 'litellm' | 'override'
-  /** Authoritative checkpoint identity when supplied by the pricing feed. */
-  hugging_face_id?: string | null
-}
 
 export interface CloudRates {
   on_demand: number | null
@@ -210,14 +197,14 @@ async function fetchCostings(source: PricingSource, scope: CostingsScope): Promi
   if (!modelsRes.ok) throw new Error(`/models ${modelsRes.status}`)
   if (systemsRes && !systemsRes.ok) throw new Error(`/systems ${systemsRes.status}`)
 
-  const modelsData = await modelsRes.json()
+  const modelsData = parseHostedModels(await modelsRes.json())
   const systemsData = systemsRes ? await systemsRes.json() : { systems: [] }
   const healthData = healthRes.ok ? await healthRes.json() : null
 
   const systems = (systemsData.systems ?? []) as Record<string, unknown>[]
 
   return {
-    models: (modelsData.models ?? []) as FrontierModel[],
+    models: modelsData.models,
     cloudRates: parseCloudRates(systems),
     hardwareCosts: parseHardwareCosts(systems),
     health: healthData as CostingsHealth | null,

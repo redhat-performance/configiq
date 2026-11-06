@@ -7,9 +7,11 @@ import { HelpIcon } from "@patternfly/react-icons";
 interface JargonPopoverProps {
   term: string;
   explanation: string;
+  /** Portal target for use inside clipped or transformed containers such as flip cards. */
+  appendTo?: HTMLElement | ((ref?: HTMLElement) => HTMLElement) | "inline";
 }
 
-export function JargonPopover({ term, explanation }: JargonPopoverProps) {
+export function JargonPopover({ term, explanation, appendTo }: JargonPopoverProps) {
   return (
     <Popover
       aria-label={`${term} explanation`}
@@ -17,6 +19,7 @@ export function JargonPopover({ term, explanation }: JargonPopoverProps) {
       bodyContent={<div className="gc-body">{explanation}</div>}
       position="auto"
       maxWidth="360px"
+      appendTo={appendTo}
     >
       <button
         type="button"

@@ -50,7 +50,13 @@ function candidateFromResult(
     purchasePriceCollectionKind: purchaseConfiguration?.collectionKind,
     purchasePriceRetrievedAt: purchaseConfiguration?.retrievedAt,
     purchasePriceStale: purchaseConfiguration?.stale,
+    purchaseIncludes: purchaseConfiguration?.includes,
     tdpWattsPerGpu: gpu.tdpWatts,
+    // Reference-performance evidence retained from the sizing result.
+    referenceMode: result.mode,
+    referenceTtftMs: result.performance.ttftLatencyMs,
+    referenceTpotMs: result.performance.tpotMs,
+    referenceConcurrency: result.performance.concurrency,
   }
 }
 
@@ -144,7 +150,10 @@ export function useHybridSizing(offers: InfrastructureOffers, preferredCloudProv
           })
           const data = await readRecommendStream(response)
           if (!current()) return
-          if (data.status !== 'completed' || data.simulator !== input.simulator) {
+          if (data.status !== 'completed' || data.simulator !== input.simulator ||
+              ![data.recommendation.gpusPerReplica, data.recommendation.replicasNeeded].every(value => Number.isSafeInteger(value) && value > 0) ||
+              ![data.throughput.tokensPerSecond, data.performance.ttftLatencyMs, data.performance.tpotMs].every(value => Number.isFinite(value) && value > 0) ||
+              data.performance.ttftLatencyMs > input.targetTtftMs || data.performance.tpotMs > input.targetTpotMs) {
             failures += 1
             continue
           }

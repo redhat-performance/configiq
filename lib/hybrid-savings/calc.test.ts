@@ -7,7 +7,10 @@ import {
   hostedCostAtVolume,
   infrastructureCandidateKey,
   infrastructureOptionsAtVolume,
+  ownedCostForCandidate,
+  rentedCostForCandidate,
   workloadFacts,
+  workloadOutputShare,
   type CostAssumptions,
   type HostedPrice,
   type HybridWorkload,
@@ -80,6 +83,25 @@ const candidate: InfrastructureCandidate = {
 }
 
 describe('hybrid savings calculations', () => {
+  it('includes API request fees consistently in cards, chart samples and crossovers', () => {
+    const price = { ...hostedPrice, requestPerRequest: 0.01 }
+    const comparison = calculateHybridComparison(workload, price, [candidate], assumptions)
+    expect(comparison.options.find(option => option.key === 'hosted')!.monthlyCost).toBeCloseTo(85)
+    for (const point of comparison.chartPoints) {
+      expect(point.hosted).toBeCloseTo(hostedCostAtVolume(workload, price, assumptions, point.tokens).monthlyCost)
+    }
+    const crossover = comparison.rentedBreakEvenTokens!
+    expect(crossover).not.toBeNull()
+    const at = (volume: number) => rentedCostForCandidate(workload, candidate, assumptions, volume)!.monthlyCost -
+      hostedCostAtVolume(workload, price, assumptions, volume).monthlyCost
+    expect(at(crossover)).toBeLessThanOrEqual(0)
+    expect(at(crossover - 1)).toBeGreaterThan(0)
+  })
+
+  it.each([null, NaN, Infinity, 0])('does not silently price unknown GPU power as zero: %s', tdpWattsPerGpu => {
+    expect(ownedCostForCandidate(workload, { ...candidate, tdpWattsPerGpu }, assumptions, 25_000_000)).toBeNull()
+    expect(ownedCostForCandidate(workload, { ...candidate, tdpWattsPerGpu }, { ...assumptions, electricityPerKwh: 0 }, 25_000_000)).not.toBeNull()
+  })
   it('preserves candidate order when multiple configurations have equal costs', () => {
     const equivalent = { ...candidate, systemId: 'equivalent', label: 'Equivalent GPU' }
     for (const choose of [bestRentedAtVolume, bestOwnedAtVolume]) {
@@ -543,7 +565,7 @@ describe('hybrid savings calculations', () => {
   })
 
   it('uses a workload-relative fallback when no crossover exists', () => {
-    for (const monthlyTokens of [0, 25e6, 2.5e9]) {
+    for (const monthlyTokens of [0, 2.5e6, 25e6, 2.5e9]) {
       const result = calculateHybridComparison(
         { ...workload, monthlyInputTokens: monthlyTokens * 0.8, monthlyOutputTokens: monthlyTokens * 0.2 },
         { ...hostedPrice, inputPerMillion: 0, outputPerMillion: 0 },
@@ -551,7 +573,7 @@ describe('hybrid savings calculations', () => {
       )
       expect(result.rentedBreakEvenTokens).toBeNull()
       expect(result.ownedBreakEvenTokens).toBeNull()
-      expect(result.chartMaximumTokens).toBe(Math.max(monthlyTokens * 3, 1e9))
+      expect(result.chartMaximumTokens).toBe(Math.max(monthlyTokens * 3, 1))
       expect(result.chartPoints[0].tokens).toBe(0)
       expect(result.chartPoints.some(point => point.tokens === monthlyTokens)).toBe(true)
     }
@@ -855,7 +877,6 @@ describe('hybrid savings calculations', () => {
       gpusPerReplica: 4,
       purchasePricePerReplica: 94_000,
       purchaseInstallationPerReplica: 6_600,
-      tdpWattsPerGpu: 0,
     }
     const result = bestOwnedAtVolume(
       workload,
@@ -877,7 +898,7 @@ describe('hybrid savings calculations', () => {
   it('uses the four-year UI default when hardware life is invalid', () => {
     const result = bestOwnedAtVolume(
       workload,
-      [{ ...candidate, purchasePricePerReplica: 48_000, tdpWattsPerGpu: 0 }],
+      [{ ...candidate, purchasePricePerReplica: 48_000 }],
       {
         ...assumptions,
         hardwareLifeYears: 0,
@@ -894,7 +915,7 @@ describe('hybrid savings calculations', () => {
   it('accounts for replacement purchases when the analysis exceeds useful life', () => {
     const result = bestOwnedAtVolume(
       workload,
-      [{ ...candidate, purchasePricePerReplica: 12_000, purchaseInstallationPerReplica: 1_200, tdpWattsPerGpu: 0 }],
+      [{ ...candidate, purchasePricePerReplica: 12_000, purchaseInstallationPerReplica: 1_200 }],
       {
         ...assumptions,
         analysisMonths: 24,
@@ -1014,5 +1035,211 @@ describe('independent hardware selections', () => {
     })
     expect(option(marginal, 'owned').candidate).toBe(expensive)
     expect(option(marginal, 'rented').candidate).toBe(expensive)
+  })
+})
+
+describe('deployment capacity and output-token economics', () => {
+  // Section-10 fixture: aggregate 100 output tok/s across 2 replicas of
+  // 2 GPUs, request shape 4,000 input / 1,000 output, 10 processing hours,
+  // 90% planning use, peak 2x, demand 6.48M input + 1.62M output.
+  const capacityWorkload: HybridWorkload = {
+    monthlyInputTokens: 6_480_000,
+    monthlyOutputTokens: 1_620_000,
+    averageInputTokens: 4_000,
+    averageOutputTokens: 1_000,
+    activeHoursPerMonth: 10,
+    peakToAverage: 2,
+  }
+  const capacityAssumptions: CostAssumptions = { ...assumptions, planningCapacityUsePct: 90 }
+  const capacityCandidate: InfrastructureCandidate = {
+    ...candidate,
+    gpusPerReplica: 2,
+    replicasNeeded: 2,
+    clusterOutputTokensPerSecond: 100,
+    cloudGpusPerInstance: 8,
+    cloudHourlyCostPerInstance: 16,
+    purchaseGpusPerServer: 4,
+    purchasePricePerReplica: 40_000,
+  }
+
+  it('derives per-replica planning capacity from the reference throughput', () => {
+    // 50 output tok/s per replica = 0.05 requests/s; at 90% planning use,
+    // 10 hours and peak 2x that is 810 requests per replica. The workload mix
+    // implies 0.0002 requests per billed token, so one replica carries
+    // 810 / 0.0002 = 4,050,000 billed tokens.
+    expect(candidateCapacityTokens(capacityWorkload, capacityCandidate, 90)).toBeCloseTo(4_050_000, 6)
+  })
+
+  it('reports the whole-instance rented layout and utilization over all usable slots', () => {
+    const result = bestRentedAtVolume(capacityWorkload, [capacityCandidate], capacityAssumptions, 8_100_000)
+    const deployment = result?.deployment
+    expect(deployment).not.toBeNull()
+    // Two required replicas of 2 GPUs fit 4-per-instance on an 8-GPU
+    // instance: one whole instance, 8 billed GPUs, 4 usable slots.
+    expect(deployment?.requiredReplicas).toBe(2)
+    expect(deployment?.requiredGpus).toBe(4)
+    expect(deployment?.wholeUnits).toBe(1)
+    expect(deployment?.billedGpus).toBe(8)
+    expect(deployment?.availableReplicaSlots).toBe(4)
+    expect(deployment?.planningTokenCapacity).toBeCloseTo(16_200_000, 6)
+    expect(deployment?.planningOutputCapacity).toBeCloseTo(3_240_000, 6)
+    expect(deployment?.planningCapacityUsedPct).toBeCloseTo(50, 6)
+    expect(result?.utilizationPct).toBeCloseTo(50, 6)
+    expect(deployment?.effectiveBillingMode).toBe('always-on')
+    expect(deployment?.billableInstanceHours).toBe(730)
+  })
+
+  it('reports the whole-server purchased layout at full planning use', () => {
+    const result = bestOwnedAtVolume(capacityWorkload, [capacityCandidate], capacityAssumptions, 8_100_000)
+    const deployment = result?.deployment
+    // Two required replicas of 2 GPUs fill one 4-GPU server exactly.
+    expect(deployment?.requiredReplicas).toBe(2)
+    expect(deployment?.requiredGpus).toBe(4)
+    expect(deployment?.wholeUnits).toBe(1)
+    expect(deployment?.billedGpus).toBe(4)
+    expect(deployment?.availableReplicaSlots).toBe(2)
+    expect(deployment?.planningTokenCapacity).toBeCloseTo(8_100_000, 6)
+    expect(deployment?.planningOutputCapacity).toBeCloseTo(1_620_000, 6)
+    expect(deployment?.planningCapacityUsedPct).toBeCloseTo(100, 6)
+    expect(deployment?.effectiveBillingMode).toBeNull()
+    expect(deployment?.billableInstanceHours).toBeNull()
+  })
+
+  it('exposes cost per million requested output tokens for every option', () => {
+    const result = calculateHybridComparison(
+      capacityWorkload,
+      { ...hostedPrice, inputPerMillion: 1, outputPerMillion: 3 },
+      [capacityCandidate],
+      capacityAssumptions,
+    )
+    const hosted = result.options.find(option => option.key === 'hosted')!
+    // $6.48 input + $4.86 output = $11.34 over 1.62M requested output tokens.
+    expect(hosted.monthlyCost).toBeCloseTo(11.34, 6)
+    expect(hosted.costPerMillionOutputTokens).toBeCloseTo(7, 6)
+    for (const option of result.options) {
+      expect(option.costPerMillionOutputTokens).not.toBeNull()
+      expect(option.costPerMillionOutputTokens!).toBeCloseTo(
+        option.monthlyCost * 1_000_000 / 1_620_000, 4,
+      )
+    }
+  })
+
+  it('returns a null unit cost when no output volume is requested', () => {
+    const oneSided: HybridWorkload = { ...workload, monthlyOutputTokens: 0 }
+    const result = hostedCostAtVolume(oneSided, hostedPrice, assumptions, 20_000_000)
+    expect(result.costPerMillionOutputTokens).toBeNull()
+    expect(result.deployment).toBeNull()
+  })
+
+  it('keeps monthly-cost and output-unit rankings identical', () => {
+    const expensive: InfrastructureCandidate = {
+      ...capacityCandidate,
+      systemId: 'expensive_gpu',
+      label: 'Expensive GPU',
+      cloudHourlyCostPerInstance: 32,
+      purchasePricePerReplica: 80_000,
+    }
+    const result = calculateHybridComparison(
+      capacityWorkload,
+      { ...hostedPrice, inputPerMillion: 1, outputPerMillion: 3 },
+      [capacityCandidate, expensive],
+      capacityAssumptions,
+    )
+    const priced = result.options.filter(option => option.costPerMillionOutputTokens !== null)
+    expect(priced.length).toBeGreaterThanOrEqual(3)
+    // Every option divides by the same requested output volume, so ordering
+    // by the unit metric must exactly match ordering by monthly cost.
+    const byMonthly = [...priced]
+      .sort((left, right) => left.monthlyCost - right.monthlyCost)
+      .map(option => option.key)
+    const byUnit = [...priced]
+      .sort((left, right) => (left.costPerMillionOutputTokens ?? 0) - (right.costPerMillionOutputTokens ?? 0))
+      .map(option => option.key)
+    expect(byUnit).toEqual(byMonthly)
+    // The cheapest badge agrees with both rankings.
+    expect(result.cheapest?.key).toBe(byMonthly[0])
+  })
+
+  it('keeps chart sample growth bounded across demand ranges', () => {
+    const bounded = calculateHybridComparison(workload, hostedPrice, [candidate], assumptions)
+    // Uniform and logarithmic sample counts are fixed and step boundaries are
+    // capped per curve, so the sample set stays small no matter how far the
+    // range extends. Enumerating every capacity boundary in the enormous
+    // range would produce thousands of points.
+    const enormous = calculateHybridComparison({
+      ...workload,
+      monthlyInputTokens: 2_000_000_000_000,
+      monthlyOutputTokens: 500_000_000_000,
+    }, hostedPrice, [candidate], assumptions)
+    expect(bounded.chartPoints.length).toBeGreaterThan(160)
+    expect(bounded.chartPoints.length).toBeLessThan(600)
+    expect(enormous.chartPoints.length).toBeLessThan(600)
+    // The current workload stays an exact anchor in both ranges.
+    expect(bounded.chartPoints.some(point => point.tokens === bounded.monthlyTokens)).toBe(true)
+    expect(enormous.chartPoints.some(point => point.tokens === enormous.monthlyTokens)).toBe(true)
+  })
+
+  it('keeps zero-volume unfrozen billing at zero while freezing whole deployments', () => {
+    // Unfrozen: zero demand means zero replicas, so no instances bill.
+    expect(bestRentedAtVolume(capacityWorkload, [capacityCandidate], capacityAssumptions, 0)?.monthlyCost)
+      .toBe(0)
+    expect(bestOwnedAtVolume(capacityWorkload, [capacityCandidate], capacityAssumptions, 0)?.monthlyCost)
+      .toBe(0)
+
+    // Frozen: the captured 4-slot deployment keeps billing under always-on,
+    // while scale-to-zero still bills nothing without demand.
+    const frozen = { availableReplicaSlots: 4 }
+    const frozenAlwaysOn = rentedCostForCandidate(capacityWorkload, capacityCandidate, capacityAssumptions, 0, frozen)!
+    expect(frozenAlwaysOn.monthlyCost).toBeCloseTo(730 * 16, 6)
+    expect(frozenAlwaysOn.deployment?.wholeUnits).toBe(1)
+    expect(frozenAlwaysOn.deployment?.billedGpus).toBe(8)
+    expect(frozenAlwaysOn.deployment?.planningCapacityUsedPct).toBe(0)
+
+    const frozenActiveWindow = rentedCostForCandidate(
+      capacityWorkload, capacityCandidate,
+      { ...capacityAssumptions, cloudBillingMode: 'active-window' }, 0, frozen,
+    )!
+    expect(frozenActiveWindow.monthlyCost).toBeCloseTo(10 * 16, 6)
+    expect(frozenActiveWindow.deployment?.billableInstanceHours).toBe(10)
+
+    const frozenScaleToZero = rentedCostForCandidate(
+      capacityWorkload, capacityCandidate,
+      { ...capacityAssumptions, cloudBillingMode: 'scale-to-zero' }, 0, frozen,
+    )!
+    expect(frozenScaleToZero.monthlyCost).toBe(0)
+
+    // The purchased capture freezes its own two-slot layout: one 4-GPU server.
+    const frozenOwned = ownedCostForCandidate(capacityWorkload, capacityCandidate, capacityAssumptions, 0, { availableReplicaSlots: 2 })!
+    expect(frozenOwned.monthlyCost).toBeGreaterThan(0)
+    expect(frozenOwned.deployment?.wholeUnits).toBe(1)
+    expect(frozenOwned.deployment?.billedGpus).toBe(4)
+  })
+
+  it('never resizes a frozen deployment as sampled demand changes', () => {
+    const frozen = { availableReplicaSlots: 4 }
+    const half = rentedCostForCandidate(capacityWorkload, capacityCandidate, capacityAssumptions, 8_100_000, frozen)!
+    const doubled = rentedCostForCandidate(capacityWorkload, capacityCandidate, capacityAssumptions, 16_200_000, frozen)!
+    const beyond = rentedCostForCandidate(capacityWorkload, capacityCandidate, capacityAssumptions, 32_400_000, frozen)!
+
+    for (const option of [half, doubled, beyond]) {
+      expect(option.deployment?.wholeUnits).toBe(1)
+      expect(option.deployment?.billedGpus).toBe(8)
+      expect(option.deployment?.availableReplicaSlots).toBe(4)
+      expect(option.monthlyCost).toBeCloseTo(730 * 16, 6)
+    }
+    expect(half.deployment?.planningCapacityUsedPct).toBeCloseTo(50, 6)
+    expect(doubled.deployment?.planningCapacityUsedPct).toBeCloseTo(100, 6)
+    expect(beyond.deployment?.planningCapacityUsedPct).toBeCloseTo(100, 6)
+    // Required GPUs still follow demand; only the billed deployment is frozen.
+    expect(beyond.deployment?.requiredReplicas).toBe(8)
+    expect(beyond.deployment?.requiredGpus).toBe(16)
+  })
+
+  it('derives the output share with the engine convention', () => {
+    expect(workloadOutputShare(capacityWorkload)).toBeCloseTo(0.2, 12)
+    const noTotals: HybridWorkload = {
+      ...capacityWorkload, monthlyInputTokens: 0, monthlyOutputTokens: 0,
+    }
+    expect(workloadOutputShare(noTotals)).toBeCloseTo(1_000 / 5_000, 12)
   })
 })

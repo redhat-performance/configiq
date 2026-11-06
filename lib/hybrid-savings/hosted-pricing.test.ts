@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FrontierModel } from '@/lib/hooks/useCostings'
-import { resolveHostedPricing } from './hosted-pricing'
+import { hostedPriceForWorkload, hostedProviderIdentity, hostedTokenUsageCost, resolveHostedPricing } from './hosted-pricing'
 
 function pricedModel(
   id: string,
@@ -21,6 +21,57 @@ function pricedModel(
 }
 
 describe('hosted pricing resolution', () => {
+  const shape = { averageInputTokens: 1000, averageOutputTokens: 100 }
+  const billing: NonNullable<FrontierModel['billing']> = { currency: 'USD', request_price: 0, overrides: [], unsupported: [] }
+
+  it('includes request fees in offer ranking and usage, independently of token prices', () => {
+    const fee = { ...pricedModel('owner/model', 'A', 0.1, 0.1), billing: { ...billing, request_price: 0.01 } }
+    const flat = pricedModel('owner/model', 'B', 1, 1)
+    expect(hostedTokenUsageCost(fee, 1_000_000, 100_000, shape)).toBeCloseTo(10.11)
+    expect(resolveHostedPricing('owner/model', [fee, flat], 1_000_000, 100_000, shape).selected).toBe(flat)
+    expect(hostedPriceForWorkload(fee)).toBeNull() // Cannot price requests without their shape.
+  })
+
+  it('uses representative prompt length, strict thresholds and ordered partial overrides', () => {
+    const offer = { ...pricedModel('owner/model', 'A', 1, 2), billing: { ...billing, overrides: [
+      { min_prompt_tokens: 1000, input_per_million: 3 },
+      { min_prompt_tokens: 1000, output_per_million: 4 },
+      { min_prompt_tokens: 2000, input_per_million: 5 },
+    ] } }
+    expect(hostedPriceForWorkload(offer, shape)).toMatchObject({ inputPerMillion: 1, outputPerMillion: 2 })
+    expect(hostedPriceForWorkload(offer, { ...shape, averageInputTokens: 1001 })).toMatchObject({ inputPerMillion: 3, outputPerMillion: 4 })
+    expect(hostedPriceForWorkload(offer, { ...shape, averageInputTokens: 2001 })).toMatchObject({ inputPerMillion: 5, outputPerMillion: 4 })
+    expect(hostedTokenUsageCost(offer, 1_000_000_000, 100_000_000, shape)).toBe(1200)
+  })
+
+  it.each([
+    { max_input_tokens: 999 }, { max_output_tokens: 99 }, { max_context_tokens: 1099 },
+    { source: 'openrouter' as const, context_window: 1099 },
+    { source: 'litellm' as const, context_window: 999 },
+  ])('rejects request shapes exceeding published limits: %j', limits => {
+    const offer = { ...pricedModel('owner/model', 'A', 1, 2), ...limits }
+    expect(resolveHostedPricing('owner/model', [offer], 1_000_000, 100_000, shape).selected).toBeNull()
+  })
+
+  it('accepts exact limits, treats LiteLLM input limits separately and applies no guessed cache discount', () => {
+    const offer = { ...pricedModel('owner/model', 'A', 1, 2), source: 'litellm' as const,
+      context_window: 1000, max_output_tokens: 100,
+      billing: { ...billing, input_cache_read_per_million: 0.01, input_cache_write_per_million: 1.25 } }
+    expect(hostedTokenUsageCost(offer, 1_000_000, 100_000, shape)).toBe(1.2)
+    expect(hostedPriceForWorkload({ ...offer, max_context_tokens: 1100 }, shape)).not.toBeNull()
+  })
+
+  it('excludes explicitly unsupported conditions and invalid representative lengths', () => {
+    const offer = pricedModel('owner/model', 'A', 1, 2)
+    expect(hostedPriceForWorkload({ ...offer, billing: { ...billing, unsupported: ['Time window'] } }, shape)).toBeNull()
+    for (const value of [NaN, Infinity, 0, 0.5]) expect(hostedPriceForWorkload(offer, { ...shape, averageInputTokens: value })).toBeNull()
+  })
+
+  it('does not confuse the OpenRouter author namespace with its serving provider', () => {
+    const offer = { ...pricedModel('owner/model', 'Author', 1, 2), source: 'openrouter' as const }
+    expect(hostedProviderIdentity(offer)).toBe('OpenRouter')
+    expect(hostedProviderIdentity({ ...offer, serving_provider: 'Actual host' })).toBe('Actual host')
+  })
   it.each([
     ['Qwen/Qwen3-Coder-480B-A35B-Instruct', 'qwen/qwen3-coder'],
     ['deepseek-ai/DeepSeek-V3', 'deepseek/deepseek-chat'],

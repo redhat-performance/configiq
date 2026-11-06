@@ -18,11 +18,17 @@ const candidate: InfrastructureCandidate = {
 function option(key: CostOption['key']): CostOption {
   return {
     key, label: key, monthlyCost: 1467, fullyLoadedMonthlyCost: 1467, marginalMonthlyCost: 356,
-    costPerMillionTokens: 0.59, costPerRequest: 0.002,
+    costPerMillionTokens: 0.59, costPerMillionOutputTokens: 2.93, costPerRequest: 0.002,
     candidate: key === 'hosted' ? null : candidate,
     gpuCount: 1, billedGpuCount: 1, replicas: 1, utilizationPct: 5,
     breakdown: [{ label: 'Implementation', monthlyCost: 1111, includedInMarginal: false },
       { label: 'Token usage', monthlyCost: 356, includedInMarginal: true }],
+    deployment: key === 'hosted' ? null : {
+      requiredReplicas: 1, requiredGpus: 1, billedGpus: 2, wholeUnits: 1, availableReplicaSlots: 2,
+      planningTokenCapacity: 10_000_000, planningOutputCapacity: 2_500_000,
+      planningCapacityUsedPct: 50, effectiveBillingMode: key === 'rented' ? 'always-on' : null,
+      billableInstanceHours: key === 'rented' ? 730 : null,
+    },
   }
 }
 let root: ReturnType<typeof createRoot>
@@ -102,12 +108,44 @@ describe('Hybrid cost flip cards', () => {
     await act(async () => root.render(<HybridCostCard title="Purchased hardware" option={marginal} cheapest lens="marginal" />))
     await click('View Purchased hardware details')
     const back = host.querySelector('[class*="costBack"]')!
-    expect(back.textContent).toContain('Monthly cost breakdown · Marginal')
+    expect(back.textContent).toContain('Monthly cost breakdown · Direct running costs')
     expect(back.textContent).not.toContain('Implementation')
     expect(back.textContent).not.toContain('Other platform costs')
     expect(back.querySelectorAll('li')).toHaveLength(1)
     expect(back.querySelector('[class*="costBackTotal"]')!.textContent).toBe('Total / month$356')
     expect(marginal.breakdown).toHaveLength(3)
+  })
+
+  it('makes the output-unit metric primary with the monthly cost secondary', async () => {
+    await act(async () => root.render(<HybridCostCard title="Rented" option={option('rented')} cheapest lens="fully-loaded"
+      requestedOutputTokens={500_000_000} />))
+    const front = host.querySelector<HTMLElement>('[class*="costFront"]')!
+    const value = front.querySelector<HTMLElement>('[class*="costValue"]')!
+    const period = front.querySelector<HTMLElement>('[class*="costPeriod"]')!
+    expect(value.textContent).toContain('$2.93')
+    expect(front.textContent).toContain('per 1M output tokens')
+    expect(front.querySelector('button[aria-label="Help for Cost per 1M output tokens"]')).not.toBeNull()
+    expect(period.textContent).toBe('$1,467 / month')
+    expect(front.textContent).toContain('1 instance · 2 GPUs')
+    expect(front.textContent).toContain('Modeled output capacity')
+    expect(front.textContent).toContain('2.5M tokens/month · 50% used')
+    await click('View Rented details')
+    const back = host.querySelector<HTMLElement>('[class*="costBack"]')!
+    for (const removed of ['Requested output', 'Planning output capacity', 'Planning capacity used', 'Reference concurrency', 'Effective billing mode', 'Billable instance-hours', 'replica slots', 'Average request']) {
+      expect(back.textContent).not.toContain(removed)
+    }
+    expect(back.querySelectorAll('dt')).toHaveLength(1)
+    expect(back.textContent).toContain('Instance rate$2.00 / hour')
+  })
+
+  it('explains the missing unit metric when no output volume is requested', async () => {
+    const noOutput = { ...option('hosted'), costPerMillionOutputTokens: null }
+    await act(async () => root.render(<HybridCostCard title="Hosted API" option={noOutput} cheapest lens="fully-loaded" requestedOutputTokens={0} />))
+    const front = host.querySelector<HTMLElement>('[class*="costFront"]')!
+    expect(front.querySelector<HTMLElement>('[class*="costValue"]')!.textContent).toContain('$1,467')
+    expect(front.querySelector<HTMLElement>('[class*="costValue"]')!.textContent).toContain('/ month')
+    expect(front.querySelector<HTMLElement>('[class*="costPeriod"]')!.textContent)
+      .toBe('Enter a positive monthly output volume to compare cost per million output tokens.')
   })
 
   it('does not offer a flip for an unavailable option', async () => {

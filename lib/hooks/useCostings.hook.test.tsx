@@ -228,6 +228,21 @@ it('does not reuse another source after a failed switch and retries the selected
   expect(view.state.error).toBeNull()
 })
 
+it('preserves last-good data when a refresh has invalid tariff metadata', async () => {
+  const view = await harness(true, 'merged', 'models')
+  const previous = view.state.models
+  reply = url => url.includes('/models') ? Response.json({ models: [{ ...model,
+    billing: { currency: 'USD', request_price: -1 } }] }) : healthyResponse(url)
+  await act(async () => vi.advanceTimersByTimeAsync(CLIENT_CACHE_TTL_MS.costings))
+  expect(view.state.models).toBe(previous)
+  expect(view.state.modelsStale).toBe(true)
+  expect(view.state.error).not.toBeNull()
+  reply = healthyResponse
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(view.state.error).toBeNull()
+  expect(view.state.modelsStale).toBe(false)
+})
+
 it('does not fetch while disabled or poll while the page is hidden', async () => {
   const view = await harness(false)
   expect(fetch).not.toHaveBeenCalled()
