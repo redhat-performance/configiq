@@ -531,8 +531,13 @@ export default function Sizing() {
   // never presented as matching the visible inputs.
   const checkedSubmittedParams = React.useRef(false);
   React.useEffect(() => {
-    if (!hydrated || !modelFromSettingsApplied || checkedSubmittedParams.current || !params || !result) return;
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || checkedSubmittedParams.current || !params || !result) return;
     checkedSubmittedParams.current = true;
+    // Mirror what handleCalculate would send now. Keep undefined (fabric not
+    // required, so omitted) distinct from null (aggregate-only).
+    const effectiveFabric = fabricRequired
+      ? (disaggSupported ? selectedNetworkFabric || null : null)
+      : undefined;
     const submitted = {
       model: params.model_path,
       system: params.system,
@@ -546,6 +551,7 @@ export default function Sizing() {
       prefillMaxSeqLen: params.prefill_max_seq_len ?? null,
       decodeMaxSeqLen: params.decode_max_seq_len ?? null,
       requestLatency: params.request_latency ?? null,
+      fabric: params.fabric,
     };
     if (
       submitted.model !== model ||
@@ -559,11 +565,12 @@ export default function Sizing() {
       submitted.maxSeqLen !== maxSeqLen ||
       submitted.prefillMaxSeqLen !== prefillMaxSeqLen ||
       submitted.decodeMaxSeqLen !== decodeMaxSeqLen ||
-      submitted.requestLatency !== requestLatency
+      submitted.requestLatency !== requestLatency ||
+      submitted.fabric !== effectiveFabric
     ) {
       setInputsDirty(true);
     }
-  }, [hydrated, modelFromSettingsApplied, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const handleCalculate = () => {
     setInputsDirty(false);
