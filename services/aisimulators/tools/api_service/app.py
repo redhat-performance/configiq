@@ -2636,26 +2636,26 @@ def _capacity_option_outcome(
 ) -> CapacityOutcome:
     needed_tokens = target_concurrency * context_tokens
     fits = candidate.capacity_tokens >= needed_tokens
-    common = dict(
-        target_concurrency=target_concurrency,
-        context_per_sequence_tokens=context_tokens,
-        capacity_tokens=candidate.capacity_tokens,
-        capacity_sequences=candidate.capacity_sequences,
-        fits=fits,
-        shortfall_sequences=(
+    common = {
+        "target_concurrency": target_concurrency,
+        "context_per_sequence_tokens": context_tokens,
+        "capacity_tokens": candidate.capacity_tokens,
+        "capacity_sequences": candidate.capacity_sequences,
+        "fits": fits,
+        "shortfall_sequences": (
             None if fits else max(0, target_concurrency - candidate.capacity_sequences)
         ),
-        shortfall_tokens=(
+        "shortfall_tokens": (
             None if fits else max(0, needed_tokens - candidate.capacity_tokens)
         ),
-        minimum_gpus=minimum_gpus,
-        evaluated_shapes=evaluated_shapes,
-        feasible_shapes=feasible_shapes,
-        exhaustive=True,
-        performance_available=prediction is not None,
-        performance_unavailable_reason=unavailable_reason,
-        simulator="aisimulate",
-    )
+        "minimum_gpus": minimum_gpus,
+        "evaluated_shapes": evaluated_shapes,
+        "feasible_shapes": feasible_shapes,
+        "exhaustive": True,
+        "performance_available": prediction is not None,
+        "performance_unavailable_reason": unavailable_reason,
+        "simulator": "aisimulate",
+    }
     if isinstance(candidate, _DisaggCapacityCandidate):
         return CapacityOutcome(
             **common,

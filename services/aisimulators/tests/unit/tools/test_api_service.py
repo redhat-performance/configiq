@@ -1808,7 +1808,7 @@ class TestRunCapacityRecommendation:
             prediction=self._available_prediction(),
             max_candidate_gpus=16,
         )
-        assert [option.role for option in options][0] == "minimum"
+        assert next(option.role for option in options) == "minimum"
         disagg_option = next(option for option in options if option.role == "disaggregated")
         assert disagg_option.capacity.mode == "disagg"
         assert disagg_option.config.mode == "disagg"
