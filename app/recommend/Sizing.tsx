@@ -542,6 +542,10 @@ export default function Sizing() {
       tpot: params.tpot ?? 30,
       concurrency: params.target_concurrency ?? 32,
       prefix: params.prefix ?? 0,
+      maxSeqLen: params.max_seq_len ?? null,
+      prefillMaxSeqLen: params.prefill_max_seq_len ?? null,
+      decodeMaxSeqLen: params.decode_max_seq_len ?? null,
+      requestLatency: params.request_latency ?? null,
     };
     if (
       submitted.model !== model ||
@@ -551,11 +555,15 @@ export default function Sizing() {
       submitted.ttft !== ttft ||
       submitted.tpot !== tpot ||
       submitted.concurrency !== targetConcurrency ||
-      submitted.prefix !== prefix
+      submitted.prefix !== prefix ||
+      submitted.maxSeqLen !== maxSeqLen ||
+      submitted.prefillMaxSeqLen !== prefillMaxSeqLen ||
+      submitted.decodeMaxSeqLen !== decodeMaxSeqLen ||
+      submitted.requestLatency !== requestLatency
     ) {
       setInputsDirty(true);
     }
-  }, [hydrated, modelFromSettingsApplied, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix]);
+  }, [hydrated, modelFromSettingsApplied, params, result, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency]);
 
   const handleCalculate = () => {
     setInputsDirty(false);
@@ -635,7 +643,7 @@ export default function Sizing() {
               value={selectedNetworkFabric}
               aria-label="Inter-node fabric"
               isDisabled={networkOptions.length === 0 || !disaggSupported}
-              onChange={(_, value) => setNetworkFabric(value)}
+              onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
               {networkOptions.map(network => (
