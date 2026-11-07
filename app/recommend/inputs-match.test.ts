@@ -186,6 +186,87 @@ describe('submittedInputsMatch', () => {
   })
 })
 
+describe('submittedInputsMatch for Pareto sweeps', () => {
+  const paretoParams: SubmittedRecommendParams = {
+    ...baseParams,
+    sla_mode: 'none',
+    pareto: true,
+    ttft: undefined,
+    tpot: undefined,
+    target_concurrency: undefined,
+    target_request_rate: undefined,
+  }
+
+  it('ignores load targets for a no-SLA sweep', () => {
+    const inputs: CurrentRecommendInputs = {
+      ...baseInputs,
+      targetConcurrency: 1,
+      demandRate: 99,
+    }
+    expect(submittedInputsMatch(paretoParams, inputs)).toBe(true)
+  })
+
+  it('ignores latency bounds for a no-SLA sweep', () => {
+    const inputs: CurrentRecommendInputs = {
+      ...baseInputs,
+      ttft: 900,
+      tpot: 90,
+    }
+    expect(submittedInputsMatch(paretoParams, inputs)).toBe(true)
+  })
+
+  it('still compares the workload shape', () => {
+    expect(submittedInputsMatch(paretoParams, { ...baseInputs, isl: 4096 })).toBe(false)
+    expect(submittedInputsMatch(paretoParams, { ...baseInputs, model: 'Qwen/Qwen3-8B' })).toBe(false)
+    expect(submittedInputsMatch(paretoParams, { ...baseInputs, system: 'h100' })).toBe(false)
+  })
+
+  it('compares TTFT and TPOT when the sweep enforced the SLA', () => {
+    const params: SubmittedRecommendParams = {
+      ...paretoParams,
+      sla_mode: 'enforce',
+      ttft: 500,
+    }
+    expect(submittedInputsMatch(params, baseInputs)).toBe(true)
+    expect(submittedInputsMatch(params, { ...baseInputs, ttft: 600 })).toBe(false)
+    expect(submittedInputsMatch(params, { ...baseInputs, tpot: 40 })).toBe(false)
+  })
+
+  it('compares the end-to-end bound when the sweep sent one', () => {
+    const params: SubmittedRecommendParams = {
+      ...paretoParams,
+      sla_mode: 'enforce',
+      ttft: undefined,
+      tpot: undefined,
+      request_latency: 2000,
+    }
+    const inputs: CurrentRecommendInputs = {
+      ...baseInputs,
+      ttft: 120,
+      tpot: 12,
+      requestLatency: 2000,
+    }
+    expect(submittedInputsMatch(params, inputs)).toBe(true)
+    expect(submittedInputsMatch(params, { ...inputs, requestLatency: 2500 })).toBe(false)
+  })
+
+  it('marks a switch between decomposed and end-to-end bounds dirty', () => {
+    const params: SubmittedRecommendParams = {
+      ...paretoParams,
+      sla_mode: 'enforce',
+      ttft: undefined,
+      tpot: undefined,
+      request_latency: 2000,
+    }
+    expect(submittedInputsMatch(params, baseInputs)).toBe(false)
+  })
+
+  it('does not require a Pareto flag to compare sizing requests', () => {
+    expect(baseParams.pareto).toBeUndefined()
+    expect(submittedInputsMatch(baseParams, { ...baseInputs, ttft: 600 })).toBe(false)
+  })
+})
+
 describe('resolveEffectiveFabric', () => {
   it('omits the fabric when the backend does not require one', () => {
     expect(resolveEffectiveFabric(false, false, true, 'roce-200g')).toBeUndefined()

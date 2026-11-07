@@ -17,7 +17,7 @@ import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 
 import styles from './Sizing.module.css';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
-import { useRecommend, type SizingGoal } from '@/contexts/RecommendContext';
+import { useRecommend, type RecommendObjective, type RecommendParams, type SizingGoal } from '@/contexts/RecommendContext';
 import type { RecommendProgressEvent } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
@@ -308,13 +308,22 @@ export default function Sizing() {
   // capability, never on the simulator's ID.
   const availableObjectives = support?.objectives ?? catalogObjectives;
   const capacitySupported = availableObjectives.includes('concurrency_capacity');
+  const paretoSupported = availableObjectives.includes('pareto');
   const aggregateOnlyGoal = isDemand || isCapacity;
+  // A Pareto sweep always searches both aggregated and disaggregated
+  // deployments. It is not a sizing goal, so it is unavailable only when the
+  // simulator cannot compute one or the workload has no throughput trade-off.
+  const paretoDisabledReason = isCapacity
+    ? 'Pareto frontier is not available for concurrency-capacity sizing.'
+    : !paretoSupported
+      ? 'Pareto frontier is not available for the selected simulator.'
+      : null;
 
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { params, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, reset } = useRecommend();
+  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, startPareto, reset } = useRecommend();
   // Capacity runs return ranked alternatives. The result panel shows whichever
   // option is promoted; every other view keeps the primary recommendation so
   // the search summary and provenance still describe what was submitted.
@@ -371,7 +380,7 @@ export default function Sizing() {
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
 
   const markInputsDirty = () => {
-    if (primaryResult || isLoading) setInputsDirty(true);
+    if (primaryResult || isLoading || frontier.status !== 'idle') setInputsDirty(true);
   };
 
   const handleSequenceLengthChange = (
@@ -590,8 +599,9 @@ export default function Sizing() {
   // or newly submitted request with the visible form so a stale result is never
   // presented as matching the inputs that produced it.
   const checkedSubmittedParams = React.useRef<typeof params>(null);
+  const hasDisplayedResult = primaryResult != null || runMode === 'pareto';
   React.useEffect(() => {
-    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !primaryResult) return;
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !hasDisplayedResult) return;
     if (checkedSubmittedParams.current === params) return;
     checkedSubmittedParams.current = params;
     const currentObjective = isCapacity
@@ -622,50 +632,58 @@ export default function Sizing() {
       ),
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, primaryResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+
+  const sizingObjective: RecommendObjective = isCapacity
+    ? 'concurrency_capacity'
+    : isDemand
+      ? 'throughput_demand'
+      : 'min_gpus';
+
+  const buildRecommendParams = (): RecommendParams => ({
+    model_path: model,
+    system: gpuSystem,
+    isl,
+    osl,
+    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
+    objective: sizingObjective,
+    ...(isCapacity
+      ? { target_concurrency: targetConcurrency }
+      : isDemand
+        ? { target_request_rate: demandRate }
+        : {
+            target_concurrency: targetConcurrency,
+            // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
+            // request schema rejects sending both shapes at once.
+            ...(requestLatency != null
+              ? { request_latency: requestLatency }
+              : { ttft, tpot }),
+          }),
+    prefix,
+    ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
+    ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+    ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+    backend: inferenceBackend,
+    ...(backendVersion ? { backend_version: backendVersion } : {}),
+    // Send the HF config for models AISimulators can't resolve from its catalog.
+    ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+    simulator,
+    // A release without P/D modelling can only search aggregated candidates,
+    // so do not send a fabric that asks for a disaggregated topology. Demand
+    // and capacity sizing are aggregate-only regardless of the selected fabric.
+    ...(fabricRequired && !aggregateOnlyGoal
+      ? { fabric: disaggSupported ? selectedNetworkFabric || null : null }
+      : {}),
+  });
 
   const handleCalculate = () => {
     setInputsDirty(false);
-    const objective = isCapacity
-      ? 'concurrency_capacity'
-      : isDemand
-        ? 'throughput_demand'
-        : 'min_gpus';
-    startSizing({
-      model_path: model,
-      system: gpuSystem,
-      isl,
-      osl,
-      sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
-      objective,
-      ...(isCapacity
-        ? { target_concurrency: targetConcurrency }
-        : isDemand
-          ? { target_request_rate: demandRate }
-          : {
-              target_concurrency: targetConcurrency,
-              // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
-              // request schema rejects sending both shapes at once.
-              ...(requestLatency != null
-                ? { request_latency: requestLatency }
-                : { ttft, tpot }),
-            }),
-      prefix,
-      ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
-      ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-      ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
-      backend: inferenceBackend,
-      ...(backendVersion ? { backend_version: backendVersion } : {}),
-      // Send the HF config for models AISimulators can't resolve from its catalog.
-      ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
-      simulator,
-      // A release without P/D modelling can only search aggregated candidates,
-      // so do not send a fabric that asks for a disaggregated topology. Demand
-      // and capacity sizing are aggregate-only regardless of the selected fabric.
-      ...(fabricRequired && !aggregateOnlyGoal
-        ? { fabric: disaggSupported ? selectedNetworkFabric || null : null }
-        : {}),
-    });
+    startSizing(buildRecommendParams());
+  };
+
+  const handlePareto = () => {
+    setInputsDirty(false);
+    startPareto(buildRecommendParams());
   };
 
   // Local memory analysis using the same engine as Quick Estimate
@@ -756,19 +774,51 @@ export default function Sizing() {
           </div>
         )}
 
-        {/* Calculate button */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 16 }}>
+        {/* Calculate and Pareto are alternative actions, not a chain. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+          <Button
+            variant="secondary"
+            onClick={handlePareto}
+            isDisabled={
+              isLoading ||
+              !paretoSupported ||
+              isCapacity ||
+              !model.includes('/') ||
+              invalidISL ||
+              invalidOSL ||
+              invalidMaxSeqLen ||
+              invalidPrefillMaxSeqLen ||
+              invalidDecodeMaxSeqLen ||
+              catalogLoading ||
+              (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))
+            }
+          >
+            {isLoading && runMode === 'pareto' ? 'Running Pareto...' : 'Pareto frontier'}
+          </Button>
           <Button
             variant="primary"
             onClick={handleCalculate}
             isDisabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
-            {isLoading ? 'Calculating...' : 'Calculate'}
+            {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
         </div>
+        {paretoDisabledReason && (
+          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 6, textAlign: 'right' }}>
+            {paretoDisabledReason}
+          </div>
+        )}
       </div>
 
-      {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
+      {inputsDirty && (
+        <WarningPanel
+          warnings={[
+            runMode === 'pareto'
+              ? 'Inputs have changed since the last Pareto sweep. Click Pareto frontier to update the results.'
+              : 'Inputs have changed since the last submitted calculation. Click Calculate to update results.',
+          ]}
+        />
+      )}
 
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -1092,7 +1142,7 @@ export default function Sizing() {
       )}
 
       {/* ─── Loading ─── */}
-      {isLoading && (
+      {isLoading && runMode === 'sizing' && (
         <div className={styles.card}>
           <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} progressMessages={recommendProgressMessages(progressHistory)} />
         </div>
@@ -1589,12 +1639,19 @@ export default function Sizing() {
         />
       )}
 
-      {/* ─── Pareto frontier (companion scan, never replaces the primary result) ─── */}
-      {primaryResult && (
+      {/* ─── Pareto frontier (standalone action, exclusive of the sizing result) ─── */}
+      {runMode === 'pareto' && (
         <FrontierPanel
           state={frontier}
-          gpuLabel={currentGpuOption?.label ?? gpuSystem}
-          onRetry={handleCalculate}
+          gpuLabel={
+            selectableGpus.find(option => option.systemId === params?.system)?.label
+            ?? params?.system
+            ?? currentGpuOption?.label
+            ?? gpuSystem
+          }
+          onRetry={handlePareto}
+          elapsed={elapsed}
+          timeoutSeconds={gatewayTimeout}
         />
       )}
 

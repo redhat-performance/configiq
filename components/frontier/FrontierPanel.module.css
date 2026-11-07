@@ -258,6 +258,12 @@
   color: var(--t2);
 }
 
+.failuresBlock {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--t2);
+}
+
 .table th {
   text-align: left;
   padding: 8px 10px;

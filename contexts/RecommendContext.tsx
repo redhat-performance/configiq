@@ -2,23 +2,21 @@
 
 import * as React from 'react';
 import {
-  configuredMaxCandidateGpus,
   type RecommendProgressEvent,
   type RecommendResult,
 } from '@/lib/api/recommend';
 import { readRecommendStream } from '@/lib/api/recommend-stream';
-import { fetchFrontier } from '@/lib/api/pareto';
+import {
+  buildFrontierRequest,
+  fetchFrontier,
+  FrontierRequestError,
+} from '@/lib/api/pareto';
 import type { FrontierState } from '@/lib/types/pareto';
 
-/**
- * Companion Pareto sweeps are sized from the primary result rather than a fixed
- * GPU cap: the frontier should cover the recommended point with room on both
- * sides, up to the simulator's own enumerated ceiling.
- */
-const FRONTIER_MIN_WINDOW = 32;
-const FRONTIER_WINDOW_MULTIPLIER = 2;
-
 export type SizingGoal = 'latency' | 'demand' | 'capacity';
+
+/** Which action produced the currently displayed result. */
+export type RunMode = 'sizing' | 'pareto' | null;
 
 /** Objective sent to AISimulators; derived from the sizing goal. */
 export type RecommendObjective =
@@ -27,7 +25,7 @@ export type RecommendObjective =
   | 'pareto'
   | 'concurrency_capacity';
 
-interface RecommendParams {
+export interface RecommendParams {
   model_path: string;
   system: string;
   isl: number;
@@ -50,10 +48,17 @@ interface RecommendParams {
   model_config?: Record<string, unknown> | null;
   simulator?: 'aisimulate' | 'blis';
   fabric?: string | null;
+  /**
+   * True when this request was submitted by the Pareto action. The objective
+   * stays the visible sizing goal so the dirty check can compare the same form
+   * fields; the sweep request itself always uses `objective: 'pareto'`.
+   */
+  pareto?: boolean;
 }
 
 interface RecommendState {
   params: RecommendParams | null;
+  runMode: RunMode;
   isLoading: boolean;
   result: RecommendResult | null;
   error: string | null;
@@ -66,17 +71,19 @@ interface RecommendState {
   progress: RecommendProgressEvent | null;
   progressHistory: RecommendProgressEvent[];
   /**
-   * Companion Pareto sweep for the same workload. It starts after the primary
-   * recommendation completes so the primary numbers are visible while the
-   * sweep runs, and it never replaces the primary result.
+   * Standalone Pareto result. A Pareto run never shares state with a sizing
+   * result: starting one clears the other, so the page always shows exactly the
+   * action the user asked for.
    */
   frontier: FrontierState;
   startSizing: (params: RecommendParams) => void;
+  startPareto: (params: RecommendParams) => void;
   reset: () => void;
 }
 
 const RecommendContext = React.createContext<RecommendState>({
   params: null,
+  runMode: null,
   isLoading: false,
   result: null,
   error: null,
@@ -90,6 +97,7 @@ const RecommendContext = React.createContext<RecommendState>({
   progressHistory: [],
   frontier: { status: 'idle' },
   startSizing: () => {},
+  startPareto: () => {},
   reset: () => {},
 });
 
@@ -135,20 +143,9 @@ function requestBodyFor(p: RecommendParams): Record<string, unknown> {
   return body;
 }
 
-/** Window that surrounds the primary recommendation without a fixed GPU cap. */
-function frontierWindow(primaryGpus: number): { minGpus: number; maxGpus: number } {
-  const ceiling = configuredMaxCandidateGpus();
-  const primary = Number.isFinite(primaryGpus) && primaryGpus > 0 ? primaryGpus : 1;
-  const maxGpus = Math.min(
-    ceiling,
-    Math.max(FRONTIER_MIN_WINDOW, Math.ceil(primary * FRONTIER_WINDOW_MULTIPLIER)),
-  );
-  const minGpus = Math.max(1, Math.min(maxGpus, Math.floor(primary / 2)));
-  return { minGpus, maxGpus };
-}
-
 export function RecommendProvider({ children }: { children: React.ReactNode }) {
   const [params, setParams] = React.useState<RecommendParams | null>(null);
+  const [runMode, setRunMode] = React.useState<RunMode>(null);
   const [isLoading, setIsLoading] = React.useState(false);
   const [result, setResult] = React.useState<RecommendResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -180,62 +177,20 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     return clearTimer;
   }, [isLoading, clearTimer]);
 
-  const launchFrontier = React.useCallback(
-    (body: Record<string, unknown>, primaryGpus: number, simulator: string | undefined) => {
-      if (body.objective === 'concurrency_capacity') {
-        setFrontier({
-          status: 'unavailable',
-          reason: 'Concurrency-capacity sizing answers a residency question, not a throughput/latency trade-off, so no Pareto frontier is run.',
-        });
-        return;
-      }
-      if (simulator === 'blis') {
-        setFrontier({
-          status: 'unavailable',
-          reason: 'Pareto frontiers are computed by AISimulate only. Select AISimulate in Settings to see one.',
-        });
-        return;
-      }
-      if (frontierAbortRef.current) frontierAbortRef.current.abort();
-      const controller = new AbortController();
-      frontierAbortRef.current = controller;
-      setFrontier({ status: 'loading' });
-      const window = frontierWindow(primaryGpus);
-      void fetchFrontier(
-        {
-          ...body,
-          simulator: 'aisimulate',
-          min_candidate_gpus: window.minGpus,
-          max_candidate_gpus: window.maxGpus,
-        },
-        controller.signal,
-      )
-        .then(({ candidates, views, sweep }) => {
-          if (controller.signal.aborted) return;
-          setFrontier({ status: 'ready', candidates, views, sweep });
-        })
-        .catch((err: unknown) => {
-          if (controller.signal.aborted) return;
-          setFrontier({
-            status: 'error',
-            message: err instanceof Error ? err.message : 'Pareto sweep failed',
-          });
-        });
-    },
-    [],
-  );
-
   const startSizing = React.useCallback((p: RecommendParams) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // A sizing result and a Pareto frontier are alternatives. Discard the
+    // other action's request and result instead of running them in sequence.
     if (frontierAbortRef.current) frontierAbortRef.current.abort();
     frontierAbortRef.current = null;
 
     const requestBody = requestBodyFor(p);
 
     setParams(p);
+    setRunMode('sizing');
     setIsLoading(true);
     setResult(null);
     setError(null);
@@ -275,8 +230,7 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           setProgressHistory(history => [...history, event]);
         });
         // `reset` may have aborted the request after the stream finished
-        // reading. Do not publish a result (or start a frontier) for a run the
-        // user already discarded.
+        // reading. Do not publish a result for a run the user already discarded.
         if (controller.signal.aborted) return;
         setDebugResponse(response as unknown as Record<string, unknown>);
         setDebugDuration(Math.round(performance.now() - t0));
@@ -285,10 +239,7 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           setErrorCode(response.error.code);
           return;
         }
-        // Publish the primary result first, then start the companion sweep, so
-        // the sizing numbers are readable while the frontier is still running.
         setResult(response);
-        launchFrontier(requestBody, response.recommendation.gpusNeeded, p.simulator);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setDebugDuration(Math.round(performance.now() - t0));
@@ -299,13 +250,69 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
       }
     };
     void run();
-  }, [launchFrontier]);
+  }, []);
+
+  const startPareto = React.useCallback((p: RecommendParams) => {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = null;
+    if (frontierAbortRef.current) frontierAbortRef.current.abort();
+    const controller = new AbortController();
+    frontierAbortRef.current = controller;
+
+    const requestBody = buildFrontierRequest(requestBodyFor(p));
+
+    setParams({ ...p, pareto: true });
+    setRunMode('pareto');
+    setIsLoading(true);
+    setResult(null);
+    setError(null);
+    setErrorCode(null);
+    setDebugRequest(requestBody);
+    setDebugResponse(null);
+    setDebugStatus(null);
+    setDebugDuration(null);
+    setProgress(null);
+    setProgressHistory([]);
+    setFrontier({ status: 'loading' });
+
+    const t0 = performance.now();
+
+    void fetchFrontier(requestBody, controller.signal)
+      .then(({ candidates, views, sweep }) => {
+        if (controller.signal.aborted) return;
+        setFrontier({ status: 'ready', candidates, views, sweep });
+        setDebugStatus(200);
+        setDebugResponse({ candidates, views, sweep });
+        setDebugDuration(Math.round(performance.now() - t0));
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        const message = err instanceof Error ? err.message : 'Pareto sweep failed';
+        setFrontier({ status: 'error', message });
+        if (err instanceof FrontierRequestError) {
+          setDebugStatus(err.status);
+          setDebugResponse(
+            err.body && typeof err.body === 'object'
+              ? err.body as Record<string, unknown>
+              : { error: message },
+          );
+        } else {
+          setDebugResponse({ error: message });
+        }
+        setDebugDuration(Math.round(performance.now() - t0));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+  }, []);
 
   const reset = React.useCallback(() => {
     if (abortRef.current) abortRef.current.abort();
     if (frontierAbortRef.current) frontierAbortRef.current.abort();
+    abortRef.current = null;
     frontierAbortRef.current = null;
     setIsLoading(false);
+    setRunMode(null);
     setResult(null);
     setError(null);
     setErrorCode(null);
@@ -321,8 +328,8 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = React.useMemo<RecommendState>(
-    () => ({ params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, reset }),
-    [params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, reset]
+    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, startPareto, reset }),
+    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, startPareto, reset]
   );
 
   return (

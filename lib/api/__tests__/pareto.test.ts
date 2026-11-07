@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { fetchFrontier } from '../pareto'
+import { buildFrontierRequest, fetchFrontier } from '../pareto'
 
 function mockFetchOk(data: unknown) {
   return vi.fn().mockResolvedValue({
@@ -29,8 +29,64 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('buildFrontierRequest', () => {
+  it('marks the action as a pareto sweep and drops the sizing load target', () => {
+    const body = buildFrontierRequest({
+      model_path: 'org/model',
+      system: 'h200_sxm',
+      isl: 2048,
+      osl: 128,
+      sla_mode: 'enforce',
+      ttft: 1000,
+      tpot: 30,
+      target_concurrency: 8,
+      objective: 'min_gpus',
+    })
+
+    expect(body).toMatchObject({
+      objective: 'pareto',
+      sla_mode: 'enforce',
+      ttft: 1000,
+      tpot: 30,
+    })
+    expect(body).not.toHaveProperty('target_concurrency')
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body).not.toHaveProperty('minGpus')
+    expect(body).not.toHaveProperty('maxGpus')
+  })
+
+  it('never adds a GPU window, so the service resolves the model-aware one', () => {
+    const body = buildFrontierRequest({
+      model_path: 'org/model',
+      system: 'h200_sxm',
+      sla_mode: 'none',
+    })
+
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
+  it('passes explicit bounds through for direct API callers', () => {
+    const body = buildFrontierRequest({
+      model_path: 'org/model',
+      system: 'h200_sxm',
+      sla_mode: 'none',
+      min_candidate_gpus: 2,
+      max_candidate_gpus: 32,
+    })
+
+    expect(body.min_candidate_gpus).toBe(2)
+    expect(body.max_candidate_gpus).toBe(32)
+  })
+
+  it('preserves the caller simulator rather than substituting AISimulate', () => {
+    expect(buildFrontierRequest({ simulator: 'blis' }).simulator).toBe('blis')
+    expect(buildFrontierRequest({ simulator: 'aisimulate' }).simulator).toBe('aisimulate')
+  })
+})
+
 describe('fetchFrontier', () => {
-  it('posts the companion scan to the same-origin proxy as a pareto sweep', async () => {
+  it('posts the standalone sweep to the same-origin proxy', async () => {
     const fetchMock = mockFetchOk(FRONTIER_BODY)
     vi.stubGlobal('fetch', fetchMock)
 
@@ -44,8 +100,7 @@ describe('fetchFrontier', () => {
       tpot: 30,
       target_concurrency: 8,
       objective: 'min_gpus',
-      min_candidate_gpus: 2,
-      max_candidate_gpus: 32,
+      simulator: 'aisimulate',
     })
 
     expect(result.candidates).toHaveLength(1)
@@ -58,9 +113,10 @@ describe('fetchFrontier', () => {
       objective: 'pareto',
       simulator: 'aisimulate',
       sla_mode: 'enforce',
-      min_candidate_gpus: 2,
-      max_candidate_gpus: 32,
     })
+    // A standalone sweep lets the service choose the GPU window.
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
     // A sweep drives its own load; the sizing target is not a bound.
     expect(body).not.toHaveProperty('target_concurrency')
     expect(body).not.toHaveProperty('target_request_rate')

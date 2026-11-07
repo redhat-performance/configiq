@@ -22,6 +22,8 @@ export interface SubmittedRecommendParams {
   request_latency?: number
   prefix?: number
   fabric?: string | null
+  /** The submitted action was a Pareto sweep rather than a sizing run. */
+  pareto?: boolean
 }
 
 /** The visible form values the dirty check compares against the request. */
@@ -84,6 +86,17 @@ export function submittedInputsMatch(
   if ((params.prefill_max_seq_len ?? null) !== inputs.prefillMaxSeqLen) return false
   if ((params.decode_max_seq_len ?? null) !== inputs.decodeMaxSeqLen) return false
   if (params.fabric !== inputs.effectiveFabric) return false
+
+  if (params.pareto) {
+    // A Pareto sweep sends the workload, not a load target: the service drives
+    // load itself. Only an enforced SLA is still a submitted constraint.
+    if (params.sla_mode === 'none') return true
+    const submittedLatency = params.request_latency ?? null
+    if (submittedLatency != null || inputs.requestLatency != null) {
+      return submittedLatency === inputs.requestLatency
+    }
+    return params.ttft === inputs.ttft && (params.tpot ?? 30) === inputs.tpot
+  }
 
   switch (submittedObjective) {
     case 'throughput_demand':

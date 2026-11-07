@@ -30,10 +30,14 @@ import styles from './FrontierPanel.module.css';
 
 interface FrontierPanelProps {
   state: FrontierState;
-  /** Display label of the GPU system the primary result sized for. */
+  /** Display label of the GPU system the sweep was submitted for. */
   gpuLabel: string;
-  /** Re-run the whole sizing flow (and therefore the companion sweep). */
+  /** Re-run only the Pareto sweep. */
   onRetry: () => void;
+  /** Seconds elapsed since the sweep started, while it is loading. */
+  elapsed?: number;
+  /** Gateway timeout the sweep must finish inside, when known. */
+  timeoutSeconds?: number | null;
 }
 
 type AxisMode = 'throughput_per_user' | 'ttft';
@@ -42,7 +46,6 @@ type AxisMode = 'throughput_per_user' | 'ttft';
 // feasible pass the dataviz contrast checks on a light surface.
 const C_FRONTIER = '#0066cc';
 const C_FEASIBLE = '#009596';
-const C_INFEASIBLE = '#b8bbbe';
 const C_SELECTED = '#f0ab00';
 
 const FEASIBLE_STATUSES = new Set(['feasible']);
@@ -163,9 +166,9 @@ interface ChartPoint {
 function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect }: FrontierChartProps) {
   const [wrapRef, width] = useContainerWidth();
 
-  const withObjectives = candidates.filter(c => c.objectives !== null);
-  const feasible = withObjectives.filter(isFeasible);
-  const infeasible = withObjectives.filter(c => !isFeasible(c));
+  // The chart shows only candidates that actually produced a measurement.
+  // Failed and timed-out attempts stay in the table behind a disclosure.
+  const withObjectives = candidates.filter(c => c.objectives !== null && isFeasible(c));
 
   const xOf = (candidate: Candidate): number | null =>
     axisMode === 'ttft' ? ttftOf(candidate) : throughputPerUser(candidate);
@@ -183,8 +186,7 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
     };
   };
 
-  const feasiblePoints = feasible.map(toPoint).filter((p): p is ChartPoint => p !== null);
-  const infeasiblePoints = infeasible.map(toPoint).filter((p): p is ChartPoint => p !== null);
+  const feasiblePoints = withObjectives.map(toPoint).filter((p): p is ChartPoint => p !== null);
   const frontierPoints = feasiblePoints
     .filter(point => frontierIds.has(point.candidate.candidate_id))
     .sort((a, b) => a.x - b.x);
@@ -249,14 +251,6 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
           />
         )}
 
-        {infeasiblePoints.length > 0 && (
-          <ChartScatter
-            data={infeasiblePoints}
-            size={4}
-            style={{ data: { fill: C_INFEASIBLE, opacity: 0.7 } }}
-          />
-        )}
-
         {feasibleOff.length > 0 && (
           <ChartScatter
             data={feasibleOff}
@@ -288,7 +282,6 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
       <div className={styles.legend}>
         <LegendDot color={C_FRONTIER} label="Pareto frontier" />
         <LegendDot color={C_FEASIBLE} label="Feasible" />
-        <LegendDot color={C_INFEASIBLE} label="Not feasible" />
         <span className={styles.legendItem}>
           <span className={styles.legendSelected} style={{ background: C_SELECTED }} />
           <span>Selected</span>
@@ -303,10 +296,10 @@ interface CandidateTableProps {
   frontierIds: Set<string>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  gpuLabel: string;
+  caption: string;
 }
 
-function CandidateTable({ candidates, frontierIds, selectedId, onSelect, gpuLabel }: CandidateTableProps) {
+function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption }: CandidateTableProps) {
   const sorted = React.useMemo(
     () =>
       [...candidates].sort((a, b) => {
@@ -324,9 +317,7 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, gpuLabe
   return (
     <div className={styles.tableScroll}>
       <table className={styles.table}>
-        <caption className={styles.tableCaption}>
-          Sampled candidates for {gpuLabel}. Select a row to inspect it on the chart.
-        </caption>
+        <caption className={styles.tableCaption}>{caption}</caption>
         <thead>
           <tr>
             <th scope="col">Candidate</th>
@@ -435,9 +426,16 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
   );
 }
 
-export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) {
+export function FrontierPanel({
+  state,
+  gpuLabel,
+  onRetry,
+  elapsed = 0,
+  timeoutSeconds = null,
+}: FrontierPanelProps) {
   const [axisMode, setAxisMode] = React.useState<AxisMode>('throughput_per_user');
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [showFailures, setShowFailures] = React.useState(false);
 
   const candidates = React.useMemo(
     () => (state.status === 'ready' ? state.candidates : []),
@@ -447,6 +445,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
   const sweep = state.status === 'ready' ? state.sweep : null;
 
   const feasible = React.useMemo(() => candidates.filter(isFeasible), [candidates]);
+  const failed = React.useMemo(() => candidates.filter(candidate => !isFeasible(candidate)), [candidates]);
 
   const hasTtft = React.useMemo(
     () => feasible.some(candidate => ttftOf(candidate) != null),
@@ -467,18 +466,47 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
   React.useEffect(() => {
     if (selectedId != null && candidates.some(candidate => candidate.candidate_id === selectedId)) return;
     const next =
-      [...frontierIds].find(id => candidates.some(candidate => candidate.candidate_id === id)) ??
-      candidates[0]?.candidate_id ??
+      [...frontierIds].find(id => feasible.some(candidate => candidate.candidate_id === id)) ??
+      feasible[0]?.candidate_id ??
       null;
     setSelectedId(next);
-  }, [candidates, frontierIds, selectedId]);
+  }, [candidates, feasible, frontierIds, selectedId]);
 
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
+  const statusSummary = React.useMemo(() => {
+    const sampled = sweep?.evaluated ?? candidates.length;
+    const parts = [`${sampled} sampled`, `${feasible.length} feasible`];
+    for (const status of ['timed_out', 'infeasible', 'failed', 'unsupported', 'resource_limited'] as const) {
+      const count = candidates.filter(candidate => candidate.status === status).length;
+      if (count > 0) parts.push(`${count} ${status.replace('_', ' ')}`);
+    }
+    return `${parts.join(' · ')} — not exhaustive.`;
+  }, [candidates, feasible.length, sweep?.evaluated]);
+
   if (state.status === 'idle') return null;
 
-  const evaluated = sweep?.evaluated ?? candidates.length;
-  const sampledCaption = `Best of ${evaluated} sampled ${evaluated === 1 ? 'configuration' : 'configurations'} — not exhaustive.`;
+  const failuresDisclosure = failed.length > 0 && (
+    <div className={styles.failuresBlock}>
+      <Button
+        variant="link"
+        isInline
+        onClick={() => setShowFailures(visible => !visible)}
+        aria-expanded={showFailures}
+      >
+        {showFailures ? 'Hide failed attempts' : `Show failed attempts (${failed.length})`}
+      </Button>
+      {showFailures && (
+        <CandidateTable
+          candidates={failed}
+          frontierIds={frontierIds}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          caption={`Failed attempts for ${gpuLabel}. Kept for transparency; they are not plotted.`}
+        />
+      )}
+    </div>
+  );
 
   return (
     <section className={styles.section} aria-labelledby="frontier-heading">
@@ -486,7 +514,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
         <CardTitle>
           <div className={styles.titleRow}>
             <h2 id="frontier-heading" className={styles.title}>Pareto frontier</h2>
-            <span className={styles.subtitle}>Efficiency companion scan for the sizing result above</span>
+            <span className={styles.subtitle}>Efficiency trade-off across aggregated and disaggregated deployments</span>
           </div>
         </CardTitle>
         <CardBody>
@@ -496,8 +524,9 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
               <div>
                 <div className={styles.loadingTitle}>Sampling the efficiency frontier…</div>
                 <div className={styles.loadingHint}>
-                  Your sizing recommendation above is already complete. This companion scan tests a range of
-                  GPU counts and finishes on its own.
+                  Testing a range of GPU counts across aggregated and disaggregated deployments.
+                  {elapsed > 0 && <> {elapsed}s elapsed.</>}
+                  {timeoutSeconds != null && <> The gateway limit is {timeoutSeconds}s.</>}
                 </div>
               </div>
             </div>
@@ -507,7 +536,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
             <div className={styles.notice}>
               <ExclamationTriangleIcon className={styles.noticeIcon} />
               <div>
-                <div className={styles.noticeTitle}>Frontier unavailable for this simulator</div>
+                <div className={styles.noticeTitle}>Frontier unavailable</div>
                 <div className={styles.noticeBody}>{state.reason}</div>
               </div>
             </div>
@@ -520,7 +549,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
                 <div className={styles.noticeTitle}>The Pareto sweep did not complete</div>
                 <div className={styles.noticeBody}>{state.message}</div>
                 <Button variant="secondary" size="sm" className={styles.retryButton} onClick={onRetry}>
-                  Retry sizing and sweep
+                  Retry Pareto sweep
                 </Button>
               </div>
             </div>
@@ -534,7 +563,22 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
             </EmptyState>
           )}
 
-          {state.status === 'ready' && candidates.length > 0 && (
+          {state.status === 'ready' && candidates.length > 0 && feasible.length === 0 && (
+            <EmptyState>
+              <EmptyStateBody>
+                <div>{statusSummary}</div>
+                <div style={{ marginTop: 8 }}>
+                  No candidate configuration met the workload constraints. Try a different model, GPU system, or
+                  workload context.
+                </div>
+                <Button variant="secondary" size="sm" className={styles.retryButton} onClick={onRetry}>
+                  Retry Pareto sweep
+                </Button>
+              </EmptyStateBody>
+            </EmptyState>
+          )}
+
+          {state.status === 'ready' && feasible.length > 0 && (
             <>
               <div className={styles.toolbar}>
                 <div className={styles.axisControl}>
@@ -554,7 +598,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
                   </ToggleGroup>
                 </div>
                 <div className={styles.sweepMeta}>
-                  {sampledCaption}
+                  {statusSummary}
                   {sweep?.windowMinGpus != null && sweep?.windowMaxGpus != null && (
                     <> Window: {sweep.windowMinGpus}–{sweep.windowMaxGpus} GPUs.</>
                   )}
@@ -575,7 +619,7 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
               <div className={styles.bodyGrid}>
                 <div className={styles.chartColumn}>
                   <FrontierChart
-                    candidates={candidates}
+                    candidates={feasible}
                     frontierIds={frontierIds}
                     axisMode={axisMode}
                     selectedId={selectedId}
@@ -589,14 +633,18 @@ export function FrontierPanel({ state, gpuLabel, onRetry }: FrontierPanelProps) 
               </div>
 
               <CandidateTable
-                candidates={candidates}
+                candidates={feasible}
                 frontierIds={frontierIds}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                gpuLabel={gpuLabel}
+                caption={`Feasible candidates for ${gpuLabel}. Select a row to inspect it on the chart.`}
               />
+
+              {failuresDisclosure}
             </>
           )}
+
+          {state.status === 'ready' && candidates.length > 0 && feasible.length === 0 && failuresDisclosure}
         </CardBody>
       </Card>
     </section>

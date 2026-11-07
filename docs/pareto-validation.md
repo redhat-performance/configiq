@@ -88,32 +88,51 @@ destination_missing` shows up in **TTFT / e2e latency**, not in steady-state
 not cleanly in `mean_ttst_ms`. Use `mean_e2e_latency_ms` / `mean_ttft_ms` as the
 transfer-sensitive signal.
 
-## ConfigIQ companion-scan contract
+## ConfigIQ standalone-sweep contract
 
-The Pareto frontier runs as a companion scan after the primary sizing result.
-It never replaces that result: `/recommend` returns the primary sizing first,
-and the browser starts the frontier request separately so both can render
-independently. The contract below is what the UI and service rely on.
+The Pareto frontier is a standalone action, not a companion scan. `Pareto
+frontier` and `Calculate` are alternative buttons: either action replaces the
+other's result, and retrying re-runs only the active action. The contract below
+is what the UI and service rely on.
 
 ### Availability
 
 `objective=pareto` is AISimulate-only. A BLIS request returns 422 at the API
-boundary and the UI shows an explicit unavailable state naming AISimulate as the
-capable simulator. There is no silent substitution and no cross-simulator
+boundary and the UI keeps the request simulator-neutral, surfacing that explicit
+rejection rather than substituting AISimulate. There is no cross-simulator
 frontier.
 
-### Window
+### Deployment modes
 
-The browser sizes the window from the primary recommendation:
+Every sweep searches both aggregated and disaggregated deployments (when the
+window can hold more than one GPU). A workload may legitimately have no feasible
+disaggregated point; that absence is reported, not hidden. Both modes contribute
+candidates and frontier points when they are feasible.
 
-- `min_candidate_gpus = max(1, floor(primary_gpus / 2))`
-- `max_candidate_gpus = clamp(2 x primary_gpus, 32, server_ceiling)`
+### Automatic GPU window
 
-The server clamps the requested maximum again to
-`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024). Candidate enumeration is
-roughly O(max²), which is the practical reason a ceiling exists; it is not a
-claim that a larger cluster cannot be sized. A one-GPU total window runs a
-single aggregate trial, because a P/D deployment needs at least two GPUs.
+The browser does not send `min_candidate_gpus` or `max_candidate_gpus`. When
+both are omitted, the service resolves a model-aware window before sampling:
+
+- **Floor** — the smallest aggregated worker shape that holds one full-context
+  sequence (`min(shape.gpus_per_worker)` from the KV-feasibility enumeration).
+  Aggregated is a valid floor for both modes because a disaggregated deployment
+  replicates the full weights in both pools.
+- **Ceiling** — `clamp(max(16, floor × 2), floor, 64,
+  AISIMULATORS_MAX_CANDIDATE_GPUS)`. The Pareto cap is configurable with
+  `PARETO_MAX_WINDOW_GPUS` (default 64).
+
+The resolved window is reported as `sweep.window_min_gpus` /
+`sweep.window_max_gpus`; there is no user-facing window control. If no shape fits
+inside the cap, the response is an explicit 422 that asks the caller for wider
+bounds. If the preflight estimate itself fails, the service logs a warning and
+falls back to a bounded `1..min(16, ceiling)` window rather than failing the
+sweep.
+
+API callers may still pin either bound explicitly. Sending either
+`min_candidate_gpus` or `max_candidate_gpus` disables automatic resolution and
+keeps the historical semantics; the server clamps an explicit maximum to
+`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024).
 
 ### Budgets and sampler
 
@@ -121,9 +140,10 @@ single aggregate trial, because a P/D deployment needs at least two GPUs.
 |---|---|---|
 | `PARETO_MAX_TRIALS` | 20 | Total trial budget, split across searched deployment modes |
 | `PARETO_PARALLELISM` | 8 | Concurrent candidate evaluations |
-| `PARETO_CANDIDATE_TIMEOUT_S` | 8 | Per-candidate wall budget |
+| `PARETO_CANDIDATE_TIMEOUT_S` | 8 | Per-wave wall budget (applied per evaluation wave, not per candidate) |
 | `PARETO_MAX_CONCURRENCY` | 2 | Concurrent sweeps per worker; excess returns 429 |
 | `PARETO_ALGORITHM` | `random` | `random` or `bayesian` |
+| `PARETO_MAX_WINDOW_GPUS` | 64 | Cap for an automatically resolved window |
 | `SWEEP_SEED` | 42 | Reproducible sampling and optimizer seed |
 
 `bayesian` maps to `SeededBayesianBranchSampler`, which flips `jax_enable_x64`
@@ -134,7 +154,16 @@ a per-mode count.
 
 `sweep.budget_exhausted` is true when `evaluated >= max_trials`. It means the
 trial budget was spent, never that the search enumerated every configuration.
-The UI caption is always "best of N sampled — not exhaustive".
+The UI caption is always "sampled — not exhaustive".
+
+### Candidate presentation
+
+The chart plots feasible, measured candidates only. Failed, timed-out,
+infeasible, and unsupported attempts remain in the response for transparency but
+are collapsed behind `Show failed attempts (N)` in the UI, with a status summary
+(evaluated, feasible, timed out, …) visible above the chart. A sweep with no
+feasible candidate shows the same summary plus a retry action instead of an
+empty chart.
 
 ### Dominance authority
 
@@ -185,11 +214,15 @@ unmet. `demand.window_seconds` reports that same arrival window.
 
 ### Timing
 
-The primary sizing request and the companion scan are sequential from the
-browser's point of view. A worst-case primary run plus a worst-case scan is
-about 84 seconds against a 90-second default gateway timeout. The primary
-result renders while the scan is still running, so a scan timeout degrades only
-the frontier panel, not the sizing recommendation.
+A sweep is the only request in flight for the Pareto action, so it must fit the
+gateway timeout on its own. The auto window keeps the search near the model's
+fit floor, which materially reduces sparse curves and timeout noise compared
+with a one-GPU-to-ceiling sweep. Measured wall times against `aisimulators.dev`
+for 0.6B/8B/32B sweeps over 1–16 GPUs were 20–29 seconds with 20/20 feasible
+candidates; a Qwen3-235B-A22B sweep from its 4-GPU floor over 4–16 GPUs took
+21 seconds with 10 aggregated and 10 disaggregated candidates. The frontend
+shows elapsed time and the gateway limit while the sweep runs, and a timeout
+degrades only the frontier panel.
 
 ## Conclusion
 

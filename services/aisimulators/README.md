@@ -349,6 +349,25 @@ simulator; BLIS rejects this objective with 422.
 falls back to AISimulate, because a frontier computed by another simulator would
 be misattributed.
 
+A sweep searches both aggregated and disaggregated deployments whenever the GPU
+window can hold more than one GPU. Both modes contribute candidates and frontier
+points when they are feasible; a workload may have no feasible disaggregated
+point, and that absence is reported rather than filled in.
+
+When the caller omits both `min_candidate_gpus` and `max_candidate_gpus`, the
+service resolves a model-aware window before sampling. The floor is the smallest
+aggregated worker shape that holds one full-context sequence (from the
+KV-feasibility enumeration), and the ceiling is
+`clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server ceiling)`.
+Aggregated is a valid floor for both modes because a disaggregated deployment
+replicates the full weights in both pools. The resolved bounds are assigned to
+the request, so `sweep.window_min_gpus` / `sweep.window_max_gpus` report the
+window that was actually searched. If no shape fits inside the cap, the response
+is an explicit 422 asking for wider bounds; if the preflight estimate itself
+fails, the service logs a warning and falls back to a bounded
+`1..min(16, ceiling)` window. Sending either bound explicitly disables automatic
+resolution and preserves the historical search semantics.
+
 For a Pareto result:
 
 - `candidates` contains every evaluated candidate, including infeasible,
@@ -375,9 +394,10 @@ Pareto sweeps use `PARETO_MAX_TRIALS` (default 20), `PARETO_PARALLELISM`
 (default 8), `PARETO_CANDIDATE_TIMEOUT_S` (default 8), and
 `PARETO_MAX_CONCURRENCY` (default 2 concurrent sweeps per worker, returning 429
 when exceeded). `PARETO_ALGORITHM` selects `random` (default) or `bayesian`; the
-Bayesian sampler enables JAX x64 process-wide and is not the default. `SWEEP_SEED`
-defaults to 42. A one-GPU total window runs one aggregate trial, since it cannot
-contain a P/D deployment.
+Bayesian sampler enables JAX x64 process-wide and is not the default.
+`PARETO_MAX_WINDOW_GPUS` (default 64) caps an automatically resolved window, and
+`SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
+since it cannot contain a P/D deployment.
 
 The image sets `BLIS_VERSION`, `BLIS_CATALOG`, `BLIS_REGISTRY` and
 `BLIS_SUPPORT`. `BLIS_VERSION` is the release reported by `/backends` and in

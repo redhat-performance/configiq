@@ -112,6 +112,9 @@ class MockCandidate:
             }},
         },
     })
+    provenance: object = field(
+        default_factory=lambda: types.SimpleNamespace(topology={}, performance_data=[])
+    )
 
 
 @dataclass
@@ -637,6 +640,227 @@ def _demand_metrics(
         "mean_tpot_ms": 18.0,
         "output_throughput_tok_s": offered_rps * 128,
     }
+
+
+VALID_PARETO_BODY = {
+    "model_path": "Qwen/Qwen3-32B",
+    "system": "h200_sxm",
+    "isl": 4096,
+    "osl": 512,
+    "objective": "pareto",
+    "sla_mode": "none",
+    "backend": "vllm",
+}
+
+
+class TestParetoAutoWindow:
+    """An omitted Pareto window starts at the model's own fit floor."""
+
+    @pytest.mark.parametrize(
+        ("floor", "expected"),
+        [
+            (1, (1, 16)),
+            (4, (4, 16)),
+            (8, (8, 16)),
+            (16, (16, 32)),
+            (20, (20, 40)),
+            (64, (64, 64)),
+        ],
+    )
+    def test_floor_and_ceiling_follow_the_minimum_fit(self, monkeypatch, floor, expected):
+        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
+        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(
+            app_module,
+            "_capacity_shapes",
+            lambda *args, **kwargs: [_capacity_shape(tp=floor)],
+        )
+
+        assert app_module._pareto_auto_window(
+            request, backend="vllm", backend_version="0.24.0"
+        ) == expected
+
+    def test_preflight_honours_the_pareto_window_cap(self, monkeypatch):
+        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
+        monkeypatch.setenv("PARETO_MAX_WINDOW_GPUS", "24")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        budgets: list[int] = []
+
+        def shapes(*args, **kwargs):
+            budgets.append(kwargs["gpu_budget"])
+            return [_capacity_shape(tp=20)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert app_module._pareto_auto_window(
+            request, backend="vllm", backend_version="0.24.0"
+        ) == (20, 24)
+        assert budgets == [24]
+
+    def test_preflight_honours_the_server_candidate_ceiling(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        budgets: list[int] = []
+
+        def shapes(*args, **kwargs):
+            budgets.append(kwargs["gpu_budget"])
+            return [_capacity_shape(tp=8)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert app_module._pareto_auto_window(
+            request, backend="vllm", backend_version="0.24.0"
+        ) == (8, 8)
+        assert budgets == [8]
+
+    def test_no_fitting_shape_is_an_explicit_error(self, monkeypatch):
+        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: [])
+
+        with pytest.raises(ValueError, match="no aggregated parallel configuration"):
+            app_module._pareto_auto_window(
+                request, backend="vllm", backend_version="0.24.0"
+            )
+
+    def test_failed_preflight_falls_back_to_a_bounded_window(self, monkeypatch):
+        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
+        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        def shapes(*args, **kwargs):
+            raise RuntimeError("estimator unavailable")
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert app_module._pareto_auto_window(
+            request, backend="vllm", backend_version="0.24.0"
+        ) == (1, 16)
+
+    def test_resolved_window_is_applied_and_reported(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(app_module, "_pareto_auto_window", lambda *args, **kwargs: (4, 16))
+        captured: list[app_module.RecommendRequest] = []
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda req: captured.append(req) or object(),
+        )
+
+        app_module._run_pareto_recommendation(request, auto_window=True)
+
+        assert request.min_candidate_gpus == 4
+        assert request.max_candidate_gpus == 16
+        assert captured == [request]
+        sweep = app_module._sweep_meta(
+            types.SimpleNamespace(counts=None, provenance=None, candidates=[]), request
+        )
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 16
+
+    def test_explicit_bounds_skip_the_preflight(self, monkeypatch):
+        body = {**VALID_PARETO_BODY, "min_candidate_gpus": 2}
+        request = app_module.RecommendRequest.model_validate(body)
+        monkeypatch.setattr(
+            app_module,
+            "_pareto_auto_window",
+            lambda *args, **kwargs: pytest.fail("preflight must not run"),
+        )
+        monkeypatch.setattr(
+            app_module, "_run_aisimulate_recommendation", lambda req: object()
+        )
+
+        app_module._run_pareto_recommendation(request, auto_window=False)
+
+        assert request.min_candidate_gpus == 2
+        assert request.max_candidate_gpus is None
+
+    def test_auto_window_searches_both_deployment_modes(self):
+        body = {**VALID_PARETO_BODY, "min_candidate_gpus": 4, "max_candidate_gpus": 16}
+        request = app_module.RecommendRequest.model_validate(body)
+        config = app_module._aisimulate_recommendation_config(request)
+
+        assert config.engine.mode.choices == ["aggregated", "disaggregated"]
+        assert config.optimization.constraints.min_candidate_gpus == 4
+        assert config.optimization.constraints.max_candidate_gpus == 16
+
+
+@dataclass
+class MockParetoResult:
+    selected_candidates: list = field(default_factory=lambda: [MockCandidate()])
+    candidates: list = field(default_factory=lambda: [MockCandidate()])
+    counts: object = field(
+        default_factory=lambda: types.SimpleNamespace(evaluated=20, feasible=20, timed_out=0)
+    )
+    provenance: object = field(
+        default_factory=lambda: types.SimpleNamespace(run_id="run-1")
+    )
+    views: object = field(
+        default_factory=lambda: types.SimpleNamespace(pareto_front=[], top_n=[])
+    )
+
+
+class TestParetoEndpointWindow:
+    @patch("tools.api_service.app._candidate_record_to_response")
+    @patch("tools.api_service.app._aisimulate_candidate_config")
+    @patch("tools.api_service.app._run_pareto_recommendation")
+    def test_omitted_bounds_request_an_auto_window(
+        self, mock_run, mock_config, mock_candidate
+    ):
+        mock_run.return_value = MockParetoResult()
+        mock_config.return_value = app_module.RecommendConfig(total_gpus_needed=4)
+        mock_candidate.return_value = app_module.CandidateResponse(
+            candidate_id="candidate-000001",
+            status="feasible",
+            mode="agg",
+            topology={},
+            used_gpus=4,
+        )
+
+        response = client.post("/recommend", json=VALID_PARETO_BODY)
+
+        assert response.status_code == 200
+        assert mock_run.call_args.kwargs["auto_window"] is True
+
+    @pytest.mark.parametrize(
+        "bounds",
+        [{"min_candidate_gpus": 2}, {"max_candidate_gpus": 8}],
+    )
+    @patch("tools.api_service.app._candidate_record_to_response")
+    @patch("tools.api_service.app._aisimulate_candidate_config")
+    @patch("tools.api_service.app._run_pareto_recommendation")
+    def test_an_explicit_bound_disables_the_auto_window(
+        self, mock_run, mock_config, mock_candidate, bounds
+    ):
+        mock_run.return_value = MockParetoResult()
+        mock_config.return_value = app_module.RecommendConfig(total_gpus_needed=4)
+        mock_candidate.return_value = app_module.CandidateResponse(
+            candidate_id="candidate-000001",
+            status="feasible",
+            mode="agg",
+            topology={},
+            used_gpus=4,
+        )
+
+        response = client.post("/recommend", json={**VALID_PARETO_BODY, **bounds})
+
+        assert response.status_code == 200
+        assert mock_run.call_args.kwargs["auto_window"] is False
+
+    def test_common_error_handler_preserves_an_explicit_status(self):
+        with pytest.raises(HTTPException) as raised:
+            app_module._common_error_handler(
+                HTTPException(status_code=422, detail="no fitting shape"),
+                "recommend",
+                "Qwen/Qwen3-32B",
+                "vllm",
+                "h200_sxm",
+            )
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == "no fitting shape"
 
 
 class TestRecommendDemand:

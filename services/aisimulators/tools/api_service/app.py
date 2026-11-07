@@ -879,6 +879,17 @@ def _max_candidate_gpus() -> int:
     return _positive_int_env("AISIMULATORS_MAX_CANDIDATE_GPUS", _DEFAULT_MAX_CANDIDATE_GPUS)
 
 
+#: Largest GPU count an omitted Pareto window will reach automatically. The
+#: auto window starts at the smallest shape that holds one full-context
+#: sequence and doubles that floor up to this cap, so a model that needs more
+#: than this must pass explicit `min_candidate_gpus` / `max_candidate_gpus`.
+_DEFAULT_PARETO_MAX_WINDOW_GPUS = 64
+
+
+def _pareto_max_window_gpus() -> int:
+    return _positive_int_env("PARETO_MAX_WINDOW_GPUS", _DEFAULT_PARETO_MAX_WINDOW_GPUS)
+
+
 #: Simulated traffic per demand run: `requests_per_load_unit × offered rate`.
 #: The replay window must scale with the rate; a fixed request count would
 #: measure a different (shorter) window at every target.
@@ -2009,6 +2020,65 @@ def _capacity_shapes(
     ]
 
 
+def _pareto_auto_window(
+    req: RecommendRequest,
+    *,
+    backend: str,
+    backend_version: str | None,
+) -> tuple[int, int]:
+    """Pick a Pareto GPU window from the model's own fit floor.
+
+    An omitted Pareto window should not start at one GPU and should not reach
+    the server ceiling: both waste trials on shapes the model cannot run. This
+    reuses the aggregated KV-feasibility enumeration (`_capacity_shapes`) to
+    find the smallest shape that holds one sequence at the workload context,
+    then searches from that floor up to twice the floor, at least 16 GPUs, and
+    never past the Pareto window cap or the server ceiling.
+
+    Aggregated is a valid floor for both deployment modes: a disaggregated
+    deployment replicates the full weights in the prefill and decode pools, so
+    it cannot need fewer GPUs than the aggregated shape.
+
+    Raises ``ValueError`` when no shape fits inside the cap, so the caller
+    returns an explicit no-result response instead of running a useless sweep.
+    """
+    server_ceiling = _max_candidate_gpus()
+    ceiling = min(server_ceiling, _pareto_max_window_gpus())
+    context_tokens = _capacity_context_tokens(req)
+    try:
+        with _with_model_config(req.model_path, req.model_config_data) as model_path:
+            shapes = _capacity_shapes(
+                req,
+                model_path,
+                backend=backend,
+                backend_version=backend_version,
+                context_tokens=context_tokens,
+                gpu_budget=ceiling,
+            )
+    except Exception as error:  # a failed preflight must not mask the sweep's own error
+        fallback_upper = min(16, ceiling)
+        logger.warning(
+            "Pareto auto-window preflight failed for %s on %s (%s); "
+            "using the bounded 1-%d window: %s",
+            req.model_path,
+            req.system,
+            req.backend,
+            fallback_upper,
+            error,
+        )
+        return 1, max(1, fallback_upper)
+    if not shapes:
+        raise ValueError(
+            f"{req.model_path} on {req.system}: no aggregated parallel configuration "
+            f"holds a {context_tokens}-token sequence within {ceiling} GPUs "
+            f"({req.backend} KV-cache estimate). Pass explicit min_candidate_gpus / "
+            "max_candidate_gpus to widen the Pareto window."
+        )
+    floor = min(shape.gpus_per_worker for shape in shapes)
+    upper = min(ceiling, max(16, floor * 2))
+    return floor, max(floor, upper)
+
+
 def _capacity_aggregate_candidates(
     shapes: list[_CapacityShape],
     *,
@@ -3045,6 +3115,25 @@ def _run_aisimulate_recommendation(
             show_progress=False,
         )
 
+
+def _run_pareto_recommendation(req: RecommendRequest, *, auto_window: bool):
+    """Run a Pareto sweep, resolving an omitted GPU window from the model's fit.
+
+    Resolution happens inside the version-fallback closure so the preflight
+    estimates KV capacity with the same backend version the sweep will use.
+    An explicit bound, on either side, keeps the caller's current semantics.
+    """
+    if auto_window:
+        lower, upper = _pareto_auto_window(
+            req,
+            backend=_sdk_backend_id(req.backend),
+            backend_version=req.backend_version,
+        )
+        req.min_candidate_gpus = lower
+        req.max_candidate_gpus = upper
+    return _run_aisimulate_recommendation(req)
+
+
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.config.cli import CorePredictionConfig
@@ -3473,6 +3562,11 @@ def _unwrapped_detail(msg: str) -> str:
 
 
 def _common_error_handler(e: Exception, op: str, model_path: str, backend: str, system: str) -> None:
+    # A handler that already chose a status and detail (for example the
+    # capacity enumeration's no-fit 422) must keep it; re-wrapping it as a 500
+    # would report a client-actionable answer as a server failure.
+    if isinstance(e, HTTPException):
+        raise e
     msg = str(e)
     # A pinned version that the performance data cannot serve, or a blank
     # version that no declared version can serve. Both are client-actionable.
@@ -3796,6 +3890,14 @@ def post_recommend(
     demand_records: list[Any] = []
     sweep: SweepMeta | None = None
     includes = _parse_include(include)
+    # An omitted Pareto window is auto-fitted to the model. Resolve it inside
+    # the version-fallback closure (below) so the preflight and the sweep share
+    # the same backend version. Either explicit bound keeps the old semantics.
+    pareto_auto_window = (
+        req.objective == "pareto"
+        and req.min_candidate_gpus is None
+        and req.max_candidate_gpus is None
+    )
     try:
         if req.objective == "throughput_demand":
             # Demand sizing cannot rely on the SDK's smallest-first search
@@ -3811,6 +3913,11 @@ def post_recommend(
             # there is no window ladder or sampler to drive.
             capacity_result, fell_back_from = _run_with_version_fallback(
                 req, lambda: _run_capacity_recommendation(req, include=includes)
+            )
+        elif req.objective == "pareto":
+            result, fell_back_from = _run_with_version_fallback(
+                req,
+                lambda: _run_pareto_recommendation(req, auto_window=pareto_auto_window),
             )
         else:
             result, fell_back_from = _run_with_version_fallback(

@@ -7,22 +7,32 @@ export interface FrontierResponse {
   sweep: FrontierSweep | null
 }
 
+/** A failed Pareto request, carrying the status and body for the Debug panel. */
+export class FrontierRequestError extends Error {
+  readonly status: number
+  readonly body: unknown
+
+  constructor(message: string, status: number, body: unknown) {
+    super(message)
+    this.name = 'FrontierRequestError'
+    this.status = status
+    this.body = body
+  }
+}
+
 /**
- * Request the Pareto candidate ledger through the same-origin /api/recommend
- * proxy. The request carries the same workload shape as the sizing request and
- * only differs in `objective`.
+ * Build the exact payload sent by the standalone Pareto action.
  *
- * This is always AISimulate-only. BLIS does not provide a frontier, and the
- * service rejects the combination rather than substituting another simulator.
+ * A sweep drives its own load, so the sizing request's target rate and
+ * concurrency are not bounds and must not be sent. The caller's simulator is
+ * preserved: Pareto is capability-gated in the UI, and a request for a
+ * simulator that cannot provide a frontier must surface the API's explicit
+ * rejection rather than be redirected to another simulator.
  */
-export async function fetchFrontier(
-  request: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<FrontierResponse> {
+export function buildFrontierRequest(request: Record<string, unknown>): Record<string, unknown> {
   const slaMode = request.sla_mode === 'none' ? 'none' : 'enforce'
   const payload: Record<string, unknown> = {
     ...request,
-    simulator: 'aisimulate',
     objective: 'pareto',
     sla_mode: slaMode,
   }
@@ -37,6 +47,22 @@ export async function fetchFrontier(
     delete payload.ttft
     delete payload.tpot
   }
+  return payload
+}
+
+/**
+ * Request the Pareto candidate ledger through the same-origin /api/recommend
+ * proxy. The request carries the same workload shape as the sizing request and
+ * only differs in `objective`.
+ *
+ * Pareto is AISimulate-only. The caller keeps its simulator so an unsupported
+ * request fails explicitly; the response is validated to identify AISimulate.
+ */
+export async function fetchFrontier(
+  request: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<FrontierResponse> {
+  const payload = buildFrontierRequest(request)
 
   const res = await fetch('/api/recommend', {
     method: 'POST',
@@ -48,7 +74,11 @@ export async function fetchFrontier(
   const body: unknown = await res.json().catch(() => null)
 
   if (!res.ok) {
-    throw new Error(formatApiError(body, `Pareto sweep failed (${res.status})`))
+    throw new FrontierRequestError(
+      formatApiError(body, `Pareto sweep failed (${res.status})`),
+      res.status,
+      body,
+    )
   }
 
   const parsed = parseFrontierBody(body)

@@ -87,10 +87,20 @@ paths:
           AISimulate.
         - `pareto` (AISimulate only) sweeps the throughput-per-user vs
           throughput-per-gpu frontier and returns every evaluated candidate in
-          `candidates` plus SDK-computed `views`. `sla_mode=enforce` restricts the
-          frontier to SLA-compliant candidates; `sla_mode=none` sweeps capacity
-          without an SLA. BLIS rejects `objective=pareto` with 422 and never
-          substitutes AISimulate.
+          `candidates` plus SDK-computed `views`. It searches both aggregated
+          and disaggregated deployments (when the window can hold more than one
+          GPU); a workload may legitimately have no feasible disaggregated
+          point. `sla_mode=enforce` restricts the frontier to SLA-compliant
+          candidates; `sla_mode=none` sweeps capacity without an SLA. When both
+          `min_candidate_gpus` and `max_candidate_gpus` are omitted, the service
+          resolves a model-aware window: the floor is the smallest aggregated
+          shape that holds one full-context sequence, and the ceiling is
+          `clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server
+          ceiling)`. The resolved bounds are reported as
+          `sweep.window_min_gpus` / `sweep.window_max_gpus`. No shape fitting
+          inside the cap returns 422 asking for explicit bounds. Sending either
+          bound disables automatic resolution. BLIS rejects `objective=pareto`
+          with 422 and never substitutes AISimulate.
 
         With `sla_mode=enforce`, provide either `request_latency` (end-to-end ms)
         or both `ttft` and `tpot`; sending an end-to-end bound together with
@@ -517,13 +527,19 @@ components:
         min_candidate_gpus:
           type: integer
           nullable: true
-          description: Lower bound of the searched GPU window.
+          description: |
+            Lower bound of the searched GPU window. For objective=pareto, when
+            both this and max_candidate_gpus are omitted the service resolves a
+            model-aware window automatically and reports it in `sweep`.
           minimum: 1
           default: null
         max_candidate_gpus:
           type: integer
           nullable: true
-          description: Upper bound of the searched GPU window; clamped to the service candidate ceiling.
+          description: |
+            Upper bound of the searched GPU window; clamped to the service
+            candidate ceiling. For objective=pareto, sending either bound
+            disables the automatic model-aware window.
           minimum: 1
           default: null
         kv_transfer_bandwidth_gb_per_second:
