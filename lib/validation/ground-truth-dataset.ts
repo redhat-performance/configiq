@@ -189,7 +189,7 @@ function filterValue(row: DatasetRow, key: GroundTruthFilterKey): string | null 
 
 function configurationForRow(row: DatasetRow): DatasetConfiguration {
   return Object.fromEntries(CONFIGURATION_FIELDS.map(field => {
-    if (field === 'measurement_source') return [field, row.benchmark_source === 'inferencex' ? 'InferenceX' : 'Internal GT']
+    if (field === 'measurement_source') return [field, row.benchmark_source === 'inferencex' ? 'InferenceX' : 'Red Hat']
     if (field === 'benchmark_version') return [field, row.benchmark_source === 'inferencex' ? null : normalizeValue(row.version)]
     if (field === 'backend') return [field, normalizeBackend(row.backend)]
     if (field === 'backend_version') return [field, normalizeBackendVersion(row.backend, row.backend_version)]
