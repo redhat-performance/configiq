@@ -379,6 +379,15 @@ export default function Sizing() {
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && !validSequenceLength(prefillMaxSeqLenInput);
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
 
+  // A Pareto sweep keeps only the fields buildFrontierRequest sends. It has no
+  // load target, so demand rate and concurrency never block it; in SLA-free
+  // mode it has no latency bound; with an end-to-end bound it drops TTFT/TPOT.
+  const invalidParetoInputs = isDemand
+    ? false
+    : requestLatency != null
+      ? invalidLatency
+      : invalidTTFT || invalidTpot;
+
   const markInputsDirty = () => {
     if (primaryResult || isLoading || frontier.status !== 'idle') setInputsDirty(true);
   };
@@ -790,7 +799,7 @@ export default function Sizing() {
               invalidPrefillMaxSeqLen ||
               invalidDecodeMaxSeqLen ||
               catalogLoading ||
-              (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))
+              invalidParetoInputs
             }
           >
             {isLoading && runMode === 'pareto' ? 'Running Pareto...' : 'Pareto frontier'}
