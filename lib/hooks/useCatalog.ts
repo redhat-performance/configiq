@@ -280,7 +280,9 @@ function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
     support[simulator] = {
       id: typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : simulator,
       label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : simulator,
-      version: typeof entry.version === 'string' ? entry.version : null,
+      version: typeof entry.version === 'string' && entry.version.trim().length > 0
+        ? entry.version.trim()
+        : null,
       recommendSearch: entry.recommend_search === 'single' || entry.recommendSearch === 'single'
         ? 'single'
         : 'windowed',
@@ -310,7 +312,9 @@ function mapSimulatorDescriptors(raw: unknown): SimulatorDescriptor[] {
     return [{
       id: value.id,
       label: typeof value.label === 'string' && value.label.length > 0 ? value.label : value.id,
-      version: typeof value.version === 'string' ? value.version : null,
+      version: typeof value.version === 'string' && value.version.trim().length > 0
+        ? value.version.trim()
+        : null,
       default: value.default === true,
     }]
   })

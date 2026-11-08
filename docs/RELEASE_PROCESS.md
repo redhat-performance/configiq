@@ -125,7 +125,9 @@ independently of the binary:
 To move to a new BLIS release:
 
 1. Resolve the release image's multi-arch index digest and put the tag plus
-   digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release.
+   digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release. The
+   Containerfile fails the build when the `BLIS_IMAGE` tag and `BLIS_VERSION`
+   disagree, so the reported version cannot drift from the binary.
 2. Bump the catalog and registry commits to the releases that BLIS tag is tested
    against (its `README.md` names them).
 3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and

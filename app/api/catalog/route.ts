@@ -91,7 +91,9 @@ function simulatorDescriptors(data: unknown): SimulatorDescriptor[] {
     return [{
       id: value.id,
       label: typeof value.label === 'string' && value.label.trim().length > 0 ? value.label : value.id,
-      version: typeof value.version === 'string' ? value.version : null,
+      version: typeof value.version === 'string' && value.version.trim().length > 0
+        ? value.version.trim()
+        : null,
       default: value.default === true,
     }]
   })

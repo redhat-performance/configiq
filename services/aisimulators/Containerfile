@@ -54,6 +54,18 @@ FROM python:3.12-slim
 # BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
 ARG BLIS_VERSION=0.15.0
 
+# BLIS_IMAGE is declared before the first FROM so it can choose the release
+# stage. Redeclare it here to compare that image's tag with the reported
+# release: the footer must never name a different version than the binary.
+ARG BLIS_IMAGE
+RUN image_ref="${BLIS_IMAGE%%@*}" \
+    && image_tag="${image_ref##*:}" \
+    && image_version="${image_tag#v}" \
+    && if [ "$image_version" != "$BLIS_VERSION" ]; then \
+         echo "BLIS_VERSION=${BLIS_VERSION} does not match BLIS_IMAGE tag ${image_tag}" >&2; \
+         exit 1; \
+       fi
+
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
 # name it shares. Set on package creation; add here so future publishes resolve
 # to configiq/packages rather than redhat-performance/aisimulators.

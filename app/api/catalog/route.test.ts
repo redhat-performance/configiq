@@ -6,6 +6,12 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+// Deliberately non-release strings: the route must forward whatever the
+// service's /simulators reports, not know or pin a simulator version. Using
+// plausible SemVer here made the fixtures look like real release pins.
+const AISIMULATE_FIXTURE_VERSION = 'test-aisimulate-version'
+const BLIS_FIXTURE_VERSION = 'test-blis-version'
+
 /**
  * Route every gateway URL to a fixture keyed by pathname + search. A URL with
  * no fixture is treated as an upstream failure so a test cannot accidentally
@@ -28,8 +34,8 @@ describe('GET /api/catalog', () => {
     const responses: Record<string, unknown> = {
       '/simulators': {
         simulators: [
-          { id: 'aisimulate', label: 'AISimulate', default: true, version: '1.2.3' },
-          { id: 'blis', label: 'BLIS', default: false, version: '0.15.0' },
+          { id: 'aisimulate', label: 'AISimulate', default: true, version: AISIMULATE_FIXTURE_VERSION },
+          { id: 'blis', label: 'BLIS', default: false, version: BLIS_FIXTURE_VERSION },
         ],
         default_simulator: 'aisimulate',
       },
@@ -77,8 +83,8 @@ describe('GET /api/catalog', () => {
       backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }],
       networks: [],
       simulators: [
-        { id: 'aisimulate', label: 'AISimulate', version: '1.2.3', default: true },
-        { id: 'blis', label: 'BLIS', version: '0.15.0', default: false },
+        { id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true },
+        { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
       ],
       defaultSimulator: 'aisimulate',
       objectives: ['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity'],
@@ -88,7 +94,7 @@ describe('GET /api/catalog', () => {
     expect(body.simulatorSupport.aisimulate).toMatchObject({
       id: 'aisimulate',
       label: 'AISimulate',
-      version: '1.2.3',
+      version: AISIMULATE_FIXTURE_VERSION,
       recommendSearch: 'windowed',
       modelsExhaustive: false,
       systems: [{ id: 'h200_sxm' }],
@@ -99,7 +105,7 @@ describe('GET /api/catalog', () => {
     expect(body.simulatorSupport.blis).toMatchObject({
       id: 'blis',
       label: 'BLIS',
-      version: '0.15.0',
+      version: BLIS_FIXTURE_VERSION,
       recommendSearch: 'single',
       modelsExhaustive: true,
       systems: [{ id: 'l40s' }],
@@ -109,6 +115,31 @@ describe('GET /api/catalog', () => {
       objectives: ['min_gpus', 'throughput_demand'],
     })
     expect(fetchMock).toHaveBeenCalledTimes(9)
+  })
+
+  it('reports a blank simulator version as unavailable instead of an empty value', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+    stubGateway({
+      '/simulators': {
+        simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true, version: '   ' }],
+      },
+      '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisimulate&include=specs': {
+        simulator: 'aisimulate',
+        models: [{ id: 'Qwen/Qwen3-8B' }],
+      },
+      '/systems?simulator=aisimulate': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
+      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+    })
+
+    const response = await GET(new Request('https://configiq.dev/api/catalog'))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.simulators).toEqual([
+      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+    ])
+    expect(body.simulatorSupport.aisimulate.version).toBeNull()
   })
 
   it('omits a simulator whose scoped responses do not echo it', async () => {
@@ -192,7 +223,7 @@ describe('GET /api/catalog', () => {
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
       networks: ['ib-400g'],
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: '1.2.3', default: true }],
+      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true }],
       defaultSimulator: 'aisimulate',
       simulatorSupport: { aisimulate: { id: 'aisimulate' } },
       objectives: ['min_gpus'],
@@ -207,7 +238,7 @@ describe('GET /api/catalog', () => {
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
       networks: ['ib-400g'],
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: '1.2.3', default: true }],
+      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true }],
       defaultSimulator: 'aisimulate',
       simulatorSupport: { aisimulate: { id: 'aisimulate' } },
       objectives: ['min_gpus'],

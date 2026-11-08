@@ -69,10 +69,30 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-try:
-    from aisimulate import __version__ as _AISIMULATE_VERSION
-except Exception:  # pragma: no cover - the wheel always exposes __version__
-    _AISIMULATE_VERSION = "unknown"
+
+def _installed_aisimulate_version() -> str | None:
+    """The installed SDK release, or None when it cannot be determined.
+
+    A missing version is reported as null so clients show "unavailable"
+    instead of presenting a placeholder such as "unknown" as a release.
+    """
+    try:
+        from aisimulate import __version__
+
+        if isinstance(__version__, str) and __version__.strip():
+            return __version__.strip()
+    except Exception:  # pragma: no cover - the wheel ships __version__
+        pass
+    try:
+        from importlib.metadata import version as distribution_version
+
+        return distribution_version("aisimulate")
+    except Exception:  # pragma: no cover - only when the package is missing
+        logger.warning("Could not determine the installed aisimulate version")
+        return None
+
+
+_AISIMULATE_VERSION = _installed_aisimulate_version()
 
 # ─── Simulator registry ─────────────────────────────────────────────────────
 #

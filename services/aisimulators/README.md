@@ -51,8 +51,9 @@ BLIS v0.15.0 is copied from the upstream multi-arch release image
 `ghcr.io/inference-sim/blis:v0.15.0`, pinned by index digest
 `sha256:ae02212a5c06d147f98e62f90d8101ec158bcd74c55cc3a424d9f2b213d89c33`.
 Using the published release keeps the binary exactly the artifact upstream
-tested and removes the Go toolchain from this build. The image bundles the two
-catalog inputs a BLIS run reads, both at pinned commits:
+tested and removes the Go toolchain from this build. The build fails if the
+`BLIS_IMAGE` tag and the reported `BLIS_VERSION` disagree. The image bundles the
+two catalog inputs a BLIS run reads, both at pinned commits:
 
 | Path | Contents | Pin |
 |---|---|---|

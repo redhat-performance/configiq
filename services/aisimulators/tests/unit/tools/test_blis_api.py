@@ -106,7 +106,14 @@ def test_simulators_endpoint_lists_identity_label_and_version():
     assert ids == ["aisimulate", "blis"]
     assert body["default_simulator"] == "aisimulate"
     assert {entry["label"] for entry in body["simulators"]} == {"AISimulate", "BLIS"}
-    assert all(entry["version"] for entry in body["simulators"])
+    # The endpoint reports the same installed/built versions the service uses
+    # elsewhere, not a literal that can drift from the artifact.
+    versions = {entry["id"]: entry["version"] for entry in body["simulators"]}
+    assert versions == {
+        "aisimulate": app_module._AISIMULATE_VERSION,
+        "blis": app_module.blis_release(),
+    }
+    assert all(isinstance(version, str) and version for version in versions.values())
 
 
 def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_fallback():

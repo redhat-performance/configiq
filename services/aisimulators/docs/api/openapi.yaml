@@ -319,7 +319,10 @@ paths:
                           type: boolean
                         version:
                           type: string
-                          description: The simulator release this deployment runs.
+                          nullable: true
+                          description: |
+                            The simulator release this deployment runs, or null
+                            when the artifact does not report one.
                   default_simulator:
                     type: string
                     example: aisimulate
