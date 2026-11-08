@@ -3810,6 +3810,7 @@ def get_backends(
     ),
 ):
     """Return backend/version support and effective memory defaults."""
+    simulator = _validate_simulator(simulator)
     if simulator == "blis":
         return _blis_backends()
     supported = get_supported_databases()
