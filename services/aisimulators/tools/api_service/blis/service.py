@@ -25,7 +25,6 @@ from .scenario import (
     ScenarioRequest,
     disaggregation_refusal,
     engine_version_support,
-    normalize_weight_quantization,
     resolve_engine_version,
     write_scenario,
 )

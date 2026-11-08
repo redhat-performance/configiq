@@ -82,7 +82,10 @@ def _installed_aisimulate_version() -> str | None:
         if isinstance(__version__, str) and __version__.strip():
             return __version__.strip()
     except Exception:  # pragma: no cover - the wheel ships __version__
-        pass
+        logger.debug(
+            "aisimulate.__version__ unavailable; using package metadata",
+            exc_info=True,
+        )
     try:
         from importlib.metadata import version as distribution_version
 
