@@ -5,6 +5,10 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 
+// Deliberately not a SemVer release: the UI renders whatever version the
+// catalog reports, and a plausible pin here would look like a real one.
+const BLIS_FIXTURE_VERSION = 'test-blis-version';
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
 }));
@@ -40,14 +44,14 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
     networkOptions: ['ib-400g'],
     simulators: [
       { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
-      { id: 'blis', label: 'BLIS', version: '0.15.0', default: false },
+      { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
     ],
     defaultSimulator: 'aisimulate',
     simulatorSupport: {
       blis: {
         id: 'blis',
         label: 'BLIS',
-        version: '0.15.0',
+        version: BLIS_FIXTURE_VERSION,
         recommendSearch: 'single',
         modelsExhaustive: true,
         modelSpecs: new Map(),

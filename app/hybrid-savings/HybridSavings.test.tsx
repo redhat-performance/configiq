@@ -42,6 +42,9 @@ vi.mock('@/lib/hooks/useTestedModels', () => ({
 
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement
+// Deliberately not a SemVer release: the UI renders whatever version the
+// catalog reports, and a plausible pin here would look like a real one.
+const BLIS_FIXTURE_VERSION = 'test-blis-version'
 const models = ['first', 'second', 'third', 'fourth'].map((provider, index) => ({
   id: 'Qwen/Qwen3-8B', name: 'Qwen3-8B', provider, tier: 'fast' as const,
   price_per_m_input: 0.1 * (index + 1), price_per_m_output: 0.2 * (index + 1),
@@ -298,10 +301,10 @@ describe('Hybrid page composition', () => {
     vi.mocked(useCatalog).mockReturnValue({ ...catalog,
       simulators: [
         { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
-        { id: 'blis', label: 'BLIS', version: '0.15.0', default: false },
+        { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
       ],
       simulatorSupport: { blis: {
-      id: 'blis', label: 'BLIS', version: '0.15.0', recommendSearch: 'single', modelsExhaustive: true,
+      id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, recommendSearch: 'single', modelsExhaustive: true,
       modelSpecs: new Map(), networks: [], defaultNetwork: null,
       systems: ['l40s'], models: ['Qwen/Qwen3-8B'], backends: [{
         id: 'vllm', aisimulateId: 'vllm', versions: ['0.11.0'], defaultVersion: '0.11.0',
