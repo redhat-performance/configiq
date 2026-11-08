@@ -65,6 +65,8 @@ interface SizingInput {
   model: string
   backend: string
   simulator: Simulator
+  /** Search shape the selected simulator reports; a proxy hint only. */
+  searchStrategy?: 'windowed' | 'single'
   backendVersion: string
   averageInputTokens: number
   averageOutputTokens: number
@@ -136,6 +138,7 @@ export function useHybridSizing(offers: InfrastructureOffers, preferredCloudProv
               system: gpu.systemId,
               backend: input.backend,
               simulator: input.simulator,
+              search_strategy: input.searchStrategy ?? 'windowed',
               ...(input.backendVersion ? { backend_version: input.backendVersion } : {}),
               isl: Math.max(Math.round(input.averageInputTokens), 1),
               osl: Math.max(Math.round(input.averageOutputTokens), 1),

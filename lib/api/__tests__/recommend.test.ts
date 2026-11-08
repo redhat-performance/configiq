@@ -680,7 +680,7 @@ describe('callRecommend', () => {
     const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
 
-    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', fabric: 'ib-400g' }, { timeoutSeconds: 45 })
+    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single', fabric: 'ib-400g' }, { timeoutSeconds: 45 })
 
     const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(sentBody.simulator).toBe('blis')
@@ -698,8 +698,8 @@ describe('callRecommend', () => {
     expect(sentBody).toHaveProperty('fabric', null)
   })
 
-  it('rejects a BLIS request when the API does not confirm BLIS provenance', async () => {
-    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+  it('rejects a request when the API confirms a different simulator', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'aisimulate' }))
 
     const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis' })
 
@@ -737,11 +737,11 @@ describe('callRecommend', () => {
     }
   })
 
-  it('does not fabricate AISimulate GPU windows for BLIS', async () => {
+  it('does not fabricate GPU windows for a single-search simulator', async () => {
     vi.stubGlobal('fetch', mockFetchOk(BLIS_EXTERNAL_RESPONSE))
     const events: string[] = []
 
-    for await (const event of incrementalRecommend({ ...VALID_REQUEST, simulator: 'blis' })) {
+    for await (const event of incrementalRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single' })) {
       events.push(event.type)
     }
 
@@ -1357,8 +1357,12 @@ describe('callPareto', () => {
     expect(result.sweep).toMatchObject({ evaluated: 1, windowMaxGpus: 32, strictSla: true })
   })
 
-  it('refuses BLIS without making a request', async () => {
-    const fetchMock = vi.fn()
+  it('surfaces the API rejection for a simulator without a frontier', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({ detail: 'Pareto is not supported by this simulator.' }),
+    })
     vi.stubGlobal('fetch', fetchMock)
 
     const result = await callPareto({
@@ -1368,8 +1372,12 @@ describe('callPareto', () => {
       fabric: 'roce-200g',
     })
 
-    expect(result).toMatchObject({ status: 'failed', error: { code: 'AISIM_UNSUPPORTED' } })
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(result.status).toBe('failed')
+    if (result.status === 'failed') expect(result.error.message).toContain('not supported')
+    // The request is forwarded with the selected simulator; the service owns
+    // the refusal, so the adapter never substitutes or invents one.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).simulator).toBe('blis')
   })
 })
 

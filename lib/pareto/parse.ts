@@ -54,7 +54,7 @@ function parseMetrics(value: unknown): Record<string, number | null> {
  * unknown is dropped rather than relabelled: the UI must not present a made-up
  * state as simulator output.
  */
-export function parseCandidate(value: unknown): Candidate | null {
+export function parseCandidate(value: unknown, bodySimulator: string): Candidate | null {
   if (!isRecord(value)) return null
   const status = value.status
   if (typeof status !== 'string' || !CANDIDATE_STATUSES.has(status)) return null
@@ -82,7 +82,9 @@ export function parseCandidate(value: unknown): Candidate | null {
     provenance_sources: Array.isArray(value.provenance_sources)
       ? value.provenance_sources.filter((source): source is string => typeof source === 'string')
       : [],
-    simulator: 'aisimulate',
+    simulator: typeof value.simulator === 'string' && value.simulator.length > 0
+      ? value.simulator
+      : bodySimulator,
   }
 }
 
@@ -111,15 +113,31 @@ export function parseSweep(value: unknown): FrontierSweep | null {
   }
 }
 
-/** Parse the candidate ledger, views, and sweep facts from a Pareto response. */
+/**
+ * Parse the candidate ledger, views, and sweep facts from a Pareto response.
+ *
+ * The response must name the simulator that produced it; the identifier is not
+ * checked against a client-side list so a simulator added by the service is
+ * still readable. The caller compares it with the simulator it requested.
+ */
 export function parseFrontierBody(
   value: unknown
-): { candidates: Candidate[]; views: CandidateViews | null; sweep: FrontierSweep | null } | null {
-  if (!isRecord(value) || value.simulator !== 'aisimulate') return null
+): {
+  simulator: string
+  candidates: Candidate[]
+  views: CandidateViews | null
+  sweep: FrontierSweep | null
+} | null {
+  if (!isRecord(value)) return null
+  const simulator = typeof value.simulator === 'string' && value.simulator.trim().length > 0
+    ? value.simulator
+    : null
+  if (simulator === null) return null
   return {
+    simulator,
     candidates: Array.isArray(value.candidates)
       ? value.candidates
-          .map(parseCandidate)
+          .map(candidate => parseCandidate(candidate, simulator))
           .filter((candidate): candidate is Candidate => candidate !== null)
       : [],
     views: parseViews(value.views),

@@ -2,17 +2,29 @@
 
 import * as React from 'react';
 import { loadAppConfig } from '@/lib/app-config';
+import { useCatalog } from '@/lib/hooks/useCatalog';
 
 export type InferenceBackend = 'vllm' | 'tensorrt-llm' | 'sglang';
-export type Simulator = 'aisimulate' | 'blis';
-export const DEFAULT_SIMULATOR: Simulator = 'aisimulate';
-const SIMULATOR_BACKENDS: Record<Simulator, readonly InferenceBackend[]> = {
-  aisimulate: ['vllm', 'tensorrt-llm', 'sglang'],
-  blis: ['vllm'],
-}
+/**
+ * A simulator identifier discovered from GET /simulators. It is deliberately an
+ * open string: the backend service owns the list, and a build of this app must
+ * keep working when a simulator is added or retired.
+ */
+export type Simulator = string;
+/** Empty means "no explicit choice"; the catalog's default simulator applies. */
+const NO_SIMULATOR = '';
 
-export function isSimulatorBackendCompatible(simulator: Simulator, backend: InferenceBackend): boolean {
-  return SIMULATOR_BACKENDS[simulator].includes(backend)
+/**
+ * Whether a simulator advertises support for a backend. The answer comes from
+ * that simulator's own catalog entry, never from a table in this file.
+ */
+export function simulatorSupportsBackend(
+  simulator: Simulator,
+  backend: InferenceBackend,
+  support: { backends: Array<{ id: string }> } | undefined,
+): boolean {
+  if (!simulator) return true
+  return support?.backends.some(option => option.id === backend) ?? true
 }
 // A hosted-model pricing feed. 'merged' is the one constant the API always
 // exposes; the individual feeds (openrouter, litellm, …) are discovered at
@@ -42,7 +54,7 @@ const STORAGE_KEYS = {
  * scoped key.
  */
 function versionStorageKey(simulator: Simulator): string {
-  return `${STORAGE_KEYS.backendVersion}:${simulator}`;
+  return `${STORAGE_KEYS.backendVersion}:${simulator || '_default'}`;
 }
 
 interface SettingsState {
@@ -70,7 +82,7 @@ const SettingsContext = React.createContext<SettingsState>({
   defaultModel: '',
   hfToken: '',
   inferenceBackend: 'vllm',
-  simulator: DEFAULT_SIMULATOR,
+  simulator: NO_SIMULATOR,
   backendVersion: '',
   costingsEnabled: false,
   preferredCloudProvider: null,
@@ -86,17 +98,26 @@ const SettingsContext = React.createContext<SettingsState>({
 });
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
+  const { defaultSimulator, isLoading: catalogLoading } = useCatalog();
   const [hydrated, setHydrated] = React.useState(false);
   const [defaultModel, setDefaultModelState] = React.useState('');
   const [hfToken, setHfTokenState] = React.useState('');
   const [inferenceBackend, setInferenceBackendState] = React.useState<InferenceBackend>('vllm');
-  const [simulator, setSimulatorState] = React.useState<Simulator>(DEFAULT_SIMULATOR);
+  // An explicit choice; empty means the catalog's default simulator applies.
+  const [simulatorChoice, setSimulatorChoiceState] = React.useState<Simulator>(NO_SIMULATOR);
+  const simulator = simulatorChoice || defaultSimulator;
   const [backendVersion, setBackendVersionState] = React.useState('');
   const [costingsEnabled, setCostingsEnabledState] = React.useState(false);
   const [preferredCloudProvider, setPreferredCloudProviderState] = React.useState<string | null>(null);
   const [pricingSource, setPricingSourceState] = React.useState<PricingSource>(DEFAULT_PRICING_SOURCE);
 
+  const initialized = React.useRef(false);
   React.useEffect(() => {
+    // Wait for the catalog so a saved default model's simulator pin migrates to
+    // the right per-simulator key. A failed catalog still hydrates below.
+    if (catalogLoading || initialized.current) return;
+    initialized.current = true;
+
     async function init() {
       // Load config.json first — gives us the defaults to fall back to
       const config = await loadAppConfig();
@@ -111,20 +132,17 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       const activeBackend: InferenceBackend = savedBackend ?? config.defaultBackend as InferenceBackend;
       setInferenceBackendState(activeBackend);
 
+      // The simulator id is an open string discovered from the service; keep
+      // whatever was saved. An unknown or retired id surfaces the API's
+      // explicit error instead of being silently replaced with another
+      // simulator here.
       const savedSimulator = localStorage.getItem(STORAGE_KEYS.simulator);
-      const requestedSimulator = savedSimulator === 'blis' ? 'blis' : DEFAULT_SIMULATOR;
-      const activeSimulator = isSimulatorBackendCompatible(requestedSimulator, activeBackend)
-        ? requestedSimulator
-        : DEFAULT_SIMULATOR;
-      setSimulatorState(activeSimulator);
-      if (savedSimulator && savedSimulator !== activeSimulator) {
-        localStorage.setItem(STORAGE_KEYS.simulator, activeSimulator);
-      }
+      setSimulatorChoiceState(savedSimulator ?? NO_SIMULATOR);
 
-      // The legacy unsuffixed key only ever held the default simulator's pin.
-      const legacyVersion = activeSimulator === DEFAULT_SIMULATOR
-        ? localStorage.getItem(STORAGE_KEYS.backendVersion)
-        : null;
+      // The legacy unsuffixed key only ever held the default simulator's pin,
+      // so migrate it to the simulator this profile actually resolves to.
+      const activeSimulator = savedSimulator || defaultSimulator;
+      const legacyVersion = localStorage.getItem(STORAGE_KEYS.backendVersion);
       const savedVersion = localStorage.getItem(versionStorageKey(activeSimulator)) ?? legacyVersion;
       setBackendVersionState(savedVersion ?? '');
       if (legacyVersion !== null) {
@@ -148,7 +166,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       setHydrated(true);
     }
     init();
-  }, []);
+  }, [catalogLoading, defaultSimulator]);
 
   const setDefaultModel = React.useCallback((v: string) => {
     setDefaultModelState(v);
@@ -165,7 +183,6 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setInferenceBackend = React.useCallback((v: InferenceBackend) => {
-    if (!isSimulatorBackendCompatible(simulator, v)) return;
     setInferenceBackendState(v);
     localStorage.setItem(STORAGE_KEYS.inferenceBackend, v);
     // Settings resolves the backend's default version from the live catalog.
@@ -174,13 +191,12 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, [simulator]);
 
   const setSimulator = React.useCallback((v: Simulator) => {
-    if (!isSimulatorBackendCompatible(v, inferenceBackend)) return;
-    setSimulatorState(v);
+    setSimulatorChoiceState(v);
     localStorage.setItem(STORAGE_KEYS.simulator, v);
     // Load the version saved for the simulator being switched to. The two
     // simulators' version namespaces are unrelated, so never carry one over.
     setBackendVersionState(localStorage.getItem(versionStorageKey(v)) ?? '');
-  }, [inferenceBackend]);
+  }, []);
 
   const setBackendVersion = React.useCallback((v: string) => {
     setBackendVersionState(v);

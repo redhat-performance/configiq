@@ -38,9 +38,21 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
     modelSpecs: new Map(),
     backendOptions: [],
     networkOptions: ['ib-400g'],
+    simulators: [
+      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+      { id: 'blis', label: 'BLIS', version: '0.15.0', default: false },
+    ],
+    defaultSimulator: 'aisimulate',
     simulatorSupport: {
       blis: {
-        version: '0.14.0',
+        id: 'blis',
+        label: 'BLIS',
+        version: '0.15.0',
+        recommendSearch: 'single',
+        modelsExhaustive: true,
+        modelSpecs: new Map(),
+        networks: ['ib-400g'],
+        defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct', 'settings/default-model'],
         systems: ['h200_sxm', 'h100_sxm'],
         backends: [{

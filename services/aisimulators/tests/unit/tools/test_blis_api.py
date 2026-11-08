@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
 from tools.api_service.app import app
-from tools.api_service.blis.manifest import SupportManifest
+from tools.api_service.blis.manifest import BlisCatalog, CatalogModel
 
 client = TestClient(app)
 
@@ -32,6 +32,32 @@ RECOMMEND_BODY = {
 }
 
 
+def _catalog_model(slug: str, repo: str, config: dict | None = None) -> CatalogModel:
+    return CatalogModel(
+        slug=slug,
+        hf_repo=repo,
+        config=config or {
+            "architectures": ["Qwen3ForCausalLM"],
+            "num_attention_heads": 40,
+            "num_key_value_heads": 8,
+            "max_position_embeddings": 40960,
+        },
+    )
+
+
+def _catalog() -> BlisCatalog:
+    # A real catalog, not a SimpleNamespace: the endpoints call resolve_* and
+    # specs_for on it, and stubbing the type hides contract breakage.
+    return BlisCatalog(
+        models={
+            "qwen3-32b": _catalog_model("qwen3-32b", "Qwen/Qwen3-32B"),
+            "glm-5": _catalog_model("glm-5", "zai-org/GLM-5"),
+        },
+        hardware=frozenset({"h100", "h200", "a100-sxm"}),
+        networks=frozenset({"ib-400g", "roce-200g"}),
+    )
+
+
 def _prediction():
     return SimpleNamespace(
         summary={
@@ -44,18 +70,22 @@ def _prediction():
         },
         provenance={
             "simulator": "blis",
+            "simulator_version": "0.15.0",
             "requested_model": "Qwen/Qwen3-32B",
             "resolved_model": "qwen3-32b",
-            "model_source": "aisimulate",
+            "model_source": "blis-catalog",
             "system": "h200_sxm",
             "hardware": "h200",
-            "model_config_relation": "different_quantization",
             "engine_version": "0.31.0",
         },
         serving_config={
             "backend": "vllm",
+            "backend_version": "0.31.0",
             "tensor_parallel_size": 2,
-            "max_model_len": 2176,
+            # BLIS resolved the window by policy, so the report carries the
+            # policy rather than an invented token count.
+            "max_model_len": None,
+            "max_model_len_policy": "auto",
             "max_num_seqs": 8,
             "max_num_batched_tokens": 8192,
             "gpu_memory_utilization": 0.92,
@@ -65,6 +95,18 @@ def _prediction():
         },
         warnings=[],
     )
+
+
+def test_simulators_endpoint_lists_identity_label_and_version():
+    response = client.get("/simulators")
+
+    assert response.status_code == 200
+    body = response.json()
+    ids = [entry["id"] for entry in body["simulators"]]
+    assert ids == ["aisimulate", "blis"]
+    assert body["default_simulator"] == "aisimulate"
+    assert {entry["label"] for entry in body["simulators"]} == {"AISimulate", "BLIS"}
+    assert all(entry["version"] for entry in body["simulators"])
 
 
 def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_fallback():
@@ -77,8 +119,10 @@ def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_f
     assert response.status_code == 200
     body = response.json()
     assert body["simulator"] == "blis"
-    assert body["provenance"]["model_config_relation"] == "different_quantization"
+    assert body["provenance"]["simulator_version"] == "0.15.0"
     assert body["serving_config"]["tensor_parallel_size"] == 2
+    assert body["serving_config"]["max_model_len"] is None
+    assert body["serving_config"]["max_model_len_policy"] == "auto"
     assert body["memory_breakdown"] is None
     assert "does not provide" in body["memory_unavailable_reason"]
     run_blis.assert_called_once()
@@ -130,15 +174,19 @@ def test_blis_disagg_requires_an_explicit_fabric():
     assert "require an explicit fabric" in response.json()["detail"]
 
 
-def test_network_endpoint_lists_fabrics_from_the_pinned_manifest():
-    with patch(
-        "tools.api_service.app.load_support_manifest",
-        return_value=SimpleNamespace(networks=frozenset({"ib-400g", "roce-200g"})),
-    ):
-        response = client.get("/networks")
+def test_network_endpoint_lists_the_requested_simulators_fabrics_and_default():
+    with patch("tools.api_service.app.load_catalog", return_value=_catalog()):
+        blis = client.get("/networks?simulator=blis")
+        aisimulate = client.get("/networks?simulator=aisimulate")
 
-    assert response.status_code == 200
-    assert response.json() == {"networks": ["ib-400g", "roce-200g"], "simulator": "blis"}
+    assert blis.status_code == 200
+    assert blis.json() == {
+        "simulator": "blis",
+        "networks": ["ib-400g", "roce-200g"],
+        "default_network": "roce-200g",
+    }
+    assert aisimulate.status_code == 200
+    assert aisimulate.json() == {"simulator": "aisimulate", "networks": [], "default_network": None}
 
 
 def test_aisimulate_rejects_blis_fabric_selection():
@@ -187,6 +235,26 @@ def test_blis_rejects_aisimulate_only_estimate_options():
     assert "requests_per_load_unit" in response.json()["detail"]
 
 
+def test_unknown_simulator_is_an_explicit_error_not_a_substitution():
+    unknown = "not-a-simulator"
+    for path in (
+        f"/models?simulator={unknown}",
+        f"/systems?simulator={unknown}",
+        f"/networks?simulator={unknown}",
+        f"/backends?simulator={unknown}",
+    ):
+        response = client.get(path)
+        assert response.status_code == 422, path
+        assert "Unknown simulator" in response.json()["detail"]
+
+    recommend = client.post("/recommend", json={**RECOMMEND_BODY, "simulator": unknown})
+    predict = client.post("/predict", json={**ESTIMATE_BODY, "simulator": unknown})
+    memory = client.post("/memory", json={**ESTIMATE_BODY, "simulator": unknown})
+    assert recommend.status_code == 422
+    assert predict.status_code == 422
+    assert memory.status_code == 422
+
+
 def test_blis_recommend_dispatches_to_blis_only():
     outcome = SimpleNamespace(
         configs=[{
@@ -204,7 +272,7 @@ def test_blis_recommend_dispatches_to_blis_only():
             "tokens_per_second_per_user": 62.5,
             "concurrency": 8,
             "simulator": "blis",
-                "provenance": _prediction().provenance,
+            "provenance": _prediction().provenance,
         }],
         search_summary={"strategy": "tensor_parallel_only", "candidate_gpus": [1, 2]},
     )
@@ -262,7 +330,7 @@ def test_blis_recommend_accepts_fabric_and_returns_chosen_pd_mode():
     assert recommend.call_args.args[0].fabric == "ib-400g"
 
 
-def test_blis_recommend_defaults_roce_but_allows_explicit_aggregate_only():
+def test_blis_recommend_defaults_fabric_from_the_simulator_registry():
     defaulted = app_module.RecommendRequest.model_validate({
         **RECOMMEND_BODY,
         "simulator": "blis",
@@ -273,7 +341,7 @@ def test_blis_recommend_defaults_roce_but_allows_explicit_aggregate_only():
         "fabric": None,
     })
 
-    assert defaulted.fabric == "roce-200g"
+    assert defaulted.fabric == app_module._simulator_entry("blis")["default_network"]
     assert aggregate_only.fabric is None
 
 
@@ -290,41 +358,15 @@ def test_blis_recommend_normalizes_fractional_concurrency_like_aisimulate():
     assert run_blis.call_args.args[0].concurrency == 8
 
 
-def _manifest() -> SupportManifest:
-    # A real manifest, not a SimpleNamespace: the catalog endpoints call
-    # supports_hardware()/resolve_* on it, and stubbing the type hides breakage.
-    return SupportManifest(
-        models={
-            "qwen3-32b": {
-                "origin": "aisimulate",
-                "graph": True,
-                "aisimulate_model_id": "Qwen/Qwen3-32B",
-            },
-            "glm-5": {
-                "origin": "upstream",
-                "graph": True,
-                "aisimulate_model_id": "zai-org/GLM-5",
-            },
-            "no-graph": {
-                "origin": "upstream",
-                "graph": False,
-                "aisimulate_model_id": "org/NoGraph",
-            },
-        },
-        skipped=(),
-        hardware=frozenset({"h100", "h200", "a100-sxm"}),
-        networks=frozenset({"ib-400g"}),
-    )
-
-
-def test_backends_endpoint_reports_blis_versions_and_their_support():
-    with patch("tools.api_service.app.blis_release", return_value="0.14.0"):
+def test_backends_endpoint_reports_simulator_version_and_search_shape():
+    with patch("tools.api_service.app.blis_release", return_value="0.15.0"):
         response = client.get("/backends?simulator=blis")
 
     assert response.status_code == 200
     body = response.json()
     assert body["simulator"] == "blis"
-    assert body["blis_version"] == "0.14.0"
+    assert body["simulator_version"] == "0.15.0"
+    assert body["recommend_search"] == "single"
     backend = body["backends"][0]
     assert backend["id"] == "vllm"
     assert backend["versions"] == ["0.29.0", "0.31.0", "0.32.0"]
@@ -338,44 +380,46 @@ def test_backends_endpoint_reports_blis_versions_and_their_support():
         "max_model_len_auto": True,
     }
     assert backend["version_support"]["0.32.0"] == {
-        "disaggregated": False,
+        "disaggregated": True,
         "max_model_len_auto": False,
     }
 
 
-def test_models_endpoint_lists_only_aisimulate_ids_blis_can_price():
-    with patch(
-        "tools.api_service.blis.service.load_support_manifest",
-        return_value=_manifest(),
-    ):
+def test_aisimulate_backends_reports_simulator_version_and_windowed_search():
+    body = client.get("/backends?simulator=aisimulate").json()
+
+    assert body["simulator"] == "aisimulate"
+    assert body["simulator_version"]
+    assert body["recommend_search"] == "windowed"
+    assert set(body["objectives"]) == {
+        "min_gpus", "throughput_demand", "pareto", "concurrency_capacity",
+    }
+
+
+def test_models_endpoint_lists_blis_catalog_hugging_face_ids():
+    with patch("tools.api_service.app.load_catalog", return_value=_catalog()):
         response = client.get("/models?simulator=blis")
 
     assert response.status_code == 200
     body = response.json()
     assert body["simulator"] == "blis"
-    # no-graph has an ID but no derived graph, so BLIS cannot price it.
     assert body["models"] == ["Qwen/Qwen3-32B", "zai-org/GLM-5"]
 
 
 def test_models_endpoint_accepts_include_specs_for_blis():
-    manifest = _manifest()
-    with (
-        patch("tools.api_service.blis.service.load_support_manifest", return_value=manifest),
-        patch(
-            "tools.api_service.app.get_model_config_from_model_path",
-            return_value={"architecture": "Qwen3ForCausalLM", "num_experts": 0},
-        ),
-    ):
+    with patch("tools.api_service.app.load_catalog", return_value=_catalog()):
         response = client.get("/models?simulator=blis&include=specs")
 
     assert response.status_code == 200
     model = response.json()["models"][0]
     assert model["id"] == "Qwen/Qwen3-32B"
+    assert model["context_length"] == 40960
+    assert model["num_experts"] is None
 
 
 def test_systems_endpoint_filters_to_hardware_blis_has_a_catalog_chip_for():
     with (
-        patch("tools.api_service.blis.service.load_support_manifest", return_value=_manifest()),
+        patch("tools.api_service.app.load_catalog", return_value=_catalog()),
         patch("tools.api_service.app.supported_systems", lambda: {"h200_sxm", "b200_sxm"}),
         patch.dict(
             "tools.api_service.app._DEVICE_DISPLAY_NAMES",
@@ -391,20 +435,22 @@ def test_systems_endpoint_filters_to_hardware_blis_has_a_catalog_chip_for():
     assert [system["id"] for system in body["systems"]] == ["h200_sxm"]
 
 
-def test_blis_catalog_endpoints_report_an_unavailable_manifest():
+def test_blis_catalog_endpoints_report_an_unavailable_catalog():
     with patch(
-        "tools.api_service.blis.service.load_support_manifest",
-        side_effect=app_module.BlisManifestError("manifest missing"),
+        "tools.api_service.app.load_catalog",
+        side_effect=app_module.BlisManifestError("catalog missing"),
     ):
         models = client.get("/models?simulator=blis")
         systems = client.get("/systems?simulator=blis")
+        networks = client.get("/networks?simulator=blis")
 
     assert models.status_code == 503
-    assert models.json()["detail"] == "manifest missing"
+    assert models.json()["detail"] == "catalog missing"
     assert systems.status_code == 503
+    assert networks.status_code == 503
 
 
-def test_memory_endpoint_ignores_simulator_when_only_aisimulate_is_available():
+def test_memory_endpoint_refuses_a_simulator_without_the_memory_capability():
     raw = {
         "total_gpu_capacity_bytes": 80,
         "total_kv_size_bytes": 40,
@@ -414,8 +460,11 @@ def test_memory_endpoint_ignores_simulator_when_only_aisimulate_is_available():
         "memory_breakdown": {},
     }
     with patch("tools.api_service.app.estimate_kv_cache", return_value=raw) as estimate_memory:
-        response = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "blis"})
+        blis = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "blis"})
+        aisimulate = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "aisimulate"})
 
-    assert response.status_code == 200
-    assert response.json()["simulator"] == "aisimulate"
+    assert blis.status_code == 422
+    assert "does not provide a KV-cache memory breakdown" in blis.json()["detail"]
+    assert aisimulate.status_code == 200
+    assert aisimulate.json()["simulator"] == "aisimulate"
     estimate_memory.assert_called_once()

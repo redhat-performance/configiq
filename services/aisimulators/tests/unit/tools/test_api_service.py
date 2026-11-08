@@ -3026,6 +3026,7 @@ class TestEstimate:
             "backend": "vllm",
             "tensor_parallel_size": 2,
             "max_model_len": 5000,
+            "max_model_len_policy": None,
             "max_num_seqs": 64,
             "max_num_batched_tokens": None,
             "gpu_memory_utilization": 0.97,

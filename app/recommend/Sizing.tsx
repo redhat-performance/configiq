@@ -254,7 +254,10 @@ export default function Sizing() {
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
-  const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
+  const availableNetworks = support?.networks ?? networkOptions;
+  // The simulator names the fabric its P/D topology uses by default. Never
+  // invent a fabric name: an empty catalog means aggregate-only search.
+  const defaultNetworkFabric = support?.defaultNetwork ?? availableNetworks[0] ?? '';
   const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -263,6 +266,9 @@ export default function Sizing() {
   // Input state
   const [model, setModel] = React.useState('');
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
+  // A simulator that models a catalog also says which models it cannot price.
+  // The default model may be one of them; surface that instead of replacing it.
+  const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !catalogModels.includes(model);
 
   // Set model from settings after context has loaded from localStorage.
   // Track readiness separately from the value: an intentionally empty saved
@@ -677,6 +683,9 @@ export default function Sizing() {
     // Send the HF config for models AISimulators can't resolve from its catalog.
     ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
     simulator,
+    // The simulator reports whether it answers one bounded search or streams
+    // GPU windows. This is a proxy hint and is never forwarded upstream.
+    search_strategy: support?.recommendSearch ?? 'windowed',
     // A release without P/D modelling can only search aggregated candidates,
     // so do not send a fabric that asks for a disaggregated topology. Demand
     // and capacity sizing are aggregate-only regardless of the selected fabric.
@@ -750,6 +759,13 @@ export default function Sizing() {
           <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
+        {modelUnsupported && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
+          </div>
+        )}
+
         {fabricRequired && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
             <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
@@ -757,11 +773,11 @@ export default function Sizing() {
               id="recommend-network-fabric"
               value={selectedNetworkFabric}
               aria-label="Inter-node fabric"
-              isDisabled={networkOptions.length === 0 || !disaggSupported || aggregateOnlyGoal}
+              isDisabled={availableNetworks.length === 0 || !disaggSupported || aggregateOnlyGoal}
               onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
-              {networkOptions.map(network => (
+              {availableNetworks.map(network => (
                 <FormSelectOption key={network} value={network} label={network} />
               ))}
             </FormSelect>
@@ -772,10 +788,10 @@ export default function Sizing() {
                   ? 'Concurrency-capacity sizing is aggregate-only, so the fabric selection does not affect this run.'
                 : !disaggSupported
                 ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}; only aggregate candidates are searched.`
-                : networkOptions.length === 0
+                : availableNetworks.length === 0
                   ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
-                  : selectedNetworkFabric === 'roce-200g' && networkFabric === null
-                    ? 'RoCE 200G is preselected; choose another fabric if needed. Select None for aggregate-only search.'
+                  : networkFabric === null && defaultNetworkFabric
+                    ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
                     : selectedNetworkFabric
                       ? 'The simulator searches aggregate and P/D candidates using this fabric.'
                       : 'No fabric selected; the simulator searches aggregate candidates only.'}
@@ -792,6 +808,7 @@ export default function Sizing() {
               isLoading ||
               !paretoSupported ||
               isCapacity ||
+              modelUnsupported ||
               !model.includes('/') ||
               invalidISL ||
               invalidOSL ||
@@ -807,7 +824,7 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>

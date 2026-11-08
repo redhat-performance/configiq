@@ -44,7 +44,8 @@ export interface EstimateAdapterInput {
   prefix?: number
   kvcache_quant_mode?: string | null
   gemm_quant_mode?: string | null
-  simulator?: 'aisimulate' | 'blis'
+  /** Simulator identifier discovered from the catalog; open by design. */
+  simulator?: string
   // Disagg: when mode='disagg', prefill/decode drive separate pools.
   mode?: 'agg' | 'disagg'
   fabric?: string
@@ -204,17 +205,30 @@ export async function fetchEstimateAsInferenceResult(
     throw new EstimateError(code, message)
   }
 
-  const requestedSimulator = input.simulator ?? 'aisimulate'
-  const responseSimulator = data?.simulator === 'aisimulate' || data?.simulator === 'blis'
+  // Provenance is an open identifier. The response must name the same
+  // simulator the caller requested; older builds that omit it are accepted as
+  // the requested simulator. A response that names another simulator is never
+  // accepted as a fallback.
+  const requestedSimulator = typeof input.simulator === 'string' && input.simulator.length > 0
+    ? input.simulator
+    : null
+  const responseSimulator = typeof data?.simulator === 'string' && data.simulator.trim().length > 0
     ? data.simulator
     : null
   if (data?.simulator != null && responseSimulator == null) {
     throw new EstimateError('AISIM_INVALID_RESPONSE', 'The API returned an unknown simulator identifier.')
   }
-  if (requestedSimulator !== responseSimulator && (requestedSimulator === 'blis' || responseSimulator === 'blis')) {
+  const actualSimulator = responseSimulator ?? requestedSimulator
+  if (actualSimulator == null) {
+    throw new EstimateError(
+      'AISIM_INVALID_RESPONSE',
+      'The API did not identify the simulator that produced this estimate.',
+    )
+  }
+  if (requestedSimulator != null && responseSimulator != null && actualSimulator !== requestedSimulator) {
     throw new EstimateError(
       'SIMULATOR_MISMATCH',
-      `Requested ${requestedSimulator}, but the API confirmed ${responseSimulator ?? 'no simulator'}. No fallback was accepted.`,
+      `Requested ${requestedSimulator}, but the API confirmed ${actualSimulator}. No fallback was accepted.`,
     )
   }
   const tp = data.tp ?? input.tp_size
@@ -227,7 +241,7 @@ export async function fetchEstimateAsInferenceResult(
 
   const sc = data.serving_config
   const mb = data.memory_breakdown
-  const simulator: 'aisimulate' | 'blis' = responseSimulator ?? 'aisimulate'
+  const simulator: string = actualSimulator
   const memoryAvailable = !!mb || typeof data.memory === 'number'
   const totalVramGb = input.vram_gb ?? null
   const gmu = sc?.gpu_memory_utilization ?? input.gpu_memory_utilization ?? 0.9
@@ -239,7 +253,21 @@ export async function fetchEstimateAsInferenceResult(
     : 0
   const usablePerGpu = totalVramGb != null ? totalVramGb * gmu : null
   const maxNumSeqs = sc?.max_num_seqs ?? input.batch_size
-  const maxModelLen = sc?.max_model_len ?? (input.isl + input.osl)
+  // Null is a real answer: the simulator resolved the context window by policy
+  // (for example BLIS's `max_model_len: auto`) and names that policy instead of
+  // reporting a number. Do not invent a value the API did not give.
+  const reportedMaxModelLen = sc?.max_model_len
+  const maxModelLen = typeof reportedMaxModelLen === 'number'
+    ? reportedMaxModelLen
+    : reportedMaxModelLen === null
+      ? null
+      : input.max_seq_len ?? null
+  const maxModelLenPolicy = typeof sc?.max_model_len_policy === 'string'
+    ? sc.max_model_len_policy
+    : null
+  // Batch-token sizing still needs a concrete window; use the caller's chosen
+  // length when the API reports the window by policy.
+  const maxModelLenForBatch = maxModelLen ?? input.max_seq_len ?? input.isl + input.osl
 
   // With pipeline parallel, weights are sharded across TP×PP GPUs
   const shardCount = tp * pp
@@ -316,13 +344,18 @@ export async function fetchEstimateAsInferenceResult(
     vllm_config: {
       tensor_parallel_size: sc?.tensor_parallel_size ?? tp,
       max_model_len: maxModelLen,
+      max_model_len_policy: maxModelLenPolicy,
       max_num_seqs: maxNumSeqs,
       gpu_memory_utilization: gmu,
-      max_num_batched_tokens: sc?.max_num_batched_tokens ?? Math.min(maxModelLen * maxNumSeqs, 32768),
+      max_num_batched_tokens: sc?.max_num_batched_tokens ?? Math.min(maxModelLenForBatch * maxNumSeqs, 32768),
       enable_chunked_prefill: typeof sc?.enable_chunked_prefill === 'boolean'
         ? sc.enable_chunked_prefill
         : input.enable_chunked_prefill ?? null,
-      enable_prefix_caching: sc?.enable_prefix_caching ?? false,
+      // Null means the run did not state the setting. Do not present a default
+      // as if the simulator chose it.
+      enable_prefix_caching: typeof sc?.enable_prefix_caching === 'boolean'
+        ? sc.enable_prefix_caching
+        : null,
       quantization: sc?.quantization ?? 'auto',
     },
     parallelism_strategy: {

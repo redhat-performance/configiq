@@ -39,11 +39,13 @@ Keep the image versions compatible when releasing the frontend and services.
 ## Version Display in UI
 
 The sidebar footer shows:
-- **Version**: From git tag (via `NEXT_PUBLIC_GIT_VERSION`)
-- **Commit**: Short git hash (via `NEXT_PUBLIC_GIT_COMMIT`)
-- **Build time**: UTC timestamp (via `NEXT_PUBLIC_BUILD_TIME`)
+- **ConfigIQ build**: version (from git tag, via `NEXT_PUBLIC_GIT_VERSION`) and
+  short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
+- **Every simulator**: label and version, from `GET /simulators`, in that
+  endpoint's order
 
-These are injected at build time by `scripts/inject-build-metadata.js`.
+The footer lives in `components/layout/AppShell.tsx` and reads simulator identity
+from the catalog API, so adding a simulator needs no footer change.
 
 ## Container Tags
 
@@ -102,57 +104,45 @@ so rebuilds are reproducible. The wheel is produced by the fork's
 > two-wheel aiconfigurator 0.11/0.12 SDK.
 
 After bumping the SDK, rebuild the `aisimulators` image before assuming the new
-model configs are live: its build merges the wheel's configs into the BLIS
-catalog and regenerates `/opt/blis/support.json`. Check the exporter's summary
-(`N added, M shared, K skipped`) and the `skipped` list in the manifest for
-configs that stopped loading.
+model configs are live. BLIS does not read the wheel's model configs: it prices
+only models in the pinned blis-catalog, so an SDK model absent from the catalog
+is an explicit unsupported response rather than a build-time import.
 
 ## Bumping BLIS
 
-BLIS is built from source inside `services/aisimulators/Containerfile`; there is
-no published BLIS image to copy. Upstream's own `Dockerfile` named a Go base
-older than its `go.mod` required, so the v0.12.0 through v0.14.0 images were never
-published — do not expect a GHCR tag to appear for a release.
+BLIS is copied from the upstream multi-arch release image
+`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. The Containerfile
+also clones the catalog and registry at commits, because their pins advance
+independently of the binary:
 
-The build pins five things as `ARG`s at the top of the Containerfile, each a
-commit rather than a tag:
-
-| Argument | Upstream repo |
+| Argument | Upstream |
 |---|---|
-| `BLIS_COMMIT` | `inference-sim/inference-sim` |
-| `BLIS_VERSION` | the release the image reports (`/backends`, provenance) |
-| `BLIS_GO_VERSION` | the `golang:<version>-alpine` builder base |
+| `BLIS_IMAGE` | `ghcr.io/inference-sim/blis:vX.Y.Z@sha256:…` |
+| `BLIS_VERSION` | the release the image reports (`/simulators`, `/backends`, provenance) |
 | `BLIS_CATALOG_COMMIT` | `inference-sim/blis-catalog` |
 | `BLIS_REGISTRY_COMMIT` | `inference-sim/blis-registry` |
 
 To move to a new BLIS release:
 
-1. Read the release's `go.mod` and set `BLIS_GO_VERSION` to its `go` directive;
-   a mismatch fails the image build with a Go toolchain error.
-2. Set `BLIS_COMMIT` and the human-facing `BLIS_VERSION` to the release tag's
-   commit and version, and bump the catalog and registry commits to the releases
-   that release is tested against (its `README.md` names them).
+1. Resolve the release image's multi-arch index digest and put the tag plus
+   digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release.
+2. Bump the catalog and registry commits to the releases that BLIS tag is tested
+   against (its `README.md` names them).
 3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and
    `ENGINE_VERSION_SUPPORT` in `tools/api_service/blis/scenario.py` if the
    release changes which vLLM versions it models. The API refuses any
    `backend_version` outside that set rather than substituting one.
-4. Rebuild the image and confirm the exporter summary is plausible. A release
-   that adds an architecture the catalog's `scripts/derive_graph.py` cannot
-   derive will show up under `skipped` in `/opt/blis/support.json` rather than
-   disappearing.
-5. Verify the merged catalog still loads through BLIS's production loader by
-   running `scripts/catalog-load-gate.sh` from the BLIS checkout with
-   `BLIS_CATALOG` pointing at the merged catalog.
+4. Rebuild the image and confirm the new binary reports the release:
+   `/usr/local/bin/blis --help`, then `GET /simulators` and
+   `GET /backends?simulator=blis`.
+5. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
+   then a BLIS `/predict` for a listed model) so a catalog/binary mismatch fails
+   before deployment.
 
 BLIS never fetches at run time, so the catalog and registry must be baked into
-the image. `/opt/blis/support.json` is the API contract: which models BLIS can
-price, where each came from, how an AISimulate config relates to a same-named
-upstream entry, which hardware and fabrics are bundled, and which `aisimulate`
-wheel supplied the configs.
-
-> **Note:** ConfigIQ deliberately keeps building BLIS from source. A published
-> image would need upstream to fix its Go base first, and would give up the
-> per-release catalog/registry pins the exporter relies on.
+the image. The catalog is read directly by the API and is the only source of
+BLIS support facts: models with a derived `graph.yaml`, hardware files, and
+network files.
 
 
 ## Deployment

@@ -160,10 +160,10 @@ describe('fetchFrontier', () => {
       .rejects.toThrow('body.objective: unsupported objective')
   })
 
-  it('rejects a response that does not identify AISimulate', async () => {
+  it('rejects a response that names a different simulator', async () => {
     vi.stubGlobal('fetch', mockFetchOk({ ...FRONTIER_BODY, simulator: 'blis' }))
 
-    await expect(fetchFrontier({ model_path: 'org/model', system: 'h200_sxm' }))
-      .rejects.toThrow('did not identify AISimulate')
+    await expect(fetchFrontier({ model_path: 'org/model', system: 'h200_sxm', simulator: 'aisimulate' }))
+      .rejects.toThrow('Requested aisimulate, but the API confirmed blis')
   })
 })

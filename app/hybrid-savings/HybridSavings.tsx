@@ -277,6 +277,9 @@ export default function HybridSavings() {
         : infrastructureStates.length === 0 ? 'Infrastructure source status unavailable' : 'No stale feed reported'
 
   const [model, setModel] = React.useState('')
+  // A simulator that reports a complete model catalog cannot price a model
+  // outside it. Show that explicitly rather than replacing the selection.
+  const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !modelOptions.includes(model)
   const [monthlyInputTokens, setMonthlyInputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens)
   const [monthlyOutputTokens, setMonthlyOutputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens)
   const [averageInputTokens, setAverageInputTokens] = React.useState(DEFAULT_HYBRID_WORKLOAD.averageInputTokens)
@@ -573,6 +576,7 @@ export default function HybridSavings() {
     }
     sizeConfigurations({
       signature: sizingSignature, model, backend: inferenceBackend, simulator, backendVersion,
+      searchStrategy: support?.recommendSearch ?? 'windowed',
       averageInputTokens, averageOutputTokens, targetTtftMs, targetTpotMs,
       targetConcurrency, prefixTokens,
       gpuOptions,
@@ -580,7 +584,7 @@ export default function HybridSavings() {
     })
   }
 
-  const canCalculate = assumptionsHydrated && !backendUnavailable && !invalidWorkload && !!hostedPrice && !!model && gpuOptions.length > 0 &&
+  const canCalculate = assumptionsHydrated && !backendUnavailable && !modelUnsupported && !invalidWorkload && !!hostedPrice && !!model && gpuOptions.length > 0 &&
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
     (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
 
@@ -608,6 +612,10 @@ export default function HybridSavings() {
         actionClose={<AlertActionCloseButton onClose={() => setSelectionNotice(null)} />}>{selectionNotice}</Alert>}
       {backendUnavailable && <Alert title="Selected backend unavailable" variant="warning" isInline>
         This simulator does not support the backend selected in Settings. Choose a supported backend there to calculate.
+      </Alert>}
+      {modelUnsupported && <Alert title="Model not supported by the selected simulator" variant="danger" isInline>
+        {model} is not in the {support?.label ?? 'selected simulator'} model catalog, which lists every model it can price.
+        Choose a catalog model or switch simulators in Settings.
       </Alert>}
 
       <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }}>

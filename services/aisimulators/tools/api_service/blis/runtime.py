@@ -12,7 +12,7 @@ from .manifest import BlisManifestError
 #: The BLIS release this build is pinned to. The image sets BLIS_VERSION from the
 #: Containerfile's build arg; the literal is the value a source checkout gets, so
 #: the reported release never silently drifts from the pin.
-DEFAULT_BLIS_RELEASE = "0.14.0"
+DEFAULT_BLIS_RELEASE = "0.15.0"
 
 
 @dataclass(frozen=True)

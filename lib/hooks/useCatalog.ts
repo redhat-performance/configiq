@@ -80,15 +80,43 @@ export interface EngineVersionSupport {
   maxModelLenAuto: boolean
 }
 
-/** Simulator-specific overrides of the top-level catalog support. */
-export interface SimulatorSupport {
-  /** Build/release identifier for the simulator, when it has one. */
+/** Identity and release of one simulator, as listed by GET /simulators. */
+export interface SimulatorDescriptor {
+  id: string
+  label: string
   version: string | null
+  default: boolean
+}
+
+/** Everything one simulator reports about the catalogue it can price. */
+export interface SimulatorSupport {
+  id: string
+  label: string
+  /** Release of the simulator itself (not the engine/backend version). */
+  version: string | null
+  /**
+   * How the client requests a recommendation: `windowed` streams progressive
+   * GPU windows, `single` makes one bounded search call. The simulator reports
+   * this so the client never selects a search shape by simulator ID.
+   */
+  recommendSearch: 'windowed' | 'single'
   /** Model IDs this simulator can price. */
   models: string[]
+  /**
+   * Whether `models` is the complete set this simulator can price. When false
+   * (or not reported), a model outside the list may still resolve, so the UI
+   * must not call it unsupported.
+   */
+  modelsExhaustive: boolean
+  /** Per-model metadata for the models above. */
+  modelSpecs: Map<string, ModelSpec>
   /** GPU system IDs this simulator can price. */
   systems: string[]
   backends: BackendOption[]
+  /** Network fabrics this simulator models; empty when it models none. */
+  networks: string[]
+  /** Fabric used when a P/D request omits one; null when none is modeled. */
+  defaultNetwork: string | null
   /**
    * Sizing objectives this simulator advertises. The client gates its goal
    * selector on this list rather than on the simulator's ID.
@@ -112,11 +140,15 @@ export interface Catalog {
   backendOptions: BackendOption[]
   networkOptions: string[]
   /**
-   * Per-simulator overrides keyed by the simulator ID the API uses. A missing
-   * entry means the top-level catalog is that simulator's support; a present
-   * entry narrows the models, systems, and versions it can price.
+   * Per-simulator catalogues keyed by the simulator ID the API uses, in the
+   * service's discovery order. Every discovered simulator has an entry, so a
+   * page can render exactly what the selected simulator reports.
    */
   simulatorSupport: Record<string, SimulatorSupport>
+  /** Simulator identity list from GET /simulators, in service order. */
+  simulators: SimulatorDescriptor[]
+  /** Simulator the service uses when a request names none; empty until loaded. */
+  defaultSimulator: string
   /**
    * Sizing objectives the default simulator (the top-level catalog) advertises.
    * Empty when an older API does not report them.
@@ -222,13 +254,19 @@ function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
       .filter((candidate): candidate is Record<string, unknown> => !!candidate && typeof candidate === 'object')
       .map(mapBackendOption)
       .filter((candidate): candidate is BackendOption => candidate !== null)
-    const models = Array.isArray(entry.models)
-      ? entry.models
-        .map(model => typeof model === 'string' ? model : (model && typeof model === 'object'
-          ? (model as Record<string, unknown>).id
-          : null))
-        .filter((id): id is string => typeof id === 'string' && id.length > 0)
-      : []
+    const models: string[] = []
+    const modelSpecs = new Map<string, ModelSpec>()
+    for (const model of Array.isArray(entry.models) ? entry.models : []) {
+      if (typeof model === 'string' && model.length > 0) {
+        models.push(model)
+      } else if (model && typeof model === 'object') {
+        const spec = model as Record<string, unknown>
+        if (typeof spec.id === 'string' && spec.id.length > 0) {
+          models.push(spec.id)
+          modelSpecs.set(spec.id, spec as unknown as ModelSpec)
+        }
+      }
+    }
     const systems = Array.isArray(entry.systems)
       ? entry.systems
         .map(system => system && typeof system === 'object'
@@ -236,18 +274,46 @@ function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
           : system)
         .filter((id): id is string => typeof id === 'string' && id.length > 0)
       : []
-    if (backends.length === 0 && models.length === 0 && systems.length === 0) continue
+    const networks = Array.isArray(entry.networks)
+      ? entry.networks.filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
+      : []
     support[simulator] = {
+      id: typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : simulator,
+      label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : simulator,
       version: typeof entry.version === 'string' ? entry.version : null,
+      recommendSearch: entry.recommend_search === 'single' || entry.recommendSearch === 'single'
+        ? 'single'
+        : 'windowed',
       models,
+      modelsExhaustive: entry.modelsExhaustive === true || entry.model_catalog_complete === true,
+      modelSpecs,
       systems,
       backends,
+      networks,
+      defaultNetwork: typeof entry.default_network === 'string'
+        ? entry.default_network
+        : typeof entry.defaultNetwork === 'string' ? entry.defaultNetwork : null,
       objectives: Array.isArray(entry.objectives)
         ? entry.objectives.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
         : [],
     }
   }
   return support
+}
+
+function mapSimulatorDescriptors(raw: unknown): SimulatorDescriptor[] {
+  if (!Array.isArray(raw)) return []
+  return raw.flatMap((entry): SimulatorDescriptor[] => {
+    if (!entry || typeof entry !== 'object') return []
+    const value = entry as Record<string, unknown>
+    if (typeof value.id !== 'string' || value.id.length === 0) return []
+    return [{
+      id: value.id,
+      label: typeof value.label === 'string' && value.label.length > 0 ? value.label : value.id,
+      version: typeof value.version === 'string' ? value.version : null,
+      default: value.default === true,
+    }]
+  })
 }
 
 const GB = 1_073_741_824
@@ -276,6 +342,8 @@ let cachedModelSpecs: Map<string, ModelSpec> | null = null
 let cachedBackends: BackendOption[] | null = null
 let cachedNetworks: string[] | null = null
 let cachedSimulatorSupport: Record<string, SimulatorSupport> = {}
+let cachedSimulators: SimulatorDescriptor[] = []
+let cachedDefaultSimulator = ''
 let cachedObjectives: string[] = []
 let cachedTimeoutSeconds: number = DEFAULT_GATEWAY_TIMEOUT_SECONDS
 let cacheTimestamp: number | null = null
@@ -295,6 +363,12 @@ export function useCatalog(): Catalog {
   const [simulatorSupport, setSimulatorSupport] = useState<Record<string, SimulatorSupport>>(
     isCacheValid() ? cachedSimulatorSupport : {},
   )
+  const [simulators, setSimulators] = useState<SimulatorDescriptor[]>(
+    isCacheValid() ? cachedSimulators : [],
+  )
+  const [defaultSimulator, setDefaultSimulator] = useState<string>(
+    isCacheValid() ? cachedDefaultSimulator : '',
+  )
   const [objectives, setObjectives] = useState<string[]>(isCacheValid() ? cachedObjectives : [])
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(cachedTimeoutSeconds)
   const [isLoading, setIsLoading] = useState(!isCacheValid())
@@ -308,6 +382,8 @@ export function useCatalog(): Catalog {
       setBackendOptions(cachedBackends!)
       setNetworkOptions(cachedNetworks!)
       setSimulatorSupport(cachedSimulatorSupport)
+      setSimulators(cachedSimulators)
+      setDefaultSimulator(cachedDefaultSimulator)
       setObjectives(cachedObjectives)
       setTimeoutSeconds(cachedTimeoutSeconds)
       setIsLoading(false)
@@ -363,6 +439,10 @@ export function useCatalog(): Catalog {
           cachedBackends = backends
           cachedNetworks = networks
           cachedSimulatorSupport = mapSimulatorSupport(data.simulatorSupport)
+          cachedSimulators = mapSimulatorDescriptors(data.simulators)
+          cachedDefaultSimulator = typeof data.defaultSimulator === 'string' && data.defaultSimulator.length > 0
+            ? data.defaultSimulator
+            : cachedSimulators.find(simulator => simulator.default)?.id ?? ''
           cachedObjectives = Array.isArray(data.objectives)
             ? data.objectives.filter((objective: unknown): objective is string => typeof objective === 'string' && objective.trim().length > 0)
             : []
@@ -382,6 +462,8 @@ export function useCatalog(): Catalog {
           setBackendOptions(cachedBackends!)
           setNetworkOptions(cachedNetworks!)
           setSimulatorSupport(cachedSimulatorSupport)
+          setSimulators(cachedSimulators)
+          setDefaultSimulator(cachedDefaultSimulator)
           setObjectives(cachedObjectives)
           setTimeoutSeconds(cachedTimeoutSeconds)
           if (cachedBackends!.length === 0) {
@@ -411,5 +493,9 @@ export function useCatalog(): Catalog {
     }
   }, [])
 
-  return { gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions, simulatorSupport, objectives, timeoutSeconds, isLoading, error }
+  return {
+    gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions,
+    simulatorSupport, simulators, defaultSimulator, objectives, timeoutSeconds,
+    isLoading, error,
+  }
 }

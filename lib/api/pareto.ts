@@ -55,8 +55,9 @@ export function buildFrontierRequest(request: Record<string, unknown>): Record<s
  * proxy. The request carries the same workload shape as the sizing request and
  * only differs in `objective`.
  *
- * Pareto is AISimulate-only. The caller keeps its simulator so an unsupported
- * request fails explicitly; the response is validated to identify AISimulate.
+ * Whether a simulator can sweep a frontier is its own capability. The caller
+ * keeps the selected simulator so an unsupported request fails explicitly; the
+ * response must confirm the same simulator and is never redirected to another.
  */
 export async function fetchFrontier(
   request: Record<string, unknown>,
@@ -83,7 +84,13 @@ export async function fetchFrontier(
 
   const parsed = parseFrontierBody(body)
   if (parsed === null) {
-    throw new Error('The Pareto response did not identify AISimulate as the simulator.')
+    throw new Error('The Pareto response did not identify the simulator that produced it.')
+  }
+  const requested = typeof payload.simulator === 'string' ? payload.simulator : null
+  if (requested != null && parsed.simulator !== requested) {
+    throw new Error(
+      `Requested ${requested}, but the API confirmed ${parsed.simulator}. No fallback was accepted.`,
+    )
   }
   return parsed
 }

@@ -48,10 +48,21 @@ export const RecommendRequestSchema = z.object({
   top_n: z.number().int().min(1).max(20).optional(),
   // HF config.json for models AISimulators can't resolve from its catalog (nullish = resolve from HF).
   model_config: z.record(z.string(), z.unknown()).nullish(),
-  simulator: z.enum(['aisimulate', 'blis']).default('aisimulate'),
+  // An open string discovered from GET /simulators. The schema does not list
+  // simulator IDs: a simulator is added or retired by the service, and an
+  // unknown value must reach the service for an explicit unsupported response
+  // rather than be rejected here against a stale union.
+  simulator: z.string().min(1).default('aisimulate'),
   // Whether a simulator consumes a fabric is its own capability; the service
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
+  /**
+   * Internal client hint describing how this proxy should search: `single`
+   * makes one bounded request, `windowed` searches progressively larger GPU
+   * windows. The simulator reports which shape it needs and the proxy consumes
+   * the hint; it is never forwarded upstream.
+   */
+  search_strategy: z.enum(['windowed', 'single']).default('windowed'),
   /**
    * Optimization objective. `pareto` returns a candidate ledger and the
    * simulator-computed frontier views; `throughput_demand` finds the fewest

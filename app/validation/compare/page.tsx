@@ -148,12 +148,12 @@ async function mapWithLimit<T, R>(
 
 export default function GroundTruthComparisonPage() {
   const { simulator } = useSettings()
-  const { gpuOptions, modelOptions, modelSpecs, backendOptions, simulatorSupport, isLoading: catalogLoading, error: catalogError } = useCatalog()
+  const { gpuOptions, modelOptions, modelSpecs, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading, error: catalogError } = useCatalog()
   const support = simulatorSupport[simulator]
   const predictionBackendOptions = support?.backends ?? backendOptions
   const predictionModelIds = support?.models ?? modelOptions
   const predictionSystemIds = support?.systems ?? gpuOptions.map(gpu => gpu.systemId)
-  const simulatorLabel = simulator === 'blis' ? 'BLIS' : 'AISimulate'
+  const simulatorLabel = simulators.find(entry => entry.id === simulator)?.label ?? simulator
   const [filters, setFilters] = React.useState<GroundTruthFilters>(EMPTY_FILTERS)
   const [filterOptions, setFilterOptions] = React.useState<Record<GroundTruthFilterKey, string[]>>({
     accelerator: [], model: [], backend: [], backendVersion: [], isl: [], osl: [], tp: [],
@@ -536,7 +536,9 @@ export default function GroundTruthComparisonPage() {
   const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
   const measuredCount = new Set([...groundTruth, ...inferencex].map(point => point.concurrency)).size
   const safeInferenceXRuns = inferencexRuns.filter(run => isHttpsUrl(run.url))
-  const predictionLabel = predictedBy === 'blis' ? 'BLIS' : predictedBy === 'aisimulate' ? 'AISimulate' : simulatorLabel
+  const predictionLabel = predictedBy == null
+    ? simulatorLabel
+    : simulators.find(entry => entry.id === predictedBy)?.label ?? predictedBy
 
   return (
     <PageSection className={styles.page}>

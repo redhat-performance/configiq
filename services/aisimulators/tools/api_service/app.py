@@ -41,7 +41,7 @@ from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_supported_databases, get_version_slots, load_system_spec
 from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
-from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_support_manifest
+from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_catalog
 from .blis.runner import BlisExecutionError, BlisTimeoutError
 from .blis.runtime import blis_release
 from .blis.scenario import DEFAULT_ENGINE_VERSION, ENGINE_VERSION_SUPPORT, MODELED_ENGINE_VERSIONS
@@ -68,6 +68,61 @@ except ImportError:
     _MCP = False
 
 logger = logging.getLogger(__name__)
+
+try:
+    from aisimulate import __version__ as _AISIMULATE_VERSION
+except Exception:  # pragma: no cover - the wheel always exposes __version__
+    _AISIMULATE_VERSION = "unknown"
+
+# ─── Simulator registry ─────────────────────────────────────────────────────
+#
+# The only place a simulator is named. Every endpoint accepts its `simulator`
+# value as a validated string against this registry, so adding a simulator
+# never requires a schema change. Clients discover the list from /simulators
+# and must not hard-code an ID.
+_SIMULATORS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "aisimulate",
+        "label": "AISimulate",
+        "default": True,
+        "version": _AISIMULATE_VERSION,
+        "recommend_search": "windowed",
+        "networks": False,
+        # /memory is an AISimulate capability; a simulator that does not model
+        # a KV-cache breakdown must refuse the request, not borrow the answer.
+        "memory": True,
+    },
+    {
+        "id": "blis",
+        "label": "BLIS",
+        "default": False,
+        "version": blis_release(),
+        "recommend_search": "single",
+        "networks": True,
+        "memory": False,
+        # The fabric a P/D request uses when the caller omits one is the
+        # catalog's default, named here so /networks can report it as the
+        # user-visible assumption rather than the UI inventing a value.
+        "default_network": "roce-200g",
+    },
+)
+_DEFAULT_SIMULATOR = next(item["id"] for item in _SIMULATORS if item["default"])
+
+
+def _simulator_entry(simulator: str) -> dict[str, Any]:
+    entry = next((item for item in _SIMULATORS if item["id"] == simulator), None)
+    if entry is None:
+        available = ", ".join(item["id"] for item in _SIMULATORS)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown simulator {simulator!r}; supported simulators: {available}",
+        )
+    return entry
+
+
+def _validate_simulator(simulator: str) -> str:
+    return _simulator_entry(simulator)["id"]
+
 
 # ─── Pydantic models ────────────────────────────────────────────────────────
 
@@ -176,7 +231,7 @@ class RecommendRequest(BaseModel):
         ),
     )
     model_config = {"populate_by_name": True}
-    simulator: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Simulator to use.")
+    simulator: str = Field(default="aisimulate", description="Simulator to use. Discover supported values from GET /simulators.")
 
     @model_validator(mode="after")
     def validate_request(self):
@@ -261,7 +316,7 @@ class RecommendRequest(BaseModel):
         if self.simulator == "aisimulate" and self.fabric is not None:
             raise ValueError("AISimulate does not currently consume a network-fabric selection")
         if self.simulator == "blis" and "fabric" not in self.model_fields_set:
-            self.fabric = "roce-200g"
+            self.fabric = _simulator_entry("blis").get("default_network")
         return self
 
 
@@ -346,7 +401,7 @@ class EstimateRequest(BaseModel):
     )
 
     model_config = {"populate_by_name": True}
-    simulator: Literal["aisimulate", "blis"] = Field(default="aisimulate", description="Simulator to use.")
+    simulator: str = Field(default="aisimulate", description="Simulator to use. Discover supported values from GET /simulators.")
 
     @model_validator(mode="after")
     def reject_aisimulate_fabric(self):
@@ -366,12 +421,17 @@ class MemoryBreakdown(BaseModel):
 class ServingConfig(BaseModel):
     backend: str
     tensor_parallel_size: int
-    max_model_len: int
-    max_num_seqs: int
+    # Null when the simulator resolved the window by policy (for example
+    # BLIS's `max_model_len: auto`); `max_model_len_policy` then names it.
+    max_model_len: int | None = None
+    max_model_len_policy: str | None = None
+    max_num_seqs: int | None = None
     max_num_batched_tokens: int | None = None
-    gpu_memory_utilization: float
-    enable_chunked_prefill: bool | None
-    enable_prefix_caching: bool
+    gpu_memory_utilization: float | None = None
+    enable_chunked_prefill: bool | None = None
+    # Null when the run did not state a value; the client must show the
+    # setting as unknown rather than assume a default.
+    enable_prefix_caching: bool | None = None
     quantization: str
     memory_fraction: float | None = None
     memory_fraction_kind: str | None = None
@@ -399,7 +459,8 @@ class WorkerConfig(BaseModel):
 
 
 class SimulatorProvenance(BaseModel):
-    simulator: Literal["aisimulate", "blis"]
+    simulator: str
+    simulator_version: str | None = None
     requested_model: str | None = None
     resolved_model: str | None = None
     model_source: str | None = None
@@ -426,7 +487,7 @@ class CandidateResponse(BaseModel):
     objectives: dict[str, float] | None = None
     transfer_delay_modeled: bool = False
     provenance_sources: list[str] = Field(default_factory=list)
-    simulator: Literal["aisimulate"] = "aisimulate"
+    simulator: str = "aisimulate"
 
 
 class CandidateViews(BaseModel):
@@ -450,7 +511,7 @@ class DemandOutcome(BaseModel):
     completed_requests: int | None = None
     evaluated_configurations: int | None = None
     best_observed_rps: float | None = None
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: str = "aisimulate"
 
 
 class CapacityOutcome(BaseModel):
@@ -492,7 +553,7 @@ class CapacityOutcome(BaseModel):
     decode_replicas: int | None = None
     prefill_gpus: int | None = None
     decode_gpus: int | None = None
-    simulator: Literal["aisimulate"] = "aisimulate"
+    simulator: str = "aisimulate"
 
 
 class SweepMeta(BaseModel):
@@ -552,7 +613,7 @@ class RecommendConfig(BaseModel):
     prefill_config: WorkerConfig | None = None
     decode_config: WorkerConfig | None = None
     mode: str = "agg"
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: str = "aisimulate"
     provenance: SimulatorProvenance | None = None
     warnings: list[str] = Field(default_factory=list)
 
@@ -575,7 +636,7 @@ class CapacityOption(BaseModel):
 class RecommendResponse(BaseModel):
     configs: list[RecommendConfig]
     chosen_mode: str
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: str = "aisimulate"
     search_summary: dict[str, Any] | None = None
     candidates: list[CandidateResponse] = Field(default_factory=list)
     views: CandidateViews | None = None
@@ -612,7 +673,7 @@ class EstimateResponse(BaseModel):
     mode: str = "agg"
     prefill_config: WorkerConfig | None = None
     decode_config: WorkerConfig | None = None
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: str = "aisimulate"
     provenance: SimulatorProvenance | None = None
     memory_unavailable_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -645,6 +706,10 @@ class MemoryRequest(BaseModel):
         description="Pre-fetched HuggingFace model config.json. Skips HF download. "
         "Leave null to let the service resolve the model from HuggingFace.",
     )
+    simulator: str = Field(
+        default="aisimulate",
+        description="Simulator to use. Only simulators that report a memory capability accept this endpoint.",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -657,7 +722,7 @@ class MemoryResponse(BaseModel):
     source: str
     memory_breakdown: MemoryBreakdown
     tolerance_adjusted: dict[str, Any] | None = None
-    simulator: Literal["aisimulate", "blis"] = "aisimulate"
+    simulator: str = "aisimulate"
 
 
 class _PredictionResult:
@@ -3681,7 +3746,10 @@ def _blis_backends() -> dict[str, Any]:
     """
     return {
         "simulator": "blis",
-        "blis_version": blis_release(),
+        "simulator_version": blis_release(),
+        # How a client asks for a recommendation: BLIS returns one bounded
+        # search result rather than a stream of windowed candidates.
+        "recommend_search": _simulator_entry("blis")["recommend_search"],
         # The sizing goals this simulator can answer. A client gates its goal
         # selector on this list instead of on the simulator's name.
         "objectives": ["min_gpus", "throughput_demand"],
@@ -3713,9 +3781,9 @@ def _blis_backends() -> dict[str, Any]:
 
 @app.get("/backends")
 def get_backends(
-    simulator: Literal["aisimulate", "blis"] = Query(
-        default="aisimulate",
-        description="Simulator whose backend and version support is reported.",
+    simulator: str = Query(
+        default=_DEFAULT_SIMULATOR,
+        description="Simulator whose backend and version support is reported. Discover supported values from GET /simulators.",
     ),
 ):
     """Return backend/version support and effective memory defaults."""
@@ -3787,6 +3855,10 @@ def get_backends(
         })
     return {
         "simulator": "aisimulate",
+        "simulator_version": _simulator_entry("aisimulate")["version"],
+        # AISimulate answers a recommendation with a stream of progressively
+        # larger GPU windows, which the client renders as it arrives.
+        "recommend_search": _simulator_entry("aisimulate")["recommend_search"],
         # The sizing goals this simulator can answer. A client gates its goal
         # selector on this list instead of on the simulator's name.
         "objectives": ["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"],
@@ -3823,6 +3895,9 @@ def post_recommend(
     include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
 ):
     """Find optimal GPU configuration for a workload."""
+    # Validate against the deployment's simulator registry so an unknown value
+    # is an explicit 422, never a silent fall-through to another simulator.
+    req.simulator = _validate_simulator(req.simulator)
     if req.simulator == "blis":
         try:
             outcome = _blis_recommend(req)
@@ -4194,6 +4269,9 @@ def post_predict(
     Use this when you know your deployment configuration and want to predict
     its performance. Use /recommend when you want to find the optimal config.
     """
+    # Validate against the simulator registry so an unknown value is an
+    # explicit 422 instead of falling through to another simulator's branch.
+    req.simulator = _validate_simulator(req.simulator)
     is_disagg = req.mode == "disagg"
 
     # Resolve per-role parallelism, falling back to the top-level agg fields.
@@ -4374,6 +4452,12 @@ app.post("/estimate", response_model=EstimateResponse, deprecated=True)(post_pre
 @app.post("/memory", response_model=MemoryResponse)
 def post_memory(req: MemoryRequest):
     """Estimate GPU memory breakdown for a model configuration."""
+    simulator = _validate_simulator(req.simulator)
+    if not _simulator_entry(simulator).get("memory"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"The {simulator!r} simulator does not provide a KV-cache memory breakdown.",
+        )
     try:
         with _with_model_config(req.model_path, req.model_config_data) as effective_path:
             raw = estimate_kv_cache(
@@ -4415,7 +4499,7 @@ def post_memory(req: MemoryRequest):
             kv_cache_bytes=raw["total_kv_size_bytes"],
         ),
         tolerance_adjusted=raw.get("tolerance_adjusted"),
-        simulator="aisimulate",
+        simulator=simulator,
     )
 
 
@@ -4441,36 +4525,73 @@ def _model_specs(model_id: str) -> dict:
     }
 
 
+@app.get("/simulators")
+def get_simulators():
+    """List the simulators this deployment can run.
+
+    Clients discover simulator identity here and gate simulator-specific
+    capabilities on the values each simulator reports, never on its name.
+    """
+    return {
+        "simulators": [
+            {
+                "id": entry["id"],
+                "label": entry["label"],
+                "default": entry["default"],
+                "version": entry["version"],
+            }
+            for entry in _SIMULATORS
+        ],
+        "default_simulator": _DEFAULT_SIMULATOR,
+    }
+
+
 @app.get("/models")
 def get_models(
     include: str | None = Query(default=None, examples=["specs"], description="Comma-separated extras: specs."),
-    simulator: Literal["aisimulate", "blis"] = Query(
-        default="aisimulate",
-        description="Simulator whose model support is reported.",
+    simulator: str = Query(
+        default=_DEFAULT_SIMULATOR,
+        description="Simulator whose model support is reported. Discover supported values from GET /simulators.",
     ),
 ):
     """List supported models."""
+    simulator = _validate_simulator(simulator)
     includes = _parse_include(include)
+    # `model_catalog_complete` tells a client whether the list above is the
+    # complete set this simulator can price. BLIS resolves models only through
+    # its catalog; AISimulate also resolves arbitrary Hugging Face models, so a
+    # model absent from its list is not necessarily unsupported.
     if simulator == "blis":
-        # Only the AISimulate IDs BLIS can price. The picker offers AISimulate IDs, so
-        # a catalog-only model would be a dead option here.
         try:
-            models = supported_model_ids()
+            catalog = load_catalog()
+            models = supported_model_ids(catalog)
+            if "specs" in includes:
+                return {
+                    "simulator": simulator,
+                    "model_catalog_complete": True,
+                    "models": [catalog.specs_for(model) for model in models],
+                }
         except BlisManifestError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-    else:
-        models = sorted(get_default_models())
+        except BlisUnsupportedRequest as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"simulator": simulator, "model_catalog_complete": True, "models": models}
+    models = sorted(get_default_models())
     if "specs" in includes:
-        return {"simulator": simulator, "models": [_model_specs(m) for m in models]}
-    return {"simulator": simulator, "models": models}
+        return {
+            "simulator": simulator,
+            "model_catalog_complete": False,
+            "models": [_model_specs(m) for m in models],
+        }
+    return {"simulator": simulator, "model_catalog_complete": False, "models": models}
 
 
-def _system_entries(simulator: Literal["aisimulate", "blis"], *, want_specs: bool) -> list[dict[str, Any]]:
+def _system_entries(simulator: str, *, want_specs: bool) -> list[dict[str, Any]]:
     """Catalog entries for the requested simulator, in the /systems shape."""
     system_ids = sorted(supported_systems())
     if simulator == "blis":
         try:
-            system_ids = supported_system_ids(system_ids)
+            system_ids = supported_system_ids(system_ids, load_catalog())
         except BlisManifestError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -4513,12 +4634,13 @@ def _system_entries(simulator: Literal["aisimulate", "blis"], *, want_specs: boo
 @app.get("/systems")
 def get_systems(
     include: str | None = Query(default=None, examples=["specs"], description="Comma-separated extras: specs."),
-    simulator: Literal["aisimulate", "blis"] = Query(
-        default="aisimulate",
-        description="Simulator whose GPU system support is reported.",
+    simulator: str = Query(
+        default=_DEFAULT_SIMULATOR,
+        description="Simulator whose GPU system support is reported. Discover supported values from GET /simulators.",
     ),
 ):
     """List supported GPU systems."""
+    simulator = _validate_simulator(simulator)
     includes = _parse_include(include)
     return {
         "simulator": simulator,
@@ -4527,12 +4649,31 @@ def get_systems(
 
 
 @app.get("/networks")
-def get_networks():
-    """List network fabrics available to network-aware simulators."""
+def get_networks(
+    simulator: str = Query(
+        default=_DEFAULT_SIMULATOR,
+        description="Simulator whose inter-node fabrics are reported. Discover supported values from GET /simulators.",
+    ),
+):
+    """List network fabrics available to the requested simulator.
+
+    A simulator that does not model a network fabric reports an empty list
+    rather than another simulator's fabrics.
+    """
+    simulator = _validate_simulator(simulator)
+    entry = _simulator_entry(simulator)
+    if not entry.get("networks"):
+        return {"simulator": simulator, "networks": [], "default_network": None}
     try:
-        return {"networks": sorted(load_support_manifest().networks), "simulator": "blis"}
+        catalog = load_catalog()
     except BlisManifestError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    networks = sorted(catalog.networks)
+    default_network = entry.get("default_network")
+    if not isinstance(default_network, str) or default_network not in networks:
+        default_network = None
+    return {"simulator": simulator, "networks": networks, "default_network": default_network}
+
 
 
 @app.get("/metrics")
