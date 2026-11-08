@@ -140,15 +140,13 @@ export interface Catalog {
   backendOptions: BackendOption[]
   networkOptions: string[]
   /**
-   * Per-simulator catalogues keyed by the simulator ID the API uses, in the
-   * service's discovery order. Every discovered simulator has an entry, so a
-   * page can render exactly what the selected simulator reports.
+   * Capabilities for each simulator whose catalogue could be read, keyed by
+   * ID. An unavailable simulator is absent rather than represented by empty
+   * lists, so pages fall back to the top-level catalogue.
    */
   simulatorSupport: Record<string, SimulatorSupport>
-  /** Simulator identity list from GET /simulators, in service order. */
+  /** Simulator identity list from the combined catalog, in service order. */
   simulators: SimulatorDescriptor[]
-  /** Simulator the service uses when a request names none; empty until loaded. */
-  defaultSimulator: string
   /**
    * Sizing objectives the default simulator (the top-level catalog) advertises.
    * Empty when an older API does not report them.
@@ -244,80 +242,92 @@ export function hasDefaultMemoryFractionForVersion(
   return version === systemDefault.version
 }
 
-function mapSimulatorSupport(raw: unknown): Record<string, SimulatorSupport> {
-  if (!raw || typeof raw !== 'object') return {}
-  const support: Record<string, SimulatorSupport> = {}
-  for (const [simulator, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!value || typeof value !== 'object') continue
-    const entry = value as Record<string, unknown>
-    const backends = (Array.isArray(entry.backends) ? entry.backends : [])
-      .filter((candidate): candidate is Record<string, unknown> => !!candidate && typeof candidate === 'object')
-      .map(mapBackendOption)
-      .filter((candidate): candidate is BackendOption => candidate !== null)
-    const models: string[] = []
-    const modelSpecs = new Map<string, ModelSpec>()
-    for (const model of Array.isArray(entry.models) ? entry.models : []) {
-      if (typeof model === 'string' && model.length > 0) {
-        models.push(model)
-      } else if (model && typeof model === 'object') {
-        const spec = model as Record<string, unknown>
-        if (typeof spec.id === 'string' && spec.id.length > 0) {
-          models.push(spec.id)
-          modelSpecs.set(spec.id, spec as unknown as ModelSpec)
-        }
+function mapSimulatorSupportEntry(entry: Record<string, unknown>): SimulatorSupport {
+  const backends = (Array.isArray(entry.backends) ? entry.backends : [])
+    .filter((candidate): candidate is Record<string, unknown> => !!candidate && typeof candidate === 'object')
+    .map(mapBackendOption)
+    .filter((candidate): candidate is BackendOption => candidate !== null)
+  const models: string[] = []
+  const modelSpecs = new Map<string, ModelSpec>()
+  for (const model of Array.isArray(entry.models) ? entry.models : []) {
+    if (typeof model === 'string' && model.length > 0) {
+      models.push(model)
+    } else if (model && typeof model === 'object') {
+      const spec = model as Record<string, unknown>
+      if (typeof spec.id === 'string' && spec.id.length > 0) {
+        models.push(spec.id)
+        modelSpecs.set(spec.id, spec as unknown as ModelSpec)
       }
     }
-    const systems = Array.isArray(entry.systems)
-      ? entry.systems
-        .map(system => system && typeof system === 'object'
-          ? (system as Record<string, unknown>).id
-          : system)
-        .filter((id): id is string => typeof id === 'string' && id.length > 0)
-      : []
-    const networks = Array.isArray(entry.networks)
-      ? entry.networks.filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
-      : []
-    support[simulator] = {
-      id: typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : simulator,
-      label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : simulator,
+  }
+  const systems = Array.isArray(entry.systems)
+    ? entry.systems
+      .map(system => system && typeof system === 'object'
+        ? (system as Record<string, unknown>).id
+        : system)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : []
+  const networks = Array.isArray(entry.networks)
+    ? entry.networks.filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
+    : []
+  return {
+    id: entry.id as string,
+    label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id as string,
+    version: typeof entry.version === 'string' && entry.version.trim().length > 0
+      ? entry.version.trim()
+      : null,
+    recommendSearch: entry.recommend_search === 'single' || entry.recommendSearch === 'single'
+      ? 'single'
+      : 'windowed',
+    models,
+    modelsExhaustive: entry.modelsExhaustive === true || entry.model_catalog_complete === true,
+    modelSpecs,
+    systems,
+    backends,
+    networks,
+    defaultNetwork: typeof entry.default_network === 'string'
+      ? entry.default_network
+      : typeof entry.defaultNetwork === 'string' ? entry.defaultNetwork : null,
+    objectives: Array.isArray(entry.objectives)
+      ? entry.objectives.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
+      : [],
+  }
+}
+
+interface MappedSimulators {
+  descriptors: SimulatorDescriptor[]
+  support: Record<string, SimulatorSupport>
+}
+
+/**
+ * Split the combined catalogue's self-describing simulator entries into the
+ * identity list used for selection and the capability map used by pages.
+ *
+ * An entry marked unavailable keeps its identity but contributes no support,
+ * so callers fall back to the top-level catalogue instead of reading empty
+ * capability lists as "this simulator prices nothing".
+ */
+function mapSimulators(raw: unknown): MappedSimulators {
+  const descriptors: SimulatorDescriptor[] = []
+  const support: Record<string, SimulatorSupport> = {}
+  if (!Array.isArray(raw)) return { descriptors, support }
+  for (const candidate of raw) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const entry = candidate as Record<string, unknown>
+    if (typeof entry.id !== 'string' || entry.id.length === 0) continue
+    descriptors.push({
+      id: entry.id,
+      label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id,
       version: typeof entry.version === 'string' && entry.version.trim().length > 0
         ? entry.version.trim()
         : null,
-      recommendSearch: entry.recommend_search === 'single' || entry.recommendSearch === 'single'
-        ? 'single'
-        : 'windowed',
-      models,
-      modelsExhaustive: entry.modelsExhaustive === true || entry.model_catalog_complete === true,
-      modelSpecs,
-      systems,
-      backends,
-      networks,
-      defaultNetwork: typeof entry.default_network === 'string'
-        ? entry.default_network
-        : typeof entry.defaultNetwork === 'string' ? entry.defaultNetwork : null,
-      objectives: Array.isArray(entry.objectives)
-        ? entry.objectives.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
-        : [],
-    }
+      default: entry.default === true,
+    })
+    if (entry.available === false) continue
+    if (!Array.isArray(entry.backends) || !Array.isArray(entry.models) || !Array.isArray(entry.systems)) continue
+    support[entry.id] = mapSimulatorSupportEntry(entry)
   }
-  return support
-}
-
-function mapSimulatorDescriptors(raw: unknown): SimulatorDescriptor[] {
-  if (!Array.isArray(raw)) return []
-  return raw.flatMap((entry): SimulatorDescriptor[] => {
-    if (!entry || typeof entry !== 'object') return []
-    const value = entry as Record<string, unknown>
-    if (typeof value.id !== 'string' || value.id.length === 0) return []
-    return [{
-      id: value.id,
-      label: typeof value.label === 'string' && value.label.length > 0 ? value.label : value.id,
-      version: typeof value.version === 'string' && value.version.trim().length > 0
-        ? value.version.trim()
-        : null,
-      default: value.default === true,
-    }]
-  })
+  return { descriptors, support }
 }
 
 const GB = 1_073_741_824
@@ -347,7 +357,6 @@ let cachedBackends: BackendOption[] | null = null
 let cachedNetworks: string[] | null = null
 let cachedSimulatorSupport: Record<string, SimulatorSupport> = {}
 let cachedSimulators: SimulatorDescriptor[] = []
-let cachedDefaultSimulator = ''
 let cachedObjectives: string[] = []
 let cachedTimeoutSeconds: number = DEFAULT_GATEWAY_TIMEOUT_SECONDS
 let cacheTimestamp: number | null = null
@@ -370,9 +379,6 @@ export function useCatalog(): Catalog {
   const [simulators, setSimulators] = useState<SimulatorDescriptor[]>(
     isCacheValid() ? cachedSimulators : [],
   )
-  const [defaultSimulator, setDefaultSimulator] = useState<string>(
-    isCacheValid() ? cachedDefaultSimulator : '',
-  )
   const [objectives, setObjectives] = useState<string[]>(isCacheValid() ? cachedObjectives : [])
   const [timeoutSeconds, setTimeoutSeconds] = useState<number>(cachedTimeoutSeconds)
   const [isLoading, setIsLoading] = useState(!isCacheValid())
@@ -387,7 +393,6 @@ export function useCatalog(): Catalog {
       setNetworkOptions(cachedNetworks!)
       setSimulatorSupport(cachedSimulatorSupport)
       setSimulators(cachedSimulators)
-      setDefaultSimulator(cachedDefaultSimulator)
       setObjectives(cachedObjectives)
       setTimeoutSeconds(cachedTimeoutSeconds)
       setIsLoading(false)
@@ -442,11 +447,9 @@ export function useCatalog(): Catalog {
           cachedModelSpecs = specsMap
           cachedBackends = backends
           cachedNetworks = networks
-          cachedSimulatorSupport = mapSimulatorSupport(data.simulatorSupport)
-          cachedSimulators = mapSimulatorDescriptors(data.simulators)
-          cachedDefaultSimulator = typeof data.defaultSimulator === 'string' && data.defaultSimulator.length > 0
-            ? data.defaultSimulator
-            : cachedSimulators.find(simulator => simulator.default)?.id ?? ''
+          const mapped = mapSimulators(data.simulators)
+          cachedSimulatorSupport = mapped.support
+          cachedSimulators = mapped.descriptors
           cachedObjectives = Array.isArray(data.objectives)
             ? data.objectives.filter((objective: unknown): objective is string => typeof objective === 'string' && objective.trim().length > 0)
             : []
@@ -467,7 +470,6 @@ export function useCatalog(): Catalog {
           setNetworkOptions(cachedNetworks!)
           setSimulatorSupport(cachedSimulatorSupport)
           setSimulators(cachedSimulators)
-          setDefaultSimulator(cachedDefaultSimulator)
           setObjectives(cachedObjectives)
           setTimeoutSeconds(cachedTimeoutSeconds)
           if (cachedBackends!.length === 0) {
@@ -499,7 +501,7 @@ export function useCatalog(): Catalog {
 
   return {
     gpuOptions, modelOptions, modelSpecs, backendOptions, networkOptions,
-    simulatorSupport, simulators, defaultSimulator, objectives, timeoutSeconds,
+    simulatorSupport, simulators, objectives, timeoutSeconds,
     isLoading, error,
   }
 }

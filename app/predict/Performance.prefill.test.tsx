@@ -46,7 +46,6 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
       { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
       { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
     ],
-    defaultSimulator: 'aisimulate',
     simulatorSupport: {
       blis: {
         id: 'blis',

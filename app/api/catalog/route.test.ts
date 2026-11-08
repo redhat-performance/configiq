@@ -82,16 +82,22 @@ describe('GET /api/catalog', () => {
       models: [{ id: 'Qwen/Qwen3-8B' }],
       backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }],
       networks: [],
-      simulators: [
-        { id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true },
-        { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
-      ],
-      defaultSimulator: 'aisimulate',
       objectives: ['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity'],
     })
+    // Identity, default flag, and capabilities live in one entry per simulator.
+    expect(body).not.toHaveProperty('defaultSimulator')
+    expect(body).not.toHaveProperty('simulatorSupport')
+    expect(body.simulators.map((simulator: { id: string; default: boolean; available: boolean }) => ({
+      id: simulator.id,
+      default: simulator.default,
+      available: simulator.available,
+    }))).toEqual([
+      { id: 'aisimulate', default: true, available: true },
+      { id: 'blis', default: false, available: true },
+    ])
     // Capability facts are taken from each simulator's own envelope, never
     // inferred from its ID.
-    expect(body.simulatorSupport.aisimulate).toMatchObject({
+    expect(body.simulators[0]).toMatchObject({
       id: 'aisimulate',
       label: 'AISimulate',
       version: AISIMULATE_FIXTURE_VERSION,
@@ -102,7 +108,7 @@ describe('GET /api/catalog', () => {
       networks: [],
       defaultNetwork: null,
     })
-    expect(body.simulatorSupport.blis).toMatchObject({
+    expect(body.simulators[1]).toMatchObject({
       id: 'blis',
       label: 'BLIS',
       version: BLIS_FIXTURE_VERSION,
@@ -136,13 +142,17 @@ describe('GET /api/catalog', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json()
-    expect(body.simulators).toEqual([
-      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
-    ])
-    expect(body.simulatorSupport.aisimulate.version).toBeNull()
+    expect(body.simulators).toHaveLength(1)
+    expect(body.simulators[0]).toMatchObject({
+      id: 'aisimulate',
+      label: 'AISimulate',
+      version: null,
+      default: true,
+      available: true,
+    })
   })
 
-  it('omits a simulator whose scoped responses do not echo it', async () => {
+  it('marks a simulator whose scoped responses do not echo it as unavailable', async () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     stubGateway({
       '/simulators': {
@@ -167,8 +177,23 @@ describe('GET /api/catalog', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json()
-    expect(Object.keys(body.simulatorSupport)).toEqual(['aisimulate'])
-    expect(body.simulatorSupport).not.toHaveProperty('blis')
+    // The identity is kept so it stays listed, but no capability is claimed.
+    expect(body.simulators.map((simulator: { id: string; available: boolean }) => ({
+      id: simulator.id,
+      available: simulator.available,
+    }))).toEqual([
+      { id: 'aisimulate', available: true },
+      { id: 'blis', available: false },
+    ])
+    expect(body.simulators[1]).toMatchObject({
+      id: 'blis',
+      default: false,
+      available: false,
+      models: [],
+      systems: [],
+      backends: [],
+      networks: [],
+    })
   })
 
   it('fails when the default simulator catalogue cannot be read', async () => {
@@ -204,16 +229,17 @@ describe('GET /api/catalog', () => {
     const response = await GET(new Request('https://configiq.dev/api/catalog'))
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({
+    const body = await response.json()
+    expect(body).toMatchObject({
       systems: [{ id: 'h200_sxm' }],
       models: [{ id: 'Qwen/Qwen3-8B' }],
       backends: [{ id: 'vllm' }],
       networks: ['ib-400g'],
       simulators: [],
-      defaultSimulator: null,
-      simulatorSupport: {},
       objectives: ['min_gpus'],
     })
+    expect(body).not.toHaveProperty('defaultSimulator')
+    expect(body).not.toHaveProperty('simulatorSupport')
   })
 
   it('preserves a combined ConfigIQ catalogue gateway envelope', async () => {
@@ -225,7 +251,21 @@ describe('GET /api/catalog', () => {
       networks: ['ib-400g'],
       simulators: [{ id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true }],
       defaultSimulator: 'aisimulate',
-      simulatorSupport: { aisimulate: { id: 'aisimulate' } },
+      simulatorSupport: {
+        aisimulate: {
+          id: 'aisimulate',
+          label: 'AISimulate',
+          version: AISIMULATE_FIXTURE_VERSION,
+          recommendSearch: 'windowed',
+          modelsExhaustive: false,
+          backends: [{ id: 'vllm' }],
+          models: ['Qwen/Qwen3-8B'],
+          systems: [{ id: 'h200_sxm' }],
+          networks: ['ib-400g'],
+          defaultNetwork: null,
+          objectives: ['min_gpus'],
+        },
+      },
       objectives: ['min_gpus'],
     })))
     vi.stubGlobal('fetch', fetchMock)
@@ -233,17 +273,65 @@ describe('GET /api/catalog', () => {
     const response = await GET(new Request('https://local.configiq.test/api/catalog'))
 
     expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({
+    const body = await response.json()
+    expect(body).toMatchObject({
       systems: [{ id: 'h200_sxm' }],
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
       networks: ['ib-400g'],
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true }],
-      defaultSimulator: 'aisimulate',
-      simulatorSupport: { aisimulate: { id: 'aisimulate' } },
       objectives: ['min_gpus'],
     })
+    // The old identity list and support map are folded into one list.
+    expect(body).not.toHaveProperty('defaultSimulator')
+    expect(body).not.toHaveProperty('simulatorSupport')
+    expect(body.simulators).toEqual([{
+      id: 'aisimulate',
+      label: 'AISimulate',
+      version: AISIMULATE_FIXTURE_VERSION,
+      default: true,
+      available: true,
+      recommendSearch: 'windowed',
+      modelsExhaustive: false,
+      backends: [{ id: 'vllm' }],
+      models: ['Qwen/Qwen3-8B'],
+      systems: [{ id: 'h200_sxm' }],
+      networks: ['ib-400g'],
+      defaultNetwork: null,
+      objectives: ['min_gpus'],
+    }])
     expect(fetchMock).toHaveBeenCalledWith('https://configiq.dev/api/catalog', expect.any(Object))
+  })
+
+  it('accepts a combined gateway that already uses the unified simulator shape', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://configiq.dev/api')
+    const simulator = {
+      id: 'blis',
+      label: 'BLIS',
+      version: BLIS_FIXTURE_VERSION,
+      default: true,
+      available: true,
+      recommendSearch: 'single',
+      modelsExhaustive: true,
+      backends: [{ id: 'vllm' }],
+      models: ['meta-llama/Llama-3.1-70B-Instruct'],
+      systems: [{ id: 'l40s' }],
+      networks: ['roce-200g'],
+      defaultNetwork: 'roce-200g',
+      objectives: ['min_gpus'],
+    }
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(Response.json({
+      systems: [{ id: 'l40s' }],
+      models: simulator.models,
+      backends: simulator.backends,
+      networks: simulator.networks,
+      simulators: [simulator],
+      objectives: simulator.objectives,
+    }))))
+
+    const response = await GET(new Request('https://local.configiq.test/api/catalog'))
+
+    expect(response.status).toBe(200)
+    expect((await response.json()).simulators).toEqual([simulator])
   })
 
   it('rejects a combined gateway pointing back to this host, including behind a proxy', async () => {

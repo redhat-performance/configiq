@@ -98,7 +98,10 @@ const SettingsContext = React.createContext<SettingsState>({
 });
 
 export function SettingsProvider({ children }: { children: React.ReactNode }) {
-  const { defaultSimulator, isLoading: catalogLoading } = useCatalog();
+  const { simulators, isLoading: catalogLoading } = useCatalog();
+  // The default is the entry the catalogue marks as such; fall back to the
+  // first in service order, matching how the proxy resolves a missing flag.
+  const defaultSimulator = simulators.find(entry => entry.default)?.id ?? simulators[0]?.id ?? '';
   const [hydrated, setHydrated] = React.useState(false);
   const [defaultModel, setDefaultModelState] = React.useState('');
   const [hfToken, setHfTokenState] = React.useState('');

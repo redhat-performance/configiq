@@ -2,7 +2,8 @@
 // Same-origin proxy for the AISimulators catalog. Discovers the simulators the
 // service exposes through /simulators, then fetches each simulator's own
 // /models, /systems, /backends, and /networks envelopes server-side via
-// AISIMULATORS_GATEWAY_URL and combines their raw shapes for useCatalog.
+// AISIMULATORS_GATEWAY_URL and folds them into one list of self-describing
+// simulator entries for useCatalog.
 //
 // The browser must call this route rather than AISimulators directly, so the
 // per-host gateway (host.containers.internal on each deployment) is resolved
@@ -28,14 +29,50 @@ export interface SimulatorDescriptor {
   default: boolean
 }
 
+/** Everything one simulator reports about the catalogue it can price. */
+export interface SimulatorCapabilities {
+  recommendSearch: 'windowed' | 'single'
+  modelsExhaustive: boolean
+  models: unknown[]
+  systems: unknown[]
+  backends: unknown[]
+  networks: string[]
+  defaultNetwork: string | null
+  objectives: string[]
+}
+
+/**
+ * One simulator as the combined catalogue exposes it: identity, the default
+ * flag, and capabilities in a single entry. Clients do not have to correlate a
+ * separate identity list and support map by ID.
+ *
+ * An entry whose capabilities could not be read keeps its identity so it stays
+ * selectable, with `available: false` and empty capability lists. Empty lists
+ * alone never mean "supports nothing"; `available` carries that distinction.
+ */
+export interface SimulatorCatalogEntry extends SimulatorDescriptor, SimulatorCapabilities {
+  available: boolean
+}
+
+function emptyCapabilities(): SimulatorCapabilities {
+  return {
+    recommendSearch: 'windowed',
+    modelsExhaustive: false,
+    models: [],
+    systems: [],
+    backends: [],
+    networks: [],
+    defaultNetwork: null,
+    objectives: [],
+  }
+}
+
 function catalogResponse(
   systems: unknown[],
   models: unknown[],
   backends: unknown[],
   networks: string[],
-  simulators: SimulatorDescriptor[],
-  defaultSimulator: string | null,
-  simulatorSupport: Record<string, unknown>,
+  simulators: SimulatorCatalogEntry[],
   objectives: string[],
 ) {
   return NextResponse.json(
@@ -45,8 +82,6 @@ function catalogResponse(
       backends,
       networks,
       simulators,
-      defaultSimulator,
-      simulatorSupport,
       objectives,
       timeoutSeconds: gatewayTimeoutSeconds(),
     },
@@ -79,6 +114,11 @@ async function fetchJson(
   }
 }
 
+/** A release string, or null when absent or blank. */
+function normalizedVersion(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+}
+
 /** The simulator identity list from GET /simulators, in service order. */
 function simulatorDescriptors(data: unknown): SimulatorDescriptor[] {
   if (!data || typeof data !== 'object') return []
@@ -91,9 +131,7 @@ function simulatorDescriptors(data: unknown): SimulatorDescriptor[] {
     return [{
       id: value.id,
       label: typeof value.label === 'string' && value.label.trim().length > 0 ? value.label : value.id,
-      version: typeof value.version === 'string' && value.version.trim().length > 0
-        ? value.version.trim()
-        : null,
+      version: normalizedVersion(value.version),
       default: value.default === true,
     }]
   })
@@ -121,6 +159,95 @@ function catalogString(data: unknown, key: string): string | null {
 }
 
 /**
+ * Read one simulator's capability block from either the direct service
+ * envelopes or a newer combined catalogue, where it is flattened onto the
+ * simulator entry. Returns null for an unavailable entry or one that lacks the
+ * required lists entirely.
+ */
+function capabilityEnvelope(raw: unknown): SimulatorCapabilities | null {
+  if (!raw || typeof raw !== 'object') return null
+  const entry = raw as Record<string, unknown>
+  if (entry.available === false) return null
+  const backends = catalogList(entry, 'backends')
+  const models = catalogList(entry, 'models')
+  const systems = catalogList(entry, 'systems')
+  if (!backends || !models || !systems) return null
+  const networks = catalogList(entry, 'networks') ?? []
+  return {
+    recommendSearch: catalogString(entry, 'recommendSearch') === 'single'
+      || catalogString(entry, 'recommend_search') === 'single'
+      ? 'single'
+      : 'windowed',
+    modelsExhaustive: entry.modelsExhaustive === true || entry.model_catalog_complete === true,
+    models,
+    systems,
+    backends,
+    networks: networks.filter(
+      (network): network is string => typeof network === 'string' && network.trim().length > 0,
+    ),
+    defaultNetwork: catalogString(entry, 'defaultNetwork') ?? catalogString(entry, 'default_network'),
+    objectives: catalogObjectives(entry),
+  }
+}
+
+/**
+ * Fold a combined upstream catalogue (this proxy's old two-field shape or the
+ * newer one-entry shape) into the single simulator list clients consume.
+ * Capabilities come from the entry itself when present, otherwise from the
+ * legacy `simulatorSupport` map keyed by ID.
+ */
+function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntry[] {
+  const rawList = Array.isArray(data.simulators) ? data.simulators : []
+  const support = data.simulatorSupport && typeof data.simulatorSupport === 'object'
+    ? data.simulatorSupport as Record<string, unknown>
+    : {}
+  const entries: SimulatorCatalogEntry[] = []
+
+  for (const raw of rawList) {
+    if (!raw || typeof raw !== 'object') continue
+    const value = raw as Record<string, unknown>
+    const id = catalogString(value, 'id')
+    if (!id) continue
+    const capabilities = capabilityEnvelope(value) ?? capabilityEnvelope(support[id])
+    entries.push({
+      id,
+      label: catalogString(value, 'label') ?? id,
+      version: normalizedVersion(value.version),
+      default: value.default === true,
+      available: capabilities !== null,
+      ...(capabilities ?? emptyCapabilities()),
+    })
+  }
+
+  // A pre-/simulators upstream may expose only the support map.
+  if (entries.length === 0) {
+    for (const [id, raw] of Object.entries(support)) {
+      if (!raw || typeof raw !== 'object') continue
+      const value = raw as Record<string, unknown>
+      const capabilities = capabilityEnvelope(value)
+      if (!capabilities) continue
+      entries.push({
+        id,
+        label: catalogString(value, 'label') ?? id,
+        version: normalizedVersion(value.version),
+        default: false,
+        available: true,
+        ...capabilities,
+      })
+    }
+  }
+
+  // Resolve exactly one default so clients never have to guess: an explicit
+  // upstream field wins, then the entry's own flag, then the first entry.
+  const defaultId = catalogString(data, 'defaultSimulator') ?? catalogString(data, 'default_simulator')
+  const resolved = (defaultId ? entries.find(entry => entry.id === defaultId) : undefined)
+    ?? entries.find(entry => entry.default)
+    ?? entries[0]
+  for (const entry of entries) entry.default = entry === resolved
+  return entries
+}
+
+/**
  * Everything one simulator reports about itself: the models and systems it can
  * price, its backend/version table, its fabrics and default fabric, and the
  * sizing objectives it implements.
@@ -134,7 +261,7 @@ async function simulatorCapabilities(
   baseUrl: string,
   descriptor: SimulatorDescriptor,
   timeoutSeconds: number,
-): Promise<Record<string, unknown> | null> {
+): Promise<SimulatorCapabilities | null> {
   const simulator = encodeURIComponent(descriptor.id)
   const [backendsData, modelsData, systemsData, networksData] = await Promise.all([
     fetchJson(`${baseUrl}/backends?simulator=${simulator}`, timeoutSeconds),
@@ -156,10 +283,7 @@ async function simulatorCapabilities(
         .filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
     : []
   return {
-    id: descriptor.id,
-    label: descriptor.label,
-    version: descriptor.version,
-    recommendSearch: catalogString(backendsData, 'recommend_search') ?? 'windowed',
+    recommendSearch: catalogString(backendsData, 'recommend_search') === 'single' ? 'single' : 'windowed',
     // Whether the model list is the complete set the simulator can price.
     // Absent means "unknown", which falls back to per-model resolution.
     modelsExhaustive: modelsData != null && typeof modelsData === 'object'
@@ -266,15 +390,10 @@ export async function GET(request: Request) {
       const networks = (catalogList(catalogData, 'networks') ?? [])
         .filter((network): network is string => typeof network === 'string')
       if (!systems || !models || !validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
-      const rawSupport = (catalogData as Record<string, unknown>).simulatorSupport
-      const simulatorSupport = rawSupport && typeof rawSupport === 'object' ? rawSupport : {}
-      const simulators = simulatorDescriptors(catalogData)
-      const defaultSimulator = catalogString(catalogData, 'defaultSimulator')
-        ?? simulators.find(simulator => simulator.default)?.id
-        ?? null
       return catalogResponse(
-        systems, models, backends, networks, simulators, defaultSimulator,
-        simulatorSupport as Record<string, unknown>, catalogObjectives(catalogData),
+        systems, models, backends, networks,
+        combinedSimulators(catalogData as Record<string, unknown>),
+        catalogObjectives(catalogData),
       )
     }
 
@@ -297,38 +416,40 @@ export async function GET(request: Request) {
       const networks = (catalogList(networksData, 'networks') ?? [])
         .filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
       return catalogResponse(
-        systems, models, backends, networks, [], null, {}, catalogObjectives(backendsData),
+        systems, models, backends, networks, [], catalogObjectives(backendsData),
       )
     }
 
     const capabilities = await Promise.all(
       simulators.map(simulator => simulatorCapabilities(baseUrl, simulator, timeoutSeconds)),
     )
-    const simulatorSupport: Record<string, Record<string, unknown>> = {}
-    simulators.forEach((simulator, index) => {
+    const simulatorEntries: SimulatorCatalogEntry[] = simulators.map((simulator, index) => {
       const support = capabilities[index]
-      if (support) simulatorSupport[simulator.id] = support
+      return {
+        ...simulator,
+        default: simulator.id === defaultDescriptor.id,
+        available: support !== null,
+        ...(support ?? emptyCapabilities()),
+      }
     })
 
-    const defaultSupport = simulatorSupport[defaultDescriptor.id]
-    if (!defaultSupport) {
+    const defaultEntry = simulatorEntries.find(entry => entry.id === defaultDescriptor.id)
+    if (!defaultEntry || !defaultEntry.available) {
       // The default simulator's own catalogue is the top-level catalogue; if it
       // cannot be read, every page that lists models or systems is unusable.
       return invalidCatalogResponse()
     }
-    const systems = defaultSupport.systems as unknown[]
-    const models = defaultSupport.models as unknown[]
-    const backends = defaultSupport.backends as unknown[]
+    const systems = defaultEntry.systems
+    const models = defaultEntry.models
+    const backends = defaultEntry.backends
     if (!validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
     return catalogResponse(
       systems,
       models,
       backends,
-      defaultSupport.networks as string[],
-      simulators,
-      defaultDescriptor.id,
-      simulatorSupport,
-      defaultSupport.objectives as string[],
+      defaultEntry.networks,
+      simulatorEntries,
+      defaultEntry.objectives,
     )
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {

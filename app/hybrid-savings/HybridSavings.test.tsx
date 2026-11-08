@@ -64,7 +64,6 @@ beforeEach(async () => {
     modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
     modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
     simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
-    defaultSimulator: 'aisimulate',
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
@@ -662,7 +661,6 @@ describe('Hybrid page composition', () => {
       modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
       modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
       simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
-      defaultSimulator: 'aisimulate',
       isLoading: false, error: null,
     })
     vi.mocked(useInfrastructureOffers).mockReturnValue({

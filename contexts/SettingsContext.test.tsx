@@ -21,7 +21,7 @@ vi.mock('@/lib/app-config', () => ({
 
 vi.mock('@/lib/hooks/useCatalog', () => ({
   useCatalog: () => ({
-    defaultSimulator: 'aisimulate',
+    simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
     isLoading: false,
   }),
 }))
