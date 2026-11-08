@@ -263,19 +263,19 @@ paths:
       tags: [catalog]
       summary: List backend and engine-version support
       description: |
-        Returns backend version support, the sizing `objectives` this simulator
+        Returns backend version support, the simulator's `simulator_version`
+        and `recommend_search` shape, the sizing `objectives` this simulator
         implements, and effective memory defaults. With `simulator=blis`,
         reports the vLLM releases BLIS models, a literal default version (never
-        an AISimulate alias), a `version_support` map per release, empty
-        per-system maps, and `blis_version`.
+        an AISimulate alias), a `version_support` map per release, and empty
+        per-system maps.
       parameters:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose backend support is reported.
+          description: Simulator whose backend support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -285,16 +285,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/BackendListResponse'
 
+  /simulators:
+    get:
+      operationId: listSimulators
+      tags: [catalog]
+      summary: List simulators this deployment can run
+      description: |
+        Returns simulator identity, label, version, and whether it is the
+        default. Clients discover the list here and must not hard-code an ID;
+        every `simulator` parameter or field accepts one of these `id` values.
+      responses:
+        '200':
+          description: Simulator list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [simulators, default_simulator]
+                properties:
+                  simulators:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label, default, version]
+                      properties:
+                        id:
+                          type: string
+                          example: blis
+                        label:
+                          type: string
+                          example: BLIS
+                        default:
+                          type: boolean
+                        version:
+                          type: string
+                          nullable: true
+                          description: |
+                            The simulator release this deployment runs, or null
+                            when the artifact does not report one.
+                  default_simulator:
+                    type: string
+                    example: aisimulate
+
   /models:
     get:
       operationId: listModels
       tags: [catalog]
       summary: List supported models
       description: |
-        Returns supported model identifiers. Without include, returns a sorted list of strings.
-        Use include=specs to get per-model metadata (MoE fields, context length, attention heads, architecture).
+        Returns supported model identifiers. Without include, returns a sorted
+        list of strings. Use include=specs to get per-model metadata (MoE
+        fields, context length, attention heads, architecture).
 
-        With `simulator=blis`, returns only the AISimulate model IDs that BLIS can price.
+        With `simulator=blis`, returns the Hugging Face repo IDs in the pinned
+        blis-catalog that ship a derived model graph. A catalog slug is accepted
+        as an input alias for its Hugging Face ID.
       parameters:
         - name: include
           in: query
@@ -306,10 +351,9 @@ paths:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose model support is reported.
+          description: Simulator whose model support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -341,10 +385,9 @@ paths:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose GPU system support is reported.
+          description: Simulator whose GPU system support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -360,9 +403,19 @@ paths:
       tags: [catalog]
       summary: List supported network fabrics
       description: |
-        Returns network fabric identifiers available to network-aware simulations,
-        including prefill/decode KV transfer. Network fabric modeling is currently
-        provided by BLIS; AISimulate does not consume this catalog.
+        Returns network fabric identifiers available to the requested simulator,
+        including prefill/decode KV transfer. A simulator that does not model an
+        inter-node fabric returns an empty list rather than another simulator's
+        fabrics. `default_network` names the fabric a request uses when it omits
+        one; null means the simulator has no fabric default.
+      parameters:
+        - name: simulator
+          in: query
+          required: false
+          description: Simulator whose fabrics are reported. Discover supported values from GET /simulators.
+          schema:
+            type: string
+            default: aisimulate
       responses:
         '200':
           description: Available network fabrics
@@ -370,17 +423,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [networks, simulator]
+                required: [networks, simulator, default_network]
                 properties:
                   networks:
                     type: array
                     items: { type: string }
                   simulator:
                     type: string
-                    enum: [blis]
-                    description: Simulator providing the current network-fabric catalog.
+                    description: Simulator providing the network-fabric catalog.
+                  default_network:
+                    type: string
+                    nullable: true
+                    description: Fabric used when a P/D request omits one; null when none is modeled.
         '503':
-          description: BLIS support manifest unavailable
+          description: The selected simulator's catalog is unavailable
           content:
             application/json:
               schema:
@@ -427,7 +483,11 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator identifier. Discover supported values from GET /simulators.
+        simulator_version:
+          type: string
+          nullable: true
+          description: Release of the simulator that produced this result.
         requested_model:
           type: string
           nullable: true
@@ -467,9 +527,8 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          enum: [aisimulate, blis]
           default: aisimulate
-          description: Simulator to use. BLIS requests never fall back to AISimulate.
+          description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
           description: Inference backend.
@@ -623,7 +682,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         configs:
           type: array
           description: Top configurations ranked by fewest GPUs, then throughput.
@@ -749,8 +808,7 @@ components:
           description: Highest sustained arrival-window rate across evaluated candidates, reported when the target is unmet.
         simulator:
           type: string
-          enum: [aisimulate, blis]
-          description: Simulator that produced the measurement.
+          description: Simulator that produced the result, as reported by the service.
 
     CapacityOutcome:
       type: object
@@ -857,7 +915,6 @@ components:
           description: Why the informational simulation was unavailable, when it was.
         simulator:
           type: string
-          enum: [aisimulate]
           description: Simulator that produced the KV estimate.
 
     CapacityOption:
@@ -942,7 +999,7 @@ components:
           items: { type: string }
         simulator:
           type: string
-          enum: [aisimulate]
+          description: Simulator that produced this candidate.
 
     CandidateViews:
       type: object
@@ -961,7 +1018,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         provenance:
           $ref: '#/components/schemas/SimulatorProvenance'
         warnings:
@@ -1163,9 +1220,15 @@ components:
           type: integer
         max_model_len:
           type: integer
-          description: Maximum sequence length (ISL + OSL).
+          nullable: true
+          description: Resolved maximum sequence length; null when the simulator applied a context-length policy.
+        max_model_len_policy:
+          type: string
+          nullable: true
+          description: Policy name when `max_model_len` is null (for example `auto`).
         max_num_seqs:
           type: integer
+          nullable: true
           description: Maximum concurrent sequences.
         max_num_batched_tokens:
           type: integer
@@ -1173,13 +1236,16 @@ components:
           description: Maximum tokens in a scheduled batch, when specified by the simulator.
         gpu_memory_utilization:
           type: number
-          description: Fraction of GPU memory to use (0.0-1.0).
+          nullable: true
+          description: Fraction of GPU memory to use (0.0-1.0), when the simulator reports one.
         enable_chunked_prefill:
           type: boolean
           nullable: true
           description: Null when the simulator's scenario does not state this backend setting.
         enable_prefix_caching:
           type: boolean
+          nullable: true
+          description: Null when the simulator's scenario does not state this backend setting.
         quantization:
           type: string
           description: Quantization mode (fp8, int8, auto, etc).
@@ -1200,9 +1266,8 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          enum: [aisimulate, blis]
           default: aisimulate
-          description: Simulator to use. BLIS requests never fall back to AISimulate.
+          description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
           description: Inference backend.
@@ -1387,7 +1452,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         mode:
           type: string
           enum: [agg, disagg]
@@ -1512,6 +1577,10 @@ components:
           type: string
           description: GPU system identifier.
           example: h200_sxm
+        simulator:
+          type: string
+          default: aisimulate
+          description: Simulator to use. Only a simulator that reports the memory capability accepts this endpoint; others return 422.
         backend:
           type: string
           description: Inference backend.
@@ -1596,8 +1665,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate]
-          description: Memory estimation is provided by AISimulate.
+          description: Simulator that provided the memory estimate. Only a simulator that reports the memory capability answers this endpoint.
         total_gpu_capacity_bytes:
           type: integer
           description: Total GPU memory capacity (bytes).
@@ -1651,11 +1719,21 @@ components:
 
     BackendListResponse:
       type: object
-      required: [simulator, objectives, backends]
+      required: [simulator, simulator_version, recommend_search, objectives, backends]
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+        simulator_version:
+          type: string
+          nullable: true
+          description: The release of the selected simulator this deployment runs.
+        recommend_search:
+          type: string
+          enum: [windowed, single]
+          description: |
+            How the client should request a recommendation. `windowed` means
+            progressive GPU-window requests; `single` means one bounded search
+            call per action.
         objectives:
           type: array
           description: |
@@ -1665,10 +1743,6 @@ components:
           items:
             type: string
             enum: [min_gpus, throughput_demand, pareto, concurrency_capacity]
-        blis_version:
-          type: string
-          nullable: true
-          description: The BLIS release the image was built from. Present when simulator=blis.
         backends:
           type: array
           items:
@@ -1756,11 +1830,17 @@ components:
 
     ModelListResponse:
       type: object
-      required: [simulator, models]
+      required: [simulator, model_catalog_complete, models]
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
+        model_catalog_complete:
+          type: boolean
+          description: |
+            True when `models` is the complete set this simulator can price.
+            False when the simulator can also resolve models outside the list,
+            so absence from the list is not an unsupported verdict.
         models:
           type: array
           description: Sorted list of models. Items are strings without include=specs, objects with include=specs.
@@ -1809,7 +1889,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         systems:
           type: array
           items:

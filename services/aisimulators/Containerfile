@@ -9,45 +9,25 @@
 #
 #   * the aisimulate SDK, installed from the single published wheel pinned in
 #     pyproject.toml (bump it there to move to a newer SDK), and
-#   * BLIS, built from the pinned upstream source commit below, together with the
+#   * BLIS, taken from the upstream release image pinned below, together with the
 #     blis-catalog and blis-registry clones it reads at run time. BLIS is CPU-only
 #     and fetches nothing at run time. A request's scenario is generated per call,
 #     so no scenario directory is bundled.
 #
-# BLIS's own `Dockerfile` in the release tag names a Go base older than its
-# `go.mod`, which is why the upstream GHCR image was never published for v0.12.0
-# through v0.14.0. Building from source here keeps the base image under our
-# control; bump BLIS_GO_VERSION with BLIS_COMMIT when `go.mod` requires a newer
-# toolchain.
+# BLIS publishes a multi-arch image (linux/amd64, linux/arm64) from the same
+# `Dockerfile` the release tag builds. Pulling that image instead of rebuilding
+# from source keeps the binary exactly the artifact upstream tested, and removes
+# the Go toolchain from this build. Pin the digest, not just the tag, so the
+# reported release cannot drift.
 #
-# The last build step adds AISimulate's packaged model configs to the pinned
-# catalog and writes /opt/blis/support.json, the manifest the REST API uses to
-# decide whether BLIS can price a request. Upstream-reviewed catalog entries always
-# win. See services/aisimulators/README.md.
+# The catalog and registry are cloned separately (rather than copied from the
+# BLIS image) because their pins advance independently of the BLIS binary and
+# are part of the API's support facts. See services/aisimulators/README.md.
 
-# --- BLIS source -----------------------------------------------------------------
-# Commit for BLIS v0.14.0.
-ARG BLIS_COMMIT=f2ba6bb1c189ed5a56933cfa3d0927eae3836ee9
-ARG BLIS_VERSION=0.14.0
-ARG BLIS_GO_VERSION=1.27.2
-
-FROM alpine/git:2.47.2 AS blis_source
-ARG BLIS_COMMIT
-RUN git init /src \
-    && git -C /src remote add origin https://github.com/inference-sim/inference-sim.git \
-    && git -C /src fetch --depth 1 origin "${BLIS_COMMIT}" \
-    && git -C /src checkout --quiet --detach FETCH_HEAD \
-    && rm -rf /src/.git
-
-FROM golang:${BLIS_GO_VERSION}-alpine AS blis_build
-WORKDIR /src
-# Cache the module graph separately from the source so a source-only change does
-# not re-download every dependency.
-COPY --from=blis_source /src/go.mod /src/go.sum ./
-RUN go mod download
-COPY --from=blis_source /src /src
-# CGO_ENABLED=0: a fully static binary for the musl-based Alpine runtime stage.
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /blis main.go
+# --- BLIS release image ----------------------------------------------------------
+# ghcr.io/inference-sim/blis:v0.15.0, multi-arch index digest.
+ARG BLIS_IMAGE=ghcr.io/inference-sim/blis:v0.15.0@sha256:ae02212a5c06d147f98e62f90d8101ec158bcd74c55cc3a424d9f2b213d89c33
+FROM ${BLIS_IMAGE} AS blis_release
 
 # --- BLIS declared facts and fitted numbers --------------------------------------
 # blis-catalog 0.3.0: model graphs, chips, fabrics, workload presets.
@@ -70,9 +50,21 @@ RUN git init /opt/blis/registry \
 
 FROM python:3.12-slim
 
-# The BLIS release this image was built from, reported by GET /backends and in
-# every BLIS prediction's provenance. Re-declared from the global ARG above.
-ARG BLIS_VERSION
+# The BLIS release reported by GET /simulators, GET /backends, and in every
+# BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
+ARG BLIS_VERSION=0.15.0
+
+# BLIS_IMAGE is declared before the first FROM so it can choose the release
+# stage. Redeclare it here to compare that image's tag with the reported
+# release: the footer must never name a different version than the binary.
+ARG BLIS_IMAGE
+RUN image_ref="${BLIS_IMAGE%%@*}" \
+    && image_tag="${image_ref##*:}" \
+    && image_version="${image_tag#v}" \
+    && if [ "$image_version" != "$BLIS_VERSION" ]; then \
+         echo "BLIS_VERSION=${BLIS_VERSION} does not match BLIS_IMAGE tag ${image_tag}" >&2; \
+         exit 1; \
+       fi
 
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
 # name it shares. Set on package creation; add here so future publishes resolve
@@ -81,20 +73,21 @@ LABEL org.opencontainers.image.source=https://github.com/redhat-performance/conf
 
 WORKDIR /app
 
-COPY --from=blis_build /blis /usr/local/bin/blis
+# The release image puts the static binary at /usr/local/bin/blis and runs as
+# its own non-root user; copy the binary into this image's layout instead of
+# inheriting that user.
+COPY --from=blis_release /usr/local/bin/blis /usr/local/bin/blis
 COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
 COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
 
-# BLIS_CATALOG is the one input BLIS itself reads from the environment; the
-# registry has no environment fallback, so the wrapper reads our own variable and
-# passes an explicit flag. BLIS_SUPPORT is the generated manifest (models, skipped
-# models, hardware, networks).
+# BLIS reads the catalog from a flag the wrapper supplies and the registry has
+# no environment fallback, so both paths are explicit. There is no build-time
+# support manifest: the API reads the catalog directly.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BLIS_VERSION=${BLIS_VERSION} \
     BLIS_CATALOG=/opt/blis/catalog \
     BLIS_REGISTRY=/opt/blis/registry \
-    BLIS_SUPPORT=/opt/blis/support.json \
     PATH=/opt/venv/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -117,17 +110,9 @@ RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
-# Augment the pinned BLIS catalog with the wheel's cached model configs and write
-# the support manifest. The upstream catalog always wins a shared name; a model is
-# added only when blis-catalog's own scripts/derive_graph.py can derive its graph,
-# and everything that cannot be priced is recorded in the manifest with a reason
-# instead of silently disappearing.
-# Expose both simulator CLIs at stable system paths afterwards.
-COPY aisimulators/tools/export_blis_catalog.py /tmp/export_blis_catalog.py
-RUN python /tmp/export_blis_catalog.py /opt/blis/catalog \
-        --manifest "${BLIS_SUPPORT}" \
-    && rm /tmp/export_blis_catalog.py \
-    && ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
+# Expose the aisimulate CLI at a stable system path and fail the build early if
+# either simulator binary cannot answer `--help`.
+RUN ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
     && /usr/local/bin/aisimulate --help >/dev/null \
     && /usr/local/bin/blis --help >/dev/null
 

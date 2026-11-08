@@ -46,7 +46,13 @@ export interface RecommendParams {
   request_latency?: number;
   prefix?: number;
   model_config?: Record<string, unknown> | null;
-  simulator?: 'aisimulate' | 'blis';
+  /** Simulator identifier discovered from the catalog; open by design. */
+  simulator?: string;
+  /**
+   * Search shape the selected simulator reports (`windowed` or `single`). This
+   * is a proxy hint, not a simulator request field, so it is never forwarded.
+   */
+  search_strategy?: 'windowed' | 'single';
   fabric?: string | null;
   /**
    * True when this request was submitted by the Pareto action. The objective
@@ -139,6 +145,7 @@ function requestBodyFor(p: RecommendParams): Record<string, unknown> {
   if (p.prefix != null && p.prefix > 0) body.prefix = p.prefix;
   if (p.model_config != null) body.model_config = p.model_config;
   if (p.simulator) body.simulator = p.simulator;
+  if (p.search_strategy) body.search_strategy = p.search_strategy;
   if (p.fabric !== undefined) body.fabric = p.fabric;
   return body;
 }

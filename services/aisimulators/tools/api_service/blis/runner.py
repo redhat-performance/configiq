@@ -1,4 +1,4 @@
-"""Run BLIS with explicit image resources and parse its stable metrics section."""
+"""Run BLIS and parse its Result document."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from .runtime import BlisRuntime
-
-METRICS_MARKER = "=== Simulation Metrics ==="
 
 
 class BlisExecutionError(RuntimeError):
@@ -80,34 +78,64 @@ def build_run_command(runtime: BlisRuntime, request: RunRequest) -> list[str]:
     return command
 
 
-def parse_metrics(stdout: str) -> dict[str, Any]:
-    reports: list[dict[str, Any]] = []
-    search_from = 0
-    while True:
-        marker_index = stdout.find(METRICS_MARKER, search_from)
-        if marker_index < 0:
-            break
-        payload_start = marker_index + len(METRICS_MARKER)
-        payload = stdout[payload_start:].strip()
-        json_start = payload.find("{")
-        if json_start < 0:
-            raise BlisExecutionError("BLIS metrics section does not contain a JSON object")
-        try:
-            metrics, json_end = json.JSONDecoder().raw_decode(payload, json_start)
-        except json.JSONDecodeError as exc:
-            raise BlisExecutionError(f"BLIS metrics JSON is invalid: {exc.msg}") from exc
-        if not isinstance(metrics, dict):
-            raise BlisExecutionError("BLIS metrics payload must be a JSON object")
-        reports.append(metrics)
-        search_from = payload_start + json_end
+def parse_result(stdout: str) -> dict[str, Any]:
+    """Return the last `kind: Result` document BLIS wrote to stdout.
 
-    if not reports:
-        raise BlisExecutionError(f"BLIS output is missing {METRICS_MARKER!r}")
-    # Cluster-wide metrics follow per-instance reports in multi-instance (P/D)
-    # runs. Prefer that aggregate so callers do not mistake the prefill-only
-    # report for end-to-end latency and throughput.
-    cluster_reports = [report for report in reports if report.get("instance_id") == "cluster"]
-    return cluster_reports[-1] if cluster_reports else reports[0]
+    BLIS v0.15 replaced the human-readable metrics block with a single
+    schematized Result document. Diagnostics go to stderr, but scan the stream
+    for a Result rather than assuming stdout contains nothing else, so a tool
+    that prints a banner cannot break parsing.
+    """
+    decoder = json.JSONDecoder()
+    results: list[dict[str, Any]] = []
+    position = 0
+    while True:
+        start = stdout.find("{", position)
+        if start < 0:
+            break
+        try:
+            value, end = decoder.raw_decode(stdout, start)
+        except json.JSONDecodeError:
+            position = start + 1
+            continue
+        position = end
+        if isinstance(value, dict) and value.get("kind") == "Result":
+            results.append(value)
+    if not results:
+        raise BlisExecutionError("BLIS output did not contain a Result document")
+    return results[-1]
+
+
+def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a Result into the metric keys the service reasons about.
+
+    BLIS reports rates over its measured window. Fall back to the simulated
+    duration only when the window is absent, matching the previous contract.
+    """
+    metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+    requests = result.get("requests") if isinstance(result.get("requests"), dict) else {}
+    engine = result.get("engine") if isinstance(result.get("engine"), dict) else {}
+    cluster = engine.get("cluster") if isinstance(engine.get("cluster"), dict) else {}
+    window = result.get("window") if isinstance(result.get("window"), dict) else {}
+
+    duration = window.get("duration_s")
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        duration = cluster.get("simulated_duration_s")
+
+    def number(source: dict[str, Any], key: str) -> float | int | None:
+        value = source.get(key)
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    return {
+        "ttft_mean_ms": number(metrics, "ttft_mean_ms"),
+        "itl_mean_ms": number(metrics, "itl_mean_ms"),
+        "e2e_mean_ms": number(metrics, "e2e_mean_ms"),
+        "tokens_per_sec": number(metrics, "output_tok_s"),
+        "responses_per_sec": number(metrics, "request_throughput"),
+        "completed_requests": number(requests, "completed"),
+        "dropped_unservable": number(requests, "dropped_unservable") or 0,
+        "vllm_estimated_duration_s": duration,
+    }
 
 
 def run_blis(
@@ -135,4 +163,4 @@ def run_blis(
         if len(detail) > 1200:
             detail = detail[-1200:]
         raise BlisExecutionError(f"BLIS exited with status {completed.returncode}: {detail or 'no diagnostics'}")
-    return parse_metrics(completed.stdout)
+    return parse_result(completed.stdout)

@@ -19,7 +19,14 @@ vi.mock('@/lib/app-config', () => ({
   }),
 }))
 
-import { isSimulatorBackendCompatible, SettingsProvider, useSettings } from './SettingsContext'
+vi.mock('@/lib/hooks/useCatalog', () => ({
+  useCatalog: () => ({
+    simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
+    isLoading: false,
+  }),
+}))
+
+import { simulatorSupportsBackend, SettingsProvider, useSettings } from './SettingsContext'
 
 const VERSION_KEY = 'settings_backend_version_v2'
 const DEFAULT_SIMULATOR_VERSION_KEY = `${VERSION_KEY}:aisimulate`
@@ -113,14 +120,16 @@ describe('Backend version persistence', () => {
     expect(state().simulator).toBe('blis')
   })
 
-  it('normalizes a persisted BLIS selection that conflicts with the inference backend', async () => {
+  it('keeps a persisted simulator instead of silently substituting one', async () => {
+    // Compatibility is surfaced by the Settings UI and enforced by the API;
+    // the context never rewrites the user's simulator choice.
     localStorage.setItem(SIMULATOR_KEY, 'blis')
     localStorage.setItem('settings_inference_backend', 'sglang')
 
     await render()
 
-    expect(state().simulator).toBe('aisimulate')
-    expect(localStorage.getItem(SIMULATOR_KEY)).toBe('aisimulate')
+    expect(state().simulator).toBe('blis')
+    expect(localStorage.getItem(SIMULATOR_KEY)).toBe('blis')
   })
 
   it('persists a global simulator change', async () => {
@@ -132,12 +141,17 @@ describe('Backend version persistence', () => {
 })
 
 describe('Simulator/backend compatibility', () => {
-  it('allows all AISimulate backends but only vLLM with BLIS', () => {
-    expect(isSimulatorBackendCompatible('aisimulate', 'vllm')).toBe(true)
-    expect(isSimulatorBackendCompatible('aisimulate', 'sglang')).toBe(true)
-    expect(isSimulatorBackendCompatible('aisimulate', 'tensorrt-llm')).toBe(true)
-    expect(isSimulatorBackendCompatible('blis', 'vllm')).toBe(true)
-    expect(isSimulatorBackendCompatible('blis', 'sglang')).toBe(false)
-    expect(isSimulatorBackendCompatible('blis', 'tensorrt-llm')).toBe(false)
+  it('reads compatibility from the simulator catalog, not a local table', () => {
+    const vllmOnly = { backends: [{ id: 'vllm' }] }
+    const allBackends = { backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }] }
+
+    expect(simulatorSupportsBackend('aisimulate', 'vllm', allBackends)).toBe(true)
+    expect(simulatorSupportsBackend('aisimulate', 'sglang', allBackends)).toBe(true)
+    expect(simulatorSupportsBackend('blis', 'vllm', vllmOnly)).toBe(true)
+    expect(simulatorSupportsBackend('blis', 'sglang', vllmOnly)).toBe(false)
+    expect(simulatorSupportsBackend('blis', 'tensorrt-llm', vllmOnly)).toBe(false)
+    // No explicit choice or no catalog entry: do not invent a restriction.
+    expect(simulatorSupportsBackend('', 'sglang', undefined)).toBe(true)
+    expect(simulatorSupportsBackend('unknown', 'sglang', undefined)).toBe(true)
   })
 })

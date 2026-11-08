@@ -10,7 +10,12 @@ export type CandidateStatus =
   | 'failed'
   | 'resource_limited'
 
-export type SimulatorId = 'aisimulate'
+/**
+ * A simulator identifier as reported by the API. Deliberately an open string:
+ * the service owns the list, and a client build must not reject a simulator it
+ * predates.
+ */
+export type SimulatorId = string
 
 /**
  * Flat topology dict emitted by the aisimulate SDK (CandidateProvenance.topology).

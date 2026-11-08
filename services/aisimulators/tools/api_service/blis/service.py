@@ -13,19 +13,18 @@ from typing import Any
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from .manifest import (
+    BlisCatalog,
     BlisUnsupportedRequest,
     ModelResolution,
-    SupportManifest,
-    load_support_manifest,
+    load_catalog,
 )
-from .runner import BlisExecutionError, RunRequest, run_blis
+from .runner import BlisExecutionError, RunRequest, normalize_result, run_blis
 from .runtime import BlisRuntime, blis_release, resolve_runtime
 from .scenario import (
     ScenarioPoolRequest,
     ScenarioRequest,
     disaggregation_refusal,
     engine_version_support,
-    normalize_weight_quantization,
     resolve_engine_version,
     write_scenario,
 )
@@ -179,7 +178,7 @@ class _RecommendCandidate:
 
 @dataclass(frozen=True)
 class _ResolvedRequest:
-    manifest: SupportManifest
+    catalog: BlisCatalog
     runtime: BlisRuntime
     model: ModelResolution
     hardware: str
@@ -193,9 +192,9 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
             f"BLIS scenarios currently model vLLM deployments, not backend {backend!r}; "
             "select vLLM or choose AISimulate explicitly"
         )
-    manifest = load_support_manifest()
-    model = manifest.resolve_model(model_path)
-    hardware = manifest.resolve_hardware(system)
+    catalog = load_catalog()
+    model = catalog.resolve_model(model_path)
+    hardware = catalog.resolve_hardware(system)
     try:
         system_spec = load_system_spec(system)
     except Exception as exc:
@@ -205,7 +204,7 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     if gpus_per_node < 1:
         raise BlisUnsupportedRequest(f"BLIS has no single-node GPU layout for {system!r}")
     return _ResolvedRequest(
-        manifest=manifest,
+        catalog=catalog,
         runtime=resolve_runtime(),
         model=model,
         hardware=hardware,
@@ -217,13 +216,13 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
 def _provenance(resolved: _ResolvedRequest, model_path: str, system: str) -> dict[str, str | None]:
     return {
         "simulator": "blis",
-        "blis_version": blis_release(),
+        "simulator_version": blis_release(),
         "requested_model": model_path,
         "resolved_model": resolved.model.catalog_name,
         "model_source": resolved.model.origin,
         "system": system,
         "hardware": resolved.hardware,
-        "model_config_relation": resolved.model.config_relation,
+        "model_config_relation": None,
         "engine_version": resolved.engine_version,
     }
 
@@ -234,37 +233,20 @@ def _require_disaggregation(resolved: _ResolvedRequest) -> None:
         raise BlisUnsupportedRequest(disaggregation_refusal(resolved.engine_version))
 
 
-def supported_model_ids(manifest: SupportManifest | None = None) -> list[str]:
-    """AISimulate model IDs BLIS can price, for the catalog endpoints.
-
-    Only entries a picker can actually offer are listed: an upstream catalog model
-    with no AISimulate ID is reachable by its catalog name, but ConfigIQ never
-    offers that name, so advertising it would be a dead option.
-    """
-    manifest = manifest or load_support_manifest()
-    return sorted(
-        entry["aisimulate_model_id"]
-        for entry in manifest.models.values()
-        if entry.get("graph") is True and isinstance(entry.get("aisimulate_model_id"), str)
-    )
+def supported_model_ids(catalog: BlisCatalog | None = None) -> list[str]:
+    """Model identifiers the BLIS catalog can price, for the catalog endpoints."""
+    catalog = catalog or load_catalog()
+    return catalog.model_ids()
 
 
-def supported_system_ids(systems: Iterable[str], manifest: SupportManifest | None = None) -> list[str]:
+def supported_system_ids(systems: Iterable[str], catalog: BlisCatalog | None = None) -> list[str]:
     """The subset of ``systems`` whose hardware BLIS has a catalog chip for."""
-    manifest = manifest or load_support_manifest()
-    return [system for system in systems if manifest.supports_hardware(system)]
+    catalog = catalog or load_catalog()
+    return [system for system in systems if catalog.supports_hardware(system)]
 
 
 def _model_warnings(resolved: _ResolvedRequest, *, model_config_provided: bool = False) -> list[str]:
     warnings: list[str] = []
-    relation = resolved.model.config_relation
-    if relation and relation != "identical":
-        warnings.append(f"The selected simulator uses a model configuration marked {relation}.")
-    if resolved.model.origin == "aisimulate":
-        warnings.append(
-            "BLIS priced this model from a catalog entry derived at image build time "
-            "from the AISimulate model configuration."
-        )
     if model_config_provided:
         warnings.append("The selected simulator used its resolved catalog model; the supplied model_config was not applied.")
     return warnings
@@ -325,7 +307,7 @@ def _scenario_request(
         osl=osl,
         concurrency=concurrency,
         max_num_seqs=max_num_seqs,
-        max_model_len=max_seq_len if max_seq_len is not None else isl + osl,
+        max_model_len=max_seq_len,
         max_num_batched_tokens=max(8192, isl),
         gpu_memory_utilization=gpu_memory_utilization,
         weight_quantization=gemm_quant_mode,
@@ -362,25 +344,51 @@ def _metrics_summary(metrics: dict[str, Any], total_gpus: int) -> dict[str, floa
     return summary
 
 
-def _serving_config(scenario: ScenarioRequest) -> dict[str, Any]:
-    weight_quantization = normalize_weight_quantization(scenario.weight_quantization)
+def _deployment_pools(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Deployment pools BLIS echoed in `Result.input.deployment`."""
+    input_document = result.get("input") if isinstance(result.get("input"), dict) else {}
+    deployment = input_document.get("deployment") if isinstance(input_document.get("deployment"), dict) else {}
+    pools = deployment.get("pools")
+    return [pool for pool in pools if isinstance(pool, dict)] if isinstance(pools, list) else []
+
+
+def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], backend_version: str) -> dict[str, Any]:
+    """Report the engine settings BLIS resolved, not a reconstruction of them."""
+    max_model_len = engine.get("max_model_len")
+    max_model_len_policy: str | None = None
+    if max_model_len == "auto":
+        # `auto` is the simulator's own policy, so report the policy rather than
+        # inventing a token window the run did not state.
+        max_model_len = None
+        max_model_len_policy = "auto"
     return {
         "backend": "vllm",
-        "tensor_parallel_size": scenario.tp,
-        "max_model_len": scenario.max_model_len or (scenario.isl + scenario.osl),
-        "max_num_seqs": scenario.max_num_seqs or scenario.concurrency,
-        "max_num_batched_tokens": scenario.max_num_batched_tokens or max(8192, scenario.isl),
-        "gpu_memory_utilization": (
-            scenario.gpu_memory_utilization
-            if scenario.gpu_memory_utilization is not None
-            else 0.92
-        ),
+        "backend_version": backend_version,
+        "tensor_parallel_size": parallel.get("tp") or 1,
+        "max_model_len": max_model_len if isinstance(max_model_len, int) else None,
+        "max_model_len_policy": max_model_len_policy,
+        "max_num_seqs": engine.get("max_num_seqs"),
+        "max_num_batched_tokens": engine.get("max_num_batched_tokens"),
+        "gpu_memory_utilization": engine.get("gpu_memory_utilization"),
         # Chunked prefill is not a Scenario field. Leave it unknown rather than
         # claiming a default that the generated document did not specify.
         "enable_chunked_prefill": None,
-        "enable_prefix_caching": scenario.prefix_caching if scenario.prefix_caching is not None else True,
-        "quantization": weight_quantization or "model default",
+        "enable_prefix_caching": engine.get("enable_prefix_caching"),
+        "quantization": engine.get("quantization") or "model default",
     }
+
+
+def _serving_config(result: dict[str, Any]) -> dict[str, Any] | None:
+    pools = _deployment_pools(result)
+    if not pools:
+        return None
+    pool = pools[0]
+    engine = pool.get("engine") if isinstance(pool.get("engine"), dict) else {}
+    parallel = pool.get("parallel") if isinstance(pool.get("parallel"), dict) else {}
+    provenance_version = result.get("revisions") if isinstance(result.get("revisions"), dict) else {}
+    engine_revision = provenance_version.get("engine") if isinstance(provenance_version.get("engine"), dict) else {}
+    backend_version = engine_revision.get("upstream_version")
+    return _engine_serving_config(engine, parallel, backend_version if isinstance(backend_version, str) else "unknown")
 
 
 def _run_scenario(
@@ -427,7 +435,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         )
     if not request.fabric:
         raise BlisUnsupportedRequest("BLIS disaggregated predictions require an explicit fabric")
-    fabric = resolved.manifest.resolve_network(request.fabric)
+    fabric = resolved.catalog.resolve_network(request.fabric)
     if request.dp != 1:
         raise BlisUnsupportedRequest("BLIS disaggregated predictions currently require attention_dp_size=1")
     if request.prefix > 0 and request.prefix_caching is False:
@@ -510,7 +518,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         fmha_quantization=request.fmha_quant_mode,
     )
     scenario = base
-    metrics = _run_scenario(
+    result = _run_scenario(
         resolved,
         scenario,
         prefix=request.prefix,
@@ -518,6 +526,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         prefill_instances=request.prefill_num_workers or 1,
         decode_instances=request.decode_num_workers or 1,
     )
+    metrics = normalize_result(result)
     total_gpus = (
         prefill.tp * prefill.pp * (request.prefill_num_workers or 1)
         + decode.tp * decode.pp * (request.decode_num_workers or 1)
@@ -587,17 +596,18 @@ def estimate(request: EstimateInput) -> BlisPrediction:
         prefix_caching=True if request.prefix > 0 and request.prefix_caching is None else request.prefix_caching,
         enable_chunked_prefill=request.enable_chunked_prefill,
     )
-    metrics = _run_scenario(
+    result = _run_scenario(
         resolved,
         scenario,
         prefix=request.prefix,
         timeout_seconds=float(os.environ.get("BLIS_RUN_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS)),
     )
+    metrics = normalize_result(result)
     total_gpus = request.tp * request.pp * request.dp
     return BlisPrediction(
         summary=_metrics_summary(metrics, total_gpus),
         provenance=_provenance(resolved, request.model_path, request.system),
-        serving_config=_serving_config(scenario),
+        serving_config=_serving_config(result),
         warnings=_model_warnings(resolved, model_config_provided=request.model_config_provided) + (
             [f"Simulator marked {int(metrics['dropped_unservable'])} request(s) unservable."]
             if isinstance(metrics.get("dropped_unservable"), (int, float)) and metrics["dropped_unservable"] > 0
@@ -732,7 +742,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     include_disagg = bool(request.fabric) and not demand
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.manifest.resolve_network(request.fabric) if include_disagg and request.fabric else None
+    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
     hardware_max = resolved.gpus_per_node * (2 if include_disagg else 1)
     upper = min(request.max_candidate_gpus or hardware_max, hardware_max)
     lower = request.min_candidate_gpus or 1
@@ -840,7 +850,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             prefill_instances = candidate.prefill_workers
             decode_instances = candidate.decode_workers
         try:
-            metrics = _run_scenario(
+            metrics = normalize_result(_run_scenario(
                 resolved,
                 scenario,
                 prefix=request.prefix,
@@ -849,7 +859,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 decode_instances=decode_instances,
                 rate=request.request_rate if demand else None,
                 num_requests=demand_requests if demand else None,
-            )
+            ))
         except BlisExecutionError as exc:
             evaluated.append(candidate)
             execution_failures.append(exc)

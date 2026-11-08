@@ -14,6 +14,7 @@ export type ModelStatus =
   | 'measured'
   | 'approved'
   | 'catalog'
+  | 'unsupported'
   | 'fetching'
   | 'fetched'
   | 'error'
@@ -102,6 +103,7 @@ export function ModelInput({
           {status === 'measured' && <Label color="grey" isCompact>Measured, no validated envelope</Label>}
           {status === 'approved' && <Label color="grey" isCompact>Approved, no measurements</Label>}
           {status === 'catalog' && <Label color="green" isCompact icon={<CheckCircleIcon />}>In catalog</Label>}
+          {status === 'unsupported' && <Label color="red" isCompact icon={<ExclamationTriangleIcon />}>Not supported by this simulator</Label>}
           {status === 'fetching' && <Label color="grey" isCompact>Checking...</Label>}
           {status === 'fetched' && <Label color="yellow" isCompact icon={<CheckCircleIcon />}>From HuggingFace</Label>}
           {status === 'error' && <Label color="red" isCompact icon={<ExclamationTriangleIcon />}>Not found</Label>}

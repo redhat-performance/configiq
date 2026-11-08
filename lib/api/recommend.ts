@@ -55,7 +55,8 @@ export interface RecommendDemandOutcome {
   completedRequests: number | null
   evaluatedConfigurations: number | null
   bestObservedRps: number | null
-  simulator: 'aisimulate' | 'blis'
+  /** Simulator that produced the measured outcome, as reported by the API. */
+  simulator: string
 }
 
 /**
@@ -89,7 +90,8 @@ export interface RecommendCapacityOutcome {
   decodeReplicas: number | null
   prefillGpus: number | null
   decodeGpus: number | null
-  simulator: 'aisimulate'
+  /** Simulator that produced the residency outcome, as reported by the API. */
+  simulator: string
 }
 
 export type CapacityOptionRole =
@@ -127,7 +129,8 @@ export interface RecommendSweepMeta {
 export interface RecommendResult {
   requestId: string
   status: 'completed'
-  simulator: 'aisimulate' | 'blis'
+  /** Simulator that produced this result, as reported by the API. */
+  simulator: string
   searchSummary?: RecommendSearchSummary
   /** Measured outcome of a throughput-demand run (demand objective only). */
   demand?: RecommendDemandOutcome
@@ -353,16 +356,19 @@ export async function callRecommend(
 
   const externalPayload = baseRequestPayload(request)
 
-  if (request.simulator === 'blis') {
-    const blisSearchBudgetSeconds = Math.min(60, requestTimeoutSeconds - 5)
-    if (blisSearchBudgetSeconds < 1) {
+  if (request.search_strategy === 'single') {
+    // A simulator that reports a single-search capability owns one bounded
+    // search inside the service. Keep that search inside the gateway timeout
+    // instead of letting it run past the caller's deadline.
+    const searchBudgetSeconds = Math.min(60, requestTimeoutSeconds - 5)
+    if (searchBudgetSeconds < 1) {
       return makeError(
         requestId,
         'AISIM_TIMEOUT',
-        'The configured gateway timeout is too short to run a bounded BLIS recommendation.',
+        'The configured gateway timeout is too short to run a bounded recommendation search.',
       )
     }
-    externalPayload.search_budget_seconds = blisSearchBudgetSeconds
+    externalPayload.search_budget_seconds = searchBudgetSeconds
   }
   if (options.window?.minGpus != null) externalPayload.min_candidate_gpus = options.window.minGpus
   if (options.window?.maxGpus != null) externalPayload.max_candidate_gpus = options.window.maxGpus
@@ -444,7 +450,12 @@ function parseRecommendPayload(
   startTime: number,
   includeCapacityOptions: boolean,
 ): RecommendResponse {
-  const responseSimulator = rawData.simulator === 'aisimulate' || rawData.simulator === 'blis'
+  // Provenance is an open identifier: the service may add a simulator without
+  // a client release. What matters is that the response identifies the same
+  // simulator the caller asked for, so a request is never answered by a
+  // different simulator. Older builds that omit the field are accepted as the
+  // requested simulator; a response that names an unknown shape is not.
+  const responseSimulator = typeof rawData.simulator === 'string' && rawData.simulator.trim().length > 0
     ? rawData.simulator
     : null
   if (rawData.simulator != null && responseSimulator == null) {
@@ -454,12 +465,22 @@ function parseRecommendPayload(
       'The API returned an unknown simulator identifier.',
     )
   }
-  const actualSimulator = responseSimulator ?? (request.simulator === 'aisimulate' ? 'aisimulate' : null)
-  if (actualSimulator !== request.simulator) {
+  const requestedSimulator = typeof request.simulator === 'string' && request.simulator.length > 0
+    ? request.simulator
+    : null
+  const actualSimulator = responseSimulator ?? requestedSimulator
+  if (actualSimulator == null) {
+    return makeError(
+      requestId,
+      'AISIM_INVALID_RESPONSE',
+      'The API did not identify the simulator that produced this recommendation.',
+    )
+  }
+  if (requestedSimulator != null && responseSimulator != null && actualSimulator !== requestedSimulator) {
     return makeError(
       requestId,
       'SIMULATOR_MISMATCH',
-      `Requested ${request.simulator}, but the API confirmed ${actualSimulator ?? 'no simulator'}. No fallback was accepted.`,
+      `Requested ${requestedSimulator}, but the API confirmed ${actualSimulator}. No fallback was accepted.`,
     )
   }
 
@@ -514,7 +535,9 @@ function parseRecommendPayload(
           ? demandRaw.evaluated_configurations
           : null,
         bestObservedRps: typeof demandRaw.best_observed_rps === 'number' ? demandRaw.best_observed_rps : null,
-        simulator: demandRaw.simulator === 'blis' ? 'blis' : 'aisimulate',
+        simulator: typeof demandRaw.simulator === 'string' && demandRaw.simulator.length > 0
+          ? demandRaw.simulator
+          : simulator,
       }
     : undefined
   const capacityRaw = rawData.capacity && typeof rawData.capacity === 'object'
@@ -547,7 +570,9 @@ function parseRecommendPayload(
         decodeReplicas: typeof capacityRaw.decode_replicas === 'number' ? capacityRaw.decode_replicas : null,
         prefillGpus: typeof capacityRaw.prefill_gpus === 'number' ? capacityRaw.prefill_gpus : null,
         decodeGpus: typeof capacityRaw.decode_gpus === 'number' ? capacityRaw.decode_gpus : null,
-        simulator: 'aisimulate',
+        simulator: typeof capacityRaw.simulator === 'string' && capacityRaw.simulator.length > 0
+          ? capacityRaw.simulator
+          : simulator,
       }
     : undefined
   const sweepRaw = rawData.sweep && typeof rawData.sweep === 'object'
@@ -813,7 +838,8 @@ function parseCapacityOptions(
 
 export interface ParetoResult {
   status: 'completed'
-  simulator: 'aisimulate'
+  /** Simulator that produced the sweep, as reported by the API. */
+  simulator: string
   candidates: Candidate[]
   views: CandidateViews | null
   sweep: FrontierSweep | null
@@ -835,16 +861,10 @@ export async function callPareto(
   request: RecommendRequest,
   options: { timeoutSeconds?: number; signal?: AbortSignal } = {},
 ): Promise<ParetoResponse> {
-  if (request.simulator !== 'aisimulate') {
-    return {
-      status: 'failed',
-      error: {
-        code: 'AISIM_UNSUPPORTED',
-        message: 'The Pareto frontier is available from AISimulate only; BLIS does not provide it.',
-      },
-    }
-  }
-
+  // Whether a simulator can sweep a frontier is its own capability. The caller
+  // gates the action on the catalog's `objectives`; an unsupported request is
+  // sent through so the service returns its explicit rejection instead of this
+  // adapter substituting a different simulator or inventing a refusal.
   const baseUrl = process.env.AISIMULATORS_GATEWAY_URL
   const requestTimeoutSeconds = options.timeoutSeconds ?? gatewayTimeoutSeconds()
   if (!baseUrl) {
@@ -921,14 +941,23 @@ export async function callPareto(
       status: 'failed',
       error: {
         code: 'SIMULATOR_MISMATCH',
-        message: 'The API did not confirm AISimulate as the Pareto sweep simulator.',
+        message: 'The API did not identify the Pareto sweep simulator.',
+      },
+    }
+  }
+  if (request.simulator != null && parsed.simulator !== request.simulator) {
+    return {
+      status: 'failed',
+      error: {
+        code: 'SIMULATOR_MISMATCH',
+        message: `Requested ${request.simulator}, but the API confirmed ${parsed.simulator}. No fallback was accepted.`,
       },
     }
   }
 
   return {
     status: 'completed',
-    simulator: 'aisimulate',
+    simulator: parsed.simulator,
     candidates: parsed.candidates,
     views: parsed.views,
     sweep: parsed.sweep,
@@ -944,11 +973,11 @@ export async function* incrementalRecommend(
   request: RecommendRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<RecommendProgressEvent> {
-  if (request.simulator === 'blis') {
+  if (request.search_strategy === 'single') {
     if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
     const totalTimeoutSeconds = gatewayTimeoutSeconds()
-    // BLIS owns a bounded TP-only search in the service. It is one request,
-    // not a sequence of AISimulate GPU windows; avoid publishing a guessed
+    // A single-search simulator owns a bounded search in the service. It is one
+    // request, not a sequence of GPU windows; avoid publishing a guessed
     // max-GPU range that would misstate the search the service actually ran.
     const response = await callRecommend(request, {
       timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),

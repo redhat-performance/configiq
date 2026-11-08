@@ -258,10 +258,15 @@ export default function Performance() {
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
 
+  // A simulator that reports a complete model catalog cannot price a model
+  // outside it. Surface that instead of replacing the configured default.
+  const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !catalogModels.includes(model);
   const modelStatus: ModelStatus = validatedModelIds.includes(model)
     ? 'supported'
     : catalogModels.includes(model)
     ? 'catalog'
+    : modelUnsupported
+    ? 'unsupported'
     : isFetchingConfig || catalogLoading
     ? 'fetching'
     : hfConfig
@@ -322,7 +327,9 @@ export default function Performance() {
   // Disagg: prefill and decode pools with independent parallelism / batch.
   const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg');
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
-  const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
+  const availableNetworks = support?.networks ?? networkOptions;
+  // The simulator names its own default fabric; never invent one here.
+  const defaultNetworkFabric = support?.defaultNetwork ?? availableNetworks[0] ?? '';
   const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
   const [prefillCfg, setPrefillCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '1' });
   const [decodeCfg, setDecodeCfg] = React.useState<PerfPhaseInput>({ tp: '1', pp: '1', workers: '1', batch: '64' });
@@ -1333,13 +1340,13 @@ export default function Performance() {
         }
       },
       summary: [
-        { k: 'context limit', v: servingPolicyOverride && servingManualContextLimit !== null ? `${servingManualContextLimit}` : testResult ? `${testResult.vllm_config.max_model_len}` : '—' },
-        { k: 'prefix caching', v: testResult ? (testResult.vllm_config.enable_prefix_caching ? 'on' : 'off') : '—' },
+        { k: 'context limit', v: servingPolicyOverride && servingManualContextLimit !== null ? `${servingManualContextLimit}` : testResult?.vllm_config.max_model_len != null ? `${testResult.vllm_config.max_model_len}` : testResult?.vllm_config.max_model_len_policy ?? '—' },
+        { k: 'prefix caching', v: testResult ? (testResult.vllm_config.enable_prefix_caching === true ? 'on' : testResult.vllm_config.enable_prefix_caching === false ? 'off' : 'unknown') : '—' },
       ],
       fields: [
         {
           label: 'Serving context limit',
-          value: servingPolicyOverride && servingManualContextLimit !== null ? `${servingManualContextLimit}` : testResult ? `${testResult.vllm_config.max_model_len}` : '—',
+          value: servingPolicyOverride && servingManualContextLimit !== null ? `${servingManualContextLimit}` : testResult?.vllm_config.max_model_len != null ? `${testResult.vllm_config.max_model_len}` : testResult?.vllm_config.max_model_len_policy ?? '—',
           term: 'maxModelLen',
           readonly: !servingPolicyOverride,
           type: servingPolicyOverride ? 'number' as const : undefined,
@@ -1347,7 +1354,7 @@ export default function Performance() {
         },
         {
           label: 'Prefix caching',
-          value: testResult ? (testResult.vllm_config.enable_prefix_caching ? 'On' : 'Off') : '—',
+          value: testResult ? (testResult.vllm_config.enable_prefix_caching === true ? 'On' : testResult.vllm_config.enable_prefix_caching === false ? 'Off' : 'Unknown') : '—',
           term: 'prefixCaching',
           readonly: true,
         },
@@ -1469,12 +1476,19 @@ export default function Performance() {
               <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
-        
+
+        {modelUnsupported && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
+          </div>
+        )}
+
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || !gpu || !model || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
+            isDisabled={!hydrated || isCalculating || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -2367,19 +2381,19 @@ export default function Performance() {
                               id="predict-network-fabric"
                               value={selectedNetworkFabric}
                               aria-label="Inter-node fabric"
-                              isDisabled={(networkOptions ?? []).length === 0}
+                              isDisabled={availableNetworks.length === 0}
                               onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                             >
                               <FormSelectOption value="" label="Select a fabric" isDisabled />
-                              {(networkOptions ?? []).map(network => (
+                              {availableNetworks.map(network => (
                                 <FormSelectOption key={network} value={network} label={network} />
                               ))}
                             </FormSelect>
                             <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                              {networkOptions.length === 0
+                              {availableNetworks.length === 0
                                 ? 'No network fabrics were returned by the simulator catalog.'
-                                : selectedNetworkFabric === 'roce-200g' && networkFabric === null
-                                  ? 'RoCE 200G is preselected; change it if your cluster uses another fabric.'
+                                : networkFabric === null && defaultNetworkFabric
+                                  ? `${defaultNetworkFabric} is the simulator's default; change it if your cluster uses another fabric.`
                                   : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
                             </div>
                           </div>

@@ -20,7 +20,8 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/models` | Supported models (per `simulator`) |
 | GET | `/systems` | Supported GPU systems (per `simulator`) |
 | GET | `/backends` | Backend/engine versions and memory defaults (per `simulator`) |
-| GET | `/networks` | BLIS network fabrics |
+| GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
+| GET | `/simulators` | Simulator identity, label, and version |
 
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 
@@ -46,13 +47,13 @@ The image also exposes the simulator CLIs at stable paths:
 /usr/local/bin/blis
 ```
 
-BLIS v0.14.0 is built from source in the multi-stage build (commit
-`f2ba6bb1c189ed5a56933cfa3d0927eae3836ee9`) rather than copied from an image
-digest. Upstream never published a GHCR image for v0.12.0 through v0.14.0: its
-own `Dockerfile` names a Go base older than `go.mod` requires, so the build
-failed at the tag. Building here keeps the Go base under our control
-(`BLIS_GO_VERSION`). The image bundles the two catalog inputs a BLIS run reads,
-both at pinned commits:
+BLIS v0.15.0 is copied from the upstream multi-arch release image
+`ghcr.io/inference-sim/blis:v0.15.0`, pinned by index digest
+`sha256:ae02212a5c06d147f98e62f90d8101ec158bcd74c55cc3a424d9f2b213d89c33`.
+Using the published release keeps the binary exactly the artifact upstream
+tested and removes the Go toolchain from this build. The build fails if the
+`BLIS_IMAGE` tag and the reported `BLIS_VERSION` disagree. The image bundles the
+two catalog inputs a BLIS run reads, both at pinned commits:
 
 | Path | Contents | Pin |
 |---|---|---|
@@ -62,45 +63,34 @@ both at pinned commits:
 No example-scenario directory is bundled: the adapter generates a Scenario and
 Deployment per request, so those files would be dead weight.
 
-The build then runs [`tools/export_blis_catalog.py`](tools/export_blis_catalog.py)
-to augment the wheel's packaged AISimulate model configs into that catalog:
+There is no build-time support manifest. The API reads `/opt/blis/catalog`
+directly at request time, and the catalog is the only source of BLIS support
+facts:
 
-- **The upstream catalog always wins a shared name.** AISimulate can only add
-  models the catalog does not already define, so a reviewed BLIS graph is never
-  silently replaced.
-- **An added model must earn its place.** The exporter runs blis-catalog's own
-  `scripts/derive_graph.py` for every added model and keeps it only if a
-  `graph.yaml` comes out. A model BLIS cannot price is removed and recorded.
-- **Nothing is dropped silently.** Unsupported architectures, name collisions and
-  malformed configs are recorded in `/opt/blis/support.json` with a stable reason
-  code, so the API can explain an unavailable model instead of returning a generic
-  error.
-
-`/opt/blis/support.json` is the API contract for simulator selection. It records,
-per catalog model, whether it came from upstream or AISimulate, whether it has a
-graph, its quantization, how an AISimulate config relates to the upstream entry of
-the same name (`identical`, `different_quantization`, `different`, with the
-differing paths), and any `equivalent_catalog_name`. It also lists the skipped
-AISimulate models with reasons, the bundled hardware and fabrics, and the exact
-`aisimulate` wheel (`aisimulate_wheel`) whose configs were used. Derived
-`model.yaml` files name that release build as their `revision`, so the manifest
-and the catalog agree on provenance.
-
-Because the upstream catalog wins, BLIS prices the catalog's reviewed config even
-when the wheel's copy differs. For example, upstream `glm-5` is the FP8 variant
-while AISimulate's `zai-org/GLM-5` is the unquantized base; the manifest marks that
-shared entry `different_quantization` and records the FP8 AISimulate model
-separately as `glm-5-fp8` with `equivalent_catalog_name: glm-5`.
+- A model is priceable only when blis-catalog ships its `models/<slug>/graph.yaml`.
+  The public model identifier is the Hugging Face repo from that entry's
+  `model.yaml` (`Qwen/Qwen3-32B`); the catalog slug (`qwen3-32b`) is accepted as
+  an input alias.
+- Hardware and network keys are the catalog's own files. ConfigIQ system IDs are
+  translated to catalog keys (`h100_sxm` → `h100`, `gb200` → `gb200-nvl72`);
+  PCIe parts are deliberately not translated.
+- Nothing is fabricated for a model or system the catalog does not list: the
+  request returns an explicit unsupported error naming what is available.
 
 ## Simulator API behavior
 
-`POST /predict` and `POST /recommend` accept `simulator: "aisimulate" | "blis"`;
-the default remains `aisimulate`. A BLIS request is gated by `support.json` and
-uses the manifest's catalog model and hardware identities. The service generates
-a temporary Scenario + Deployment for the requested configuration and passes it
-to `blis run` with the image-pinned catalog and registry. Unsupported models,
-systems, or settings return an explicit client error. A BLIS failure is never
-retried through AISimulate.
+`POST /predict` and `POST /recommend` accept `simulator: "aisimulate" | "blis"`
+(`GET /simulators` is the authoritative list). The default remains
+`aisimulate`. A BLIS request resolves its model, hardware, and fabric from the
+pinned catalog, generates a temporary Scenario + Deployment for the requested
+configuration, and passes it to `blis run`. Unsupported models, systems, fabrics,
+or settings return an explicit client error. A BLIS failure is never retried
+through AISimulate, and an unknown `simulator` value is a 422 rather than a
+fall-through to another branch.
+
+`POST /memory` is an AISimulate capability. A request that names a simulator
+without a memory capability (currently BLIS) returns 422 instead of borrowing
+AISimulate's answer.
 
 ## AISimulate backend versions
 
@@ -148,33 +138,36 @@ values (or null).
 
 BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
 `0.31.0`, the newest release that models prefill/decode disaggregation and
-accepts `max_model_len: auto`. `0.32.0` is opt-in and colocated-only: a P/D
-request returns 422, and the adapter states `max_model_len = isl + osl` instead of
-`auto`. Any other `backend_version`, including AISimulate aliases such as
-`current`, is refused with a 422 that names the modeled releases — BLIS treats
-`engine_version` as a check, not a selector, so the service never substitutes a
-different release silently.
+accepts `max_model_len: auto`. `0.32.0` is opt-in and models both colocated and
+P/D serving, but requires `max_model_len` stated; the adapter then writes
+`isl + osl` instead of `auto`. Any other `backend_version`, including AISimulate
+aliases such as `current`, is refused with a 422 that names the modeled releases
+— BLIS treats `engine_version` as a check, not a selector, so the service never
+substitutes a different release silently.
 
-`GET /backends`, `/models`, and `/systems` take `simulator` so a client can ask
-what the selected simulator supports. `/backends?simulator=blis` reports the
-modeled versions, the literal default, and a `version_support` map
-(`disaggregated`, `max_model_len_auto`) per release. `/models` and `/systems`
-with the same parameter return only the AISimulate IDs and systems BLIS can
-price. The envelopes include `simulator`; `/backends` also reports
-`blis_version`. Each backend entry reports
-`disaggregation_requires_fabric`, so a client knows whether a P/D topology
-needs a fabric selection without matching on the simulator ID. Each entry also
-reports `capacity_options.disaggregated`, which tells a client whether a
-concurrency-capacity run can return disaggregated alternatives. `/backends` also
-returns the simulator's `objectives` list, and clients gate a sizing-goal
-selector on that list rather than on the simulator ID.
+`GET /backends`, `/models`, `/systems`, and `/networks` take `simulator` so a
+client can ask what the selected simulator supports. `/backends?simulator=...`
+reports `simulator_version` and `recommend_search` (`windowed` for AISimulate's
+progressive GPU windows, `single` for BLIS's one bounded search). The BLIS
+branch also reports the modeled versions, the literal default, and a
+`version_support` map (`disaggregated`, `max_model_len_auto`) per release.
+`/models?simulator=blis` returns the catalog's Hugging Face repo IDs (catalog
+slugs are accepted as input aliases), and `/systems?simulator=blis` returns only
+systems that resolve to a catalog chip. `/networks?simulator=aisimulate` is an
+empty list, because AISimulate does not model an inter-node fabric; each
+response includes `simulator`, and the BLIS response names its `default_network`.
+Each backend entry reports `disaggregation_requires_fabric`, so a client knows
+whether a P/D topology needs a fabric selection without matching on the
+simulator ID. Each entry also reports `capacity_options.disaggregated`, which
+tells a client whether a concurrency-capacity run can return disaggregated
+alternatives. `/backends` also returns the simulator's `objectives` list, and
+clients gate a sizing-goal selector on that list rather than on the simulator ID.
 
 Simulator provenance includes the requested and resolved model, hardware,
-engine version, and any model-configuration relation reported by the selected
-simulator. Non-identical model configs are surfaced in the response so clients
-can label the comparison. BLIS predictions
-do not include KV-cache memory breakdowns; the single-backend `/memory` endpoint
-continues to use AISimulate and reports `simulator: "aisimulate"`.
+simulator version, and engine version. BLIS prices the catalog's own model
+configuration, so there is no cross-simulator config relation to report.
+BLIS predictions do not include KV-cache memory breakdowns; `/memory` refuses a
+simulator without that capability rather than substituting AISimulate.
 
 BLIS `/predict` supports both colocated and prefill/decode-disaggregated vLLM
 scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
@@ -399,11 +392,11 @@ Bayesian sampler enables JAX x64 process-wide and is not the default.
 `SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
 since it cannot contain a P/D deployment.
 
-The image sets `BLIS_VERSION`, `BLIS_CATALOG`, `BLIS_REGISTRY` and
-`BLIS_SUPPORT`. `BLIS_VERSION` is the release reported by `/backends` and in
-every prediction's provenance. BLIS itself only reads `BLIS_CATALOG` from the
-environment; the registry has no environment fallback, so callers must pass
-`--registry` explicitly as well:
+The image sets `BLIS_VERSION`, `BLIS_CATALOG` and `BLIS_REGISTRY`. `BLIS_VERSION`
+is the release reported by `/simulators`, `/backends`, and in every prediction's
+provenance. BLIS itself only reads `BLIS_CATALOG` from the environment; the
+registry has no environment fallback, so callers must pass `--registry`
+explicitly as well:
 
 ```bash
 blis run --catalog "$BLIS_CATALOG" --registry "$BLIS_REGISTRY" \
@@ -411,11 +404,10 @@ blis run --catalog "$BLIS_CATALOG" --registry "$BLIS_REGISTRY" \
   --rate 10 --num-requests 100
 ```
 
-To move to a new BLIS release, bump `BLIS_COMMIT`, `BLIS_VERSION`,
-`BLIS_CATALOG_COMMIT`, `BLIS_REGISTRY_COMMIT` and (if `go.mod` requires it)
-`BLIS_GO_VERSION` together; update `MODELED_ENGINE_VERSIONS` in
-`tools/api_service/blis/scenario.py` if that release changes which vLLM versions
-it models. See
+To move to a new BLIS release, bump `BLIS_IMAGE` (tag and index digest),
+`BLIS_VERSION`, `BLIS_CATALOG_COMMIT`, and `BLIS_REGISTRY_COMMIT` together;
+update `MODELED_ENGINE_VERSIONS` in `tools/api_service/blis/scenario.py` if that
+release changes which vLLM versions it models. See
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-blis).
 
 

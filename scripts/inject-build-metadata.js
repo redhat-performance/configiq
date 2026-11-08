@@ -21,9 +21,6 @@ const gitCommit = execGit('git rev-parse HEAD') || 'unknown';
 // Get version from git tag (most recent tag) - null if no tag exists
 const gitVersion = execGit('git describe --tags --abbrev=0');
 
-// Get build timestamp
-const buildTime = new Date().toISOString();
-
 // Write to .env.local for Next.js to pick up
 const envPath = path.join(__dirname, '..', '.env.local');
 
@@ -40,10 +37,10 @@ if (fs.existsSync(envPath)) {
     .trim();
 }
 
-// Append new metadata
+// The version and commit identify the build; a wall-clock timestamp adds no
+// information and would make identical builds look different.
 const metadataLines = [
   '# Auto-generated build metadata - DO NOT EDIT',
-  `NEXT_PUBLIC_BUILD_TIME=${buildTime}`,
   `NEXT_PUBLIC_GIT_COMMIT=${gitCommit}`,
 ];
 
@@ -56,7 +53,6 @@ const metadata = '\n' + metadataLines.join('\n') + '\n';
 fs.writeFileSync(envPath, envContent + '\n' + metadata);
 
 console.log('✅ Build metadata injected:');
-console.log(`   Build time: ${buildTime}`);
 console.log(`   Git commit: ${gitCommit.substring(0, 7)}`);
 if (gitVersion) {
   console.log(`   Git version: ${gitVersion}`);
