@@ -282,9 +282,10 @@ sequence can grow.
 
 Selection enumerates the parallel search space (the same backend filters,
 wideEP heuristic, and KV-feasibility rule as `min_gpus`) and reads each shape's
-KV token capacity. For aggregated shapes the service adds the fewest replicas
-that reach `target_concurrency × context_tokens`. The fewest total GPUs is the
-minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
+KV token capacity. A sequence cannot span replicas, so for aggregated shapes
+the service counts whole per-replica sequences and adds the fewest replicas
+that reach `target_concurrency` (`ceil(target_concurrency /
+per_replica_sequences)`). The fewest total GPUs is the minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
 pool must hold the resident sequences, while the prefill pool only needs to hold
 one sequence transiently. Because each pool replicates the full weights, a P/D
 deployment is only offered as a larger comparison option, never as the minimum.

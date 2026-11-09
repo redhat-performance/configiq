@@ -598,7 +598,6 @@ export function FrontierPanel({
                   {sweep?.windowMinGpus != null && sweep?.windowMaxGpus != null && (
                     <> Window: {sweep.windowMinGpus}–{sweep.windowMaxGpus} GPUs.</>
                   )}
-                  {sweep?.budgetExhausted && <> Trial budget reached.</>}
                   {sweep?.strictSla === false && (
                     <> No latency SLO was enforced, so candidates may exceed a target you would otherwise set.</>
                   )}
