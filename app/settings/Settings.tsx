@@ -420,7 +420,7 @@ export function Settings() {
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Experimental GPU cloud pricing, hardware costs, and on-prem cost modelling.
+                Experimental cluster-cost and routing-economics models. Hybrid savings and Sources are always available.
               </div>
             </div>
             {costingsSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}

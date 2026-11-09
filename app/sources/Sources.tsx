@@ -1,7 +1,6 @@
 'use client';
 
 import * as React from 'react';
-import Link from 'next/link';
 import { useSettings, DEFAULT_PRICING_SOURCE } from '@/contexts/SettingsContext';
 import { useCostings, type SourceStatus } from '@/lib/hooks/useCostings';
 import { useOnPremProfile, DEFAULT_PROFILE, type OnPremCostProfile } from '@/lib/hooks/useOnPremProfile';
@@ -57,7 +56,7 @@ function newProfile(): OnPremCostProfile {
 
 export default function Sources() {
   const {
-    hydrated, costingsEnabled,
+    hydrated,
     preferredCloudProvider, setPreferredCloudProvider,
     pricingSource, setPricingSource,
   } = useSettings();
@@ -66,11 +65,11 @@ export default function Sources() {
   const [importText, setImportText] = React.useState('');
 
   // Single source of truth: the shared costings hook (same-origin proxy, cached,
-  // and a no-op that fires zero network calls while costings is disabled).
-  const costings = useCostings(costingsEnabled, pricingSource);
+  // and a no-op that fires zero network calls until settings are hydrated).
+  const costings = useCostings(hydrated, pricingSource);
   const health = costings.health;
   // Treat pre-hydration as loading so the table doesn't flash empty before the
-  // persisted toggle/source are known.
+  // persisted pricing source is known.
   const healthLoading = costings.isLoading || !hydrated;
   const healthError = costings.error;
 
@@ -135,7 +134,7 @@ export default function Sources() {
   const [sourcesFromApi, setSourcesFromApi] = React.useState(false);
 
   React.useEffect(() => {
-    if (!costingsEnabled) return;
+    if (!hydrated) return;
     let cancelled = false;
     fetch('/api/costings/sources')
       .then(r => r.ok ? r.json() : Promise.reject())
@@ -150,7 +149,7 @@ export default function Sources() {
       // filter works regardless of whether /sources is deployed.
       .catch(() => { /* fall back to provenance-derived options */ });
     return () => { cancelled = true; };
-  }, [costingsEnabled]);
+  }, [hydrated]);
 
   // Feeds discovered from model provenance, accumulated so a feed stays
   // selectable after switching away from 'merged' (a non-merged fetch only
@@ -203,29 +202,6 @@ export default function Sources() {
 
   const staleOrErrored = sortedSources.filter(([, s]) => s.stale || s.last_error).length;
   const allFresh = sortedSources.length > 0 && staleOrErrored === 0;
-
-  // Gate live pricing sections on the Settings toggle, but keep shared cost
-  // assumptions editable for tools that remain available without costings.
-  if (hydrated && !costingsEnabled) {
-    return (
-      <div className={styles.page}>
-        <div className={styles.header}>
-          <h1 className={styles.pageTitle}>Sources</h1>
-          <p className={styles.subtitle}>
-            Pricing data source status, cloud provider preference, and on-prem cost profiles.
-          </p>
-        </div>
-        <div className={styles.section}>
-          <div className={styles.emptyState}>
-            Costings features are disabled. Enable them in{' '}
-            <Link href="/settings" style={{ color: 'var(--blue)', fontWeight: 600 }}>Settings</Link>{' '}
-            to view data sources.
-          </div>
-        </div>
-        <CostAssumptionsEditor />
-      </div>
-    );
-  }
 
   return (
     <div className={styles.page}>

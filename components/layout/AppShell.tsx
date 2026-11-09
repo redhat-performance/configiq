@@ -250,14 +250,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/settings"
               isActive={pathname === "/settings"}
             />
-            {costingsEnabled && (
-              <NavItemWithIcon
-                icon={DatabaseIcon}
-                label="Sources"
-                href="/sources"
-                isActive={pathname === "/sources"}
-              />
-            )}
+            <NavItemWithIcon
+              icon={DatabaseIcon}
+              label="Sources"
+              href="/sources"
+              isActive={pathname === "/sources"}
+            />
           </NavList>
         </Nav>
 

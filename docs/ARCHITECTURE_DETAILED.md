@@ -106,9 +106,10 @@ GPU sizing formulas or call external service URLs directly from the browser.
    first: the newer route accepts an older upstream's legacy lists, but an
    older downstream expects lists the reduced response no longer sends.
 3. `useCostings` calls `/api/costings/models`, `/api/costings/systems`, and
-   `/api/costings/health`. Hybrid Savings is available without the Experimental
-   toggle and loads prices once settings are ready. It uses the models-only
-   scope, omitting the legacy systems-pricing request. Other costings views keep
+   `/api/costings/health`. Hybrid Savings and Sources are available without the
+   Experimental toggle and load prices once settings are ready. Hybrid Savings
+   uses the models-only scope, omitting the legacy systems-pricing request; the
+   Sources page uses the full scope. Cluster cost and Routing economics keep
    their existing Experimental guards. Caches are isolated by pricing source
    and scope. Empty/stale startup data retries after one minute, while healthy
    data retains the usual one-hour cache lifetime.
