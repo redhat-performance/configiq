@@ -298,11 +298,11 @@ export default function Sizing() {
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
-  // Three sizing goals share one Calculate flow. `latency` enforces the
-  // TTFT/TPOT (or E2E) SLA; `demand` asks how many GPUs sustain an arrival
-  // rate; `capacity` asks how many GPUs hold N sequences at full context. Both
+  // Three sizing goals share one Calculate flow. `demand` asks how many GPUs
+  // sustain an arrival rate; `latency` enforces the TTFT/TPOT (or E2E) SLA;
+  // `capacity` asks how many GPUs hold N sequences at full context. Both
   // aggregate-only goals report performance without gating on it.
-  const [goal, setGoal] = React.useState<SizingGoal>('latency');
+  const [goal, setGoal] = React.useState<SizingGoal>('demand');
   const [demandRate, setDemandRate] = React.useState(DEFAULT_DEMAND_RATE);
   const isDemand = goal === 'demand';
   const isCapacity = goal === 'capacity';
