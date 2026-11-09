@@ -22,6 +22,20 @@ vi.mock('@/lib/huggingface/fetch-config', () => ({ fetchModelConfig: vi.fn() }))
 vi.mock('@/lib/app-config', () => ({ getAppConfig: () => appConfig }))
 vi.mock('next/dynamic', () => ({ default: () => (props: { points: unknown; hostedModelLabel?: string; infrastructureModelLabel?: string }) => <div data-testid="chart">Comparison chart {props.hostedModelLabel} {props.infrastructureModelLabel} {JSON.stringify(props.points)}</div> }))
 vi.mock('@/lib/hooks/useCatalog', () => ({ useCatalog: vi.fn() }))
+vi.mock('@/lib/hooks/useTestedModels', () => ({
+  useTestedModels: () => ({
+    pairs: [],
+    modelIds: ['tested/model', 'tested/other'],
+    validatedModelIds: ['tested/model', 'tested/other'],
+    measuredModelIds: ['tested/model', 'tested/other'],
+    approvedModels: ['tested/model', 'tested/other'],
+    modelStatus: () => 'validated',
+    gate: null,
+    schemaVersion: 2,
+    isLoading: false,
+    isAvailable: true,
+  }),
+}))
 
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement
@@ -41,14 +55,14 @@ beforeEach(async () => {
   vi.mocked(useCatalog).mockReturnValue({
     gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
     modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
-    modelSpecs: new Map(), backendOptions: [], timeoutSeconds: 180,
+    modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, timeoutSeconds: 180,
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
     hydrated: true, defaultModel: 'Qwen/Qwen3-8B', testedModels: [],
-    hfToken: '', backendVersion: '', inferenceBackend: 'vllm',
+    hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: true, preferredCloudProvider: null, pricingSource: 'merged',
-    setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(),
+    setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
     setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
   })
@@ -165,6 +179,32 @@ describe('Hybrid model configuration readiness', () => {
 })
 
 describe('Hybrid page composition', () => {
+  it.each([
+    ['Qwen/Qwen3-Coder-480B-A35B-Instruct', 'qwen/qwen3-coder'],
+    ['deepseek-ai/DeepSeek-V3', 'deepseek/deepseek-chat'],
+  ])('keeps canonical pricing and provider selection connected to cards and chart for %s', async (checkpoint, id) => {
+    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), defaultModel: checkpoint })
+    vi.mocked(useCatalog).mockReturnValue({ ...vi.mocked(useCatalog)(), modelOptions: [checkpoint] })
+    vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [
+      { ...models[0], id, name: 'Different display name', source: 'openrouter', hugging_face_id: checkpoint },
+      { ...models[1], id: `provider/${checkpoint}`, name: checkpoint },
+      { ...models[0], id: checkpoint, price_per_m_input: 0.001, hugging_face_id: 'other/checkpoint' },
+    ] })
+    await render(); await click('Calculate'); await click('Cost vs workload (break-even analysis)')
+    const chart = host.querySelector('[data-testid="chart"]')!
+    const beforeChart = chart.textContent
+    const beforeCosts = [...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)
+    const sizingCalls = vi.mocked(readRecommendStream).mock.calls.length
+    expect(host.querySelector<HTMLInputElement>('#hybrid-api-model')!.value).toBe(checkpoint)
+    expect(await comboOptions('hybrid-hosted-provider')).toHaveLength(2)
+    await chooseComboOption('hybrid-hosted-provider', 1)
+    const afterCosts = [...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)
+    expect(afterCosts[0]).not.toBe(beforeCosts[0])
+    expect(afterCosts.slice(1)).toEqual(beforeCosts.slice(1))
+    expect(chart.textContent).not.toBe(beforeChart)
+    expect(vi.mocked(readRecommendStream).mock.calls.length).toBe(sizingCalls)
+  })
+
   it('keeps the default API model label linked to the model selected above', async () => {
     await render(); await click('Calculate')
     expect(host.querySelector<HTMLInputElement>('#hybrid-api-model')!.value).toBe('Qwen/Qwen3-8B')

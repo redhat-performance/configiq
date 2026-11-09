@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge AISimulate's packaged HF configs into the BLIS catalog and emit its support manifest.
+"""Augment the BLIS catalog with AISimulate's packaged HF configs and emit the support manifest.
 
 The image ships BLIS's own catalog (``blis-catalog``) and the checked-out AISimulate
 wheel. This tool reconciles the two:
@@ -14,12 +14,16 @@ wheel. This tool reconciles the two:
   with a generic error;
 * the manifest (``support.json``) is the API contract: which models BLIS can price,
   where each came from, how an AISimulate config relates to the upstream entry of the
-  same name, and which hardware/networks/scenarios are bundled.
+  same name, and which hardware/networks are bundled.
+
+This is catalog *augmentation*, not a sync. BLIS reads only each model's
+``graph.yaml`` (derived from the vendor ``config.json``); it never reads AISimulate's
+configs itself, so this tool is the only bridge between an AISimulate model ID and a
+BLIS-priced one.
 
 Usage::
 
-    export_blis_catalog.py CATALOG_ROOT --manifest /opt/blis/support.json \\
-        --scenarios /opt/blis/scenarios
+    export_blis_catalog.py CATALOG_ROOT --manifest /opt/blis/support.json
 """
 
 from __future__ import annotations
@@ -33,11 +37,10 @@ import sys
 from dataclasses import dataclass, field
 from hashlib import sha256
 from importlib import resources
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import Any
-
-import yaml
+from urllib.parse import unquote, urlparse
 
 MANIFEST_SCHEMA_VERSION = 1
 GENERATOR = "services/aisimulators/tools/export_blis_catalog.py"
@@ -173,49 +176,43 @@ def config_relation(aisimulate_config: dict[str, Any], upstream_config: dict[str
     return RELATION_DIFFERENT
 
 
-def _model_yaml(name: str, model_id: str, package_version: str) -> str:
+def _model_yaml(name: str, model_id: str, package_version: str, build: str | None = None) -> str:
+    # `revision` names what the config was taken from: the fork's release build when
+    # pip recorded it, else just the installed version.
+    revision = build or f"aisimulate-{package_version}"
     return (
         f"name: {json.dumps(name)}\n"
         "source:\n"
         "  provider: aisimulate\n"
         f"  repo: {json.dumps(model_id)}\n"
-        f"  revision: {json.dumps(f'aisimulate-{package_version}')}\n"
+        f"  revision: {json.dumps(revision)}\n"
     )
 
 
-def _scenario_entry(path: Path) -> dict[str, Any]:
-    documents = [doc for doc in yaml.safe_load_all(path.read_text()) if isinstance(doc, dict)]
-    scenario = next((doc for doc in documents if doc.get("kind") == "Scenario"), {})
-    deployment = next((doc for doc in documents if doc.get("kind") == "Deployment"), {})
-    pools = []
-    for pool in deployment.get("pools") or []:
-        parallel = pool.get("parallel") or {}
-        engine = pool.get("engine") or {}
-        pools.append(
-            {
-                "role": pool.get("role"),
-                "tp": parallel.get("tp"),
-                "pp": parallel.get("pp"),
-                "dp": parallel.get("dp"),
-                "quantization": engine.get("quantization"),
-            }
-        )
-    return {
-        "name": scenario.get("name", deployment.get("name", path.stem)),
-        "file": path.name,
-        "model": scenario.get("model"),
-        "hardware": (scenario.get("cluster") or {}).get("hardware"),
-        "pools": pools,
-    }
+def installed_wheel() -> dict[str, str | None]:
+    """The exact fork-release wheel this image installed, when pip recorded one.
 
-
-def _scenario_manifest(scenarios_dir: Path | None) -> list[dict[str, Any]]:
-    if scenarios_dir is None:
-        return []
-    files = sorted(scenarios_dir.glob("*.yaml"))
-    if not files:
-        raise RuntimeError(f"no scenario YAML files found in {scenarios_dir}")
-    return [_scenario_entry(path) for path in files]
+    ``pip`` writes ``direct_url.json`` beside a distribution installed from a URL —
+    which is how the Containerfile installs this SDK. Its URL names the release build
+    (``deploy-api-v0.13.0+dd7494b9``) the bundled model configs came from, so the
+    manifest can say which build a derived catalog entry was derived from.
+    """
+    try:
+        dist = distribution("aisimulate")
+    except PackageNotFoundError:
+        return {"version": None, "build": None, "url": None}
+    url = build = None
+    try:
+        payload = json.loads(dist.read_text("direct_url.json") or "null")
+    except (OSError, ValueError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("url"), str):
+        url = payload["url"]
+        segments = [unquote(part) for part in urlparse(url).path.split("/") if part]
+        # .../releases/download/<tag>/aisimulate-<version>-<abi>.whl
+        if len(segments) >= 2:
+            build = segments[-2]
+    return {"version": dist.version, "build": build, "url": url}
 
 
 def _catalog_names(catalog_root: Path, subdir: str, suffix: str) -> list[str]:
@@ -250,11 +247,14 @@ def export_catalog(
     package_version: str | None = None,
     derive_script: Path | None = None,
     manifest_path: Path | None = None,
-    scenarios_dir: Path | None = None,
 ) -> ExportResult:
-    """Merge AISimulate configs into ``catalog_root`` and return the support manifest."""
+    """Augment ``catalog_root`` with AISimulate configs and return the support manifest."""
     source_root = source_root or Path(str(resources.files("aisimulate_core") / "model_configs"))
-    package_version = package_version or version("aisimulate")
+    wheel = installed_wheel()
+    # An explicit package_version is the caller's stated provenance, so it wins:
+    # only a version derived from the installed wheel records that wheel's build.
+    build = wheel["build"] if package_version is None else None
+    package_version = package_version or wheel["version"] or version("aisimulate")
     derive_script = derive_script or catalog_root / "scripts" / "derive_graph.py"
     destination_root = catalog_root / "models"
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -335,7 +335,7 @@ def export_catalog(
         destination = destination_root / name
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination / "config.json")
-        (destination / "model.yaml").write_text(_model_yaml(name, model_id, package_version))
+        (destination / "model.yaml").write_text(_model_yaml(name, model_id, package_version, build))
 
         if not derive_script.is_file():
             shutil.rmtree(destination)
@@ -382,11 +382,11 @@ def export_catalog(
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "generated_by": GENERATOR,
         "aisimulate_version": package_version,
+        "aisimulate_wheel": wheel,
         "models": dict(sorted(models.items())),
         "skipped": [skipped.as_dict() for skipped in result.skipped],
         "hardware": _catalog_names(catalog_root, "hardware", ".yaml"),
         "networks": _catalog_names(catalog_root, "networks", ".yaml"),
-        "scenarios": _scenario_manifest(scenarios_dir),
     }
     if manifest_path is not None:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -401,7 +401,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package-version", default=None, help="AISimulate version recorded in model.yaml")
     parser.add_argument("--derive-script", type=Path, default=None, help="path to blis-catalog scripts/derive_graph.py")
     parser.add_argument("--manifest", type=Path, default=None, help="write the support manifest here")
-    parser.add_argument("--scenarios", type=Path, default=None, help="bundled BLIS scenario directory")
     args = parser.parse_args(argv)
 
     result = export_catalog(
@@ -410,7 +409,6 @@ def main(argv: list[str] | None = None) -> int:
         package_version=args.package_version,
         derive_script=args.derive_script,
         manifest_path=args.manifest,
-        scenarios_dir=args.scenarios,
     )
     print(
         f"BLIS catalog: {result.added} AISimulate model(s) added, "

@@ -7,7 +7,7 @@ LLM inference sizing, GPU comparison, and cost modeling for engineers and infras
 - [configiq.xyz](https://configiq.xyz) (latest release)
 - [configiq.dev](https://configiq.dev) (latest commit)
 
-Built with Next.js + PatternFly, powered by our [AISimulators](https://github.com/ai-dynamo/aisimulate) [REST API](https://aisimulators.dev/docs).
+Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://aisimulators.dev/docs) for multi-simulator sizing and estimation.
 
 ## What it does
 
@@ -26,7 +26,11 @@ Built with Next.js + PatternFly, powered by our [AISimulators](https://github.co
 ConfigIQ maintains empirically trained performance-envelope classifiers for
 supported model and hardware pairs. The classifiers are built from sanitized,
 pinned ground-truth data and served by Triton FIL; the webapp consumes their
-registry and dashboard payloads through `/api/tested-models`.
+registry and dashboard payloads through `/api/tested-models`. Registry schema v2
+distinguishes validated classifiers from measured pairs without a validated
+envelope, and from models that are approved for measurement but have no data.
+Only validated pairs emit a verdict; every measured pair links to its graph at
+`/tested-models/<pair-id>`.
 
 The complete pipeline, data boundary, artifact schema, and deployment procedure
 are documented in [docs/tested-models.md](docs/tested-models.md). Source scripts
@@ -67,7 +71,7 @@ npm test             # Vitest test suite
 |-------|-----------|
 | Framework | Next.js 16 App Router + TypeScript |
 | UI | PatternFly v6 |
-| Backend APIs | [AISimulators](https://aisimulators.dev/docs) for GPU sizing and estimation; aicostings for pricing |
+| Backend APIs | [AISimulators](https://aisimulators.dev/docs) for multi-simulator sizing, estimation, and capabilities; aicostings for pricing |
 
 ## Project structure
 
@@ -87,7 +91,7 @@ app/                  Next.js App Router pages
     predict/          POST — GPU performance via AISimulators /predict
     memory/           POST — memory breakdown via AISimulators /memory
     gpus/             GET — GPU catalog via AISimulators /systems
-    catalog/          GET — combined systems, models, and backends catalog
+    catalog/          GET — combined systems, models, backends, and network-fabrics catalog
     estimate/         POST — compatibility alias for predict
     hf-config/        GET — Hugging Face model config lookup
     health/           GET — health check

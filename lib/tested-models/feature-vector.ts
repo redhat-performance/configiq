@@ -2,6 +2,7 @@ import type {
   CanonicalClassifierInput,
   ClassifierEffectiveConfiguration,
 } from './types'
+import { canonicalQuantization, type QuantizationField } from './quantization'
 
 export interface FeatureSchema {
   feature_names: string[]
@@ -64,8 +65,8 @@ export function buildFeatureValues(input: CanonicalClassifierInput): Record<stri
     accelerator: systemFamily(effective.system_id),
     request_type: 'unknown',
     precision: dtypeValue(effective),
-    weight_quantization: effective.gemm_quant_mode ?? 'unknown',
-    kv_quantization: effective.kvcache_quant_mode ?? 'unknown',
+    weight_quantization: canonicalQuantization('weight_quantization', effective.gemm_quant_mode),
+    kv_quantization: canonicalQuantization('kv_quantization', effective.kvcache_quant_mode),
     tp,
     pp,
     dp,
@@ -90,11 +91,21 @@ export function buildFeatureValues(input: CanonicalClassifierInput): Record<stri
 
 export function buildFeatureVector(input: CanonicalClassifierInput, schema: FeatureSchema): number[] {
   const values = buildFeatureValues(input)
+  const originalQuantization: Record<QuantizationField, string> = {
+    weight_quantization: input.effective.gemm_quant_mode ?? '',
+    kv_quantization: input.effective.kvcache_quant_mode ?? '',
+  }
+  const selected = new Map<string, string | null>()
+  for (const field of ['weight_quantization', 'kv_quantization'] as const) {
+    selected.set(field, selectQuantizationCategory(field, originalQuantization[field], schema.feature_names))
+  }
   return schema.feature_names.map((name) => {
     const separator = name.indexOf('=')
     if (separator >= 0) {
       const field = name.slice(0, separator)
       const expected = name.slice(separator + 1)
+      const category = selected.get(field)
+      if (category !== undefined) return category === expected ? 1 : 0
       return String(values[field] ?? '') === expected ? 1 : 0
     }
     const value = values[name]
@@ -102,4 +113,22 @@ export function buildFeatureVector(input: CanonicalClassifierInput, schema: Feat
       ? value
       : schema.numeric_medians[name] ?? 0
   })
+}
+
+/**
+ * Pick exactly one schema category for a quantization field. Legacy schemas can
+ * contain both an alias and its canonical spelling, so an exact match wins and
+ * a canonical match is only used when no exact category exists. Returning a
+ * single category preserves the one-hot encoding the classifier was trained on.
+ */
+function selectQuantizationCategory(field: QuantizationField, actual: string, featureNames: string[]): string | null {
+  const prefix = `${field}=`
+  const categories = featureNames
+    .filter(name => name.startsWith(prefix))
+    .map(name => name.slice(prefix.length))
+  if (categories.length === 0) return null
+  if (categories.includes(actual)) return actual
+  const canonical = canonicalQuantization(field, actual)
+  if (categories.includes(canonical)) return canonical
+  return categories.find(category => canonicalQuantization(field, category) === canonical) ?? null
 }

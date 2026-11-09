@@ -84,6 +84,8 @@ export type ClassifierStatus =
   | 'within_validated_range'
   | 'near_validated_boundary'
   | 'outside_validated_range'
+  | 'measured_no_envelope'
+  | 'no_measurements'
   | 'validation_unavailable'
 
 export interface ClassifierPrediction {
@@ -92,4 +94,8 @@ export interface ClassifierPrediction {
   pair_id: string | null
   classifier: string | null
   reasons: string[]
+  /** Canonical link to the measured graph for this pair, when one exists. */
+  dashboard_href?: string | null
+  /** Canonical link to the measured boundary section. */
+  boundary_href?: string | null
 }

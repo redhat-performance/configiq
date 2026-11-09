@@ -6,7 +6,7 @@ import { modelFacets } from '@/lib/model-metadata'
 /**
  * Build the model dropdown items from the three model sources, deduped:
  *   1. AISimulate catalog (from the /models REST endpoint)   → "in catalog" (green)
- *   2. Tested models (config.testedModels)                   → "tested" (blue)
+ *   2. Tested models (live tested-model registry)             → "tested" (blue)
  *   3. Hugging Face models (config.huggingFaceModels)        → "hugging face" (gold)
  *
  * A model can belong to more than one source; the flags are set independently
@@ -22,20 +22,26 @@ import { modelFacets } from '@/lib/model-metadata'
 export function buildModelItems(
   catalogModels: string[],
   specs?: Map<string, ModelSpec>,
+  validatedModels: string[] = [],
 ): ComboBoxItem[] {
   const config = getAppConfig()
   const catalog = new Set(catalogModels)
+  // `testedModels` in config is the approved-for-measurement list, not the
+  // registry's validated list. Keep those concepts separate: only registry
+  // IDs earn the "tested" badge, while approved models stay selectable.
+  const approvedValues = config.testedModels
+  const testedValues = validatedModels
 
   const seen = new Set<string>()
   const items: ComboBoxItem[] = []
-  for (const m of [...catalogModels, ...config.testedModels, ...config.huggingFaceModels]) {
+  for (const m of [...catalogModels, ...testedValues, ...approvedValues, ...config.huggingFaceModels]) {
     if (seen.has(m)) continue
     seen.add(m)
     const slash = m.indexOf('/')
     items.push({
       ...modelFacets(m, {
         spec: specs?.get(m),
-        testedModels: config.testedModels,
+        testedModels: testedValues,
         catalogModels: catalog,
         huggingFaceModels: config.huggingFaceModels,
       }),

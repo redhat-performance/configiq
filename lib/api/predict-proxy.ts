@@ -70,7 +70,11 @@ export async function handlePredict(
     if (!res.ok) {
       const d = data as Record<string, unknown>
       const raw = ((d?.error as Record<string, unknown>)?.message ?? d?.detail ?? '').toString().toLowerCase()
-      let code = 'AISIM_NO_CONFIGURATION'
+      let code = res.status === 504
+        ? 'AISIM_TIMEOUT'
+        : res.status >= 500
+          ? 'AISIM_UNAVAILABLE'
+          : 'AISIM_NO_CONFIGURATION'
       if (raw.includes('oom') || raw.includes('does not fit in gpu memory')) code = 'OOM'
       else if (raw.includes('moe_ep_size') || raw.includes('moe_tp_size') || raw.includes('moe models')) code = 'MOE_PARAMS_REQUIRED'
       else if (res.status === 401 || raw.includes('authentication') || raw.includes('gated')) code = 'AUTH_REQUIRED'

@@ -111,15 +111,16 @@ configs that stopped loading.
 
 BLIS is built from source inside `services/aisimulators/Containerfile`; there is
 no published BLIS image to copy. Upstream's own `Dockerfile` named a Go base
-older than its `go.mod` required, so the v0.12.0 and v0.13.0 images were never
+older than its `go.mod` required, so the v0.12.0 through v0.14.0 images were never
 published — do not expect a GHCR tag to appear for a release.
 
-The build pins four things as `ARG`s at the top of the Containerfile, each a
+The build pins five things as `ARG`s at the top of the Containerfile, each a
 commit rather than a tag:
 
 | Argument | Upstream repo |
 |---|---|
 | `BLIS_COMMIT` | `inference-sim/inference-sim` |
+| `BLIS_VERSION` | the release the image reports (`/backends`, provenance) |
 | `BLIS_GO_VERSION` | the `golang:<version>-alpine` builder base |
 | `BLIS_CATALOG_COMMIT` | `inference-sim/blis-catalog` |
 | `BLIS_REGISTRY_COMMIT` | `inference-sim/blis-registry` |
@@ -128,22 +129,26 @@ To move to a new BLIS release:
 
 1. Read the release's `go.mod` and set `BLIS_GO_VERSION` to its `go` directive;
    a mismatch fails the image build with a Go toolchain error.
-2. Set `BLIS_COMMIT` to the release tag's commit, and bump the catalog and
-   registry commits to the releases that release is tested against (its
-   `README.md` names them).
-3. Rebuild the image and confirm the exporter summary is plausible. A release
+2. Set `BLIS_COMMIT` and the human-facing `BLIS_VERSION` to the release tag's
+   commit and version, and bump the catalog and registry commits to the releases
+   that release is tested against (its `README.md` names them).
+3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and
+   `ENGINE_VERSION_SUPPORT` in `tools/api_service/blis/scenario.py` if the
+   release changes which vLLM versions it models. The API refuses any
+   `backend_version` outside that set rather than substituting one.
+4. Rebuild the image and confirm the exporter summary is plausible. A release
    that adds an architecture the catalog's `scripts/derive_graph.py` cannot
    derive will show up under `skipped` in `/opt/blis/support.json` rather than
    disappearing.
-4. Verify the merged catalog still loads through BLIS's production loader by
+5. Verify the merged catalog still loads through BLIS's production loader by
    running `scripts/catalog-load-gate.sh` from the BLIS checkout with
    `BLIS_CATALOG` pointing at the merged catalog.
 
-BLIS never fetches at run time, so the catalog, registry and example scenarios
-must all be baked into the image. `/opt/blis/support.json` is the API contract:
-which models BLIS can price, where each came from, how an AISimulate config
-relates to a same-named upstream entry, and which hardware, fabrics and scenarios
-are bundled.
+BLIS never fetches at run time, so the catalog and registry must be baked into
+the image. `/opt/blis/support.json` is the API contract: which models BLIS can
+price, where each came from, how an AISimulate config relates to a same-named
+upstream entry, which hardware and fabrics are bundled, and which `aisimulate`
+wheel supplied the configs.
 
 > **Note:** ConfigIQ deliberately keeps building BLIS from source. A published
 > image would need upstream to fix its Go base first, and would give up the

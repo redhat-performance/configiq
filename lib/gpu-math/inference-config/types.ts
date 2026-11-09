@@ -54,7 +54,7 @@ export interface VLLMConfig {
   max_num_seqs: number
   gpu_memory_utilization: number
   max_num_batched_tokens: number
-  enable_chunked_prefill: boolean
+  enable_chunked_prefill: boolean | null
   enable_prefix_caching: boolean
   quantization: string
 }
@@ -112,10 +112,14 @@ export interface PerformanceMetrics {
   tpot_ms: number  // Time per output token (decode latency)
   request_latency_ms: number  // Full request latency (ttft + tpot * osl)
   throughput_tokens_per_sec: number
+  /** Per-concurrent-user output rate, when the simulator reports it. */
+  throughput_tokens_per_sec_per_user?: number | null
   concurrency: number  // Max concurrent users
 }
 
 export interface InferenceConfigResult {
+  simulator: 'aisimulate' | 'blis'
+  memory_available: boolean
   memory_analysis: MemoryAnalysis
   vllm_config: VLLMConfig
   parallelism_strategy: ParallelismStrategy

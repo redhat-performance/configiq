@@ -10,22 +10,25 @@
 #   * the aisimulate SDK, installed from the single published wheel pinned in
 #     pyproject.toml (bump it there to move to a newer SDK), and
 #   * BLIS, built from the pinned upstream source commit below, together with the
-#     blis-catalog and blis-registry clones and the upstream example scenarios it
-#     needs at run time. BLIS is CPU-only and fetches nothing at run time.
+#     blis-catalog and blis-registry clones it reads at run time. BLIS is CPU-only
+#     and fetches nothing at run time. A request's scenario is generated per call,
+#     so no scenario directory is bundled.
 #
 # BLIS's own `Dockerfile` in the release tag names a Go base older than its
 # `go.mod`, which is why the upstream GHCR image was never published for v0.12.0
-# or v0.13.0. Building from source here keeps the base image under our control;
-# bump BLIS_GO_VERSION with BLIS_COMMIT when `go.mod` requires a newer toolchain.
+# through v0.14.0. Building from source here keeps the base image under our
+# control; bump BLIS_GO_VERSION with BLIS_COMMIT when `go.mod` requires a newer
+# toolchain.
 #
-# The last build step reconciles AISimulate's packaged model configs with the
-# pinned catalog and writes /opt/blis/support.json, the manifest the REST API
-# uses to decide whether BLIS can price a request. See services/aisimulators/README.md.
+# The last build step adds AISimulate's packaged model configs to the pinned
+# catalog and writes /opt/blis/support.json, the manifest the REST API uses to
+# decide whether BLIS can price a request. Upstream-reviewed catalog entries always
+# win. See services/aisimulators/README.md.
 
 # --- BLIS source -----------------------------------------------------------------
-# Commit for BLIS v0.13.0. Both the binary and the example scenarios come from
-# this one checkout, so the scenarios are the ones that release was tested with.
-ARG BLIS_COMMIT=1813579275e3f782ecc1a83ef508017935121235
+# Commit for BLIS v0.14.0.
+ARG BLIS_COMMIT=f2ba6bb1c189ed5a56933cfa3d0927eae3836ee9
+ARG BLIS_VERSION=0.14.0
 ARG BLIS_GO_VERSION=1.27.2
 
 FROM alpine/git:2.47.2 AS blis_source
@@ -67,6 +70,10 @@ RUN git init /opt/blis/registry \
 
 FROM python:3.12-slim
 
+# The BLIS release this image was built from, reported by GET /backends and in
+# every BLIS prediction's provenance. Re-declared from the global ARG above.
+ARG BLIS_VERSION
+
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
 # name it shares. Set on package creation; add here so future publishes resolve
 # to configiq/packages rather than redhat-performance/aisimulators.
@@ -77,17 +84,16 @@ WORKDIR /app
 COPY --from=blis_build /blis /usr/local/bin/blis
 COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
 COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
-COPY --from=blis_source /src/examplescenarios /opt/blis/scenarios
 
 # BLIS_CATALOG is the one input BLIS itself reads from the environment; the
-# registry and scenario directory have no environment fallback, so the wrapper
-# reads our own variables and passes explicit flags. BLIS_SUPPORT is the
-# generated manifest (models, skipped models, hardware, scenarios).
+# registry has no environment fallback, so the wrapper reads our own variable and
+# passes an explicit flag. BLIS_SUPPORT is the generated manifest (models, skipped
+# models, hardware, networks).
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    BLIS_VERSION=${BLIS_VERSION} \
     BLIS_CATALOG=/opt/blis/catalog \
     BLIS_REGISTRY=/opt/blis/registry \
-    BLIS_SCENARIOS=/opt/blis/scenarios \
     BLIS_SUPPORT=/opt/blis/support.json \
     PATH=/opt/venv/bin:${PATH}
 
@@ -111,16 +117,15 @@ RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
-# Reconcile the wheel's cached model configs into the pinned BLIS catalog and
-# write the support manifest. The upstream catalog always wins a shared name; a
-# model is added only when blis-catalog's own scripts/derive_graph.py can derive
-# its graph, and everything that cannot be priced is recorded in the manifest
-# with a reason instead of silently disappearing.
+# Augment the pinned BLIS catalog with the wheel's cached model configs and write
+# the support manifest. The upstream catalog always wins a shared name; a model is
+# added only when blis-catalog's own scripts/derive_graph.py can derive its graph,
+# and everything that cannot be priced is recorded in the manifest with a reason
+# instead of silently disappearing.
 # Expose both simulator CLIs at stable system paths afterwards.
 COPY aisimulators/tools/export_blis_catalog.py /tmp/export_blis_catalog.py
 RUN python /tmp/export_blis_catalog.py /opt/blis/catalog \
         --manifest "${BLIS_SUPPORT}" \
-        --scenarios "${BLIS_SCENARIOS}" \
     && rm /tmp/export_blis_catalog.py \
     && ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
     && /usr/local/bin/aisimulate --help >/dev/null \

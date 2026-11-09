@@ -3,7 +3,14 @@ import { NextRequest } from 'next/server'
 import { POST } from './route'
 import { readRecommendStream } from '@/lib/api/recommend-stream'
 
-const requestBody = { model_path: 'Qwen/Qwen3-8B' }
+const requestBody = {
+  model_path: 'Qwen/Qwen3-8B',
+  system: 'h200_sxm',
+  isl: 1024,
+  osl: 128,
+  ttft: 1000,
+  target_concurrency: 1,
+}
 
 function request(accept: string, path = '/api/recommend', signal?: AbortSignal): NextRequest {
   return new NextRequest(`http://localhost:3001${path}`, {
@@ -67,6 +74,24 @@ describe('POST /api/recommend through a ConfigIQ gateway', () => {
 
     const streamRequestResponse = await POST(request('text/event-stream'))
     await expect(readRecommendStream(streamRequestResponse)).resolves.toEqual(result)
+  })
+
+  it('returns an upstream failure status when BLIS provenance is missing', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(Response.json({ simulator: 'aisimulate', configs: [] }))))
+
+    const req = new NextRequest('http://localhost:3001/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ ...requestBody, simulator: 'blis' }),
+    })
+    const response = await POST(req)
+
+    expect(response.status).toBe(502)
+    await expect(response.json()).resolves.toMatchObject({
+      status: 'failed',
+      error: { code: 'SIMULATOR_MISMATCH' },
+    })
   })
 
   it('stops the upstream request when the client disconnects', async () => {

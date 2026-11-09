@@ -26,12 +26,13 @@
     "@patternfly/react-core": "^6.6.2",
     "@patternfly/react-icons": "^6.6.1",
     "@patternfly/react-table": "^6.6.1",
-    "next": "^16.3.6",
+    "hyparquet": "^1.31.3",
+    "next": "^16.4.3",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "victory": "^37.3.6",
     "winston-transport": "^4.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.7",
@@ -40,17 +41,18 @@
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "eslint": "^9.39.5",
-    "eslint-config-next": "^16.3.6",
-    "happy-dom": "^20.11.6",
+    "eslint-config-next": "^16.4.3",
+    "happy-dom": "^21.0.4",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.5",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "engines": {
     "node": ">=20.19.0"
   },
   "overrides": {
+    "glob": "^14.0.3",
     "js-yaml": "^4.3.2",
     "postcss": "^8.5.18"
   },

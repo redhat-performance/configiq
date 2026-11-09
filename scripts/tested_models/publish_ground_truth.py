@@ -10,8 +10,15 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
-from dataset_common import file_sha256, validate_public_frame
-from huggingface_hub import HfApi
+from dataset_common import (
+    DATASET_REPO_ENV,
+    DEFAULT_DATASET_REPO,
+    file_sha256,
+    resolve_dataset_repo_id,
+    validate_public_frame,
+)
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -64,9 +71,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path, default=Path("data/tested-models/dataset-manifest.json"))
     parser.add_argument("--datasets-dir", type=Path, default=Path("data/tested-models/datasets"))
     parser.add_argument("--output-dir", type=Path, default=Path("data/tested-models/hf-ground-truth"))
-    parser.add_argument("--repo-id", default="redhat-performance/configiq-performance-data")
+    parser.add_argument(
+        "--repo-id",
+        default=None,
+        help=f"Dataset repository; defaults to ${DATASET_REPO_ENV}, then {DEFAULT_DATASET_REPO}.",
+    )
     parser.add_argument("--revision", default=None, help="Optional branch or tag to update; defaults to the repository default branch.")
+    parser.add_argument("--check-only", action="store_true", help="Compare prepared data with Hugging Face without uploading.")
+    parser.add_argument(
+        "--allow-removal",
+        action="store_true",
+        help="Allow an upload to delete pairs that exist only in the remote dataset.",
+    )
     return parser.parse_args()
+
+
+def _content_signature(manifest: dict) -> list[tuple[str, int, tuple[str, ...], str | None]]:
+    return sorted(
+        (
+            pair["id"], pair["records"], tuple(pair["columns"]),
+            pair.get("data_sha256"),
+        )
+        for pair in manifest["pairs"]
+    )
 
 
 def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
@@ -143,12 +170,46 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
     return manifest
 
 
+def _missing_remote_pairs(local_manifest: dict, remote_manifest: dict) -> list[str]:
+    """Pairs in the remote dataset that this upload would delete."""
+    local_ids = {pair["id"] for pair in local_manifest.get("pairs", [])}
+    remote_ids = {pair["id"] for pair in remote_manifest.get("pairs", [])}
+    return sorted(remote_ids - local_ids)
+
+
 def main() -> int:
     args = parse_args()
+    args.repo_id = resolve_dataset_repo_id(args.repo_id)
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
-    api.create_repo(args.repo_id, repo_type="dataset", private=False, exist_ok=True)
-    parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision).sha
+    parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision, token=False).sha
+    try:
+        remote_manifest_path = hf_hub_download(
+            repo_id=args.repo_id,
+            repo_type="dataset",
+            filename="manifest.json",
+            revision=parent_commit,
+            token=False,
+        )
+        remote_manifest = json.loads(Path(remote_manifest_path).read_text())
+    except EntryNotFoundError:
+        # First publish to an empty dataset repository: nothing to compare.
+        remote_manifest = {"pairs": []}
+    if _content_signature(manifest) == _content_signature(remote_manifest):
+        print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
+        return 0
+    missing = _missing_remote_pairs(manifest, remote_manifest)
+    if missing and args.check_only:
+        print(f"prepared data would remove remote pairs: {', '.join(missing)}")
+    if args.check_only:
+        print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
+        return 0
+    if missing and not args.allow_removal:
+        raise SystemExit(
+            "prepared data would remove pairs present in the remote dataset: "
+            f"{', '.join(missing)}. Run the complete extraction, or pass --allow-removal "
+            "to remove them intentionally."
+        )
     commit = api.upload_folder(
         repo_id=args.repo_id,
         repo_type="dataset",

@@ -21,6 +21,7 @@ export interface KvCacheCalcResult {
     totalBytes: number
   }
   metadata: {
+    simulator: 'aisimulate'
     modelPath: string
     backend: string
     backendVersion: string | null
@@ -148,6 +149,7 @@ export async function callKvCacheCalc(
       totalBytes: asNumber(rawData.total_gpu_capacity_bytes, 0),
     },
     metadata: {
+      simulator: 'aisimulate',
       modelPath: request.model_path,
       backend: request.backend,
       backendVersion: request.backend_version ?? null,

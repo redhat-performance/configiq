@@ -40,9 +40,11 @@ services, typically behind nginx. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
 | App shell | `components/layout/AppShell.tsx` | PatternFly page, masthead, and sidebar |
 | Predict workflow | `app/predict/` | Explicit `/api/predict` performance requests and result display |
 | Recommend workflow | `app/recommend/` | GPU sizing requests, including streamed progress |
+| Simulator setting | `contexts/SettingsContext.tsx`, `app/settings/` | Persisted global simulator selection for Predict and Recommend |
 | KV cache calculator | `app/kv-cache/` | `/api/memory` requests and memory breakdown display |
 | Catalog hook | `lib/hooks/useCatalog.ts` | Same-origin GPU, model, and backend catalog |
 | Costings hook | `lib/hooks/useCostings.ts` | Same-origin pricing and health data |
+| Ground truth comparison | `app/validation/compare/` | Internal GT and InferenceX benchmark filters, AISimulators comparison, and PatternFly charts |
 | API adapters | `lib/api/` | Request shapes, response normalization, and error handling |
 | Legacy catalogs | `lib/gpu-math/` | Historical static data and types; no new sizing formulas |
 
@@ -54,7 +56,9 @@ GPU sizing formulas or call external service URLs directly from the browser.
 ### Predict performance
 
 1. `app/predict/Performance.tsx` builds an explicit model, system, workload,
-   backend, and parallelism request.
+   backend, simulator, and parallelism request. The simulator comes from the
+   global Settings selection. BLIS P/D predictions also include the chosen
+   network fabric and per-pool settings.
 2. `lib/api/estimate-adapter.ts` posts it to `/api/predict?include=config,memory`.
 3. The Next.js route delegates to `lib/api/predict-proxy.ts`, which calls the
    AISimulators `/predict` endpoint server-side.
@@ -65,19 +69,68 @@ GPU sizing formulas or call external service URLs directly from the browser.
 
 1. The recommend page sends a validated request to `/api/recommend`.
 2. `lib/api/recommend.ts` calls AISimulators `/recommend` and normalizes the
-   selected configuration, topology, phases, throughput, and memory.
-3. Streaming clients request `text/event-stream`; the route emits search-window
-   progress while `incrementalRecommend` searches and refines GPU bounds.
+   selected configuration, simulator provenance, topology, phases, throughput,
+   and any memory data the selected simulator provides.
+3. Streaming clients request `text/event-stream`; AISimulate emits search-window
+   progress while `incrementalRecommend` searches and refines GPU bounds. BLIS
+   performs one bounded aggregate TP search, plus a bounded P/D grid when a
+   fabric is selected, and returns the actual search summary.
 
 ### Catalog and pricing
 
 1. `useCatalog` calls `/api/catalog`.
-2. The catalog route fetches `/systems`, `/models`, and `/backends` from
-   AISimulators and combines them into one browser response.
+2. The catalog route fetches `/systems`, `/models`, `/backends`, and `/networks`
+   from AISimulators and combines them into one browser response. The network
+   list supplies fabrics for BLIS P/D predictions; AISimulate does not consume it.
 3. When costings are enabled, `useCostings` calls `/api/costings/models`,
    `/api/costings/systems`, and `/api/costings/health`.
 4. Those routes proxy the aicostings service; pricing data is not part of the
    AISimulators sizing response.
+
+### Ground truth comparison
+
+1. The comparison page requests benchmark rows through the same-origin
+   `/api/validation/ground-truth` route.
+2. The route reads the public internal GT Hugging Face Parquet files and a
+   private Hugging Face InferenceX snapshot with a server-side read token. It
+   caches both sources for five minutes and derives filter options from their
+   union. Measured runtime configurations retain their source and serving
+   settings; a selection returns only its own source's rows. If either dataset
+   fails to load, measurements from the other remain available.
+3. Selected measurements are grouped by source and concurrency; ConfigIQ calls its existing
+   `/api/predict` proxy for estimates at up to 24 measured concurrency levels,
+   with at most three requests in flight. The request carries the simulator
+   selected in Settings, and the page refuses unsupported model/system/backend
+   combinations instead of falling back to another simulator. MoE expert
+   parallelism is set from catalog or Hugging Face expert-count metadata so its
+   width matches TP. When the measured backend version is supported, prediction
+   controls match it; otherwise the user chooses a supported prediction version.
+4. PatternFly charts show source-labeled measured and predicted values for TTFT, TPOT,
+   throughput, throughput per user, and request latency. The predicted series is
+   labeled with the simulator that actually produced the results. Aggregate
+   throughput comes from the simulator's cluster-wide rate; per-user throughput
+   uses its reported per-user rate when present. Percentage differences are
+   hidden when the measured and predicted backend versions differ. An unavailable dataset is shown
+   separately from a configuration that simply matches no rows.
+
+### Tested-model envelopes
+
+1. `lib/hooks/useTestedModels.ts` loads `/api/tested-models`, which parses the
+   host-mounted `registry.json` through `lib/tested-models/registry-types.ts`.
+   Schema v2 exposes each pair's status (`validated` or
+   `measured_no_envelope`), coverage, gate result, diagnostics, and the
+   `approvedModels` list.
+2. Model pickers treat only registry-validated models as tested. Approved models
+   and measured-only pairs remain selectable but never claim a validated
+   envelope.
+3. Before a prediction result is shown, the sizing pages call
+   `/api/tested-models/classify`. A pair that fails the gate returns
+   `measured_no_envelope` with no verdict; unavailable registry data is distinct
+   from "untested".
+4. The feedback component and classify response link to the canonical pair graph
+   at `/tested-models/<pair-id>`, falling back to
+   `/tested-models?model=<modelId>&system=<systemId>`. Legacy `?pair=` links
+   redirect to the pair route.
 
 ## API route map
 
@@ -87,7 +140,11 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/predict` | POST | AISimulators `/predict` |
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
-| `/api/catalog` | GET | Combined AISimulators systems, models, and backends |
+| `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
+| `/api/validation/ground-truth` | GET | Union filters and source-specific aggregated measurements from internal GT and private InferenceX datasets |
+| `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
+| `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs |
+| `/api/tested-models/dashboard/[pairId]` | GET | Sanitized measured graph data for one model/system pair |
 | `/api/gpus` | GET | AISimulators systems transformed to the legacy GPU shape |
 | `/api/hf-config` | GET | Hugging Face model configuration lookup |
 | `/api/costings/models` | GET | aicostings hosted-model pricing |

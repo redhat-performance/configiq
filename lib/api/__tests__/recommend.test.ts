@@ -17,6 +17,7 @@ const VALID_REQUEST = {
   prefix: 0,
   database_mode: 'HYBRID' as const,
   top_n: 5,
+  simulator: 'aisimulate' as const,
 }
 
 const EXTERNAL_RESPONSE = {
@@ -37,6 +38,64 @@ const EXTERNAL_RESPONSE = {
     dp: 1,
   }],
   chosen_mode: 'agg',
+}
+
+const BLIS_EXTERNAL_RESPONSE = {
+  ...EXTERNAL_RESPONSE,
+  simulator: 'blis',
+  search_summary: {
+    strategy: 'tensor_parallel_only',
+    candidate_gpus: [1, 2, 4],
+    evaluated_gpus: [1, 2],
+    max_candidates: 3,
+    configured_max_gpus: 16,
+    hardware_max_gpus: 8,
+    effective_max_gpus: 8,
+    time_budget_seconds: 60,
+    budget_exhausted: false,
+  },
+  configs: [{
+    ...EXTERNAL_RESPONSE.configs[0],
+    simulator: 'blis',
+    provenance: {
+      simulator: 'blis',
+      requested_model: 'meta-llama/Llama-3.1-70B-Instruct',
+      resolved_model: 'llama-3.1-70b-instruct',
+      model_source: 'upstream',
+      system: 'h200_sxm',
+      hardware: 'h200',
+      model_config_relation: 'different_quantization',
+      engine_version: '0.31.0',
+    },
+    warnings: ['The selected simulator uses a model configuration marked different_quantization.'],
+    memory: null,
+    memory_breakdown: null,
+  }],
+}
+
+const BLIS_PD_EXTERNAL_RESPONSE = {
+  ...BLIS_EXTERNAL_RESPONSE,
+  chosen_mode: 'disagg',
+  search_summary: {
+    ...BLIS_EXTERNAL_RESPONSE.search_summary,
+    strategy: 'aggregate_tp_and_pd_grid',
+    modes_searched: ['agg', 'disagg'],
+    candidate_configurations: 32,
+    evaluated_configurations: 10,
+  },
+  configs: [{
+    ...BLIS_EXTERNAL_RESPONSE.configs[0],
+    total_gpus_needed: 6,
+    num_total_gpus: 6,
+    mode: 'disagg',
+    tp: null,
+    pp: null,
+    dp: null,
+    prefill_config: { tp: 4, pp: 1, dp: 1, num_workers: 1, batch_size: 32 },
+    decode_config: { tp: 2, pp: 1, dp: 1, num_workers: 1, batch_size: 32 },
+    memory: null,
+    memory_breakdown: null,
+  }],
 }
 
 function mockFetchOk(data: unknown) {
@@ -86,6 +145,32 @@ describe('RecommendRequestSchema', () => {
       decode_max_seq_len: 64000,
     })
     expect(result.success).toBe(true)
+  })
+
+  it('accepts simulator', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      simulator: 'blis',
+      fabric: 'ib-400g',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data).toMatchObject({ simulator: 'blis', fabric: 'ib-400g' })
+  })
+
+  it('accepts a fabric for any simulator; the simulator API decides support', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      fabric: 'ib-400g',
+    })
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.fabric).toBe('ib-400g')
+  })
+
+  it('defaults simulator to aisimulate', () => {
+    const { simulator: _omit, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse(rest)
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.simulator).toBe('aisimulate')
   })
 
   it('accepts target_request_rate instead of target_concurrency', () => {
@@ -356,6 +441,78 @@ describe('callRecommend', () => {
 
     const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(sentBody.model_config).toEqual(model_config)
+  })
+
+  it('forwards simulator to the upstream request', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', fabric: 'ib-400g' }, { timeoutSeconds: 45 })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody.simulator).toBe('blis')
+    expect(sentBody.fabric).toBe('ib-400g')
+    expect(sentBody.search_budget_seconds).toBe(40)
+  })
+
+  it('preserves an explicit aggregate-only fabric opt-out', async () => {
+    const mockFetch = mockFetchOk(BLIS_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', fabric: null })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody).toHaveProperty('fabric', null)
+  })
+
+  it('rejects a BLIS request when the API does not confirm BLIS provenance', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+
+    const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis' })
+
+    expect(result.status).toBe('failed')
+    if (result.status === 'failed') expect(result.error.code).toBe('SIMULATOR_MISMATCH')
+  })
+
+  it('returns BLIS provenance, memory availability, and actual search summary', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(BLIS_EXTERNAL_RESPONSE))
+
+    const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis' })
+
+    expect(result.status).toBe('completed')
+    if (result.status === 'completed') {
+      expect(result.simulator).toBe('blis')
+      expect(result.memoryAvailable).toBe(false)
+      expect(result.warnings[0]?.message).toContain('different_quantization')
+      expect(result.searchSummary?.evaluated_gpus).toEqual([1, 2])
+    }
+  })
+
+  it('normalizes a BLIS P/D recommendation and its searched modes', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(BLIS_PD_EXTERNAL_RESPONSE))
+
+    const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis', fabric: 'ib-400g' })
+
+    expect(result.status).toBe('completed')
+    if (result.status === 'completed') {
+      expect(result.mode).toBe('disagg')
+      expect(result.recommendation.gpusNeeded).toBe(6)
+      expect(result.phases.prefill?.tensorParallelSize).toBe(4)
+      expect(result.phases.decode?.tensorParallelSize).toBe(2)
+      expect(result.searchSummary?.modes_searched).toEqual(['agg', 'disagg'])
+      expect(result.searchSummary?.evaluated_configurations).toBe(10)
+    }
+  })
+
+  it('does not fabricate AISimulate GPU windows for BLIS', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(BLIS_EXTERNAL_RESPONSE))
+    const events: string[] = []
+
+    for await (const event of incrementalRecommend({ ...VALID_REQUEST, simulator: 'blis' })) {
+      events.push(event.type)
+    }
+
+    expect(events).toEqual(['completed'])
   })
 
   it('forwards context window limits to the upstream request', async () => {

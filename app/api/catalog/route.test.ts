@@ -13,6 +13,14 @@ describe('GET /api/catalog', () => {
       '/systems?include=specs': { systems: [{ id: 'h200_sxm' }] },
       '/models?include=specs': { models: [{ id: 'Qwen/Qwen3-8B' }] },
       '/backends': { backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }] },
+      '/networks': { networks: ['ib-400g', 'roce-200g'] },
+      '/backends?simulator=blis': {
+        simulator: 'blis',
+        blis_version: '0.14.0',
+        backends: [{ id: 'vllm', versions: ['0.31.0'], disaggregation_requires_fabric: true }],
+      },
+      '/models?simulator=blis': { simulator: 'blis', models: ['Qwen/Qwen3-8B'] },
+      '/systems?simulator=blis': { simulator: 'blis', systems: [{ id: 'h200_sxm' }] },
     }
     const fetchMock = vi.fn((url: string) => {
       const path = new URL(url).pathname + new URL(url).search
@@ -27,8 +35,39 @@ describe('GET /api/catalog', () => {
       systems: [{ id: 'h200_sxm' }],
       models: [{ id: 'Qwen/Qwen3-8B' }],
       backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }],
+      networks: ['ib-400g', 'roce-200g'],
+      simulatorSupport: {
+        blis: {
+          version: '0.14.0',
+          backends: [{ id: 'vllm', disaggregation_requires_fabric: true }],
+        },
+      },
     })
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(7)
+  })
+
+  it('omits simulator support when the scoped responses do not echo the simulator', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+    const responses: Record<string, unknown> = {
+      '/systems?include=specs': { systems: [{ id: 'h200_sxm' }] },
+      '/models?include=specs': { models: [{ id: 'Qwen/Qwen3-8B' }] },
+      '/backends': { backends: [{ id: 'vllm' }] },
+      '/networks': { networks: ['ib-400g'] },
+      // An older AISimulators build ignores `?simulator=blis` and answers with
+      // its default AISimulate data at HTTP 200.
+      '/backends?simulator=blis': { backends: [{ id: 'vllm' }] },
+      '/models?simulator=blis': { models: ['Qwen/Qwen3-8B'] },
+      '/systems?simulator=blis': { systems: [{ id: 'h200_sxm' }] },
+    }
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      const path = new URL(url).pathname + new URL(url).search
+      return Promise.resolve(Response.json(responses[path]))
+    }))
+
+    const response = await GET(new Request('https://configiq.dev/api/catalog'))
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ simulatorSupport: {} })
   })
 
   it('preserves backends when using a combined ConfigIQ catalogue gateway', async () => {
@@ -37,6 +76,7 @@ describe('GET /api/catalog', () => {
       systems: [{ id: 'h200_sxm' }],
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
+      networks: ['ib-400g'],
     })))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -47,6 +87,7 @@ describe('GET /api/catalog', () => {
       systems: [{ id: 'h200_sxm' }],
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
+      networks: ['ib-400g'],
     })
     expect(fetchMock).toHaveBeenCalledWith('https://configiq.dev/api/catalog', expect.any(Object))
   })

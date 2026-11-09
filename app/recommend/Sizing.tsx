@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent } from '@patternfly/react-core';
+import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent, FormSelect, FormSelectOption } from '@patternfly/react-core';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
 import MemoryIcon from '@patternfly/react-icons/dist/esm/icons/memory-icon';
 import ClockIcon from '@patternfly/react-icons/dist/esm/icons/clock-icon';
@@ -19,7 +19,9 @@ import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { useRecommend } from '@/contexts/RecommendContext';
 import type { RecommendProgressEvent } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
-import { useCatalog } from '@/lib/hooks/useCatalog';
+import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
+import { useTestedModels } from '@/lib/hooks/useTestedModels';
+import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
@@ -28,6 +30,10 @@ import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
+import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
+import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
+import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
+import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 
 function modelSuggestions(): string {
   const names = getAppConfig().suggestedModelNames;
@@ -163,6 +169,7 @@ function friendlyErrorTitle(code: string | null): string {
     case 'AISIM_UNAVAILABLE': return 'Sizing service unavailable';
     case 'AISIM_NOT_CONFIGURED': return 'Service not configured';
     case 'AISIM_INVALID_RESPONSE': return 'Unexpected response';
+    case 'SIMULATOR_MISMATCH': return 'Simulator mismatch';
     case 'INVALID_REQUEST': return 'Invalid input';
     case 'NETWORK_ERROR': return 'Connection error';
     default: return 'Something went wrong';
@@ -174,7 +181,9 @@ function friendlyErrorMessage(code: string | null, raw: string): string {
     case 'AISIM_TIMEOUT':
       return 'The AISimulators service took too long to respond. This can happen with complex configurations.';
     case 'AISIM_NO_CONFIGURATION':
-      return 'No valid GPU configuration found for this model and hardware combination.';
+      return raw || 'No valid GPU configuration found for this model and hardware combination.';
+    case 'SIMULATOR_MISMATCH':
+      return raw;
     case 'AISIM_UNAVAILABLE':
       return 'The AISimulators service is temporarily unreachable. This is usually a transient issue.';
     case 'AISIM_NOT_CONFIGURED':
@@ -195,7 +204,9 @@ function friendlyErrorHint(code: string | null): string {
     case 'AISIM_TIMEOUT':
       return 'Try again, or try a smaller model or simpler configuration.';
     case 'AISIM_NO_CONFIGURATION':
-      return 'Try a different GPU system, or reduce the input token length (ISL).';
+      return 'Try a different GPU system or adjust the requested configuration.';
+    case 'SIMULATOR_MISMATCH':
+      return 'The server did not confirm the requested simulator. The application will not substitute another simulator.';
     case 'AISIM_UNAVAILABLE':
       return 'Wait a moment and try again.';
     case 'NETWORK_ERROR':
@@ -210,13 +221,34 @@ function friendlyErrorHint(code: string | null): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Sizing() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { modelOptions: catalogModels, gpuOptions: catalogGpus, modelSpecs, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  // A simulator may price only a subset of the catalog. Its override narrows
+  // the pickers; no override means the top-level catalog is its support.
+  const support = simulatorSupport[simulator];
+  const catalogModels = support?.models ?? allCatalogModels;
+  const catalogGpus = React.useMemo(
+    () => (support
+      ? allCatalogGpus.filter(option => support.systems.includes(option.systemId))
+      : allCatalogGpus),
+    [support, allCatalogGpus],
+  );
+  const engineBackend = support?.backends.find(backend => backend.id === inferenceBackend)
+    ?? support?.backends[0];
+  const engineSupport = engineVersionSupport(engineBackend, backendVersion || engineBackend?.defaultVersion);
+  const disaggSupported = engineSupport?.disaggregated ?? true;
+  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
+  // search takes none, so the fabric control stays hidden there.
+  const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
+  const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
+  const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
+  const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
+  const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
-  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs), [catalogModels, modelSpecs, hydrated]);
+  const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
 
   // Input state
   const [model, setModel] = React.useState('');
@@ -230,6 +262,14 @@ export default function Sizing() {
     setModel(settingsDefaultModel);
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
+  const testedSystemsForModel = React.useMemo(
+    () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
+    [testedPairs, model],
+  );
+  const selectableGpus = React.useMemo(
+    () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
+    [catalogGpus, testedSystemsForModel],
+  );
   const [isl, setIsl] = React.useState(2048);
   const [osl, setOsl] = React.useState(128);
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
@@ -245,7 +285,7 @@ export default function Sizing() {
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
   // GPU sizer (persistent across navigation)
-  const { isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
+  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
   const [debugOpen, setDebugOpen] = React.useState(false);
 
   // Additional constraints accordion
@@ -342,7 +382,7 @@ export default function Sizing() {
     let cancelled = false;
     const timer = setTimeout(() => {
       if (!model.includes('/')) { setModelStatus('idle'); return; }
-      const isTested = getAppConfig().testedModels.includes(model);
+      const isTested = validatedModelIds.includes(model);
       if (!needsHfConfig(model, MODEL_OPTIONS)) {
         setModelStatus(isTested ? 'supported' : 'catalog');
         return;
@@ -364,11 +404,76 @@ export default function Sizing() {
       });
     }, 500);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [model, hfToken, MODEL_OPTIONS, catalogLoading, hydrated]);
+  }, [model, hfToken, MODEL_OPTIONS, catalogLoading, hydrated, validatedModelIds]);
 
   // Fetch live pricing
 
-  const currentGpuOption = catalogGpus.find(g => g.systemId === gpuSystem) ?? catalogGpus[0] ?? null;
+  const currentGpuOption = selectableGpus.find(g => g.systemId === gpuSystem) ?? selectableGpus[0] ?? null;
+
+  React.useEffect(() => {
+    if (!catalogLoading && selectableGpus.length > 0 && !selectableGpus.some(gpu => gpu.systemId === gpuSystem)) {
+      setGpuSystem(selectableGpus[0].systemId);
+    }
+  }, [catalogLoading, gpuSystem, selectableGpus]);
+
+  const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
+    if (!result || !params) return null;
+    const phase = (value: PhaseConfig | null): ClassifierPhaseInput | null => value ? {
+      tp_size: value.tensorParallelSize,
+      pp_size: value.pipelineParallelSize,
+      dp_size: value.dataParallelSize,
+      cp_size: value.contextParallelSize,
+      moe_tp_size: value.moeTensorParallelSize,
+      moe_ep_size: value.moeExpertParallelSize,
+      workers: value.workers,
+      batch_size: value.batchSize,
+    } : null;
+    return {
+      effective: {
+        model_id: params.model_path,
+        system_id: params.system,
+        backend: params.backend ?? inferenceBackend,
+        backend_version: params.backend_version ?? null,
+        isl: params.isl,
+        osl: params.osl,
+        max_seq_len: params.max_seq_len ?? null,
+        prefill_max_seq_len: params.prefill_max_seq_len ?? null,
+        decode_max_seq_len: params.decode_max_seq_len ?? null,
+        concurrency: result.performance.concurrency,
+        tp_size: result.recommendation.tensorParallelSize,
+        pp_size: result.recommendation.pipelineParallelSize,
+        dp_size: result.recommendation.dataParallelSize,
+        cp_size: result.recommendation.contextParallelSize,
+        moe_tp_size: result.recommendation.moeTensorParallelSize,
+        moe_ep_size: result.recommendation.moeExpertParallelSize,
+        shared_prefix_tokens: params.prefix ?? 0,
+        prefix_caching_enabled: (params.prefix ?? 0) > 0 ? true : null,
+        weight_precision: null,
+        kv_cache_precision: null,
+        moe_quant_mode: null,
+        gpu_memory_utilization: null,
+        max_num_seqs: null,
+        chunked_prefill_enabled: null,
+        serving_mode: result.mode,
+        replicas: result.recommendation.replicasNeeded,
+        prefill: phase(result.phases.prefill),
+        decode: phase(result.phases.decode),
+        encode: phase(result.phases.encode),
+      },
+      request: {
+        request_kind: 'recommend',
+        target_request_rate: params.target_request_rate ?? null,
+        target_concurrency: params.target_concurrency ?? null,
+        target_latency_ms: params.request_latency ?? null,
+        target_ttft_ms: params.ttft ?? null,
+        target_tpot_ms: params.tpot ?? null,
+        database_mode: null,
+        top_n: null,
+      },
+      model_config: params.model_config ?? null,
+    };
+  }, [inferenceBackend, params, result]);
+  const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
 
@@ -403,6 +508,10 @@ export default function Sizing() {
       ...(backendVersion ? { backend_version: backendVersion } : {}),
       // Send the HF config for models AISimulators can't resolve from its catalog.
       ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+      simulator,
+      // A release without P/D modelling can only search aggregated candidates,
+      // so do not send a fabric that asks for a disaggregated topology.
+      ...(fabricRequired ? { fabric: disaggSupported ? selectedNetworkFabric || null : null } : {}),
     });
   };
 
@@ -448,20 +557,49 @@ export default function Sizing() {
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
-              supportedModels={getAppConfig().testedModels}
+                supportedModels={testedModelsAvailable ? validatedModelIds : undefined}
               hfToken={hfToken}
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={catalogGpus} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
+
+        {fabricRequired && (
+          <div style={{ marginTop: 14, maxWidth: 360 }}>
+            <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
+            <FormSelect
+              id="recommend-network-fabric"
+              value={selectedNetworkFabric}
+              aria-label="Inter-node fabric"
+              isDisabled={networkOptions.length === 0 || !disaggSupported}
+              onChange={(_, value) => setNetworkFabric(value)}
+            >
+              <FormSelectOption value="" label="None (aggregate candidates only)" />
+              {networkOptions.map(network => (
+                <FormSelectOption key={network} value={network} label={network} />
+              ))}
+            </FormSelect>
+            <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+              {!disaggSupported
+                ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}; only aggregate candidates are searched.`
+                : networkOptions.length === 0
+                  ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
+                  : selectedNetworkFabric === 'roce-200g' && networkFabric === null
+                    ? 'RoCE 200G is preselected; choose another fabric if needed. Select None for aggregate-only search.'
+                    : selectedNetworkFabric
+                      ? 'The simulator searches aggregate and P/D candidates using this fabric.'
+                      : 'No fabric selected; the simulator searches aggregate candidates only.'}
+            </div>
+          </div>
+        )}
 
         {/* Calculate button */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 16 }}>
           <button
             className={styles.calcBtn}
             onClick={handleCalculate}
-             disabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen}
+             disabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading}
           >
             {isLoading ? 'Calculating...' : 'Calculate'}
           </button>
@@ -654,9 +792,25 @@ export default function Sizing() {
         </div>
       )}
 
+      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={params?.model_path ?? model} systemId={params?.system ?? gpuSystem} />
+
       {/* ─── Result tiles ─── */}
       {result && (
         <>
+          <div className={styles.card} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px' }}>
+            <SimulatorBadge simulator={result.simulator} />
+            <span style={{ fontSize: 13, color: '#3c3f42' }}>Sizing recommendation</span>
+            {result.searchSummary && (
+              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+                Search: {result.searchSummary.strategy.replaceAll('_', ' ')} · {result.searchSummary.modes_searched?.join(' + ') ?? result.simulator} · tested {result.searchSummary.evaluated_configurations ?? result.searchSummary.evaluated_gpus.length} configurations across {result.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {result.searchSummary.effective_max_gpus} (configured {result.searchSummary.configured_max_gpus}, hardware {result.searchSummary.hardware_max_gpus}) · {result.searchSummary.time_budget_seconds}s{result.searchSummary.budget_exhausted ? ' budget reached' : ''}.
+              </span>
+            )}
+            {!result.memoryAvailable && (
+              <span style={{ fontSize: 13, color: '#3c3f42' }}>
+                This simulator does not provide memory estimates; the memory tile is hidden.
+              </span>
+            )}
+          </div>
           <div className={styles.tilesGrid}>
             {/* GPUs Required */}
             <FlipTile
@@ -782,8 +936,8 @@ export default function Sizing() {
               }
             />
 
-            {/* Peak memory per GPU */}
-            <FlipTile
+            {/* Peak memory per GPU (only when supplied by the selected simulator) */}
+            {result.memoryAvailable && <FlipTile
               front={
                 <>
                   <span className={styles.tileLabel}><MemoryIcon /> Peak mem / GPU</span>
@@ -829,7 +983,7 @@ export default function Sizing() {
                   </div>
                 </>
               }
-            />
+            />}
 
             {/* Est. monthly cost — only when costings is enabled and a rate is available */}
             {costingsEnabled && monthlyCost != null && pricePerHour != null && (

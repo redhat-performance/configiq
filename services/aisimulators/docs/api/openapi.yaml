@@ -18,7 +18,7 @@ tags:
   - name: sizing
     description: GPU recommendation, performance estimation, and memory estimation
   - name: catalog
-    description: Supported models and GPU systems
+    description: Supported models, GPU systems, and network fabrics
   - name: observability
     description: Service metrics
 
@@ -32,11 +32,17 @@ paths:
       summary: Find optimal GPU configuration for a workload
       description: |
         Given a model, GPU system, backend, workload shape, and performance
-        targets (SLA), searches across parallelism configurations (TP/PP/DP/EP)
-        and serving modes (aggregated and disaggregated) to find the deployment
-        with the fewest GPUs that meets the constraints.
+        targets (SLA), finds a deployment that meets the constraints. With
+        `simulator=aisimulate`, searches parallelism configurations (TP/PP/DP/EP)
+        and serving modes (aggregated and disaggregated). With `simulator=blis`,
+        searches aggregate TP candidates for concurrency workloads. Supplying a
+        `fabric` from `/networks` also enables a bounded grid of P/D TP and
+        worker-count candidates, with one node per pool. Unsupported requests
+        return an error instead of falling back to AISimulate.
 
-        Wraps `cli_recommend()` from the aisimulate SDK.
+        The AISimulate path wraps `cli_recommend()` from the aisimulate SDK.
+        The BLIS path generates a temporary Scenario and Deployment and runs the
+        image-pinned BLIS CLI.
 
         Exactly one of `target_request_rate` or `target_concurrency` must be
         provided.
@@ -93,7 +99,14 @@ paths:
         Use this when you know your deployment configuration and want to predict
         its performance. Use `/recommend` when you want to find the optimal config.
 
-        Wraps `cli_estimate()` from the aisimulate SDK.
+        With `simulator=aisimulate`, wraps `cli_estimate()` from the aisimulate
+        SDK. With `simulator=blis`, runs a generated vLLM scenario. Aggregated
+        and prefill/decode disaggregated predictions are supported; P/D requests
+        require an explicit `fabric` from `GET /networks`, matching GPU systems
+        for both pools, and DP=1. The BLIS path creates dedicated prefill and
+        decode pools, NIXL transfer, and an always-disaggregate router profile.
+        Unsupported settings return an error instead of falling back to
+        AISimulate. BLIS results do not include a KV-cache memory breakdown.
 
         Use the `include` query parameter to enrich the result with optional
         detail sections:
@@ -172,6 +185,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /backends:
+    get:
+      operationId: listBackends
+      tags: [catalog]
+      summary: List backend and engine-version support
+      description: |
+        Returns backend version support and effective memory defaults. With
+        `simulator=blis`, reports the vLLM releases BLIS models, a literal
+        default version (never an AISimulate alias), a `version_support` map per
+        release, empty per-system maps, and `blis_version`.
+      parameters:
+        - name: simulator
+          in: query
+          required: false
+          description: Simulator whose backend support is reported.
+          schema:
+            type: string
+            enum: [aisimulate, blis]
+            default: aisimulate
+      responses:
+        '200':
+          description: Backend list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BackendListResponse'
+
   /models:
     get:
       operationId: listModels
@@ -180,6 +220,8 @@ paths:
       description: |
         Returns supported model identifiers. Without include, returns a sorted list of strings.
         Use include=specs to get per-model metadata (MoE fields, context length, attention heads, architecture).
+
+        With `simulator=blis`, returns only the AISimulate model IDs that BLIS can price.
       parameters:
         - name: include
           in: query
@@ -188,6 +230,14 @@ paths:
           schema:
             type: string
             example: "specs"
+        - name: simulator
+          in: query
+          required: false
+          description: Simulator whose model support is reported.
+          schema:
+            type: string
+            enum: [aisimulate, blis]
+            default: aisimulate
       responses:
         '200':
           description: Model list
@@ -204,6 +254,9 @@ paths:
       description: |
         Returns supported GPU systems. Each entry always includes id and name.
         Use include=specs to add hardware details (memory, TDP, architecture).
+
+        With `simulator=blis`, returns only the systems whose hardware BLIS has a
+        catalog chip for.
       parameters:
         - name: include
           in: query
@@ -212,6 +265,14 @@ paths:
           schema:
             type: string
             example: "specs"
+        - name: simulator
+          in: query
+          required: false
+          description: Simulator whose GPU system support is reported.
+          schema:
+            type: string
+            enum: [aisimulate, blis]
+            default: aisimulate
       responses:
         '200':
           description: System list
@@ -219,6 +280,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SystemListResponse'
+
+  /networks:
+    get:
+      operationId: listNetworks
+      tags: [catalog]
+      summary: List supported network fabrics
+      description: |
+        Returns network fabric identifiers available to network-aware simulations,
+        including prefill/decode KV transfer. Network fabric modeling is currently
+        provided by BLIS; AISimulate does not consume this catalog.
+      responses:
+        '200':
+          description: Available network fabrics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [networks, simulator]
+                properties:
+                  networks:
+                    type: array
+                    items: { type: string }
+                  simulator:
+                    type: string
+                    enum: [blis]
+                    description: Simulator providing the current network-fabric catalog.
+        '503':
+          description: BLIS support manifest unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /metrics:
     get:
@@ -256,6 +349,35 @@ paths:
 components:
   schemas:
 
+    SimulatorProvenance:
+      type: object
+      properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+        requested_model:
+          type: string
+          nullable: true
+        resolved_model:
+          type: string
+          nullable: true
+        model_source:
+          type: string
+          nullable: true
+        system:
+          type: string
+          nullable: true
+        hardware:
+          type: string
+          nullable: true
+        model_config_relation:
+          type: string
+          nullable: true
+          description: Relationship between the requested model configuration and the selected simulator's model data.
+        engine_version:
+          type: string
+          nullable: true
+
     # ── Recommend ──────────────────────────────────────────────────────────
 
     RecommendRequest:
@@ -270,6 +392,11 @@ components:
           type: string
           description: GPU system identifier.
           example: h200_sxm
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+          default: aisimulate
+          description: Simulator to use. BLIS requests never fall back to AISimulate.
         backend:
           type: string
           description: Inference backend.
@@ -278,7 +405,10 @@ components:
         backend_version:
           type: string
           nullable: true
-          description: Backend version. Null uses the latest available.
+          description: |
+            Backend version. AISimulate: null uses the latest available.
+            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
+            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
           default: null
         target_request_rate:
           type: number
@@ -326,6 +456,12 @@ components:
           default: 5
           minimum: 1
           maximum: 20
+        search_budget_seconds:
+          type: integer
+          description: BLIS total search budget in seconds; capped at 60 and reduced by the web gateway when needed.
+          default: 60
+          minimum: 1
+          maximum: 60
         inclusive_tpot:
           type: boolean
           description: |
@@ -338,11 +474,19 @@ components:
           nullable: true
           description: Pre-fetched HuggingFace model config.json. Skips the HF download when supplied.
           default: null
+        fabric:
+          type: string
+          nullable: true
+          minLength: 1
+          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. AISimulate does not consume this field.
 
     RecommendResponse:
       type: object
       required: [configs, chosen_mode]
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
         configs:
           type: array
           description: Top configurations ranked by fewest GPUs, then throughput.
@@ -352,10 +496,34 @@ components:
           type: string
           description: Serving mode chosen (agg or disagg).
           example: agg
+        search_summary:
+          type: object
+          nullable: true
+          description: Candidate GPU totals, modes, evaluated configurations, and applied bounds.
+          properties:
+            strategy: { type: string, example: tensor_parallel_only }
+            candidate_gpus: { type: array, items: { type: integer } }
+            evaluated_gpus: { type: array, items: { type: integer } }
+            configured_max_gpus: { type: integer }
+            hardware_max_gpus: { type: integer }
+            effective_max_gpus: { type: integer }
+            time_budget_seconds: { type: number }
+            budget_exhausted: { type: boolean }
+            modes_searched: { type: array, items: { type: string, enum: [agg, disagg] } }
+            candidate_configurations: { type: integer }
+            evaluated_configurations: { type: integer }
 
     RecommendConfig:
       type: object
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+        provenance:
+          $ref: '#/components/schemas/SimulatorProvenance'
+        warnings:
+          type: array
+          items: { type: string }
         # GPU sizing
         total_gpus_needed:
           type: integer
@@ -556,11 +724,17 @@ components:
         max_num_seqs:
           type: integer
           description: Maximum concurrent sequences.
+        max_num_batched_tokens:
+          type: integer
+          nullable: true
+          description: Maximum tokens in a scheduled batch, when specified by the simulator.
         gpu_memory_utilization:
           type: number
           description: Fraction of GPU memory to use (0.0-1.0).
         enable_chunked_prefill:
           type: boolean
+          nullable: true
+          description: Null when the simulator's scenario does not state this backend setting.
         enable_prefix_caching:
           type: boolean
         quantization:
@@ -581,6 +755,11 @@ components:
           type: string
           description: GPU system identifier.
           example: h200_sxm
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+          default: aisimulate
+          description: Simulator to use. BLIS requests never fall back to AISimulate.
         backend:
           type: string
           description: Inference backend.
@@ -589,7 +768,26 @@ components:
         backend_version:
           type: string
           nullable: true
-          description: Backend version. Null uses the latest available.
+          description: |
+            Backend version. AISimulate: null uses the latest available.
+            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
+            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
+          default: null
+        mode:
+          type: string
+          enum: [agg, disagg]
+          default: agg
+          description: Serving mode. BLIS supports P/D predictions with matching system IDs and attention_dp_size=1.
+        fabric:
+          type: string
+          nullable: true
+          minLength: 1
+          description: Inter-node fabric for P/D transfer; list values with GET /networks. BLIS consumes it; AISimulate does not.
+          default: null
+        decode_system:
+          type: string
+          nullable: true
+          description: Decode GPU system. BLIS requires it to match system.
           default: null
         isl:
           type: integer
@@ -603,6 +801,58 @@ components:
           type: integer
           description: Tensor parallel size.
           default: 1
+        prefill_max_seq_len:
+          type: integer
+          nullable: true
+          description: Prefill pool context limit for disaggregated predictions.
+        decode_max_seq_len:
+          type: integer
+          nullable: true
+          description: Decode pool context limit for disaggregated predictions.
+        prefill_gpu_memory_utilization:
+          type: number
+          nullable: true
+          description: Prefill pool GPU memory utilization.
+        decode_gpu_memory_utilization:
+          type: number
+          nullable: true
+          description: Decode pool GPU memory utilization.
+        prefill_tp_size:
+          type: integer
+          nullable: true
+        prefill_pp_size:
+          type: integer
+          nullable: true
+        prefill_moe_tp_size:
+          type: integer
+          nullable: true
+        prefill_moe_ep_size:
+          type: integer
+          nullable: true
+        prefill_batch_size:
+          type: integer
+          nullable: true
+        prefill_num_workers:
+          type: integer
+          nullable: true
+        decode_tp_size:
+          type: integer
+          nullable: true
+        decode_pp_size:
+          type: integer
+          nullable: true
+        decode_moe_tp_size:
+          type: integer
+          nullable: true
+        decode_moe_ep_size:
+          type: integer
+          nullable: true
+        decode_batch_size:
+          type: integer
+          nullable: true
+        decode_num_workers:
+          type: integer
+          nullable: true
         pp_size:
           type: integer
           description: Pipeline parallel size.
@@ -663,6 +913,30 @@ components:
       required: [ttft, tpot]
       description: Single-point performance estimate for a given parallelism configuration.
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+        mode:
+          type: string
+          enum: [agg, disagg]
+          description: Serving mode used for this prediction.
+        prefill_config:
+          nullable: true
+          description: Prefill pool configuration for disaggregated predictions.
+          $ref: '#/components/schemas/WorkerConfig'
+        decode_config:
+          nullable: true
+          description: Decode pool configuration for disaggregated predictions.
+          $ref: '#/components/schemas/WorkerConfig'
+        provenance:
+          $ref: '#/components/schemas/SimulatorProvenance'
+        memory_unavailable_reason:
+          type: string
+          nullable: true
+          description: Why an optional memory breakdown was not provided by the selected simulator.
+        warnings:
+          type: array
+          items: { type: string }
         ttft:
           type: number
           description: Predicted TTFT (ms).
@@ -834,6 +1108,10 @@ components:
       type: object
       required: [total_gpu_capacity_bytes, total_kv_size_bytes, kv_size_per_token_bytes, total_kv_size_tokens, source, memory_breakdown]
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate]
+          description: Memory estimation is provided by AISimulate.
         total_gpu_capacity_bytes:
           type: integer
           description: Total GPU memory capacity (bytes).
@@ -885,9 +1163,96 @@ components:
 
     # ── Catalog ────────────────────────────────────────────────────────────
 
+    BackendListResponse:
+      type: object
+      required: [simulator, backends]
+      properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
+        blis_version:
+          type: string
+          nullable: true
+          description: The BLIS release the image was built from. Present when simulator=blis.
+        backends:
+          type: array
+          items:
+            $ref: '#/components/schemas/BackendOption'
+
+    BackendOption:
+      type: object
+      required: [id, versions]
+      properties:
+        id:
+          type: string
+          example: vllm
+        aisimulate_id:
+          type: string
+          description: The corresponding AISimulate backend ID, when the simulator reuses one.
+        versions:
+          type: array
+          description: Engine versions the simulator models.
+          items:
+            type: string
+        default_version:
+          type: string
+          nullable: true
+          description: |
+            The version used when a request omits backend_version. AISimulate reports
+            its per-system namespace (`current`); BLIS reports a literal release.
+        memory_fraction:
+          type: number
+          nullable: true
+          description: Fleet-level default memory fraction, when the simulator defines one.
+        memory_fraction_kind:
+          type: string
+          enum: [of_total, of_free]
+        runtime_field:
+          type: string
+          nullable: true
+        systems:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        system_defaults:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              version:
+                type: string
+                nullable: true
+              memory_fraction:
+                type: number
+                nullable: true
+        disaggregation_requires_fabric:
+          type: boolean
+          description: |
+            Whether a prefill/decode topology needs an inter-node fabric selected
+            before the request is sent. BLIS prices the KV transfer through a named
+            fabric; AISimulate's P/D search takes none.
+        version_support:
+          type: object
+          description: Per-version capabilities. Present when simulator=blis.
+          additionalProperties:
+            type: object
+            properties:
+              disaggregated:
+                type: boolean
+                description: Whether the release can run a prefill/decode topology.
+              max_model_len_auto:
+                type: boolean
+                description: Whether the release accepts max_model_len=auto.
+
     ModelListResponse:
       type: object
+      required: [simulator, models]
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
         models:
           type: array
           description: Sorted list of models. Items are strings without include=specs, objects with include=specs.
@@ -932,7 +1297,11 @@ components:
 
     SystemListResponse:
       type: object
+      required: [simulator, systems]
       properties:
+        simulator:
+          type: string
+          enum: [aisimulate, blis]
         systems:
           type: array
           items:

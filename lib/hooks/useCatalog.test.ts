@@ -19,7 +19,16 @@ describe('mapBackendOption', () => {
     expect(mapBackendOption({ id: 'vllm', versions: [], memory_fraction_kind: 'invalid' })).toMatchObject({
       memoryFraction: null,
       memoryFractionKind: 'of_total',
+      disaggregationRequiresFabric: false,
     })
+  })
+
+  it('reports whether a P/D topology needs a fabric', () => {
+    expect(mapBackendOption({
+      id: 'vllm',
+      versions: ['0.31.0'],
+      disaggregation_requires_fabric: true,
+    })?.disaggregationRequiresFabric).toBe(true)
   })
 
   it('ignores malformed backend entries', () => {
