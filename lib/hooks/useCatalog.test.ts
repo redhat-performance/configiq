@@ -173,6 +173,44 @@ describe('mapCatalogResponse', () => {
     }])
   })
 
+  it('maps the system specs the GPU picker groups and describes', () => {
+    const mapped = mapCatalogResponse({
+      simulators: [{
+        id: 'aisimulate',
+        label: 'AISimulate',
+        default: true,
+        available: true,
+        systems: [{
+          id: 'h200_sxm',
+          name: 'NVIDIA H200 SXM',
+          vendor: 'nvidia',
+          architecture: 'hopper',
+          memory_bytes: 151_397_597_184,
+          memory_bandwidth_bytes: 4_800_000_000_000,
+          bf16_tflops: 989,
+          tdp_watts: 700,
+          gpus_per_node: 8,
+        }],
+        models,
+        backends,
+        networks: [],
+        objectives: ['pareto'],
+      }],
+    })
+
+    expect(mapped.gpuOptions[0]).toEqual({
+      systemId: 'h200_sxm',
+      label: 'NVIDIA H200 SXM',
+      vendor: 'nvidia',
+      architecture: 'hopper',
+      vramGb: 141,
+      bandwidthTbps: 4.8,
+      tflopsBf16: 989,
+      tdpWatts: 700,
+      gpusPerNode: 8,
+    })
+  })
+
   it('selects the entry flagged default, not merely the first entry', () => {
     const defaultEntry = {
       id: 'aisimulate',

@@ -78,6 +78,21 @@ function optionContaining(text: string): HTMLElement {
   return option
 }
 
+describe('GpuSystemInput grouping and specs', () => {
+  it('groups systems by vendor and architecture', async () => {
+    await mount()
+    await open()
+    const groupTitles = [...document.body.querySelectorAll<HTMLElement>('.pf-v6-c-menu__group-title')]
+      .map(element => element.textContent)
+    expect(groupTitles).toEqual(['Nvidia Blackwell', 'Nvidia Hopper'])
+  })
+
+  it('describes the selected system below the dropdown', async () => {
+    await mount()
+    expect(container.textContent).toContain('141 GB · 4.8 TB/s · 989 TFLOPS')
+  })
+})
+
 describe('GpuSystemInput all-option mode', () => {
   it('shows the all label for the empty value', async () => {
     await mount({ value: '', allLabel: 'All GPU systems' })

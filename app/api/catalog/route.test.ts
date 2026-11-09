@@ -50,7 +50,20 @@ describe('GET /api/catalog', () => {
         model_catalog_complete: false,
         models: [{ id: 'Qwen/Qwen3-8B' }],
       },
-      '/systems?simulator=aisimulate': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
+      '/systems?simulator=aisimulate&include=specs': {
+        simulator: 'aisimulate',
+        systems: [{
+          id: 'h200_sxm',
+          name: 'NVIDIA H200 SXM',
+          vendor: 'nvidia',
+          architecture: 'hopper',
+          memory_bytes: 151_397_597_184,
+          memory_bandwidth_bytes: 4_800_000_000_000,
+          bf16_tflops: 989,
+          tdp_watts: 700,
+          gpus_per_node: 8,
+        }],
+      },
       '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
       '/backends?simulator=blis': {
         simulator: 'blis',
@@ -63,7 +76,20 @@ describe('GET /api/catalog', () => {
         model_catalog_complete: true,
         models: [{ id: 'meta-llama/Llama-3.1-70B-Instruct' }],
       },
-      '/systems?simulator=blis': { simulator: 'blis', systems: [{ id: 'l40s' }] },
+      '/systems?simulator=blis&include=specs': {
+        simulator: 'blis',
+        systems: [{
+          id: 'l40s',
+          name: 'NVIDIA L40S',
+          vendor: 'nvidia',
+          architecture: 'ada',
+          memory_bytes: 48_000_000_000,
+          memory_bandwidth_bytes: 864_000_000_000,
+          bf16_tflops: 362,
+          tdp_watts: 350,
+          gpus_per_node: 8,
+        }],
+      },
       '/networks?simulator=blis': {
         simulator: 'blis',
         default_network: 'roce-200g',
@@ -123,6 +149,18 @@ describe('GET /api/catalog', () => {
       defaultNetwork: 'roce-200g',
       objectives: ['min_gpus', 'throughput_demand'],
     })
+    // The GPU picker groups by vendor/architecture and describes each system
+    // with its memory and compute specs, so the proxy must ask for and forward
+    // them rather than only the system IDs.
+    expect(body.simulators[0].systems[0]).toMatchObject({
+      vendor: 'nvidia',
+      architecture: 'hopper',
+      memory_bytes: 151_397_597_184,
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://aisimulators.dev/systems?simulator=aisimulate&include=specs',
+      expect.any(Object),
+    )
     expect(fetchMock).toHaveBeenCalledTimes(9)
   })
 
@@ -137,7 +175,7 @@ describe('GET /api/catalog', () => {
         simulator: 'aisimulate',
         models: [{ id: 'Qwen/Qwen3-8B' }],
       },
-      '/systems?simulator=aisimulate': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
+      '/systems?simulator=aisimulate&include=specs': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
       '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
     })
 
@@ -166,13 +204,13 @@ describe('GET /api/catalog', () => {
       },
       '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
       '/models?simulator=aisimulate&include=specs': { simulator: 'aisimulate', models: ['Qwen/Qwen3-8B'] },
-      '/systems?simulator=aisimulate': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
+      '/systems?simulator=aisimulate&include=specs': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
       '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
       // An older build ignores `?simulator=blis` and answers with the default
       // AISimulate data at HTTP 200 without echoing the requested simulator.
       '/backends?simulator=blis': { backends: [{ id: 'vllm' }] },
       '/models?simulator=blis&include=specs': { models: ['Qwen/Qwen3-8B'] },
-      '/systems?simulator=blis': { systems: [{ id: 'h200_sxm' }] },
+      '/systems?simulator=blis&include=specs': { systems: [{ id: 'h200_sxm' }] },
       '/networks?simulator=blis': { networks: [] },
     })
 
@@ -208,7 +246,7 @@ describe('GET /api/catalog', () => {
       // Missing the echo, so this simulator's support is unreadable.
       '/backends?simulator=aisimulate': { backends: [{ id: 'vllm' }] },
       '/models?simulator=aisimulate&include=specs': { models: ['Qwen/Qwen3-8B'] },
-      '/systems?simulator=aisimulate': { systems: [{ id: 'h200_sxm' }] },
+      '/systems?simulator=aisimulate&include=specs': { systems: [{ id: 'h200_sxm' }] },
       '/networks?simulator=aisimulate': { networks: [] },
     })
 

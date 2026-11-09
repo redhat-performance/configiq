@@ -270,7 +270,10 @@ async function simulatorCapabilities(
   const [backendsData, modelsData, systemsData, networksData] = await Promise.all([
     fetchJson(`${baseUrl}/backends?simulator=${simulator}`, timeoutSeconds),
     fetchJson(`${baseUrl}/models?simulator=${simulator}&include=specs`, timeoutSeconds),
-    fetchJson(`${baseUrl}/systems?simulator=${simulator}`, timeoutSeconds),
+    // The client's GPU picker groups systems by vendor/architecture and shows
+    // memory, bandwidth, and compute below the selection. Those fields are only
+    // present when the service is asked for specs.
+    fetchJson(`${baseUrl}/systems?simulator=${simulator}&include=specs`, timeoutSeconds),
     fetchJson(`${baseUrl}/networks?simulator=${simulator}`, timeoutSeconds),
   ])
   if (![backendsData, modelsData, systemsData].every(data => catalogString(data, 'simulator') === descriptor.id)) {
