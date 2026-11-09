@@ -280,21 +280,30 @@ The per-sequence context is the peak a resident sequence can occupy:
 credited, because a shorter average prompt does not bound how large a resident
 sequence can grow.
 
-Selection enumerates the parallel search space (the same backend filters,
-wideEP heuristic, and KV-feasibility rule as `min_gpus`) and reads each shape's
-KV token capacity. A sequence cannot span replicas, so for aggregated shapes
-the service counts whole per-replica sequences and adds the fewest replicas
-that reach `target_concurrency` (`ceil(target_concurrency /
-per_replica_sequences)`). The fewest total GPUs is the minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
-pool must hold the resident sequences, while the prefill pool only needs to hold
-one sequence transiently. Because each pool replicates the full weights, a P/D
-deployment is only offered as a larger comparison option, never as the minimum.
-This is deterministic and exhaustive for AISimulate, not a sampled sweep:
+For **AISimulate**, selection enumerates the parallel search space (the same
+backend filters, wideEP heuristic, and KV-feasibility rule as `min_gpus`) and
+reads each shape's KV token capacity. A sequence cannot span replicas, so for
+aggregated shapes the service counts whole per-replica sequences and adds the
+fewest replicas that reach `target_concurrency`
+(`ceil(target_concurrency / per_replica_sequences)`). The fewest total GPUs is
+the minimum. Disaggregated pairs come from the SDK's P/D enumeration; the
+decode pool must hold the resident sequences, while the prefill pool only needs
+to hold one sequence transiently. Because each pool replicates the full
+weights, a P/D deployment is only offered as a larger comparison option, never
+as the minimum. This is deterministic and exhaustive, not a sampled sweep:
 `sweep.algorithm` is `enumerate`, `budget_exhausted` is false, and every
-enumerated shape counts as evaluated and feasible. BLIS capacity also reports
+enumerated shape counts as evaluated and feasible.
+
+For **BLIS**, selection searches power-of-two tensor-parallel aggregate shapes
+with data and pipeline parallelism fixed at 1, runs each once at concurrency 1,
+and reads the engine's reported KV pool. It applies the same whole-sequence
+per-replica rule described above. BLIS capacity also reports
 `algorithm="enumerate"`, but its wall-clock search budget can stop the
 enumeration: then `budget_exhausted=true` and `exhaustive=false`, and the
-reported minimum is not confirmed.
+reported minimum is not confirmed. A shape run can also fail while budget
+remains, which likewise reports `exhaustive=false`; clients must check
+`capacity.exhaustive`, not only `budget_exhausted`, before treating the minimum
+as confirmed.
 
 The capacity evidence is always the selected simulator's own answer:
 
@@ -314,11 +323,13 @@ The capacity evidence is always the selected simulator's own answer:
   the selected fabric rather than an explicit bandwidth.
 
 `configs[0]` remains the single primary recommendation. For AISimulate,
-`capacity_options` is a ranked comparison set: rank 1 is the same minimum,
-followed by up to three same-GPU ties, up to two larger aggregated deployments,
-and up to two disaggregated representatives. When `top_n` is omitted the
-service returns up to 8 options when disaggregated candidates exist and 6
-otherwise; an explicit `top_n` overrides the count. Each option carries
+`capacity_options` is a ranked comparison set: rank 1 is the same minimum, and
+the initial selection adds up to three same-GPU ties, up to two larger
+aggregated deployments, and up to two disaggregated representatives. Those are
+selection quotas, not response caps: if slots remain, the service fills them
+with further aggregate or disaggregated candidates ranked by the same order.
+When `top_n` is omitted the service returns up to 8 options when disaggregated
+candidates exist and 6 otherwise; an explicit `top_n` overrides the count. Each option carries
 `option_id`, `rank`, `role` (`minimum`, `same_gpus`, `larger`, `disaggregated`,
 or `shortfall`), `gpus_over_minimum`, a complete `config`, and its own
 `capacity` block, so a client can promote any option without re-running the
