@@ -53,6 +53,11 @@ FROM python:3.12-slim
 # The BLIS release reported by GET /simulators, GET /backends, and in every
 # BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
 ARG BLIS_VERSION=0.15.0
+# The upstream commit the BLIS release tag was built from, reported alongside
+# BLIS_VERSION. The release binary embeds no revision. Leave this empty for the
+# default BLIS_VERSION: runtime.py resolves the default release's commit. When
+# bumping to another release, pass its commit or the API reports no revision.
+ARG BLIS_COMMIT=""
 
 # BLIS_IMAGE is declared before the first FROM so it can choose the release
 # stage. Redeclare it here to compare that image's tag with the reported
@@ -86,6 +91,7 @@ COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BLIS_VERSION=${BLIS_VERSION} \
+    BLIS_COMMIT=${BLIS_COMMIT} \
     BLIS_CATALOG=/opt/blis/catalog \
     BLIS_REGISTRY=/opt/blis/registry \
     PATH=/opt/venv/bin:${PATH}

@@ -11,6 +11,8 @@ afterEach(() => {
 // plausible SemVer here made the fixtures look like real release pins.
 const AISIMULATE_FIXTURE_VERSION = 'test-aisimulate-version'
 const BLIS_FIXTURE_VERSION = 'test-blis-version'
+const AISIMULATE_FIXTURE_REVISION = 'test-aisimulate-revision'
+const BLIS_FIXTURE_REVISION = 'test-blis-revision'
 
 /**
  * Route every gateway URL to a fixture keyed by pathname + search. A URL with
@@ -34,8 +36,8 @@ describe('GET /api/catalog', () => {
     const responses: Record<string, unknown> = {
       '/simulators': {
         simulators: [
-          { id: 'aisimulate', label: 'AISimulate', description: 'Analytical sizing.', default: true, version: AISIMULATE_FIXTURE_VERSION },
-          { id: 'blis', label: 'BLIS', description: 'Discrete-event simulation.', default: false, version: BLIS_FIXTURE_VERSION },
+          { id: 'aisimulate', label: 'AISimulate', description: 'Analytical sizing.', default: true, version: AISIMULATE_FIXTURE_VERSION, revision: AISIMULATE_FIXTURE_REVISION },
+          { id: 'blis', label: 'BLIS', description: 'Discrete-event simulation.', default: false, version: BLIS_FIXTURE_VERSION, revision: BLIS_FIXTURE_REVISION },
         ],
         default_simulator: 'aisimulate',
       },
@@ -128,6 +130,7 @@ describe('GET /api/catalog', () => {
       label: 'AISimulate',
       description: 'Analytical sizing.',
       version: AISIMULATE_FIXTURE_VERSION,
+      revision: AISIMULATE_FIXTURE_REVISION,
       recommendSearch: 'windowed',
       modelsExhaustive: false,
       systems: [{ id: 'h200_sxm' }],
@@ -141,6 +144,7 @@ describe('GET /api/catalog', () => {
       label: 'BLIS',
       description: 'Discrete-event simulation.',
       version: BLIS_FIXTURE_VERSION,
+      revision: BLIS_FIXTURE_REVISION,
       recommendSearch: 'single',
       modelsExhaustive: true,
       systems: [{ id: 'l40s' }],
@@ -168,7 +172,7 @@ describe('GET /api/catalog', () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     stubGateway({
       '/simulators': {
-        simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true, version: '   ' }],
+        simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true, version: '   ', revision: '   ' }],
       },
       '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
       '/models?simulator=aisimulate&include=specs': {
@@ -188,6 +192,7 @@ describe('GET /api/catalog', () => {
       id: 'aisimulate',
       label: 'AISimulate',
       version: null,
+      revision: null,
       default: true,
       available: true,
     })
@@ -329,6 +334,7 @@ describe('GET /api/catalog', () => {
       label: 'AISimulate',
       description: null,
       version: AISIMULATE_FIXTURE_VERSION,
+      revision: null,
       default: true,
       available: true,
       recommendSearch: 'windowed',
@@ -350,6 +356,7 @@ describe('GET /api/catalog', () => {
       label: 'BLIS',
       description: 'Discrete-event simulation.',
       version: BLIS_FIXTURE_VERSION,
+      revision: BLIS_FIXTURE_REVISION,
       default: true,
       available: true,
       recommendSearch: 'single',

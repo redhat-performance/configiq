@@ -6,7 +6,7 @@ as HTTP endpoints. ConfigIQ's `app/api/*` proxy routes call this service.
 
 This directory contains **only** the REST wrapper. The SDK itself is not vendored
 here — it is installed as a single wheel published by the Red Hat fork's GitHub
-Releases. That one `aisimulate` wheel bundles the Rust-compiled core and exposes
+Releases. That one `aisim` wheel bundles the Rust-compiled core and exposes
 the `aisimulate` and `aisimulate_core` APIs used by this service.
 
 ## Endpoints
@@ -21,13 +21,13 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/systems` | Supported GPU systems (per `simulator`) |
 | GET | `/backends` | Backend/engine versions and memory defaults (per `simulator`) |
 | GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
-| GET | `/simulators` | Simulator identity, label, description, and version |
+| GET | `/simulators` | Simulator identity, label, description, version, and revision |
 
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 
 ## Run with the container (recommended)
 
-The `aisimulate` wheel ships only for `linux/amd64` (manylinux x86_64), so the
+The `aisim` wheel ships only for `linux/amd64` (manylinux x86_64), so the
 container is the portable way to run this service. The build context is
 `services/` (not this directory) so the image can pull in the shared
 `configiq-py` package; pass the Containerfile with `-f` and build for
@@ -499,9 +499,11 @@ Bayesian sampler enables JAX x64 process-wide and is not the default.
 `SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
 since it cannot contain a P/D deployment.
 
-The image sets `BLIS_VERSION`, `BLIS_CATALOG` and `BLIS_REGISTRY`. `BLIS_VERSION`
-is the release reported by `/simulators`, `/backends`, and in every prediction's
-provenance. BLIS itself only reads `BLIS_CATALOG` from the environment; the
+The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG` and
+`BLIS_REGISTRY`. `BLIS_VERSION` is the release reported by `/simulators`,
+`/backends`, and in every prediction's provenance; `BLIS_COMMIT` is the git
+commit the release tag was built from, reported as `revision` in
+`/simulators`. BLIS itself only reads `BLIS_CATALOG` from the environment; the
 registry has no environment fallback, so callers must pass `--registry`
 explicitly as well:
 
@@ -512,21 +514,26 @@ blis run --catalog "$BLIS_CATALOG" --registry "$BLIS_REGISTRY" \
 ```
 
 To move to a new BLIS release, bump `BLIS_IMAGE` (tag and index digest),
-`BLIS_VERSION`, `BLIS_CATALOG_COMMIT`, and `BLIS_REGISTRY_COMMIT` together;
-update `MODELED_ENGINE_VERSIONS` in `tools/api_service/blis/scenario.py` if that
-release changes which vLLM versions it models. See
+`BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG_COMMIT`, and
+`BLIS_REGISTRY_COMMIT` together; update `MODELED_ENGINE_VERSIONS` in
+`tools/api_service/blis/scenario.py` if that release changes which vLLM
+versions it models. `BLIS_COMMIT` may be omitted only for the default release,
+whose commit the service resolves; another release without it reports no
+revision. See
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-blis).
 
 
-The `aisimulate` SDK wheel is pinned in `pyproject.toml` by exact fork-release
-download URL (the `aisimulate @ …` entry), so the image always installs that
-exact artifact — no build args. To move to a newer SDK build, update that URL and
-regenerate `uv.lock`; see
+The `aisim` SDK wheel is pinned in `pyproject.toml` by exact fork-release
+download URL (the `aisim @ …` entry), so the image always installs that exact
+artifact — no build args. The reported `revision` comes from the release tag
+suffix (`deploy-api-v<version>+<sha>`) recorded in the wheel's
+`direct_url.json`. To move to a newer SDK build, update that URL and regenerate
+`uv.lock`; see
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-the-simulation-sdk).
 
 ## Local development
 
-The `aisimulate` wheel is amd64-only, so this works on a `linux/amd64` host:
+The `aisim` wheel is amd64-only, so this works on a `linux/amd64` host:
 
 ```bash
 cd services/aisimulators
@@ -536,5 +543,5 @@ uv run ruff check .
 uvicorn tools.api_service.app:app --reload --port 7860
 ```
 
-On other platforms (e.g. macOS/arm) the `aisimulate` wheel is not available; use
+On other platforms (e.g. macOS/arm) the `aisim` wheel is not available; use
 the container instead.

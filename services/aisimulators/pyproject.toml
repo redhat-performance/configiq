@@ -14,14 +14,14 @@ dependencies = [
     "pyarrow",
     # Shared ConfigIQ utilities (GPU systems catalog, observability, MCP wiring).
     "configiq",
-    # aisimulate SDK: a single unified wheel that bundles the Rust-compiled core
+    # aisim SDK: a single unified wheel that bundles the Rust-compiled core
     # and exposes the aisimulate / aisimulate_core APIs this service imports. Consumed
     # as a wheel published by the
     # Red Hat fork's GitHub Release — NOT vendored, and not on PyPI. Referenced by
     # exact download URL (not name==version) on purpose: a direct URL forces pip
     # to install this exact artifact. Bump the URL (version + build hash live in
     # the tag) for a new SDK; see docs/RELEASE_PROCESS.md.
-    "aisimulate @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.13.0%2Bdd7494b9/aisimulate-0.13.0-cp311-abi3-manylinux_2_28_x86_64.whl",
+    "aisim @ https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.14.0%2B445b094e/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl",
     "plotext>=5.3.2,<6",
     # The BLIS catalog reader parses model.yaml and the hardware/network files,
     # so PyYAML is a runtime dependency of the API, not build-only tooling.

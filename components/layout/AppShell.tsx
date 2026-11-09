@@ -278,6 +278,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {simulators.map(simulator => (
             <div key={simulator.id} style={{ fontSize: '10px', marginTop: '2px' }}>
               {simulator.label} {simulator.version ?? 'version unavailable'}
+              {simulator.revision ? ` · ${simulator.revision.slice(0, 7)}` : ''}
             </div>
           ))}
         </div>

@@ -28,6 +28,8 @@ export interface SimulatorDescriptor {
   /** Short, service-authored explanation of what this simulator models. */
   description: string | null
   version: string | null
+  /** Git commit of the simulator artifact, when the service reports one. */
+  revision: string | null
   default: boolean
 }
 
@@ -134,6 +136,7 @@ function simulatorDescriptors(data: unknown): SimulatorDescriptor[] {
       label: typeof value.label === 'string' && value.label.trim().length > 0 ? value.label : value.id,
       description: catalogString(value, 'description'),
       version: normalizedVersion(value.version),
+      revision: normalizedVersion(value.revision),
       default: value.default === true,
     }]
   })
@@ -216,6 +219,7 @@ function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntr
       label: catalogString(value, 'label') ?? id,
       description: catalogString(value, 'description') ?? catalogString(support[id], 'description'),
       version: normalizedVersion(value.version),
+      revision: normalizedVersion(value.revision),
       default: value.default === true,
       available: capabilities !== null,
       ...(capabilities ?? emptyCapabilities()),
@@ -234,6 +238,7 @@ function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntr
         label: catalogString(value, 'label') ?? id,
         description: catalogString(value, 'description'),
         version: normalizedVersion(value.version),
+        revision: normalizedVersion(value.revision),
         default: false,
         available: true,
         ...capabilities,

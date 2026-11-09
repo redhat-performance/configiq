@@ -143,6 +143,7 @@ describe('mapCatalogResponse', () => {
           label: 'BLIS',
           description: 'Discrete-event simulation.',
           version: 'test-version',
+          revision: 'deadbee',
           default: true,
           available: true,
           recommendSearch: 'single',
@@ -169,6 +170,7 @@ describe('mapCatalogResponse', () => {
       label: 'BLIS',
       description: 'Discrete-event simulation.',
       version: 'test-version',
+      revision: 'deadbee',
       default: true,
     }])
   })
