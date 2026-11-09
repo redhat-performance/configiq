@@ -107,6 +107,7 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
     {
         "id": "aisimulate",
         "label": "AISimulate",
+        "description": "Analytical sizing powered by the AISimulate SDK; prices the full GPU and model catalogue.",
         "default": True,
         "version": _AISIMULATE_VERSION,
         "recommend_search": "windowed",
@@ -118,6 +119,7 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
     {
         "id": "blis",
         "label": "BLIS",
+        "description": "Discrete-event simulation of a serving cluster, including disaggregated prefill/decode and network fabrics.",
         "default": False,
         "version": blis_release(),
         "recommend_search": "single",
@@ -4561,6 +4563,7 @@ def get_simulators():
             {
                 "id": entry["id"],
                 "label": entry["label"],
+                "description": entry["description"],
                 "default": entry["default"],
                 "version": entry["version"],
             }

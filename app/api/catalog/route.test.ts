@@ -34,8 +34,8 @@ describe('GET /api/catalog', () => {
     const responses: Record<string, unknown> = {
       '/simulators': {
         simulators: [
-          { id: 'aisimulate', label: 'AISimulate', default: true, version: AISIMULATE_FIXTURE_VERSION },
-          { id: 'blis', label: 'BLIS', default: false, version: BLIS_FIXTURE_VERSION },
+          { id: 'aisimulate', label: 'AISimulate', description: 'Analytical sizing.', default: true, version: AISIMULATE_FIXTURE_VERSION },
+          { id: 'blis', label: 'BLIS', description: 'Discrete-event simulation.', default: false, version: BLIS_FIXTURE_VERSION },
         ],
         default_simulator: 'aisimulate',
       },
@@ -76,14 +76,14 @@ describe('GET /api/catalog', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json()
-    // The default simulator's own catalogue is the top-level catalogue.
-    expect(body).toMatchObject({
-      systems: [{ id: 'h200_sxm' }],
-      models: [{ id: 'Qwen/Qwen3-8B' }],
-      backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }],
-      networks: [],
-      objectives: ['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity'],
-    })
+    // The default simulator's own catalogue is exposed through its entry, so
+    // the response carries no duplicate top-level lists.
+    expect(body).not.toHaveProperty('systems')
+    expect(body).not.toHaveProperty('models')
+    expect(body).not.toHaveProperty('backends')
+    expect(body).not.toHaveProperty('networks')
+    expect(body).not.toHaveProperty('objectives')
+    expect(body.timeoutSeconds).toEqual(expect.any(Number))
     // Identity, default flag, and capabilities live in one entry per simulator.
     expect(body).not.toHaveProperty('defaultSimulator')
     expect(body).not.toHaveProperty('simulatorSupport')
@@ -100,6 +100,7 @@ describe('GET /api/catalog', () => {
     expect(body.simulators[0]).toMatchObject({
       id: 'aisimulate',
       label: 'AISimulate',
+      description: 'Analytical sizing.',
       version: AISIMULATE_FIXTURE_VERSION,
       recommendSearch: 'windowed',
       modelsExhaustive: false,
@@ -107,10 +108,12 @@ describe('GET /api/catalog', () => {
       models: [{ id: 'Qwen/Qwen3-8B' }],
       networks: [],
       defaultNetwork: null,
+      objectives: ['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity'],
     })
     expect(body.simulators[1]).toMatchObject({
       id: 'blis',
       label: 'BLIS',
+      description: 'Discrete-event simulation.',
       version: BLIS_FIXTURE_VERSION,
       recommendSearch: 'single',
       modelsExhaustive: true,
@@ -274,19 +277,19 @@ describe('GET /api/catalog', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json()
-    expect(body).toMatchObject({
-      systems: [{ id: 'h200_sxm' }],
-      models: ['Qwen/Qwen3-8B'],
-      backends: [{ id: 'vllm' }],
-      networks: ['ib-400g'],
-      objectives: ['min_gpus'],
-    })
-    // The old identity list and support map are folded into one list.
+    // The old top-level lists and support map are folded into simulator
+    // entries; the reduced response no longer duplicates them.
+    expect(body).not.toHaveProperty('systems')
+    expect(body).not.toHaveProperty('models')
+    expect(body).not.toHaveProperty('backends')
+    expect(body).not.toHaveProperty('networks')
+    expect(body).not.toHaveProperty('objectives')
     expect(body).not.toHaveProperty('defaultSimulator')
     expect(body).not.toHaveProperty('simulatorSupport')
     expect(body.simulators).toEqual([{
       id: 'aisimulate',
       label: 'AISimulate',
+      description: null,
       version: AISIMULATE_FIXTURE_VERSION,
       default: true,
       available: true,
@@ -307,6 +310,7 @@ describe('GET /api/catalog', () => {
     const simulator = {
       id: 'blis',
       label: 'BLIS',
+      description: 'Discrete-event simulation.',
       version: BLIS_FIXTURE_VERSION,
       default: true,
       available: true,

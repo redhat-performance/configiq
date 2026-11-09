@@ -82,12 +82,15 @@ GPU sizing formulas or call external service URLs directly from the browser.
 1. `useCatalog` calls `/api/catalog`.
 2. The catalog route discovers simulators from `/simulators`, then fetches each
    simulator's `/systems`, `/models`, `/backends`, and `/networks` and folds
-   identity, the default flag, and capabilities into one `simulators` list. An
-   entry whose capabilities cannot be read stays listed with `available: false`
-   rather than being dropped or given empty capabilities. The default
-   simulator's catalogue also fills the top-level `systems`, `models`,
-   `backends`, `networks`, and `objectives` fields. The network list supplies
-   fabrics for BLIS P/D predictions; AISimulate does not consume it.
+   identity, the default flag, description, and capabilities into one
+   `simulators` list. The response is `{ simulators, timeoutSeconds }`; clients
+   read the default simulator's entry for the systems, models, backends,
+   fabrics, and objectives a page renders. An entry whose capabilities cannot
+   be read stays listed with `available: false` rather than being dropped or
+   given empty capabilities. Only a pre-`/simulators` service returns the
+   legacy top-level `systems`, `models`, `backends`, `networks`, and
+   `objectives` fields with `simulators: []`. The network list supplies fabrics
+   for BLIS P/D predictions; AISimulate does not consume it.
 3. `useCostings` calls `/api/costings/models`, `/api/costings/systems`, and
    `/api/costings/health`. Hybrid Savings is available without the Experimental
    toggle and loads prices once settings are ready. It uses the models-only
@@ -167,7 +170,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/predict` | POST | AISimulators `/predict` |
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
-| `/api/catalog` | GET | Combined AISimulators systems, models, backends, and network fabrics |
+| `/api/catalog` | GET | Combined simulator list with each simulator's systems, models, backends, fabrics, and objectives |
 | `/api/validation/ground-truth` | GET | Union filters and source-specific aggregated measurements from internal GT and private InferenceX datasets |
 | `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
 | `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs or a backend the pair was not measured on |

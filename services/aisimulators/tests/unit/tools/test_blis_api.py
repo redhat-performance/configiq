@@ -97,7 +97,7 @@ def _prediction():
     )
 
 
-def test_simulators_endpoint_lists_identity_label_and_version():
+def test_simulators_endpoint_lists_identity_label_description_and_version():
     response = client.get("/simulators")
 
     assert response.status_code == 200
@@ -114,6 +114,11 @@ def test_simulators_endpoint_lists_identity_label_and_version():
         "blis": app_module.blis_release(),
     }
     assert all(isinstance(version, str) and version for version in versions.values())
+    # Settings explains each simulator from service text, so every entry must
+    # carry its own non-empty description rather than a frontend name table.
+    descriptions = {entry["id"]: entry["description"] for entry in body["simulators"]}
+    assert all(isinstance(description, str) and description for description in descriptions.values())
+    assert len(set(descriptions.values())) == len(descriptions)
 
 
 def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_fallback():
