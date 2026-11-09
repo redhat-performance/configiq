@@ -38,6 +38,7 @@
     { "key": "xsmall",    "label": "X-Small (2)",     "concurrency":    2 },
     { "key": "small", "label": "Small (10)", "concurrency":   10 },
     { "key": "medium",    "label": "Medium (25)",   "concurrency":  25 },
-    { "key": "large",   "label": "Large (100)",  "concurrency":  100 }
+    { "key": "large",   "label": "Large (100)",  "concurrency":  100 },
+    { "key": "xlarge",   "label": "X-Large (500)",  "concurrency":  500 }
   ]
 }
