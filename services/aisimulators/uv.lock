@@ -28,7 +28,7 @@ wheels = [
 [[package]]
 name = "aisim"
 version = "0.14.0"
-source = { url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v%2Ba14e97a8/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl" }
+source = { url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.14.0%2B445b094e/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl" }
 dependencies = [
     { name = "bokeh", version = "3.9.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "bokeh", version = "3.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -61,7 +61,7 @@ dependencies = [
     { name = "tqdm" },
 ]
 wheels = [
-    { url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v%2Ba14e97a8/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:5c14d1b55cf90959f90661e0edf884f752b27ae86bd41df8f3fc4ae37cfa2c97" },
+    { url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.14.0%2B445b094e/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:fe72faae4f956d106c3ae08dae4167447a03461141e3659c3cff0d831032174e" },
 ]
 
 [package.metadata]
@@ -149,7 +149,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aisim", url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v%2Ba14e97a8/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "aisim", url = "https://github.com/redhat-performance/aisimulate/releases/download/deploy-api-v0.14.0%2B445b094e/aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl" },
     { name = "configiq", editable = "../configiq-py" },
     { name = "configiq", extras = ["mcp"], marker = "extra == 'mcp'", editable = "../configiq-py" },
     { name = "configiq", extras = ["otel"], marker = "extra == 'otel'", editable = "../configiq-py" },
