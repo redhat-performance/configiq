@@ -957,7 +957,9 @@ def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
     assert capacity is not None
     assert capacity.target_concurrency == 8
     assert capacity.context_per_sequence_tokens == 2176
-    assert capacity.capacity_sequences == 9
+    # 10,000 tokens hold 4 whole 2,176-token sequences per replica; two
+    # replicas hold 8, not the 9 the pooled token total would suggest.
+    assert capacity.capacity_sequences == 8
     assert capacity.fits is True
     assert capacity.minimum_gpus == 1
     assert capacity.replicas == 2
@@ -965,6 +967,8 @@ def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
     assert capacity.performance_available is False
     assert result.configs[0]["total_gpus_needed"] == 2
     assert result.configs[0]["replicas_needed"] == 2
+    # num_total_gpus is one replica's scalable unit, not the cluster total.
+    assert result.configs[0]["num_total_gpus"] == 1
     assert result.configs[0]["mode"] == "agg"
     assert "does not simulate the target concurrency" in " ".join(
         result.configs[0]["warnings"]
@@ -1004,10 +1008,12 @@ def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
     capacity = result.capacity
     assert capacity is not None
     assert capacity.fits is False
+    # Two replicas of 5,000 tokens hold 2 whole sequences each.
     assert capacity.capacity_sequences == 4
     assert capacity.shortfall_sequences == 12
-    assert capacity.shortfall_tokens == 16 * 2176 - 10_000
+    assert capacity.shortfall_tokens == 12 * 2176
     assert result.configs[0]["total_gpus_needed"] == 2
+    assert result.configs[0]["num_total_gpus"] == 1
 
 
 def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog):
@@ -1039,6 +1045,7 @@ def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog)
     assert capacity.per_rank_tokens == 10_000
     assert result.configs[0]["total_gpus_needed"] == 4
     assert result.configs[0]["replicas_needed"] == 4
+    assert result.configs[0]["num_total_gpus"] == 1
     assert result.search_summary["effective_max_gpus"] == 8
     assert result.search_summary["hardware_max_gpus"] == 2
 

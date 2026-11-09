@@ -160,7 +160,8 @@ Each backend entry reports `disaggregation_requires_fabric`, so a client knows
 whether a P/D topology needs a fabric selection without matching on the
 simulator ID. Each entry also reports `capacity_options.disaggregated`, which
 tells a client whether a concurrency-capacity run can return disaggregated
-alternatives. `/backends` also returns the simulator's `objectives` list, and
+alternatives; BLIS reports false because its capacity sizing is aggregate-only.
+`/backends` also returns the simulator's `objectives` list, and
 clients gate a sizing-goal selector on that list rather than on the simulator ID.
 
 Simulator provenance includes the requested and resolved model, hardware,
@@ -287,9 +288,12 @@ minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
 pool must hold the resident sequences, while the prefill pool only needs to hold
 one sequence transiently. Because each pool replicates the full weights, a P/D
 deployment is only offered as a larger comparison option, never as the minimum.
-This is deterministic and exhaustive, not a sampled sweep: `sweep.algorithm` is
-`enumerate`, `budget_exhausted` is false, and every enumerated shape counts as
-evaluated and feasible.
+This is deterministic and exhaustive for AISimulate, not a sampled sweep:
+`sweep.algorithm` is `enumerate`, `budget_exhausted` is false, and every
+enumerated shape counts as evaluated and feasible. BLIS capacity also reports
+`algorithm="enumerate"`, but its wall-clock search budget can stop the
+enumeration: then `budget_exhausted=true` and `exhaustive=false`, and the
+reported minimum is not confirmed.
 
 The capacity evidence is always the selected simulator's own answer:
 
@@ -298,8 +302,9 @@ The capacity evidence is always the selected simulator's own answer:
   returns `capacity_options`.
 - **BLIS** runs each aggregate shape at concurrency 1 and reads the engine's
   reported KV pool
-  (`engine.cluster.kv_capacity_tokens_per_replica`), then multiplies it by the
-  replicas needed to hold the target. It never re-derives KV bytes from weights.
+  (`engine.cluster.kv_capacity_tokens_per_replica`), then adds replicas of whole
+  per-replica sequences until the target is held. It never re-derives KV bytes
+  from weights.
   BLIS capacity is aggregate-only: it returns the primary `configs[0]` and
   `capacity`, but no `capacity_options`, and it rejects an explicit non-null
   `fabric`. It does not simulate the target concurrency, so its capacity result
@@ -322,11 +327,14 @@ A capacity result carries a `capacity` block:
 
 - `target_concurrency` — sequences requested.
 - `context_per_sequence_tokens` — `max_seq_len` or `isl + osl`.
-- `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`.
-- `capacity_sequences` — whole sequences that fit.
+- `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`; the
+  aggregate pool. Unused tokens in one replica cannot serve another.
+- `capacity_sequences` — whole sequences per replica multiplied by replicas.
+  Sequences cannot span replica engines, so this is not the pooled token total
+  divided by the context length.
 - `fits` — `capacity_sequences >= target_concurrency`.
-- `shortfall_sequences` / `shortfall_tokens` — missing capacity when `fits` is
-  false.
+- `shortfall_sequences` / `shortfall_tokens` — missing sequences and the KV
+  tokens for those sequences when `fits` is false.
 - `minimum_gpus` — fewest GPUs in the requested window that hold one sequence.
 - `per_rank_tokens`, `replicas`, `attention_dp` — resolved capacity inputs. For
   a disaggregated option these describe the decode pool, which holds resident
@@ -414,11 +422,13 @@ For a Pareto result:
   not imply a fabric default. BLIS models transfer through the named `fabric`
   and rejects an explicit bandwidth.
 - `sweep` reports the algorithm, seed, trial budget, evaluated/feasible/timed-out
-  counts, and the GPU window. `sweep.budget_exhausted=true` means the trial
-  budget was spent; it never means the search was exhaustive. BLIS enumerates
-  its candidate grid rather than sampling it, so its `sweep.algorithm` is
-  `enumerate`; `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the closed-loop load
-  grid.
+  counts, and the GPU window. For AISimulate, `sweep.budget_exhausted=true`
+  means the trial budget was spent. BLIS enumerates its candidate grid rather
+  than sampling it, so its `sweep.algorithm` is `enumerate`, and
+  `budget_exhausted=true` means its wall-clock search time budget stopped the
+  enumeration before every grid point ran. In neither case does exhaustion mean
+  the search was exhaustive. `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the
+  closed-loop load grid.
 
 Pareto sweeps use `PARETO_MAX_TRIALS` (default 20), `PARETO_PARALLELISM`
 (default 8), `PARETO_CANDIDATE_TIMEOUT_S` (default 8), and

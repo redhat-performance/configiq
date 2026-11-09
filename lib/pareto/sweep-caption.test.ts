@@ -21,7 +21,7 @@ describe('describeSweepCoverage', () => {
         { algorithm: 'enumerate', evaluated: 6, budgetExhausted: true },
         [feasible],
       ),
-    ).toBe('6 evaluated · 1 feasible — the trial budget stopped the enumeration before every grid point ran.')
+    ).toBe('6 evaluated · 1 feasible — the search time budget stopped the enumeration before every grid point ran.')
   })
 
   it('does not call a sampled sweep exhaustive', () => {

@@ -33,9 +33,12 @@ export function describeSweepCoverage(
     if (count > 0) parts.push(`${count} ${status.replace('_', ' ')}`)
   }
 
+  // An enumerated sweep is bounded by wall-clock search time (BLIS), while a
+  // sampled sweep is bounded by its trial count (AISimulate). Say which budget
+  // stopped the search instead of calling both a "trial" budget.
   const coverage = enumerated
     ? budgetExhausted
-      ? 'the trial budget stopped the enumeration before every grid point ran.'
+      ? 'the search time budget stopped the enumeration before every grid point ran.'
       : 'exhaustive over the enumerated grid.'
     : budgetExhausted
       ? 'not exhaustive: the trial budget was reached.'

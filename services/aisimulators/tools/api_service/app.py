@@ -565,8 +565,10 @@ class CapacityOutcome(BaseModel):
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
-    holds. When the target does not fit, the response is still 200 and reports
-    the best achievable configuration plus the shortfall.
+    holds. Sequences cannot span replicas, so the value is whole sequences per
+    replica multiplied by the replica count, not the pooled token total divided
+    by the context length. When the target does not fit, the response is still
+    200 and reports the best achievable configuration plus the shortfall.
     """
     target_concurrency: int
     context_per_sequence_tokens: int
@@ -599,8 +601,10 @@ class CapacityOutcome(BaseModel):
 class SweepMeta(BaseModel):
     """Run-control facts for a companion sweep.
 
-    `budget_exhausted` means the configured trial budget was spent; it does not
-    mean the search was exhaustive.
+    `budget_exhausted` means the search stopped at its budget; it does not mean
+    the search was exhaustive. AISimulate reports a spent trial budget
+    (`evaluated >= max_trials`); BLIS reports a wall-clock search time budget
+    that stopped the enumeration before every grid point ran.
     """
     run_id: str | None = None
     algorithm: str | None = None
@@ -2034,7 +2038,10 @@ class _CapacityCandidate:
 
     @property
     def capacity_sequences(self) -> int:
-        return self.capacity_tokens // self.context_tokens
+        # A replica is a separate engine: a sequence cannot use KV space from
+        # another replica. Count whole sequences per replica, then scale by the
+        # replica count instead of dividing the pooled token total.
+        return (self.shape.tokens_per_replica // self.context_tokens) * self.replicas
 
 
 @dataclass(frozen=True)
@@ -2200,7 +2207,6 @@ def _capacity_aggregate_candidates(
     every replica count. ``best_effort`` is the largest deployment of each
     shape inside the window, used only when nothing holds the target.
     """
-    needed_tokens = target_concurrency * context_tokens
     minimum_gpus: int | None = None
     fitting: list[_CapacityCandidate] = []
     best_effort: list[_CapacityCandidate] = []
@@ -2212,12 +2218,17 @@ def _capacity_aggregate_candidates(
         min_replicas = max(1, math.ceil(lower_gpus / per_worker))
         if per_worker * min_replicas > upper_gpus:
             continue
+        # Sequences cannot span replicas, so only whole per-replica sequences
+        # count. A shape that cannot hold one sequence is not a candidate.
+        per_replica_sequences = shape.tokens_per_replica // context_tokens
+        if per_replica_sequences < 1:
+            continue
         single_gpus = per_worker * min_replicas
         if minimum_gpus is None or single_gpus < minimum_gpus:
             minimum_gpus = single_gpus
 
         max_replicas = upper_gpus // per_worker
-        needed_replicas = max(1, math.ceil(needed_tokens / shape.tokens_per_replica))
+        needed_replicas = max(1, math.ceil(target_concurrency / per_replica_sequences))
         first_fitting = max(min_replicas, needed_replicas)
         if first_fitting <= max_replicas:
             # Keep the minimum and the next two replica counts, plus the largest
@@ -2310,8 +2321,6 @@ def _capacity_disagg_candidates(
     if not prefill_tokens or not decode_tokens:
         return []
 
-    needed_tokens = target_concurrency * context_tokens
-
     def candidate_for(worker: Any, tokens: dict[Any, int]) -> _CapacityCandidate:
         shape = worker.shape
         return _CapacityCandidate(
@@ -2333,7 +2342,7 @@ def _capacity_disagg_candidates(
             continue
         prefill = candidate_for(pair.prefill, prefill_tokens)
         decode = candidate_for(pair.decode, decode_tokens)
-        if decode.capacity_tokens < needed_tokens:
+        if decode.capacity_sequences < target_concurrency:
             continue
         total = prefill.total_gpus + decode.total_gpus
         if total > upper_gpus or total < lower_gpus:
@@ -2813,8 +2822,7 @@ def _capacity_option_outcome(
     prediction: Any | None,
     unavailable_reason: str | None,
 ) -> CapacityOutcome:
-    needed_tokens = target_concurrency * context_tokens
-    fits = candidate.capacity_tokens >= needed_tokens
+    fits = candidate.capacity_sequences >= target_concurrency
     common = {
         "target_concurrency": target_concurrency,
         "context_per_sequence_tokens": context_tokens,
@@ -2824,8 +2832,11 @@ def _capacity_option_outcome(
         "shortfall_sequences": (
             None if fits else max(0, target_concurrency - candidate.capacity_sequences)
         ),
+        # Tokens belonging to the sequences that do not fit. The aggregate pool
+        # can exceed `target * context_tokens` while still not holding whole
+        # sequences, because unused KV in one replica cannot serve another.
         "shortfall_tokens": (
-            None if fits else max(0, needed_tokens - candidate.capacity_tokens)
+            None if fits else max(0, target_concurrency - candidate.capacity_sequences) * context_tokens
         ),
         "minimum_gpus": minimum_gpus,
         "evaluated_shapes": evaluated_shapes,

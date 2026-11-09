@@ -379,7 +379,7 @@ def test_blis_recommend_capacity_returns_the_capacity_block():
         configs=[{
             "total_gpus_needed": 2,
             "replicas_needed": 2,
-            "num_total_gpus": 2,
+            "num_total_gpus": 1,
             "tp": 1,
             "pp": 1,
             "dp": 1,
@@ -392,7 +392,7 @@ def test_blis_recommend_capacity_returns_the_capacity_block():
             target_concurrency=8,
             context_per_sequence_tokens=2176,
             capacity_tokens=20_000,
-            capacity_sequences=9,
+            capacity_sequences=8,
             fits=True,
             shortfall_sequences=None,
             shortfall_tokens=None,

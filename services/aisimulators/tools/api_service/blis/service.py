@@ -174,10 +174,11 @@ class BlisCapacityOutcome:
     """Memory-residency outcome reported by the BLIS capacity search.
 
     Capacity is read from the KV pool BLIS reports for the run
-    (``engine.cluster.kv_capacity_tokens_per_replica``), then multiplied by
-    the replicas needed to hold the requested sequences. No KV bytes are
-    re-derived from weights or a memory fraction, and no performance value is
-    invented: the search does not simulate the target concurrency.
+    (``engine.cluster.kv_capacity_tokens_per_replica``). Because sequences
+    cannot span replicas, the search counts whole sequences per replica and
+    adds replicas until the target is held. No KV bytes are re-derived from
+    weights or a memory fraction, and no performance value is invented: the
+    search does not simulate the target concurrency.
     """
 
     target_concurrency: int
@@ -893,7 +894,9 @@ def _capacity_config(
     return {
         "total_gpus_needed": total_gpus,
         "replicas_needed": replicas,
-        "num_total_gpus": total_gpus,
+        # One replica's GPUs is the scalable unit; total_gpus_needed is the
+        # cluster total, so consumers never multiply the deployment twice.
+        "num_total_gpus": tp,
         "tp": tp,
         "pp": 1,
         "dp": 1,
@@ -1030,15 +1033,18 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
         if tp * min_replicas > upper:
             continue
         max_replicas = upper // tp
-        can_hold_one = capacity_tokens >= context_tokens
-        if can_hold_one:
-            feasible_shapes += 1
-            single_gpus = tp * min_replicas
-            if minimum_gpus is None or single_gpus < minimum_gpus:
-                minimum_gpus = single_gpus
-        needed_replicas = max(
-            1, math.ceil((target * context_tokens) / capacity_tokens)
-        )
+        # A replica is a separate engine: a sequence cannot use KV space from
+        # another replica. Count whole sequences per replica, then scale by the
+        # replicas the target needs. A shape that cannot hold one sequence (or
+        # whose smallest window deployment cannot) is not a capacity candidate.
+        per_replica_sequences = capacity_tokens // context_tokens
+        if per_replica_sequences < 1:
+            continue
+        feasible_shapes += 1
+        single_gpus = tp * min_replicas
+        if minimum_gpus is None or single_gpus < minimum_gpus:
+            minimum_gpus = single_gpus
+        needed_replicas = max(1, math.ceil(target / per_replica_sequences))
         first_fitting = max(min_replicas, needed_replicas)
         row = {
             "tp": tp,
@@ -1051,14 +1057,14 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
                 **row,
                 "replicas": first_fitting,
                 "capacity_tokens": capacity_tokens * first_fitting,
-                "capacity_sequences": (capacity_tokens * first_fitting) // context_tokens,
+                "capacity_sequences": per_replica_sequences * first_fitting,
             })
         if max_replicas >= min_replicas:
             best_effort.append({
                 **row,
                 "replicas": max_replicas,
                 "capacity_tokens": capacity_tokens * max_replicas,
-                "capacity_sequences": (capacity_tokens * max_replicas) // context_tokens,
+                "capacity_sequences": per_replica_sequences * max_replicas,
             })
 
     if minimum_gpus is None:
@@ -1088,7 +1094,6 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
         )
 
     fits = winner["capacity_sequences"] >= target
-    needed_tokens = target * context_tokens
     capacity = BlisCapacityOutcome(
         target_concurrency=target,
         context_per_sequence_tokens=context_tokens,
@@ -1096,7 +1101,11 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
         capacity_sequences=winner["capacity_sequences"],
         fits=fits,
         shortfall_sequences=None if fits else max(0, target - winner["capacity_sequences"]),
-        shortfall_tokens=None if fits else max(0, needed_tokens - winner["capacity_tokens"]),
+        # Tokens belonging to the sequences that do not fit. The aggregate pool
+        # can be larger than `target * context_tokens` while still not holding
+        # whole sequences, because unused KV in one replica cannot serve a
+        # sequence on another.
+        shortfall_tokens=None if fits else max(0, target - winner["capacity_sequences"]) * context_tokens,
         minimum_gpus=minimum_gpus,
         # With attention DP=1 the aggregate pool BLIS reports is the replica's
         # whole KV capacity, so the per-rank figure equals the per-replica one.

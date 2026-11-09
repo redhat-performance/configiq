@@ -108,10 +108,15 @@ cross-simulator frontier.
 
 ### Deployment modes
 
-Every sweep searches both aggregated and disaggregated deployments (when the
-window can hold more than one GPU). A workload may legitimately have no feasible
-disaggregated point; that absence is reported, not hidden. Both modes contribute
-candidates and frontier points when they are feasible.
+An AISimulate sweep searches both aggregated and disaggregated deployments (when
+the window can hold more than one GPU). A workload may legitimately have no
+feasible disaggregated point; that absence is reported, not hidden. Both modes
+contribute candidates and frontier points when they are feasible.
+
+A BLIS sweep searches disaggregated topologies only when the request names a
+supported `fabric`; without one it is aggregate-only, even when the window holds
+multiple GPUs. Absence of P/D points in that case is a deployment-mode
+restriction, not a measured infeasibility.
 
 ### Automatic GPU window
 
@@ -158,12 +163,14 @@ optimization rounds, so it is not the default. The trial budget is split across
 aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
 a per-mode count.
 
-`sweep.budget_exhausted` is true when `evaluated >= max_trials`. It means the
-trial budget was spent, never that the search enumerated every configuration.
-The UI caption reads "sampled — not exhaustive" for a sampled sweep and
-"evaluated — exhaustive over the enumerated grid" for an enumerated sweep
-(BLIS), downgraded to a budget-exhaustion warning when the enumeration stopped
-early.
+For AISimulate's sampled sweep, `sweep.budget_exhausted` is true when
+`evaluated >= max_trials`: the trial budget was spent, never that the search
+enumerated every configuration. For BLIS's enumerated sweep, it reports whether
+the wall-clock search time budget stopped enumeration before every grid point
+ran, independently of `evaluated` and `max_trials`. The UI caption reads
+"sampled — not exhaustive" for a sampled sweep and "evaluated — exhaustive over
+the enumerated grid" for an enumerated sweep (BLIS), downgraded to the matching
+budget-exhaustion warning when the search stopped early.
 
 ### BLIS sweeps
 
@@ -172,7 +179,9 @@ BLIS drives closed-loop concurrency, so the service enumerates a load grid
 topology shape that fits the GPU window. It runs each combination through BLIS
 and computes `views.pareto_front` over throughput per user and throughput per
 GPU. The response reports `sweep.algorithm="enumerate"`,
-`candidate_configurations`, and `evaluated_configurations`.
+`candidate_configurations`, and `evaluated_configurations`. The enumeration
+shares one wall-clock search budget: `sweep.budget_exhausted=true` means the
+budget stopped it early, so the reported minimum may not be the grid minimum.
 
 - BLIS includes P/D topologies only when the request names a supported `fabric`.
   The web client sends the simulator's announced default fabric. Without one,

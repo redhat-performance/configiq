@@ -889,7 +889,9 @@ export async function callPareto(
   // keep that sweep inside the gateway timeout. This is a capability hint, not
   // a simulator identity check.
   if (request.search_strategy === 'single') {
-    const searchBudgetSeconds = Math.min(60, requestTimeoutSeconds - 5)
+    // The service declares an integer whole-second budget; a fractional
+    // caller timeout must not produce a fractional (rejected) request field.
+    const searchBudgetSeconds = Math.floor(Math.min(60, requestTimeoutSeconds - 5))
     if (searchBudgetSeconds < 1) {
       return {
         status: 'failed',
