@@ -679,19 +679,18 @@ class TestFitFloorAndCeiling:
         assert floor == 64
         assert budgets == [8, 16, 32, 64]
 
-    def test_discovery_budget_exhaustion_is_an_explicit_error(self, monkeypatch):
+    def test_discovery_budget_exhaustion_falls_back_to_no_floor(self, monkeypatch):
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: [])
 
-        with pytest.raises(HTTPException) as raised:
+        assert (
             app_module._discover_fit_floor(
                 request, configured=8, deadline=time.monotonic() - 1
             )
+            is None
+        )
 
-        assert raised.value.status_code == 422
-        assert "fit-discovery budget" in raised.value.detail
-
-    def test_failed_preflight_starts_the_search_at_one_gpu(self, monkeypatch):
+    def test_failed_preflight_falls_back_to_no_floor(self, monkeypatch):
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
 
         def shapes(*args, **kwargs):
@@ -699,9 +698,49 @@ class TestFitFloorAndCeiling:
 
         monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
 
-        assert app_module._discover_fit_floor(
+        assert (
+            app_module._discover_fit_floor(
+                request, configured=8, deadline=time.monotonic() + 5
+            )
+            is None
+        )
+
+    def test_discovery_uses_the_sweep_runtime_envelope(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        captured: dict[str, object] = {}
+
+        def shapes(*args, **kwargs):
+            captured.update(kwargs)
+            return [_capacity_shape(tp=1)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        app_module._discover_fit_floor(
             request, configured=8, deadline=time.monotonic() + 5
-        ) == 1
+        )
+
+        # The sweep reserves these engine defaults; discovery must agree.
+        assert captured["max_num_tokens"] == 32768
+        assert captured["max_batch_size"] == 1024
+        assert captured["memory_fraction"] == 0.9
+
+    def test_sglang_discovery_uses_its_lower_memory_fraction(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_PARETO_BODY, "backend": "sglang"}
+        )
+        captured: dict[str, object] = {}
+
+        def shapes(*args, **kwargs):
+            captured.update(kwargs)
+            return [_capacity_shape(tp=1)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        app_module._discover_fit_floor(
+            request, configured=8, deadline=time.monotonic() + 5
+        )
+
+        assert captured["memory_fraction"] == 0.88
 
 
 class TestParetoAutoWindow:
@@ -728,6 +767,12 @@ class TestParetoAutoWindow:
         )
 
         assert app_module._pareto_auto_window(request) == expected
+
+    def test_discovery_failure_uses_the_wide_fallback(self, monkeypatch):
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: None)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        assert app_module._pareto_auto_window(request) == (1, 16)
 
     def test_a_large_floor_gets_headroom_above_the_configured_budget(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
@@ -1112,7 +1157,7 @@ class TestRunDemandWindows:
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
             return MockLedgerRecommendationResult(
                 candidates=[
@@ -1144,7 +1189,7 @@ class TestRunDemandWindows:
 
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
             if len(windows) == 1:
                 raise NoViableParallelConfig(
@@ -1173,7 +1218,7 @@ class TestRunDemandWindows:
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
             if len(windows) == 1:
                 return MockLedgerRecommendationResult(
@@ -1211,12 +1256,12 @@ class TestRunDemandWindows:
         assert sweep.timed_out == 1
         assert sweep.max_trials > 0
 
-    def test_reports_budget_exhausted_when_a_window_spends_its_trials(self, monkeypatch):
+    def test_a_spent_trial_budget_does_not_mark_the_ladder_exhausted(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
-            # Evaluate more trials than the window offered, so the window
-            # reports that its budget was spent without meeting the target.
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            # Evaluate more trials than the window offered. That is trial spend,
+            # not a wall-clock stop, so it must not set budget_exhausted.
             return MockLedgerRecommendationResult(
                 candidates=[
                     MockLedgerCandidate(
@@ -1230,15 +1275,16 @@ class TestRunDemandWindows:
 
         _, sweep = app_module._run_demand_windows(self._request())
 
-        assert sweep.budget_exhausted is True
+        assert sweep.budget_exhausted is False
         assert sweep.evaluated >= 12
+        assert sweep.max_trials is not None
 
     def test_stops_growing_when_the_wall_clock_budget_is_spent(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
         monkeypatch.setattr(app_module, "_demand_search_budget_seconds", lambda: 1)
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
             return MockLedgerRecommendationResult(
                 candidates=[
@@ -1258,6 +1304,33 @@ class TestRunDemandWindows:
         assert sweep.window_max_gpus == 8
 
 
+class TestMinGpusTrialBudget:
+    """A min_gpus window budget comes from that window's upper bound."""
+
+    def test_budget_grows_with_the_window_upper_bound(self, monkeypatch):
+        monkeypatch.delenv("MIN_GPUS_MAX_TRIALS", raising=False)
+        monkeypatch.delenv("MIN_GPUS_PARALLELISM", raising=False)
+
+        assert app_module._recommendation_trial_budget("min_gpus", 8)[:2] == (8, 4)
+        assert app_module._recommendation_trial_budget("min_gpus", 16)[:2] == (16, 4)
+
+    def test_a_large_window_is_capped(self, monkeypatch):
+        monkeypatch.setenv("MIN_GPUS_MAX_TRIALS", "32")
+        monkeypatch.delenv("MIN_GPUS_PARALLELISM", raising=False)
+
+        assert app_module._recommendation_trial_budget("min_gpus", 256)[:2] == (32, 4)
+
+    def test_a_one_gpu_window_needs_one_trial(self):
+        assert app_module._recommendation_trial_budget("min_gpus", 1)[:2] == (1, 1)
+
+    def test_the_trial_budget_is_env_configurable(self, monkeypatch):
+        monkeypatch.setenv("MIN_GPUS_MAX_TRIALS", "12")
+        monkeypatch.setenv("MIN_GPUS_PARALLELISM", "3")
+        monkeypatch.setenv("MIN_GPUS_CANDIDATE_TIMEOUT_S", "7")
+
+        assert app_module._recommendation_trial_budget("min_gpus", 16) == (12, 3, 7)
+
+
 class TestRunMinGpusWindows:
     def _request(self):
         return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
@@ -1273,12 +1346,12 @@ class TestRunMinGpusWindows:
             provenance=MockRecommendationProvenance(run_id="run-min"),
         )
 
-    def test_starts_at_the_fit_floor_and_stops_at_the_minimum(self, monkeypatch):
+    def test_starts_with_a_wide_window_at_the_fit_floor(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
         windows: list[tuple[int, int] | None] = []
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
             return self._result(8)
 
@@ -1287,13 +1360,30 @@ class TestRunMinGpusWindows:
         result, sweep = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
-        assert windows == [(8, 8)]
+        assert windows == [(8, 16)]
         assert sweep.window_min_gpus == 8
-        assert sweep.window_max_gpus == 8
+        assert sweep.window_max_gpus == 16
         assert sweep.configured_max_gpus == 32
         assert sweep.effective_max_gpus == 32
         assert sweep.run_id == "run-min"
         assert sweep.evaluated == 2
+
+    def test_passes_the_window_parallelism_with_its_trial_budget(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        captured: dict[str, int | None] = {}
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            captured["max_trials"] = max_trials_override
+            captured["parallelism"] = parallelism_override
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        app_module._run_min_gpus_windows(self._request())
+
+        assert captured["max_trials"] is not None
+        assert captured["parallelism"] == min(4, captured["max_trials"])
 
     def test_expands_past_an_infeasible_window_then_refines(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -1303,22 +1393,22 @@ class TestRunMinGpusWindows:
         class NoViableParallelConfig(Exception):
             pass
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
-            if window == (4, 4):
+            if window == (4, 16):
                 raise NoViableParallelConfig(
                     "no deployment_mode has a viable parallel config"
                 )
-            return self._result(8 if window == (5, 8) else 5)
+            return self._result(18 if window == (17, 32) else 17)
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
         result, sweep = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
-        assert windows == [(4, 4), (5, 8), (5, 7)]
+        assert windows == [(4, 16), (17, 32), (17, 17)]
         assert sweep.window_min_gpus == 4
-        assert sweep.window_max_gpus == 8
+        assert sweep.window_max_gpus == 32
 
     def test_a_fitting_window_without_an_sla_candidate_still_grows(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -1330,10 +1420,10 @@ class TestRunMinGpusWindows:
             counts=MockRecommendationCounts(evaluated=1, feasible=0, timed_out=0),
         )
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             windows.append(window)
-            if window == (5, 8):
-                return self._result(8)
+            if window == (17, 32):
+                return self._result(32)
             return empty
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
@@ -1341,12 +1431,12 @@ class TestRunMinGpusWindows:
         result, sweep = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
-        # (4, 4) held the model but no SLA candidate; (5, 8) found one and a
-        # refinement below it found nothing, so 8 remains the minimum.
-        assert windows == [(4, 4), (5, 8), (5, 7)]
+        # (4, 16) held the model but no SLA candidate; (17, 32) found one and
+        # a refinement below it found nothing, so 32 remains the minimum.
+        assert windows == [(4, 16), (17, 32), (17, 31)]
         assert sweep.window_min_gpus == 4
-        assert sweep.window_max_gpus == 8
-        assert sweep.evaluated == 4  # two empty windows + two feasible-window counts
+        assert sweep.window_max_gpus == 32
+        assert sweep.evaluated == 4  # two empty windows + one feasible window
 
     def test_a_large_floor_raises_the_reported_ceiling(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
@@ -1362,6 +1452,24 @@ class TestRunMinGpusWindows:
         assert sweep.configured_max_gpus == 8
         assert sweep.effective_max_gpus == 16
 
+    def test_fit_floor_failure_uses_the_wide_one_gpu_fallback(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: None)
+        windows: list[tuple[int, int] | None] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return self._result(1)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(1, 16)]
+        assert sweep.window_min_gpus == 1
+        assert sweep.window_max_gpus == 16
+
     def test_no_fitting_window_is_an_explicit_error(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
         monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
@@ -1369,7 +1477,7 @@ class TestRunMinGpusWindows:
         class NoViableParallelConfig(Exception):
             pass
 
-        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             raise NoViableParallelConfig(
                 "no deployment_mode has a viable parallel config"
             )
@@ -1381,6 +1489,50 @@ class TestRunMinGpusWindows:
 
         assert raised.value.status_code == 422
         assert "between 4 and 8 GPUs" in raised.value.detail
+
+    def test_wall_clock_budget_sets_budget_exhausted(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        monkeypatch.setattr(app_module, "_min_gpus_search_budget_seconds", lambda: 1)
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            return MockLedgerRecommendationResult(
+                candidates=[],
+                counts=MockRecommendationCounts(evaluated=8, feasible=0, timed_out=0),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        with pytest.raises(HTTPException) as raised:
+            app_module._run_min_gpus_windows(self._request())
+
+        assert raised.value.status_code == 422
+        assert "time budget" in raised.value.detail
+
+    def test_a_spent_trial_budget_does_not_mark_the_search_exhausted(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            # Evaluate more trials than the window offered; this is trial
+            # spend, not a wall-clock stop.
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(candidate_id="g8", used_gpus=8)
+                ],
+                counts=MockRecommendationCounts(
+                    evaluated=max_trials_override + 10, feasible=1, timed_out=0
+                ),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.budget_exhausted is False
+        assert sweep.max_trials is not None
+        assert sweep.evaluated is not None
+        assert sweep.evaluated > sweep.max_trials
 
 
 class TestDemandConfigFromRecord:
@@ -1488,9 +1640,9 @@ class TestDemandOutcome:
 
 
 class TestSweepMeta:
-    def test_reports_budget_exhaustion_without_claiming_exhaustive_search(self, monkeypatch):
-        monkeypatch.setenv("DEMAND_MAX_TRIALS", "4")
-        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+    def test_trial_spend_does_not_set_the_time_budget_flag(self, monkeypatch):
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "4")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         result = MockLedgerRecommendationResult(
             candidates=[MockLedgerCandidate()],
             counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
@@ -1502,15 +1654,17 @@ class TestSweepMeta:
         assert meta.run_id == "run-42"
         assert meta.max_trials == 4
         assert meta.evaluated == 4
-        assert meta.budget_exhausted is True
+        # The sampled sweep is bounded by trials; trial spend is visible in
+        # max_trials/evaluated and is not a wall-clock exhaustion signal.
+        assert meta.budget_exhausted is False
         assert meta.strict_sla is False
         assert meta.window_min_gpus == 1
         assert meta.window_max_gpus == 1024
         assert meta.algorithm in {"random", "bayesian"}
 
     def test_not_exhausted_when_the_search_stops_early(self, monkeypatch):
-        monkeypatch.setenv("DEMAND_MAX_TRIALS", "16")
-        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "16")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         result = MockLedgerRecommendationResult(
             candidates=[MockLedgerCandidate(), MockLedgerCandidate(candidate_id="c2")],
             counts=MockRecommendationCounts(evaluated=2, feasible=2, timed_out=0),
@@ -1521,8 +1675,8 @@ class TestSweepMeta:
         assert meta.evaluated == 2
 
     def test_falls_back_to_ledger_length_without_counts(self, monkeypatch):
-        monkeypatch.setenv("DEMAND_MAX_TRIALS", "16")
-        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "16")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         result = MockLedgerRecommendationResult(
             candidates=[MockLedgerCandidate(), MockLedgerCandidate(candidate_id="c2")],
         )
@@ -3532,6 +3686,24 @@ class TestVersionFallback:
         assert "Tried 0.24.0, 0.31.0" in detail
         assert "compute shape [32, 2048, 1]" in detail
 
+    def test_a_passed_deadline_stops_a_second_attempt(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str] = []
+
+        def run():
+            calls.append("attempt")
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        with pytest.raises(app_module._PerfDataGap):
+            app_module._run_with_version_fallback(
+                app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY),
+                run,
+                deadline=time.monotonic() - 1,
+            )
+
+        # The first attempt always runs; the retry must not restart the budget.
+        assert calls == ["attempt"]
+
     def test_other_failures_are_not_retried(self, monkeypatch):
         self._patch_versions_h200(monkeypatch)
         calls: list[str | None] = []
@@ -3551,12 +3723,16 @@ class TestVersionFallback:
         self._patch_versions_h200(monkeypatch)
         calls: list[str | None] = []
 
-        def fake_recommendation(req, **kwargs):
+        def fake_recommendation(req, *, window=None, **kwargs):
             calls.append(req.backend_version)
             if req.backend_version == "0.24.0":
                 raise RuntimeError(EMPIRICAL_GAP)
             # Report the version the SDK would have used for this attempt.
             candidate = MockCandidate()
+            # Return a candidate at the window floor so the service ladder
+            # stops after one call per version attempt.
+            if window is not None:
+                candidate.used_gpus = window[0]
             candidate.prediction_config["engine"]["backend_version"] = req.backend_version
             return make_mock_recommendation_result([candidate])
 

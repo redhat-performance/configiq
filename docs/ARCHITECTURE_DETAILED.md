@@ -75,9 +75,11 @@ GPU sizing formulas or call external service URLs directly from the browser.
 3. Streaming clients request `text/event-stream`; the route emits one
    `completed` event. The service owns the GPU search window for both
    simulators, so the browser never replays windows or forwards candidate
-   bounds. AISimulate resolves its fit floor and window ladder server-side;
-   BLIS performs one bounded aggregate TP search, plus a bounded P/D grid when
-   a fabric is selected, and returns the actual search summary.
+   bounds. AISimulate resolves its fit floor and a wide first window
+   server-side, refines below a feasible candidate and grows after a
+   no-candidate window under one request-wide time budget; BLIS performs one
+   bounded aggregate TP search, plus a bounded P/D grid when a fabric is
+   selected, and returns the actual search summary.
 
 ### Catalog and pricing
 

@@ -50,15 +50,22 @@ paths:
           `target_request_rate` or `target_concurrency`. The service owns the
           search window: it starts at the model's fit floor, the smallest
           aggregated worker shape that holds one full-context sequence, and
-          grows only when a window cannot hold the model or no candidate clears
-          the SLA. The window doubles
-          from the fit floor, and a feasible candidate narrows the next window
-          below that candidate so the result converges on the minimum. The
-          configured ceiling is `AISIMULATORS_MAX_CANDIDATE_GPUS` (default
-          1024); when the fit floor is at or above it, the effective ceiling
-          rises to twice the floor so a large model still has room to search.
-          The whole ladder shares a wall-clock budget
-          (`MIN_GPUS_SEARCH_BUDGET_S`, default 50 seconds). The window actually
+          whose feasibility is resolved with the same runtime envelope as the
+          sweep. The first window is wide —
+          `floor .. min(ceiling, max(16, floor × 2))` — so the search is not
+          spent below the model's size. A feasible candidate above the floor
+          narrows the next window to `floor .. candidate − 1`; a window with no
+          qualifying candidate grows to `upper + 1 .. upper × 2`. The configured
+          ceiling is `AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024); when the
+          fit floor is at or above it, the effective ceiling rises to twice the
+          floor so a large model still has room to search. Each window draws its
+          trial budget from its own upper bound
+          (`MIN_GPUS_MAX_TRIALS`/`MIN_GPUS_PARALLELISM`/
+          `MIN_GPUS_CANDIDATE_TIMEOUT_S`). The whole search shares one
+          wall-clock budget (`MIN_GPUS_SEARCH_BUDGET_S`, default 70 seconds)
+          across fit discovery, every window, and every backend-version
+          attempt. A failed fit-floor discovery is logged and starts from the
+          wide `1 .. min(ceiling, 16)` fallback window. The window actually
           searched is reported as `sweep.window_min_gpus` /
           `sweep.window_max_gpus`, alongside `sweep.configured_max_gpus` and
           `sweep.effective_max_gpus`.
@@ -121,10 +128,10 @@ paths:
           the model's size. The resolved bounds are reported as
           `sweep.window_min_gpus` / `sweep.window_max_gpus`. Fit-floor discovery
           is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15 seconds); when no
-          aggregated shape fits within that budget, the service returns an
-          explicit 422. A failed preflight estimate is logged and the search
-          starts at one GPU instead of inventing a floor. BLIS has no native
-          Pareto
+          aggregated shape fits within that budget, or the preflight estimate
+          fails, the service logs the failure and uses the wide
+          `1 .. min(ceiling, 16)` fallback window instead of returning an early
+          error. BLIS has no native Pareto
           command, so the service enumerates topology and closed-loop
           concurrency combinations, runs each, and computes the non-dominated
           set itself; `sweep.algorithm="enumerate"` and
@@ -999,12 +1006,14 @@ components:
         budget_exhausted:
           type: boolean
           description: |
-            Whether the search stopped at its budget. AISimulate reports true
-            when its trial budget was spent (`evaluated >= max_trials`). BLIS
-            reports true when its wall-clock search time budget stopped the
-            enumeration before every grid point ran, independently of
-            `evaluated` and `max_trials`. In neither case does true imply the
-            search was exhaustive.
+            Whether a wall-clock search budget stopped the run. BLIS reports
+            true when its search time budget stopped the enumeration before
+            every grid point ran. AISimulate reports true when a window-ladder
+            search ran out of its whole-request time budget
+            (`MIN_GPUS_SEARCH_BUDGET_S` / `DEMAND_SEARCH_BUDGET_S`). A sampled
+            sweep's trial spend is reported separately by `max_trials` and
+            `evaluated`; `evaluated >= max_trials` means that budget was spent.
+            In no case does true imply the search was exhaustive.
         strict_sla: { type: boolean, nullable: true }
         window_min_gpus:
           type: integer

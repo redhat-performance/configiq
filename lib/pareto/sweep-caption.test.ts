@@ -33,6 +33,15 @@ describe('describeSweepCoverage', () => {
     ).toBe('20 sampled · 1 feasible — not exhaustive.')
   })
 
+  it('reports a wall-clock budget stop for a sampled sweep', () => {
+    expect(
+      describeSweepCoverage(
+        { algorithm: 'random', evaluated: 20, budgetExhausted: true },
+        [feasible],
+      ),
+    ).toBe('20 sampled · 1 feasible — not exhaustive: the search time budget was reached.')
+  })
+
   it('falls back to the ledger length when the sweep did not report a count', () => {
     expect(describeSweepCoverage(null, [feasible, feasible])).toBe(
       '2 sampled · 2 feasible — not exhaustive.',

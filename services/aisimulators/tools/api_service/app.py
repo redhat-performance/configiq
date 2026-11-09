@@ -593,10 +593,11 @@ class CapacityOutcome(BaseModel):
 class SweepMeta(BaseModel):
     """Run-control facts for a companion sweep.
 
-    `budget_exhausted` means the search stopped at its budget; it does not mean
-    the search was exhaustive. AISimulate reports a spent trial budget
-    (`evaluated >= max_trials`); BLIS reports a wall-clock search time budget
-    that stopped the enumeration before every grid point ran.
+    `budget_exhausted` means a wall-clock search budget stopped the run before
+    it could finish its window or grid. It does not mean the search was
+    exhaustive. Trial spend is always visible in `max_trials` and `evaluated`;
+    for a sampled sweep, `evaluated >= max_trials` means the trial budget was
+    spent. BLIS also reports its search time budget here.
     """
     run_id: str | None = None
     algorithm: str | None = None
@@ -992,12 +993,34 @@ def _max_candidate_gpus() -> int:
 #: large model needs more headroom, so this bounds the doubling loop rather
 #: than the GPU count.
 _FIT_DISCOVERY_BUDGET_S = 15
-#: Wall-clock budget for the min_gpus window ladder. Kept below the gateway
+#: Wall-clock budget for the whole min_gpus search: fit-floor discovery plus
+#: every window and every backend-version attempt. Kept below the gateway
 #: timeout so the caller receives the best observed result instead of a proxy
 #: timeout.
-_MIN_GPUS_SEARCH_BUDGET_S = 50
+_MIN_GPUS_SEARCH_BUDGET_S = 70
 #: Do not start another min_gpus window with less time than this remaining.
 _MIN_GPUS_MIN_WINDOW_S = 5
+#: Minimum headroom above the fit floor for the first search window. A small
+#: model starts at the historical 16-GPU sweep; a larger one starts at twice
+#: its floor so the sweep's smallest-first ordering can find the minimum.
+_AUTO_WINDOW_MIN_GPUS = 16
+#: Default cap on min_gpus trials for one window. The window's own upper bound
+#: sets the budget (one trial per candidate GPU) up to this cap, so a wide
+#: window is sampled properly while a narrow one stays cheap.
+_MIN_GPUS_MAX_TRIALS = 32
+#: Concurrent candidate evaluations for one min_gpus window.
+_MIN_GPUS_PARALLELISM = 4
+#: Per-candidate replay timeout for one min_gpus window.
+_MIN_GPUS_CANDIDATE_TIMEOUT_S = 30
+#: Runtime envelope the SDK sweep uses when deciding whether a shape can hold
+#: one sequence: engine `max_num_tokens` / `max_num_seqs` log-range defaults and
+#: SGLang's lower memory fraction. Fit-floor discovery must use the same
+#: envelope or it will disagree with the sweep about the smallest workable
+#: shape. Mirrors ``_role_runtime()`` in ``aisimulate.sweeper.search_space``.
+_SWEEP_RUNTIME_MAX_NUM_TOKENS = 32768
+_SWEEP_RUNTIME_MAX_BATCH_SIZE = 1024
+_SWEEP_RUNTIME_SGLANG_MEMORY_FRACTION = 0.88
+_SWEEP_RUNTIME_DEFAULT_MEMORY_FRACTION = 0.9
 
 
 def _fit_discovery_budget_seconds() -> int:
@@ -1006,6 +1029,32 @@ def _fit_discovery_budget_seconds() -> int:
 
 def _min_gpus_search_budget_seconds() -> int:
     return _positive_int_env("MIN_GPUS_SEARCH_BUDGET_S", _MIN_GPUS_SEARCH_BUDGET_S)
+
+
+def _min_gpus_max_trials() -> int:
+    return _positive_int_env("MIN_GPUS_MAX_TRIALS", _MIN_GPUS_MAX_TRIALS)
+
+
+def _min_gpus_parallelism() -> int:
+    return _positive_int_env("MIN_GPUS_PARALLELISM", _MIN_GPUS_PARALLELISM)
+
+
+def _min_gpus_candidate_timeout_seconds() -> int:
+    return _positive_int_env("MIN_GPUS_CANDIDATE_TIMEOUT_S", _MIN_GPUS_CANDIDATE_TIMEOUT_S)
+
+
+def _sweep_runtime_envelope(backend: str) -> tuple[int, int, float]:
+    """Runtime knobs the SDK sweep uses for KV-feasibility (tokens, batch, mem)."""
+    memory_fraction = (
+        _SWEEP_RUNTIME_SGLANG_MEMORY_FRACTION
+        if _sdk_backend_id(backend) == "sglang"
+        else _SWEEP_RUNTIME_DEFAULT_MEMORY_FRACTION
+    )
+    return (
+        _SWEEP_RUNTIME_MAX_NUM_TOKENS,
+        _SWEEP_RUNTIME_MAX_BATCH_SIZE,
+        memory_fraction,
+    )
 
 
 def _effective_search_ceiling(configured: int, fit_floor: int) -> int:
@@ -1135,11 +1184,16 @@ def _recommendation_trial_budget(
             1 if narrow_window else _positive_int_env("DEMAND_PARALLELISM", 4),
             _positive_int_env("DEMAND_CANDIDATE_TIMEOUT_S", 15),
         )
-    return (
-        1 if window_max_gpus == 1 else 8,
-        1 if window_max_gpus == 1 else 4,
-        30,
-    )
+    if window_max_gpus == 1:
+        # A one-GPU window cannot host P/D and needs only one trial.
+        return 1, 1, _min_gpus_candidate_timeout_seconds()
+    # Draw the budget from this window's own upper bound so a wide first window
+    # gets enough samples to find its smallest feasible shape. Time slicing in
+    # the ladder can still shrink the actual trials; the cap keeps a large
+    # ceiling from turning one window into an unbounded sweep.
+    max_trials = min(_min_gpus_max_trials(), max(8, window_max_gpus))
+    parallelism = min(_min_gpus_parallelism(), max_trials)
+    return max_trials, parallelism, _min_gpus_candidate_timeout_seconds()
 
 
 #: Pareto sweeps are synchronous and can outlive the request that started them.
@@ -1167,6 +1221,7 @@ def _aisimulate_recommendation_config(
     window: tuple[int, int] | None = None,
     model_path: str | None = None,
     max_trials_override: int | None = None,
+    parallelism_override: int | None = None,
     candidate_timeout_override: int | None = None,
 ) -> Any:
     from aisimulate.config.cli import CoreRecommendationConfig
@@ -1191,6 +1246,13 @@ def _aisimulate_recommendation_config(
     # shrinks each window's trial budget to fit the time that remains.
     if max_trials_override is not None:
         max_trials = max(1, max_trials_override)
+    if parallelism_override is not None:
+        parallelism = max(1, parallelism_override)
+    # The SDK requires at least one trial per active deployment branch, and a
+    # per-window budget must not disagree with the parallelism it is paired
+    # with. Clamp both together so an override cannot make the config invalid.
+    max_trials = max(len(modes), max_trials)
+    parallelism = min(parallelism, max_trials)
     if candidate_timeout_override is not None:
         candidate_timeout_seconds = max(1, candidate_timeout_override)
     concurrency = int(req.target_concurrency or 1)
@@ -1891,9 +1953,10 @@ def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) 
         evaluated=evaluated,
         feasible=getattr(counts, "feasible", None),
         timed_out=getattr(counts, "timed_out", None),
-        # The budget being spent means the search stopped at its trial limit,
-        # never that it enumerated the whole space.
-        budget_exhausted=evaluated >= max_trials,
+        # This sampled sweep is bounded by trials, not wall-clock time. Trial
+        # spend stays visible in `max_trials` and `evaluated`; only a budget
+        # that actually stopped the run on time sets `budget_exhausted`.
+        budget_exhausted=False,
         strict_sla=req.sla_mode == "enforce",
         window_min_gpus=window_min_gpus,
         window_max_gpus=window_max_gpus,
@@ -1904,20 +1967,23 @@ def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) 
     )
 
 
-def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
+def _run_demand_windows(
+    req: RecommendRequest,
+    *,
+    deadline: float | None = None,
+) -> tuple[list[Any], SweepMeta]:
     """Run the demand GPU-window ladder and merge the measured ledger.
 
     A window that cannot hold the model is skipped, and the ladder stops as
     soon as a measured candidate sustains the offered rate or the search budget
     is spent. Trial and timeout overrides keep each window inside the remaining
     wall-clock budget, because the SDK's own budget covers one call only.
+    ``deadline`` lets a version-fallback retry share the request-wide budget.
     """
     windows = _demand_gpu_windows(req)
-    max_trials, parallelism, candidate_timeout = _recommendation_trial_budget(
-        req.objective,
-        windows[0][1],
-    )
-    deadline = time.monotonic() + _demand_search_budget_seconds()
+    fallback_max_trials = _recommendation_trial_budget(req.objective, windows[0][1])[0]
+    if deadline is None:
+        deadline = time.monotonic() + _demand_search_budget_seconds()
     target_rps = float(req.target_request_rate or 0.0)
     records: list[Any] = []
     seen: set[str] = set()
@@ -1935,10 +2001,20 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
             budget_exhausted = True
             break
         attempted.append((lower, upper))
-        window_timeout = max(1, min(candidate_timeout, int(remaining)))
+        window_max_trials, window_parallelism, candidate_timeout = (
+            _recommendation_trial_budget(req.objective, upper)
+        )
+        # Honour the window's own trial budget when time allows, and stretch
+        # the per-wave timeout across the remaining time instead of shrinking
+        # the sample count on a pessimistic timeout assumption.
+        waves = max(1, math.ceil(window_max_trials / window_parallelism))
+        window_timeout = max(1, min(candidate_timeout, int(remaining // waves)))
         window_trials = max(
             1,
-            min(max_trials, max(1, int(remaining // window_timeout)) * parallelism),
+            min(
+                window_max_trials,
+                max(1, int(remaining // window_timeout)) * window_parallelism,
+            ),
         )
         offered_trials += window_trials
         try:
@@ -1946,6 +2022,7 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
                 req,
                 window=(lower, upper),
                 max_trials_override=window_trials,
+                parallelism_override=window_parallelism,
                 candidate_timeout_override=window_timeout,
             )
         except Exception as exc:
@@ -1962,7 +2039,6 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
         evaluated += window_evaluated
         feasible += int(getattr(counts, "feasible", 0) or 0)
         timed_out += int(getattr(counts, "timed_out", 0) or 0)
-        budget_exhausted = budget_exhausted or window_evaluated >= window_trials
         run_id = getattr(getattr(result, "provenance", None), "run_id", None) or run_id
         for record in getattr(result, "candidates", []) or []:
             signature = _demand_record_signature(record)
@@ -1978,10 +2054,12 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
         run_id=run_id,
         algorithm=_sweep_algorithm(),
         seed=_sweep_seed(),
-        max_trials=offered_trials or max_trials,
+        max_trials=offered_trials or fallback_max_trials,
         evaluated=evaluated,
         feasible=feasible if searched else None,
         timed_out=timed_out if searched else None,
+        # Only the wall-clock ladder budget can set this flag. Trial spend is
+        # reported by `max_trials` and `evaluated`.
         budget_exhausted=budget_exhausted,
         strict_sla=False,
         window_min_gpus=last[0],
@@ -1993,34 +2071,37 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
 
 def _run_min_gpus_windows(
     req: RecommendRequest,
+    *,
+    deadline: float | None = None,
 ) -> tuple[Any | None, SweepMeta]:
     """Run the min-GPU search over a service-resolved window ladder.
 
-    The ladder starts at the model's single-sequence fit floor, the smallest
-    worker shape that holds one full-context sequence. A window that cannot
-    hold the model, or in which no candidate clears the SLA, expands
-    geometrically. A candidate above the window floor narrows the range so the
-    search converges on the smallest feasible shape instead of an arbitrary
-    sample.
+    The first window starts at the model's single-sequence fit floor and reaches
+    at least 16 GPUs (or twice a larger floor), so both aggregated and
+    disaggregated shapes have room. The SDK orders candidates smallest-first;
+    a returned candidate above the floor narrows the range below it, while a
+    window with no qualifying candidate doubles the upper bound. Each window
+    draws its trial budget from its own upper bound.
 
     Both the fit floor and the ceiling are resolved here, so the caller sends
     workload intent only. The configured candidate ceiling is a soft budget:
     it rises to twice the fit floor when a very large model needs the headroom.
+    A discovery failure starts from the wide one-GPU fallback window; it is
+    logged rather than returned as a separate result.
     """
     configured = _max_candidate_gpus()
-    deadline = time.monotonic() + _min_gpus_search_budget_seconds()
-    floor = _discover_fit_floor(
+    if deadline is None:
+        deadline = time.monotonic() + _min_gpus_search_budget_seconds()
+    discovered = _discover_fit_floor(
         req,
         configured=configured,
         deadline=min(deadline, time.monotonic() + _fit_discovery_budget_seconds()),
     )
+    floor = 1 if discovered is None else discovered
     ceiling = _effective_search_ceiling(configured, floor)
-    max_trials, parallelism, candidate_timeout = _recommendation_trial_budget(
-        req.objective,
-        ceiling,
-    )
 
-    lower = upper = floor
+    lower = floor
+    upper = min(ceiling, max(_AUTO_WINDOW_MIN_GPUS, floor * 2))
     refining = False
     attempted: list[tuple[int, int]] = []
     offered_trials = 0
@@ -2032,18 +2113,27 @@ def _run_min_gpus_windows(
     run_id: str | None = None
     result: Any | None = None
 
-    while lower <= ceiling:
-        if attempted:
-            remaining = deadline - time.monotonic()
-            if remaining < _MIN_GPUS_MIN_WINDOW_S:
-                budget_exhausted = True
-                break
+    while lower <= upper <= ceiling:
+        if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
+            budget_exhausted = True
+            break
         remaining = max(1.0, deadline - time.monotonic())
+        window_max_trials, window_parallelism, candidate_timeout = (
+            _recommendation_trial_budget(req.objective, upper)
+        )
         attempted.append((lower, upper))
-        window_timeout = max(1, min(candidate_timeout, int(remaining)))
+        # Honour this window's own trial budget when time allows. The per-wave
+        # timeout absorbs the remaining time rather than shrinking the sample
+        # count, so a wide window is not under-sampled by a pessimistic
+        # worst-case replay assumption.
+        waves = max(1, math.ceil(window_max_trials / window_parallelism))
+        window_timeout = max(1, min(candidate_timeout, int(remaining // waves)))
         window_trials = max(
             1,
-            min(max_trials, max(1, int(remaining // window_timeout)) * parallelism),
+            min(
+                window_max_trials,
+                max(1, int(remaining // window_timeout)) * window_parallelism,
+            ),
         )
         offered_trials += window_trials
         try:
@@ -2051,6 +2141,7 @@ def _run_min_gpus_windows(
                 req,
                 window=(lower, upper),
                 max_trials_override=window_trials,
+                parallelism_override=window_parallelism,
                 candidate_timeout_override=window_timeout,
             )
         except Exception as exc:
@@ -2070,7 +2161,6 @@ def _run_min_gpus_windows(
             evaluated += window_evaluated
             feasible += int(getattr(counts, "feasible", 0) or 0)
             timed_out += int(getattr(counts, "timed_out", 0) or 0)
-            budget_exhausted = budget_exhausted or window_evaluated >= window_trials
             run_id = getattr(getattr(window_result, "provenance", None), "run_id", None) or run_id
 
             selected = getattr(window_result, "selected_candidates", None) or []
@@ -2083,7 +2173,7 @@ def _run_min_gpus_windows(
                 # A candidate can only narrow the range when it lies inside it.
                 # An out-of-window shape (for example disaggregation rounding)
                 # cannot be refined further, so keep the result as observed.
-                if refinement_max < lower or refinement_max >= upper:
+                if refinement_max < lower or candidate_gpus > upper:
                     break
                 upper = refinement_max
                 refining = True
@@ -2103,22 +2193,21 @@ def _run_min_gpus_windows(
         lower = upper + 1
         upper = min(ceiling, max(lower, upper * 2))
 
-    if result is None and not budget_exhausted:
-        raise HTTPException(
-            status_code=422,
-            detail=(
+    if result is None:
+        # Only wall-clock time sets `budget_exhausted`; a spent trial budget is
+        # reported through `max_trials` and `evaluated` instead.
+        if budget_exhausted:
+            detail = (
+                f"The recommendation search reached its time budget after "
+                f"{len(attempted)} GPU window(s) (up to {attempted[-1][1]} GPUs) "
+                "without a feasible configuration."
+            )
+        else:
+            detail = (
                 f"No GPU configuration on {req.system} meets the requested workload "
                 f"between {floor} and {ceiling} GPUs."
-            ),
-        )
-    if result is None:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"The recommendation search exhausted its time budget after {len(attempted)} "
-                f"GPU windows (up to {attempted[-1][1]} GPUs) without a feasible configuration."
-            ),
-        )
+            )
+        raise HTTPException(status_code=422, detail=detail)
 
     return result, SweepMeta(
         run_id=run_id,
@@ -2243,6 +2332,9 @@ def _capacity_shapes(
     context_tokens: int,
     gpu_budget: int,
     target_concurrency: int | None = None,
+    max_num_tokens: int | None = None,
+    max_batch_size: int | None = None,
+    memory_fraction: float | None = None,
 ) -> list[_CapacityShape]:
     """Enumerate every aggregated shape the SDK's search space allows.
 
@@ -2287,11 +2379,18 @@ def _capacity_shapes(
         # Reserve for one sequence at full context and the requested number of
         # resident sequences. Both are the workload's own bounds, not invented
         # defaults; they match the memory breakdown the response reports.
-        max_num_tokens=context_tokens,
-        max_batch_size=int(
-            target_concurrency if target_concurrency is not None else (req.target_concurrency or 1)
+        # Callers that need the SDK sweep's own envelope pass explicit values.
+        max_num_tokens=context_tokens if max_num_tokens is None else max_num_tokens,
+        max_batch_size=(
+            int(target_concurrency if target_concurrency is not None else (req.target_concurrency or 1))
+            if max_batch_size is None
+            else max_batch_size
         ),
-        memory_fraction=_backend_memory_fraction(req.backend, backend_version),
+        memory_fraction=(
+            _backend_memory_fraction(req.backend, backend_version)
+            if memory_fraction is None
+            else memory_fraction
+        ),
     )
     return [
         _CapacityShape(
@@ -2311,7 +2410,7 @@ def _discover_fit_floor(
     *,
     configured: int,
     deadline: float,
-) -> int:
+) -> int | None:
     """Smallest aggregated worker shape that holds one full-context sequence.
 
     Discovery starts at the configured candidate ceiling and doubles the
@@ -2319,11 +2418,19 @@ def _discover_fit_floor(
     footprint is above the configured value is still discovered. The loop is
     bounded by wall-clock time, not a GPU count.
 
-    A preflight failure returns the historical start at one GPU: the fit floor
-    is a search-start hint, so an estimate bug must not block a real search.
+    Feasibility uses the same runtime envelope as the sweep itself (engine
+    ``max_num_tokens`` / ``max_num_seqs`` and the backend's default memory
+    fraction). A different envelope would make discovery report a floor the
+    sweep cannot reproduce.
+
+    Returns ``None`` when discovery cannot resolve a floor: a preflight failure
+    or an exhausted budget is logged and the caller starts from the wide
+    one-GPU fallback window. The fit floor is a search-start hint, so a
+    discovery problem must not block a real search.
     """
     budget = configured
     context_tokens = _capacity_context_tokens(req)
+    max_num_tokens, max_batch_size, memory_fraction = _sweep_runtime_envelope(req.backend)
     while True:
         try:
             with _with_model_config(req.model_path, req.model_config_data) as model_path:
@@ -2337,28 +2444,34 @@ def _discover_fit_floor(
                     # One sequence is the universal lower bound for any
                     # deployment that can serve the workload.
                     target_concurrency=1,
+                    max_num_tokens=max_num_tokens,
+                    max_batch_size=max_batch_size,
+                    memory_fraction=memory_fraction,
                 )
         except Exception as error:  # a failed preflight must not mask the search's own error
             logger.warning(
-                "Fit-floor discovery failed for %s on %s (%s); starting at 1 GPU: %s",
+                "Fit-floor discovery failed for %s on %s (%s); starting from the "
+                "wide fallback window: %s",
                 req.model_path,
                 req.system,
                 req.backend,
                 error,
             )
-            return 1
+            return None
         if shapes:
             return min(shape.gpus_per_worker for shape in shapes)
         if time.monotonic() >= deadline:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"{req.model_path} on {req.system}: no aggregated parallel "
-                    f"configuration holds a {context_tokens}-token sequence within "
-                    f"the fit-discovery budget (enumerated up to {budget} GPUs). "
-                    "The model may exceed this deployment's practical cluster size."
-                ),
+            logger.warning(
+                "Fit-floor discovery reached its budget for %s on %s (%s): no "
+                "aggregated parallel configuration holds a %d-token sequence "
+                "within %d GPUs; starting from the wide fallback window",
+                req.model_path,
+                req.system,
+                req.backend,
+                context_tokens,
+                budget,
             )
+            return None
         budget *= 2
 
 
@@ -2376,18 +2489,18 @@ def _pareto_auto_window(req: RecommendRequest) -> tuple[int, int]:
     deployment replicates the full weights in the prefill and decode pools, so
     it cannot need fewer GPUs than the aggregated shape.
 
-    Raises ``HTTPException`` when no shape fits inside the discovery budget, so
-    the caller returns an explicit no-result response instead of running a
-    useless sweep.
+    A discovery failure falls back to the wide one-GPU window, so the sweep
+    still runs and can report its own no-result response.
     """
     configured = _max_candidate_gpus()
-    floor = _discover_fit_floor(
+    discovered = _discover_fit_floor(
         req,
         configured=configured,
         deadline=time.monotonic() + _fit_discovery_budget_seconds(),
     )
+    floor = 1 if discovered is None else discovered
     ceiling = _effective_search_ceiling(configured, floor)
-    upper = min(ceiling, max(16, floor * 2))
+    upper = min(ceiling, max(_AUTO_WINDOW_MIN_GPUS, floor * 2))
     return floor, max(floor, upper)
 
 
@@ -3533,7 +3646,12 @@ def _fallback_cache_put(cache_key: tuple[str, str, str, str, str], version: str)
         return is_new
 
 
-def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, str | None]:
+def _run_with_version_fallback(
+    req: Any,
+    run: Callable[[], Any],
+    *,
+    deadline: float | None = None,
+) -> tuple[Any, str | None]:
     """Resolve an omitted ``backend_version`` to a version that can serve the model.
 
     A blank version (or the ``current`` alias, which means the same thing) is
@@ -3542,6 +3660,10 @@ def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, s
     version covers it (dense Gemma-4 31B is absent on vLLM 0.24.0 and present on
     0.31.0). Retry only on a performance-data gap, and never for a version the
     caller pinned literally: ``previous`` and ``next`` name specific slots.
+
+    ``deadline`` is a ``time.monotonic()`` instant shared by every attempt, so a
+    retry does not restart a request-wide search budget. The run itself must
+    also honour it; this function only avoids starting a retry after it passes.
 
     Returns ``(result, version_the_default_could_not_serve)``.
     """
@@ -3575,7 +3697,11 @@ def _run_with_version_fallback(req: Any, run: Callable[[], Any]) -> tuple[Any, s
 
     attempted: list[str | None] = []
     cause: BaseException | None = None
-    for version in ordered[:_VERSION_FALLBACK_ATTEMPTS]:
+    for index, version in enumerate(ordered[:_VERSION_FALLBACK_ATTEMPTS]):
+        # The first attempt always runs; a retry must fit in what is left of
+        # the request-wide budget instead of restarting it.
+        if index > 0 and deadline is not None and time.monotonic() >= deadline:
+            break
         req.backend_version = version
         attempted.append(version)
         try:
@@ -4286,9 +4412,12 @@ def post_recommend(
             # Demand sizing cannot rely on the SDK's smallest-first search
             # (min_gpus is rejected without an SLA), so the service walks a
             # growing GPU window and stops at the first one that sustains
-            # the offered rate.
+            # the offered rate. One deadline covers every version attempt.
+            deadline = time.monotonic() + _demand_search_budget_seconds()
             (demand_records, sweep), fell_back_from = _run_with_version_fallback(
-                req, lambda: _run_demand_windows(req)
+                req,
+                lambda: _run_demand_windows(req, deadline=deadline),
+                deadline=deadline,
             )
         elif req.objective == "concurrency_capacity":
             # Capacity is a deterministic enumeration over the aggregated
@@ -4303,9 +4432,14 @@ def post_recommend(
             )
         else:
             # The service resolves the whole min-GPU window ladder from the
-            # model's fit floor; the request carries workload intent only.
+            # model's fit floor; the request carries workload intent only. One
+            # deadline covers fit discovery, every window, and every version
+            # attempt, so a retry cannot exceed the gateway timeout.
+            deadline = time.monotonic() + _min_gpus_search_budget_seconds()
             (result, sweep), fell_back_from = _run_with_version_fallback(
-                req, lambda: _run_min_gpus_windows(req)
+                req,
+                lambda: _run_min_gpus_windows(req, deadline=deadline),
+                deadline=deadline,
             )
     except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)

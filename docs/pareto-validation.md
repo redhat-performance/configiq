@@ -139,11 +139,11 @@ The resolved window is reported as `sweep.window_min_gpus` /
 `sweep.effective_max_gpus` alongside it; there is no user-facing window control.
 
 Fit-floor discovery is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15
-seconds), independent of the GPU count. If no shape fits within that budget,
-the response is an explicit 422 naming the budget. If the preflight estimate
-itself fails, the service logs a warning and starts at one GPU rather than
-inventing a floor. BLIS uses the service candidate ceiling, further limited by
-its hardware maximum; it does not resolve a model-aware floor.
+seconds), independent of the GPU count. If no shape fits within that budget, or
+the preflight estimate fails, the service logs the failure and uses the wide
+`1 .. min(ceiling, 16)` fallback window rather than returning an early error.
+BLIS uses the service candidate ceiling, further limited by its hardware
+maximum; it does not resolve a model-aware floor.
 
 ### Budgets and sampler
 
@@ -163,14 +163,16 @@ optimization rounds, so it is not the default. The trial budget is split across
 aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
 a per-mode count.
 
-For AISimulate's sampled sweep, `sweep.budget_exhausted` is true when
-`evaluated >= max_trials`: the trial budget was spent, never that the search
-enumerated every configuration. For BLIS's enumerated sweep, it reports whether
+For AISimulate's sampled sweep, `sweep.budget_exhausted` is a wall-clock
+signal only. Pareto sampling has no wall-clock budget, so trial spend is
+reported by `max_trials` and `evaluated` instead; `evaluated >= max_trials`
+means the trial budget was spent, never that the search enumerated every
+configuration. For BLIS's enumerated sweep, `budget_exhausted` reports whether
 the wall-clock search time budget stopped enumeration before every grid point
 ran, independently of `evaluated` and `max_trials`. The UI caption reads
 "sampled — not exhaustive" for a sampled sweep and "evaluated — exhaustive over
 the enumerated grid" for an enumerated sweep (BLIS), downgraded to the matching
-budget-exhaustion warning when the search stopped early.
+time-budget warning when the search stopped early.
 
 ### BLIS sweeps
 

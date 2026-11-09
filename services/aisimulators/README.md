@@ -233,25 +233,40 @@ With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
 `objective=min_gpus` searches the fewest GPUs that clear the latency SLA. The
 service owns the whole search window, so a request carries workload intent only.
 It first resolves the model's **fit floor**: the smallest aggregated worker
-shape whose KV capacity holds one full-context sequence. Aggregated is a valid
-lower bound for both deployment modes because a disaggregated deployment
-replicates the full weights in each pool.
+shape whose KV capacity holds one full-context sequence, using the same runtime
+envelope as the sweep (engine `max_num_tokens` / `max_num_seqs` defaults and
+the backend's default memory fraction). Aggregated is a valid lower bound for
+both deployment modes because a disaggregated deployment replicates the full
+weights in each pool.
 
-The ladder starts at the fit floor, then:
+The first window is wide — `floor .. min(ceiling, max(16, floor × 2))` — so
+both aggregated and disaggregated shapes have room and the SDK's
+smallest-first ordering can find the true minimum. The ladder then:
 
+- narrows to `floor .. candidate − 1` when a feasible candidate is above the
+  floor;
 - grows to `upper + 1 .. upper × 2` when a window cannot hold the model or no
   candidate clears the SLA;
-- narrows below a feasible candidate so the search converges on the minimum;
 - stops when the candidate is at the window floor, the effective ceiling is
-  reached, or `MIN_GPUS_SEARCH_BUDGET_S` (default 50 seconds) is spent.
+  reached, or `MIN_GPUS_SEARCH_BUDGET_S` (default 70 seconds, including fit
+  discovery and every backend-version attempt) is spent.
+
+Each window draws its trial budget from that window's own upper bound
+(`MIN_GPUS_MAX_TRIALS`, default 32, `MIN_GPUS_PARALLELISM`, default 4,
+`MIN_GPUS_CANDIDATE_TIMEOUT_S`, default 30), and the same parallelism is passed
+to the SDK so the budget and the config cannot disagree.
 
 `AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024) is a soft ceiling. When the
 fit floor is at or above it, the effective ceiling is `max(configured,
 floor × 2)`, so a large model still has room to search. Discovery of the fit
-floor is bounded separately by `FIT_DISCOVERY_BUDGET_S` (default 15 seconds);
-if no shape fits within that budget the response is an explicit 422. A failed
-preflight estimate is logged and the search starts at one GPU instead of
-inventing a floor.
+floor is bounded separately by `FIT_DISCOVERY_BUDGET_S` (default 15 seconds).
+If no shape fits within that budget, or the preflight estimate fails, the
+failure is logged and the search starts from the wide fallback window
+`1 .. min(ceiling, 16)` instead of returning an early error.
+
+`sweep.budget_exhausted` is true only when the wall-clock budget stopped the
+ladder. A spent trial budget is visible in `sweep.max_trials` and
+`sweep.evaluated`; it does not mean the search was exhaustive.
 
 The response reports the window actually searched as
 `sweep.window_min_gpus` / `sweep.window_max_gpus`, plus
@@ -293,8 +308,11 @@ smallest-first. The service therefore walks a growing GPU window, starting at
 met, the effective ceiling is reached, or the whole-search budget
 `DEMAND_SEARCH_BUDGET_S` (default 50 seconds) is spent. A window that cannot
 hold the model is skipped. The request carries no GPU bounds: the service owns
-the demand ladder as well. Each window's trial/timeout budget is reduced to the
-time that remains, so the ladder stays inside the gateway timeout.
+the demand ladder as well. Each window draws its own trial budget, and its
+per-candidate timeout is fitted to the time that remains, so the ladder stays
+inside the gateway timeout.
+`sweep.budget_exhausted` is true only when that wall-clock budget stopped the
+ladder; trial spend remains visible in `max_trials`/`evaluated`.
 
 ### Concurrency-capacity sizing
 
@@ -437,9 +455,9 @@ resolved bounds are reported as `sweep.window_min_gpus` /
 `sweep.effective_max_gpus`. The request has no window fields to override this.
 
 Fit-floor discovery is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15
-seconds). If no aggregated shape fits inside that budget, the response is an
-explicit 422 naming the budget. If the preflight estimate itself fails, the
-service logs a warning and starts at one GPU rather than inventing a floor.
+seconds). If no aggregated shape fits inside that budget, or the preflight
+estimate fails, the service logs the failure and uses the wide
+`1 .. min(ceiling, 16)` fallback window rather than returning an early error.
 BLIS uses the service candidate ceiling, further limited by its hardware
 maximum; it does not resolve a model-aware fit floor.
 
@@ -465,12 +483,12 @@ For a Pareto result:
   not imply a fabric default. BLIS models transfer through the named `fabric`
   and rejects an explicit bandwidth.
 - `sweep` reports the algorithm, seed, trial budget, evaluated/feasible/timed-out
-  counts, and the GPU window. For AISimulate, `sweep.budget_exhausted=true`
-  means the trial budget was spent. BLIS enumerates its candidate grid rather
-  than sampling it, so its `sweep.algorithm` is `enumerate`, and
-  `budget_exhausted=true` means its wall-clock search time budget stopped the
-  enumeration before every grid point ran. In neither case does exhaustion mean
-  the search was exhaustive. `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the
+  counts, and the GPU window. `sweep.budget_exhausted=true` means a wall-clock
+  search time budget stopped the run: BLIS's Pareto enumeration or an
+  AISimulate window ladder. Trial spend is reported separately by
+  `max_trials`/`evaluated`; for a sampled sweep, `evaluated >= max_trials`
+  means the trial budget was spent. Exhaustion never means the search was
+  exhaustive. `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the
   closed-loop load grid.
 
 Pareto sweeps use `PARETO_MAX_TRIALS` (default 20), `PARETO_PARALLELISM`

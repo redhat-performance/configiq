@@ -1218,7 +1218,7 @@ export default function Sizing() {
           <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {primaryResult.searchSummary && (
               <span>
-                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' budget reached' : ''}.
+                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
               </span>
             )}
             {primaryResult.sweep?.windowMinGpus != null && primaryResult.sweep.windowMaxGpus != null && (
@@ -1722,6 +1722,6 @@ function sweepCoverageLabel(sweep: RecommendSweepMeta): string {
   const max = sweep.windowMaxGpus ?? min
   const range = min === max ? `${min} GPU${min === 1 ? '' : 's'}` : `${min}–${max} GPUs`
   const evaluated = sweep.evaluated ?? 0
-  const budget = sweep.budgetExhausted ? ' · budget reached' : ''
+  const budget = sweep.budgetExhausted ? ' · time budget reached' : ''
   return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}`
 }
