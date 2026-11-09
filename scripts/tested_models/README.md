@@ -55,18 +55,30 @@ export_triton.py       # Export validated classifier artifacts
 validate_artifacts.py  # Verify bundle and schema integrity
 build_registry.py      # Generate the tested-model registry
 build_dashboard.py     # Generate dashboard data
+compare_registry.py    # Summarize a new bundle against the deployed registry
 ```
 
 The scripts are intentionally kept independent of the ConfigIQ web runtime.
 Internal extraction is run only from an approved environment; GitHub Actions
-consumes the resulting pinned public Hugging Face dataset revision.
+consumes the public Hugging Face dataset at a resolved immutable revision.
 
 The repeatable GitHub workflow is `.github/workflows/tested-models.yml`. It
-downloads a pinned revision of the public
-`redhat-performance/configiq-performance-upstream-data` Hugging Face dataset,
-generates all artifacts, and uploads only the sanitized registry/Triton/dashboard
-bundle. Raw parquet, split data, source identifiers, and training work files are
-not uploaded by the workflow.
+downloads the public `redhat-performance/configiq-performance-upstream-data`
+Hugging Face dataset, generates all artifacts, and uploads only the sanitized
+registry/Triton/dashboard bundle. Raw parquet, split data, source identifiers,
+and training work files are not uploaded by the workflow.
+
+By default the download follows the dataset's default branch and resolves it to
+an immutable 40-character commit SHA. Pass `--revision` to pin a build:
+
+```bash
+uv run --group tested-models python scripts/tested_models/download_ground_truth.py \
+  --revision e45d9e1114b2d029fdca0db7bfe7873a0f5286af
+```
+
+The `tested-models.yml` workflow exposes the same value as its `revision`
+dispatch input. The publish workflow dispatches that build automatically after
+it uploads changed ground truth, so no repository variable needs updating.
 
 To publish a new sanitized ground-truth revision after running extraction from
 the approved source environment:
@@ -74,9 +86,6 @@ the approved source environment:
 ```bash
 uv run --group tested-models python scripts/tested_models/publish_ground_truth.py
 ```
-
-Set the GitHub repository variable `TESTED_DATASET_REVISION` to the resulting
-Hugging Face commit before starting the automation workflow.
 
 ## Stage 5: performance envelope classifiers
 

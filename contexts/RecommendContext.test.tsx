@@ -11,22 +11,41 @@ vi.mock('@/lib/api/recommend-stream', () => ({
   }),
 }))
 
+vi.mock('@/lib/api/pareto', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/lib/api/pareto')>()
+  return {
+    ...actual,
+    fetchFrontier: vi.fn().mockResolvedValue({ candidates: [], views: null, sweep: null }),
+  }
+})
+
 import { RecommendProvider, useRecommend } from './RecommendContext'
+import { readRecommendStream } from '@/lib/api/recommend-stream'
+import { fetchFrontier } from '@/lib/api/pareto'
 
 let root: ReturnType<typeof createRoot>
 let host: HTMLDivElement
 let startSizing: ReturnType<typeof useRecommend>['startSizing']
+let startPareto: ReturnType<typeof useRecommend>['startPareto']
+let reset: ReturnType<typeof useRecommend>['reset']
+let latest: ReturnType<typeof useRecommend>
 
 function Consumer() {
-  const currentStartSizing = useRecommend().startSizing
+  const current = useRecommend()
   React.useEffect(() => {
-    startSizing = currentStartSizing
-  }, [currentStartSizing])
+    startSizing = current.startSizing
+    startPareto = current.startPareto
+    reset = current.reset
+    latest = current
+  })
   return null
 }
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  // The module mocks are shared across tests; clear call history so each test
+  // observes only its own requests.
+  vi.clearAllMocks()
   host = document.createElement('div')
   document.body.append(host)
   root = createRoot(host)
@@ -44,6 +63,17 @@ async function render() {
   await act(async () => root.render(<RecommendProvider><Consumer /></RecommendProvider>))
 }
 
+const SIZING_PARAMS = {
+  model_path: 'org/model',
+  system: 'h200_sxm',
+  isl: 2048,
+  osl: 128,
+  sla_mode: 'enforce' as const,
+  ttft: 1000,
+  target_concurrency: 8,
+  simulator: 'aisimulate' as const,
+}
+
 describe('RecommendContext request construction', () => {
   it.each(['roce-200g', null])('preserves the explicit BLIS fabric value %j', async fabric => {
     await render()
@@ -54,6 +84,7 @@ describe('RecommendContext request construction', () => {
         system: 'h200_sxm',
         isl: 2048,
         osl: 128,
+        sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
         simulator: 'blis',
@@ -77,6 +108,7 @@ describe('RecommendContext request construction', () => {
         system: 'h200_sxm',
         isl: 2048,
         osl: 128,
+        sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
         simulator: 'aisimulate',
@@ -100,6 +132,7 @@ describe('RecommendContext request construction', () => {
         system: 'h200_sxm',
         isl: 2048,
         osl: 128,
+        sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
         simulator: 'aisimulate',
@@ -110,5 +143,226 @@ describe('RecommendContext request construction', () => {
     const fetchMock = vi.mocked(fetch)
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
     expect(body).not.toHaveProperty('fabric')
+  })
+
+  it('builds a throughput-demand request without latency bounds', async () => {
+    await render()
+
+    await act(async () => {
+      startSizing({
+        model_path: 'org/model',
+        system: 'h200_sxm',
+        isl: 2048,
+        osl: 128,
+        sla_mode: 'none',
+        target_request_rate: 12.5,
+        simulator: 'aisimulate',
+      })
+      await Promise.resolve()
+    })
+
+    const fetchMock = vi.mocked(fetch)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('throughput_demand')
+    expect(body.sla_mode).toBe('none')
+    expect(body.target_request_rate).toBe(12.5)
+    expect(body).not.toHaveProperty('target_concurrency')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('request_latency')
+  })
+
+  it('builds a concurrency-capacity request without latency or rate targets', async () => {
+    await render()
+
+    await act(async () => {
+      startSizing({
+        model_path: 'org/model',
+        system: 'h200_sxm',
+        isl: 2048,
+        osl: 128,
+        sla_mode: 'none',
+        objective: 'concurrency_capacity',
+        target_concurrency: 64,
+        simulator: 'aisimulate',
+      })
+      await Promise.resolve()
+    })
+
+    const fetchMock = vi.mocked(fetch)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('concurrency_capacity')
+    expect(body.sla_mode).toBe('none')
+    expect(body.target_concurrency).toBe(64)
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('request_latency')
+  })
+})
+
+describe('RecommendContext action modes', () => {
+  it('does not launch a Pareto sweep after a Calculate result', async () => {
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'completed',
+      recommendation: { gpusNeeded: 4 },
+    } as never)
+    await render()
+
+    await act(async () => {
+      startSizing(SIZING_PARAMS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(vi.mocked(fetchFrontier)).not.toHaveBeenCalled()
+    expect(latest.runMode).toBe('sizing')
+    expect(latest.result).not.toBeNull()
+  })
+
+  it('sends one standalone Pareto request with no GPU-window bounds', async () => {
+    await render()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const frontier = vi.mocked(fetchFrontier)
+    expect(frontier).toHaveBeenCalledTimes(1)
+    const [request] = frontier.mock.calls[0]
+    expect(request).toMatchObject({
+      simulator: 'aisimulate',
+      objective: 'pareto',
+      sla_mode: 'enforce',
+      ttft: 1000,
+    })
+    expect(request).not.toHaveProperty('min_candidate_gpus')
+    expect(request).not.toHaveProperty('max_candidate_gpus')
+    expect(request).not.toHaveProperty('target_concurrency')
+    expect(request).not.toHaveProperty('minGpus')
+    expect(request).not.toHaveProperty('maxGpus')
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
+    expect(latest.runMode).toBe('pareto')
+    expect(latest.result).toBeNull()
+    expect(latest.frontier.status).toBe('ready')
+  })
+
+  it('drops load targets and latency bounds from a no-SLA Pareto request', async () => {
+    await render()
+
+    await act(async () => {
+      startPareto({
+        ...SIZING_PARAMS,
+        sla_mode: 'none',
+        ttft: undefined,
+        target_request_rate: 9,
+      })
+      await Promise.resolve()
+    })
+
+    const [request] = vi.mocked(fetchFrontier).mock.calls[0]
+    expect(request).toMatchObject({ objective: 'pareto', sla_mode: 'none' })
+    expect(request).not.toHaveProperty('target_request_rate')
+    expect(request).not.toHaveProperty('target_concurrency')
+    expect(request).not.toHaveProperty('ttft')
+    expect(request).not.toHaveProperty('tpot')
+    expect(request).not.toHaveProperty('request_latency')
+  })
+
+  it('keeps the caller-selected simulator instead of substituting AISimulate', async () => {
+    await render()
+
+    await act(async () => {
+      startPareto({ ...SIZING_PARAMS, simulator: 'blis' })
+      await Promise.resolve()
+    })
+
+    const [request] = vi.mocked(fetchFrontier).mock.calls[0]
+    expect(request.simulator).toBe('blis')
+  })
+
+  it('clears a Pareto result when Calculate starts', async () => {
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'completed',
+      recommendation: { gpusNeeded: 4 },
+    } as never)
+    await render()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await Promise.resolve()
+    })
+    expect(latest.frontier.status).toBe('ready')
+
+    await act(async () => {
+      startSizing(SIZING_PARAMS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.runMode).toBe('sizing')
+    expect(latest.frontier.status).toBe('idle')
+  })
+
+  it('clears a sizing result when Pareto starts', async () => {
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'completed',
+      recommendation: { gpusNeeded: 4 },
+    } as never)
+    await render()
+
+    await act(async () => {
+      startSizing(SIZING_PARAMS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(latest.result).not.toBeNull()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await Promise.resolve()
+    })
+
+    expect(latest.runMode).toBe('pareto')
+    expect(latest.result).toBeNull()
+  })
+
+  it('reports a Pareto failure on the frontier state, not the sizing error', async () => {
+    vi.mocked(fetchFrontier).mockRejectedValueOnce(new Error('sweep timed out'))
+    await render()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.frontier).toEqual({ status: 'error', message: 'sweep timed out' })
+    expect(latest.error).toBeNull()
+  })
+
+  it('discards a primary completion aborted by reset', async () => {
+    let resolveStream!: (value: unknown) => void
+    vi.mocked(readRecommendStream).mockReturnValueOnce(new Promise(resolve => {
+      resolveStream = resolve
+    }) as never)
+    await render()
+
+    await act(async () => {
+      startSizing(SIZING_PARAMS)
+      await Promise.resolve()
+    })
+    await act(async () => { reset() })
+    await act(async () => {
+      resolveStream({ status: 'completed', recommendation: { gpusNeeded: 4 } })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(latest.runMode).toBeNull()
+    expect(latest.result).toBeNull()
+    expect(vi.mocked(fetchFrontier)).not.toHaveBeenCalled()
   })
 })

@@ -43,13 +43,10 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
   const server = owned?.candidate
   const effectiveMode = cloud?.cloudRateKind === 'capacity_block' ? 'always-on' : assumptions.cloudBillingMode
   const billingLabel = effectiveMode === 'scale-to-zero' ? 'Scale to zero' : effectiveMode === 'active-window' ? 'Active window' : 'Always on'
-  const infrastructure = cloud?.cloudDirectInfrastructureMonthly ?? assumptions.rentedDirectInfrastructureMonthly
   const inputs = (keys: CostAssumptionKey[]) => keys.map(key => <Row key={key} inputKey={key}
     label={shortLabels[key] ?? fields.get(key)!.label.replace(/\s*\([^)]*\)/g, '')}>
-    {inputValue(key, key === 'rentedDirectInfrastructureMonthly' ? infrastructure : assumptions[key])}
-    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>{cloud?.cloudDirectInfrastructureMonthly != null
-      ? 'Catalogue allowance — replaces the Sources fallback.'
-      : cloud ? 'Sources fallback.' : 'Fallback; confirmed after sizing.'}</span>}
+    {inputValue(key, assumptions[key])}
+    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>Planning allowance from Sources; not a provider charge.</span>}
     {key === 'cloudRuntimeBufferPct' && effectiveMode !== 'scale-to-zero' && <span className={styles.appliedValueNote}>Not used in this billing mode.</span>}
   </Row>)
 
@@ -57,7 +54,7 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
     <section className={styles.comparisonBasis} aria-labelledby="hybrid-comparison-basis-heading">
       <h3 id="hybrid-comparison-basis-heading">Comparison basis</h3>
       <dl className={styles.basisList}>
-        <Row label="Cost view">{assumptions.costLens === 'marginal' ? 'Marginal cost' : 'Full TCO'}</Row>
+        <Row label="Cost view">{assumptions.costLens === 'marginal' ? 'Direct running costs' : 'Full TCO'}</Row>
         {inputs(['planningCapacityUsePct', 'analysisMonths', 'loadedMonthlyCostPerFte'])}
       </dl>
     </section>
@@ -95,7 +92,7 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
           </Group>
         </section>
       </div>
-      <p className={styles.calculationNote}>FTE is the share of a full-time person. Implementation is spread over the analysis period; additional installation is added to the catalogue allowance.{assumptions.costLens === 'marginal' && ' Marginal costs exclude acquisition, capital, installation, operations and initial implementation.'} Selected prices and cost breakdowns are on the flip cards.</p>
+      <p className={styles.calculationNote}>FTE is the share of a full-time person. Implementation is spread over the analysis period; additional installation is added to the catalogue allowance.{assumptions.costLens === 'marginal' && ' Direct running costs exclude acquisition, capital, installation, operations and initial implementation.'} Selected prices and cost breakdowns are on the flip cards.</p>
     </section>
   </>
 }

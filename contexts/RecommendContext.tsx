@@ -1,10 +1,30 @@
 'use client';
 
 import * as React from 'react';
-import type { RecommendProgressEvent, RecommendResult } from '@/lib/api/recommend';
+import {
+  type RecommendResult,
+} from '@/lib/api/recommend';
 import { readRecommendStream } from '@/lib/api/recommend-stream';
+import {
+  buildFrontierRequest,
+  fetchFrontier,
+  FrontierRequestError,
+} from '@/lib/api/pareto';
+import type { FrontierState } from '@/lib/types/pareto';
 
-interface RecommendParams {
+export type SizingGoal = 'latency' | 'demand' | 'capacity';
+
+/** Which action produced the currently displayed result. */
+export type RunMode = 'sizing' | 'pareto' | null;
+
+/** Objective sent to AISimulators; derived from the sizing goal. */
+export type RecommendObjective =
+  | 'min_gpus'
+  | 'throughput_demand'
+  | 'pareto'
+  | 'concurrency_capacity';
+
+export interface RecommendParams {
   model_path: string;
   system: string;
   isl: number;
@@ -12,7 +32,11 @@ interface RecommendParams {
   max_seq_len?: number;
   prefill_max_seq_len?: number;
   decode_max_seq_len?: number;
-  ttft: number;
+  /** `enforce` applies the latency SLA; `none` is a demand or capacity run. */
+  sla_mode: 'enforce' | 'none';
+  /** Explicit sizing objective. Omitted callers fall back to the sla_mode mapping. */
+  objective?: RecommendObjective;
+  ttft?: number;
   tpot?: number;
   backend?: string;
   backend_version?: string;
@@ -21,12 +45,25 @@ interface RecommendParams {
   request_latency?: number;
   prefix?: number;
   model_config?: Record<string, unknown> | null;
-  simulator?: 'aisimulate' | 'blis';
+  /** Simulator identifier discovered from the catalog; open by design. */
+  simulator?: string;
+  /**
+   * Search shape the selected simulator reports (`windowed` or `single`). This
+   * is a proxy hint, not a simulator request field, so it is never forwarded.
+   */
+  search_strategy?: 'windowed' | 'single';
   fabric?: string | null;
+  /**
+   * True when this request was submitted by the Pareto action. The objective
+   * stays the visible sizing goal so the dirty check can compare the same form
+   * fields; the sweep request itself always uses `objective: 'pareto'`.
+   */
+  pareto?: boolean;
 }
 
 interface RecommendState {
   params: RecommendParams | null;
+  runMode: RunMode;
   isLoading: boolean;
   result: RecommendResult | null;
   error: string | null;
@@ -36,14 +73,20 @@ interface RecommendState {
   debugResponse: Record<string, unknown> | null;
   debugStatus: number | null;
   debugDuration: number | null;
-  progress: RecommendProgressEvent | null;
-  progressHistory: RecommendProgressEvent[];
+  /**
+   * Standalone Pareto result. A Pareto run never shares state with a sizing
+   * result: starting one clears the other, so the page always shows exactly the
+   * action the user asked for.
+   */
+  frontier: FrontierState;
   startSizing: (params: RecommendParams) => void;
+  startPareto: (params: RecommendParams) => void;
   reset: () => void;
 }
 
 const RecommendContext = React.createContext<RecommendState>({
   params: null,
+  runMode: null,
   isLoading: false,
   result: null,
   error: null,
@@ -53,14 +96,58 @@ const RecommendContext = React.createContext<RecommendState>({
   debugResponse: null,
   debugStatus: null,
   debugDuration: null,
-  progress: null,
-  progressHistory: [],
+  frontier: { status: 'idle' },
   startSizing: () => {},
+  startPareto: () => {},
   reset: () => {},
 });
 
+function requestBodyFor(p: RecommendParams): Record<string, unknown> {
+  const objective: RecommendObjective = p.objective
+    ?? (p.sla_mode === 'enforce' ? 'min_gpus' : 'throughput_demand');
+  const body: Record<string, unknown> = {
+    model_path: p.model_path,
+    system: p.system,
+    isl: p.isl,
+    osl: p.osl,
+    sla_mode: p.sla_mode,
+    objective,
+  };
+
+  if (objective === 'concurrency_capacity') {
+    // Capacity is a design input: N sequences at the per-sequence context
+    // length. It carries no latency bound and no arrival rate.
+    body.target_concurrency = p.target_concurrency;
+  } else if (objective === 'throughput_demand') {
+    // A demand run measures an arrival rate. It carries no latency target and
+    // no concurrency target, so the service cannot fabricate an SLA for it.
+    body.target_request_rate = p.target_request_rate;
+  } else {
+    if (p.request_latency != null) body.request_latency = p.request_latency;
+    else {
+      if (p.ttft != null) body.ttft = p.ttft;
+      if (p.tpot != null) body.tpot = p.tpot;
+    }
+    if (p.target_request_rate != null) body.target_request_rate = p.target_request_rate;
+    else body.target_concurrency = p.target_concurrency ?? 32;
+  }
+
+  if (p.max_seq_len != null) body.max_seq_len = p.max_seq_len;
+  if (p.prefill_max_seq_len != null) body.prefill_max_seq_len = p.prefill_max_seq_len;
+  if (p.decode_max_seq_len != null) body.decode_max_seq_len = p.decode_max_seq_len;
+  if (p.backend) body.backend = p.backend;
+  if (p.backend_version) body.backend_version = p.backend_version;
+  if (p.prefix != null && p.prefix > 0) body.prefix = p.prefix;
+  if (p.model_config != null) body.model_config = p.model_config;
+  if (p.simulator) body.simulator = p.simulator;
+  if (p.search_strategy) body.search_strategy = p.search_strategy;
+  if (p.fabric !== undefined) body.fabric = p.fabric;
+  return body;
+}
+
 export function RecommendProvider({ children }: { children: React.ReactNode }) {
   const [params, setParams] = React.useState<RecommendParams | null>(null);
+  const [runMode, setRunMode] = React.useState<RunMode>(null);
   const [isLoading, setIsLoading] = React.useState(false);
   const [result, setResult] = React.useState<RecommendResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -70,10 +157,10 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
   const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | null>(null);
   const [debugStatus, setDebugStatus] = React.useState<number | null>(null);
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null);
-  const [progress, setProgress] = React.useState<RecommendProgressEvent | null>(null);
-  const [progressHistory, setProgressHistory] = React.useState<RecommendProgressEvent[]>([]);
+  const [frontier, setFrontier] = React.useState<FrontierState>({ status: 'idle' });
 
   const abortRef = React.useRef<AbortController | null>(null);
+  const frontierAbortRef = React.useRef<AbortController | null>(null);
   const timerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearTimer = React.useCallback(() => {
@@ -95,31 +182,15 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const requestBody: Record<string, unknown> = {
-      model_path: p.model_path,
-      system: p.system,
-      isl: p.isl,
-      osl: p.osl,
-      ttft: p.ttft,
-      tpot: p.tpot ?? 30,
-      target_concurrency: p.target_concurrency ?? 32,
-    };
-    if (p.max_seq_len != null) requestBody.max_seq_len = p.max_seq_len;
-    if (p.prefill_max_seq_len != null) requestBody.prefill_max_seq_len = p.prefill_max_seq_len;
-    if (p.decode_max_seq_len != null) requestBody.decode_max_seq_len = p.decode_max_seq_len;
-    if (p.backend) requestBody.backend = p.backend;
-    if (p.backend_version) requestBody.backend_version = p.backend_version;
-    if (p.target_request_rate != null) {
-      delete requestBody.target_concurrency;
-      requestBody.target_request_rate = p.target_request_rate;
-    }
-    if (p.request_latency != null) requestBody.request_latency = p.request_latency;
-    if (p.prefix != null && p.prefix > 0) requestBody.prefix = p.prefix;
-    if (p.model_config != null) requestBody.model_config = p.model_config;
-    if (p.simulator) requestBody.simulator = p.simulator;
-    if (p.fabric !== undefined) requestBody.fabric = p.fabric;
+    // A sizing result and a Pareto frontier are alternatives. Discard the
+    // other action's request and result instead of running them in sequence.
+    if (frontierAbortRef.current) frontierAbortRef.current.abort();
+    frontierAbortRef.current = null;
+
+    const requestBody = requestBodyFor(p);
 
     setParams(p);
+    setRunMode('sizing');
     setIsLoading(true);
     setResult(null);
     setError(null);
@@ -128,8 +199,7 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
-    setProgress(null);
-    setProgressHistory([]);
+    setFrontier({ status: 'idle' });
 
     const t0 = performance.now();
 
@@ -153,18 +223,18 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           }
           return;
         }
-        const response = await readRecommendStream(res, event => {
-          setProgress(event);
-          setProgressHistory(history => [...history, event]);
-        });
+        const response = await readRecommendStream(res);
+        // `reset` may have aborted the request after the stream finished
+        // reading. Do not publish a result for a run the user already discarded.
+        if (controller.signal.aborted) return;
         setDebugResponse(response as unknown as Record<string, unknown>);
         setDebugDuration(Math.round(performance.now() - t0));
         if (response.status === 'failed') {
           setError(response.error.message);
           setErrorCode(response.error.code);
-        } else {
-          setResult(response);
+          return;
         }
+        setResult(response);
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         setDebugDuration(Math.round(performance.now() - t0));
@@ -177,9 +247,65 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     void run();
   }, []);
 
+  const startPareto = React.useCallback((p: RecommendParams) => {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = null;
+    if (frontierAbortRef.current) frontierAbortRef.current.abort();
+    const controller = new AbortController();
+    frontierAbortRef.current = controller;
+
+    const requestBody = buildFrontierRequest(requestBodyFor(p));
+
+    setParams({ ...p, pareto: true });
+    setRunMode('pareto');
+    setIsLoading(true);
+    setResult(null);
+    setError(null);
+    setErrorCode(null);
+    setDebugRequest(requestBody);
+    setDebugResponse(null);
+    setDebugStatus(null);
+    setDebugDuration(null);
+    setFrontier({ status: 'loading' });
+
+    const t0 = performance.now();
+
+    void fetchFrontier(requestBody, controller.signal)
+      .then(({ candidates, views, sweep }) => {
+        if (controller.signal.aborted) return;
+        setFrontier({ status: 'ready', candidates, views, sweep });
+        setDebugStatus(200);
+        setDebugResponse({ candidates, views, sweep });
+        setDebugDuration(Math.round(performance.now() - t0));
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        const message = err instanceof Error ? err.message : 'Pareto sweep failed';
+        setFrontier({ status: 'error', message });
+        if (err instanceof FrontierRequestError) {
+          setDebugStatus(err.status);
+          setDebugResponse(
+            err.body && typeof err.body === 'object'
+              ? err.body as Record<string, unknown>
+              : { error: message },
+          );
+        } else {
+          setDebugResponse({ error: message });
+        }
+        setDebugDuration(Math.round(performance.now() - t0));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoading(false);
+      });
+  }, []);
+
   const reset = React.useCallback(() => {
     if (abortRef.current) abortRef.current.abort();
+    if (frontierAbortRef.current) frontierAbortRef.current.abort();
+    abortRef.current = null;
+    frontierAbortRef.current = null;
     setIsLoading(false);
+    setRunMode(null);
     setResult(null);
     setError(null);
     setErrorCode(null);
@@ -189,13 +315,12 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
-    setProgress(null);
-    setProgressHistory([]);
+    setFrontier({ status: 'idle' });
   }, []);
 
   const value = React.useMemo<RecommendState>(
-    () => ({ params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, startSizing, reset }),
-    [params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, startSizing, reset]
+    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset }),
+    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset]
   );
 
   return (

@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { Button, Label, Switch } from '@patternfly/react-core';
 import { EyeIcon, EyeSlashIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
-import { isSimulatorBackendCompatible, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
+import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
@@ -11,13 +11,25 @@ import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import styles from './Settings.module.css';
 
-type ModelStatus = 'idle' | 'supported' | 'measured' | 'approved' | 'catalog' | 'fetching' | 'fetched' | 'error';
+type ModelStatus = 'idle' | 'supported' | 'measured' | 'approved' | 'catalog' | 'unsupported' | 'fetching' | 'fetched' | 'error';
 
 const BACKEND_LABELS: Record<string, string> = {
   vllm: 'vLLM',
   'tensorrt-llm': 'TensorRT-LLM',
   sglang: 'SGLang',
 };
+
+/** Plain-language names for the sizing goals a simulator can advertise. */
+const GOAL_LABELS: Record<string, string> = {
+  min_gpus: 'latency-SLO sizing',
+  throughput_demand: 'throughput-demand sizing',
+  pareto: 'Pareto frontier scans',
+  concurrency_capacity: 'concurrency-capacity sizing',
+};
+
+function goalLabel(goal: string): string {
+  return GOAL_LABELS[goal] ?? goal.replaceAll('_', ' ');
+}
 
 export function Settings() {
   const {
@@ -26,11 +38,22 @@ export function Settings() {
     simulator, setSimulator,
     costingsEnabled, setCostingsEnabled,
   } = useSettings();
-  const { modelOptions, backendOptions, simulatorSupport, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
   const support = simulatorSupport[simulator];
+  // The selectable backends are the union the service reports, so a simulator
+  // that supports a backend the default one does not can still be used.
+  const backendChoices = React.useMemo(() => {
+    const byId = new Map(backendOptions.map(backend => [backend.id, backend]));
+    for (const entry of Object.values(simulatorSupport)) {
+      for (const backend of entry.backends) {
+        if (!byId.has(backend.id)) byId.set(backend.id, backend);
+      }
+    }
+    return [...byId.values()];
+  }, [backendOptions, simulatorSupport]);
   const selectedBackend = support
     ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
-    : backendOptions.find(b => b.id === inferenceBackend);
+    : backendChoices.find(b => b.id === inferenceBackend);
   const modelChoices = support?.models ?? modelOptions;
   const { validatedModelIds, modelStatus: registryModelStatus, isAvailable: testedModelsAvailable } = useTestedModels();
 
@@ -79,13 +102,18 @@ export function Settings() {
       if (status === 'approved_no_data') { setModelStatus('approved'); return; }
       const inCatalog = modelChoices.includes(localModel);
       if (inCatalog) { setModelStatus('catalog'); return; }
+      // Only call a model unsupported when the simulator says its list is the
+      // complete set it can price. A simulator that also resolves models on
+      // demand gets the benefit of the doubt and is checked against HF below;
+      // the API remains the authority and never silently substitutes.
+      if (support?.modelsExhaustive) { setModelStatus('unsupported'); return; }
       setModelStatus('fetching');
       fetchModelConfig(localModel, hfToken).then(r => {
         setModelStatus(r.success && r.config ? 'fetched' : 'error');
       });
     }, 500);
     return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelChoices, catalogLoading, hydrated, registryModelStatus, testedModelsAvailable]);
+  }, [localModel, hfToken, modelChoices, support, catalogLoading, hydrated, registryModelStatus, testedModelsAvailable]);
 
   const handleTokenChange = (v: string) => {
     setHfToken(v);
@@ -141,7 +169,7 @@ export function Settings() {
               id="settings-model"
               model={localModel}
               onChange={setLocalModel}
-              modelOptions={modelOptions}
+              modelOptions={modelChoices}
               isLoading={catalogLoading}
               status={modelStatus}
               placeholder={catalogLoading ? 'Loading catalog…' : 'e.g. Qwen/Qwen3-32B'}
@@ -255,7 +283,7 @@ export function Settings() {
             <div>
               <div className={styles.sectionTitle}>Simulator</div>
               <div className={styles.sectionDesc}>
-                Simulator used by Predict performance and Recommend sizing.
+                Simulator used by Predict performance, Recommend sizing and Hybrid savings.
               </div>
             </div>
             {simulatorSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}
@@ -269,12 +297,44 @@ export function Settings() {
                 onChange={e => handleSimulatorChange(e.target.value as Simulator)}
                 className={styles.selectInput}
               >
-                <option value="aisimulate">AISimulate</option>
-                <option value="blis" disabled={!isSimulatorBackendCompatible('blis', inferenceBackend)}>BLIS</option>
+                {simulators.map(entry => (
+                  <option
+                    key={entry.id}
+                    value={entry.id}
+                    disabled={!simulatorSupportsBackend(entry.id, inferenceBackend, simulatorSupport[entry.id])}
+                  >
+                    {entry.label}
+                  </option>
+                ))}
               </select>
               <div className={styles.helperText}>
-                Predict and Recommend use this simulator. BLIS is available with vLLM; KV cache uses AISimulate.
+                Predict, Recommend and Hybrid savings use the selected simulator. Each tool appears only
+                when that simulator reports the capability it needs, such as a memory breakdown for KV
+                cache or a Pareto sweep and capacity sizing for Recommend.
               </div>
+              <ul className={styles.capabilityList}>
+                {simulators.map(entry => {
+                  const entrySupport = simulatorSupport[entry.id];
+                  const backends = entry.id === simulator && support
+                    ? support.backends
+                    : entrySupport?.backends ?? [];
+                  const goals = entrySupport?.objectives ?? [];
+                  return (
+                    <li key={entry.id}>
+                      <strong>{entry.label}</strong>
+                      {entry.description ? `: ${entry.description}` : ''}
+                      {entrySupport?.available
+                        ? ` · goals: ${goals.length > 0 ? goals.map(goalLabel).join(', ') : 'none reported'}`
+                        : ' · capabilities unavailable'}
+                      {backends.length > 0 ? ` · backends: ${backends.map(b => BACKEND_LABELS[b.id] ?? b.id).join(', ')}` : ''}
+                    </li>
+                  );
+                })}
+                <li>
+                  A simulator never silently substitutes for another. A goal or topology the selected
+                  simulator does not report is offered as unavailable rather than answered by a different simulator.
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -302,11 +362,11 @@ export function Settings() {
                   onChange={e => handleBackendChange(e.target.value as InferenceBackend)}
                   className={styles.selectInput}
                 >
-                  {backendOptions.map(b => (
+                  {backendChoices.map(b => (
                     <option
                       key={b.id}
                       value={b.id}
-                      disabled={!isSimulatorBackendCompatible(simulator, b.id as InferenceBackend)}
+                      disabled={!simulatorSupportsBackend(simulator, b.id as InferenceBackend, support)}
                     >
                       {BACKEND_LABELS[b.id] ?? b.id}
                     </option>
@@ -360,7 +420,7 @@ export function Settings() {
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Experimental GPU cloud pricing, hardware costs, and on-prem cost modelling.
+                Experimental cluster-cost and routing-economics models. Hybrid savings and Sources are always available.
               </div>
             </div>
             {costingsSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}

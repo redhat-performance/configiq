@@ -232,6 +232,31 @@ describe('custom model entry', () => {
   });
 });
 
+describe('all-option mode', () => {
+  it('shows the all label for the empty value and lists it first', async () => {
+    await mount({ allLabel: 'All models' });
+    expect(input().value).toBe('All models');
+    await open();
+    expect(optionLabels()[0]).toBe('All models');
+    expect(optionLabels()).toHaveLength(IDS.length + 1);
+  });
+
+  it('selects the all option with the empty value', async () => {
+    const { onChange } = await mount({ value: 'Qwen/Qwen3-8B', allLabel: 'All models' });
+    await open();
+    await key('ArrowDown');
+    await key('Enter');
+    expect(onChange).toHaveBeenCalledWith('');
+  });
+
+  it('drops the all option while searching', async () => {
+    await mount({ allLabel: 'All models' });
+    await open();
+    await type('qwen');
+    expect(optionLabels()).not.toContain('All models');
+  });
+});
+
 describe('provider and hardware choices', () => {
   const offers: ComboBoxItem[] = [
     { value: 'cheap', label: 'Z provider', group: '', description: '$150 / month' },

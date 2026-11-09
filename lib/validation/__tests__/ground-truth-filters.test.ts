@@ -29,7 +29,7 @@ const inferencex: DatasetRow = {
 }
 
 describe('shared measured backend filters', () => {
-  it('finds GT and InferenceX under the same vLLM release without merging their provenance', () => {
+  it('finds Red Hat and InferenceX under the same vLLM release without merging their provenance', () => {
     const rows = [internal, inferencex]
     expect(getFilterOptions(rows, { ...filters, backendVersion: '' }).backendVersion).toEqual(['v0.24.0'])
     expect(filterRows(rows, filters)).toHaveLength(2)
@@ -38,9 +38,9 @@ describe('shared measured backend filters', () => {
     expect(configurations).toHaveLength(2)
     expect(configurations.map(option => option.label)).toEqual([
       expect.stringContaining('InferenceX'),
-      expect.stringContaining('Internal GT'),
+      expect.stringContaining('Red Hat'),
     ])
-    expect(configurations.find(option => option.values.measurement_source === 'Internal GT')?.values.benchmark_version)
+    expect(configurations.find(option => option.values.measurement_source === 'Red Hat')?.values.benchmark_version)
       .toBe('GT release 2')
   })
 

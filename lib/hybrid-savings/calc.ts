@@ -1,4 +1,8 @@
 import { firstWinningVolume, TransitionSearchLimitError, type CostCurve } from './transition-search'
+import {
+  costPerMillionOutputTokens as outputUnitCost,
+  outputTokensAtVolume,
+} from './token-economics'
 import type { PlanningCostAssumptions } from '@/lib/costing-assumptions'
 
 export type CloudBillingMode = 'scale-to-zero' | 'active-window' | 'always-on'
@@ -18,6 +22,8 @@ export interface HostedPrice {
   label: string
   inputPerMillion: number
   outputPerMillion: number
+  /** USD per API request, in addition to the input/output token tariff. */
+  requestPerRequest?: number
 }
 
 export interface InfrastructureCandidate {
@@ -30,8 +36,6 @@ export interface InfrastructureCandidate {
   clusterOutputTokensPerSecond: number
   /** Whole-instance list price. Preferred over the compatibility GPU rate. */
   cloudHourlyCostPerInstance?: number | null
-  /** Offer-specific support allowance; falls back to the global assumption. */
-  cloudDirectInfrastructureMonthly?: number | null
   cloudRatePerGpuHour: number | null
   cloudGpusPerInstance?: number | null
   cloudInstanceName?: string | null
@@ -39,9 +43,13 @@ export interface InfrastructureCandidate {
   cloudProviderRegion?: string | null
   cloudRateKind: 'on_demand' | 'spot' | 'capacity_block' | null
   cloudMaxInstancesPerReplica?: number | null
+  cloudInterconnect?: string | null
   cloudPriceSource?: string | null
   cloudPriceSourceUrl?: string | null
   cloudPriceSourceDate?: string | null
+  cloudPriceCollectionKind?: 'automated' | 'curated'
+  cloudPriceRetrievedAt?: string | null
+  cloudPriceStale?: boolean
   purchaseGpusPerServer?: number | null
   purchasePricePerReplica: number | null
   purchaseInstallationPerReplica: number | null
@@ -49,7 +57,16 @@ export interface InfrastructureCandidate {
   purchasePriceSource: string | null
   purchasePriceSourceUrl: string | null
   purchasePriceSourceDate: string | null
+  purchasePriceCollectionKind?: 'automated' | 'curated'
+  purchasePriceRetrievedAt?: string | null
+  purchasePriceStale?: boolean
+  purchaseIncludes?: string
   tdpWattsPerGpu: number | null
+  /** Reference-performance evidence from the sizing result, when available. */
+  referenceMode?: 'agg' | 'disagg' | null
+  referenceTtftMs?: number | null
+  referenceTpotMs?: number | null
+  referenceConcurrency?: number | null
 }
 
 export interface CostAssumptions extends PlanningCostAssumptions {
@@ -62,6 +79,44 @@ export interface CostBreakdownItem {
   includedInMarginal: boolean
 }
 
+/**
+ * Whole-deployment layout and modeled planning capacity for one hardware
+ * option. Capacity is derived from the selected request shape and reference
+ * concurrency; it is a planning ratio, not a measured maximum-throughput
+ * benchmark.
+ */
+export interface DeploymentDetails {
+  /** Replicas required by the requested demand. */
+  requiredReplicas: number
+  /** GPUs required by the requested demand. */
+  requiredGpus: number
+  /** GPUs actually billed or installed, including spare capacity in whole units. */
+  billedGpus: number
+  /** Whole cloud instances (rented) or complete servers (owned). */
+  wholeUnits: number
+  /** Complete replica slots available in the billed deployment. */
+  availableReplicaSlots: number
+  /** Combined-token planning capacity of the whole deployment. */
+  planningTokenCapacity: number
+  /** Output-token planning capacity at the current input/output mix. */
+  planningOutputCapacity: number
+  /** Requested demand as a percentage of planning token capacity; null when capacity is unavailable. */
+  planningCapacityUsedPct: number | null
+  /** Rental billing mode actually applied; null for purchased and hosted. */
+  effectiveBillingMode: CloudBillingMode | null
+  /** Rental instance-hours billed per month; null for purchased and hosted. */
+  billableInstanceHours: number | null
+}
+
+/**
+ * Explicit frozen deployment layout for fixed-deployment exploration. The
+ * billed instance/server counts derive from these slots instead of demand,
+ * so the physical deployment never resizes across sampled volumes.
+ */
+export interface FrozenDeploymentLayout {
+  availableReplicaSlots: number
+}
+
 export interface CostOption {
   key: 'hosted' | 'rented' | 'owned'
   label: string
@@ -69,6 +124,8 @@ export interface CostOption {
   fullyLoadedMonthlyCost: number
   marginalMonthlyCost: number
   costPerMillionTokens: number
+  /** Selected monthly cost per million requested output tokens; null when undefined. */
+  costPerMillionOutputTokens: number | null
   costPerRequest: number
   candidate: InfrastructureCandidate | null
   gpuCount: number | null
@@ -76,6 +133,7 @@ export interface CostOption {
   replicas: number | null
   utilizationPct: number | null
   breakdown: CostBreakdownItem[]
+  deployment: DeploymentDetails | null
 }
 
 export interface CostPoint {
@@ -94,12 +152,13 @@ export type InfrastructurePath = 'rented' | 'owned'
 
 /** Keep provider, instance topology and billing terms distinct in manual selections. */
 export function infrastructureCandidateKey(candidate: InfrastructureCandidate, path: InfrastructurePath): string {
-  return JSON.stringify([path, candidate.systemId, candidate.configurationId ?? (
+  return JSON.stringify([path, candidate.systemId,
     path === 'rented'
       ? [candidate.cloudProvider, candidate.cloudProviderRegion, candidate.cloudInstanceName,
-        candidate.cloudGpusPerInstance, candidate.cloudRateKind, candidate.cloudMaxInstancesPerReplica]
-      : [candidate.purchaseGpusPerServer ?? candidate.gpusPerReplica, candidate.purchasePriceSource]
-  )])
+        candidate.cloudGpusPerInstance, candidate.cloudRateKind, candidate.cloudMaxInstancesPerReplica ?? null,
+        candidate.cloudInterconnect ?? null]
+      : candidate.configurationId ?? [candidate.purchaseGpusPerServer ?? candidate.gpusPerReplica, candidate.purchasePriceSource],
+  ])
 }
 
 export interface HybridComparison {
@@ -187,6 +246,11 @@ function requestsAtVolume(workload: HybridWorkload, volume: number): number {
   return finiteNonNegative(volume) * workloadMix(workload).requestsPerBilledToken
 }
 
+/** Output share of billed tokens for the current mix (engine convention). */
+export function workloadOutputShare(workload: HybridWorkload): number {
+  return workloadMix(workload).outputShare
+}
+
 export function workloadFacts(workload: HybridWorkload) {
   const mix = workloadMix(workload)
   const monthlyRequests = mix.monthlyTokens * mix.requestsPerBilledToken
@@ -222,21 +286,26 @@ export function hostedCostAtVolume(
   const implementation =
     finiteNonNegative(assumptions.hostedImplementation) /
     positive(assumptions.analysisMonths, 36)
+  const requests = requestsAtVolume(workload, safeVolume)
   const breakdown: CostBreakdownItem[] = [
     { label: 'Input token usage', monthlyCost: inputTokens / MILLION * finiteNonNegative(hostedPrice.inputPerMillion), includedInMarginal: true },
     { label: 'Output token usage', monthlyCost: outputTokens / MILLION * finiteNonNegative(hostedPrice.outputPerMillion), includedInMarginal: true },
+    ...(hostedPrice.requestPerRequest ? [{ label: 'API request fees', monthlyCost: requests * finiteNonNegative(hostedPrice.requestPerRequest), includedInMarginal: true }] : []),
     { label: 'Fixed hosted fees', monthlyCost: fixed, includedInMarginal: true },
     { label: 'Operations and vendor management', monthlyCost: operations, includedInMarginal: false },
     { label: 'Implementation amortization', monthlyCost: implementation, includedInMarginal: false },
   ]
   const costs = optionCosts(breakdown, assumptions.costLens)
-  const requests = requestsAtVolume(workload, safeVolume)
 
   return {
     key: 'hosted',
     label: hostedPrice.label,
     ...costs,
     costPerMillionTokens: safeVolume > 0 ? costs.monthlyCost / safeVolume * MILLION : 0,
+    // The hosted invoice follows the entered token totals, not the possibly
+    // larger simulated request count; the unit denominator is the requested
+    // output carried by this sample.
+    costPerMillionOutputTokens: outputUnitCost(costs.monthlyCost, outputTokens),
     costPerRequest: requests > 0 ? costs.monthlyCost / requests : 0,
     candidate: null,
     gpuCount: null,
@@ -244,6 +313,7 @@ export function hostedCostAtVolume(
     replicas: null,
     utilizationPct: null,
     breakdown,
+    deployment: null,
   }
 }
 
@@ -291,8 +361,13 @@ function deploymentForVolume(
     candidate,
     assumptions.planningCapacityUsePct,
   )
+  // A demand of exactly k x capacity can land a few ULPs above k after the
+  // chained float arithmetic in candidateCapacityTokens; absorb sub-token
+  // noise (1e-12 relative) so an exact multiple does not deploy an extra
+  // replica, while a genuine extra token still does.
+  const replicaLoad = safeVolume / positive(capacityPerReplica)
   const replicas = safeVolume > 0
-    ? Math.max(Math.ceil(safeVolume / positive(capacityPerReplica)), 1)
+    ? Math.max(Math.ceil(replicaLoad - replicaLoad * 1e-12), 1)
     : 0
   const gpusPerReplica = Math.max(Math.ceil(positive(candidate.gpusPerReplica)), 1)
   return {
@@ -341,11 +416,12 @@ function rentedInstanceLayout(
   }
 }
 
-function rentedCostForCandidate(
+export function rentedCostForCandidate(
   workload: HybridWorkload,
   candidate: InfrastructureCandidate,
   assumptions: CostAssumptions,
   volume: number,
+  frozen?: FrozenDeploymentLayout,
 ): CostOption | null {
   if (candidateCapacityTokens(workload, candidate, assumptions.planningCapacityUsePct) <= 0) {
     return null
@@ -365,15 +441,22 @@ function rentedCostForCandidate(
 
   const deployment = deploymentForVolume(workload, candidate, assumptions, volume)
   const safeVolume = finiteNonNegative(volume)
-  const layout = rentedInstanceLayout(candidate, deployment.replicas)
+  // Frozen exploration keeps the captured whole deployment; the workload
+  // forecast derives it from demand.
+  const layoutReplicas = frozen
+    ? Math.max(Math.ceil(frozen.availableReplicaSlots), 0)
+    : deployment.replicas
+  const layout = rentedInstanceLayout(candidate, layoutReplicas)
   if (!layout) return null
   let billableInstanceHours = 0
   const effectiveBillingMode: CloudBillingMode = candidate.cloudRateKind === 'capacity_block'
     ? 'always-on'
     : assumptions.cloudBillingMode
 
-  if (safeVolume > 0 && effectiveBillingMode === 'scale-to-zero') {
-    const equivalentOutputTokens =
+  if (effectiveBillingMode === 'scale-to-zero') {
+    // Zero demand bills nothing under scale-to-zero, frozen deployment or not.
+    if (safeVolume > 0) {
+      const equivalentOutputTokens =
       requestsAtVolume(workload, safeVolume) * positive(workload.averageOutputTokens)
     const outputTokensPerSecondPerReplica =
       positive(candidate.clusterOutputTokensPerSecond) /
@@ -407,19 +490,21 @@ function rentedCostForCandidate(
       parallelReplicasPerInstance *
       layout.instancesPerReplica *
       (1 + finiteNonNegative(assumptions.cloudRuntimeBufferPct) / 100)
-  } else if (safeVolume > 0 && effectiveBillingMode === 'active-window') {
+    }
+  } else if (effectiveBillingMode === 'active-window') {
+    // No demand-derived guard: without a frozen layout the demand-derived
+    // replica count is already zero at zero volume, so billing stays zero,
+    // while a frozen deployment keeps billing its captured instances.
     billableInstanceHours =
       layout.billedInstances * positive(workload.activeHoursPerMonth)
-  } else if (safeVolume > 0) {
+  } else {
     billableInstanceHours =
       layout.billedInstances * positive(assumptions.hoursPerMonth, 730)
   }
 
   const compute = billableInstanceHours * hourlyInstanceCost
   const fixed = finiteNonNegative(assumptions.rentedFixedMonthly)
-  const directInfrastructure = finiteNonNegative(
-    candidate.cloudDirectInfrastructureMonthly ?? assumptions.rentedDirectInfrastructureMonthly,
-  )
+  const directInfrastructure = finiteNonNegative(assumptions.rentedDirectInfrastructureMonthly)
   const operations =
     finiteNonNegative(assumptions.rentedOperationsFte) *
     finiteNonNegative(assumptions.loadedMonthlyCostPerFte)
@@ -435,33 +520,61 @@ function rentedCostForCandidate(
   ]
   const costs = optionCosts(breakdown, assumptions.costLens)
   const requests = requestsAtVolume(workload, safeVolume)
+  // Denominator for utilization is every usable replica slot in the billed
+  // deployment (whole instances), not only the replicas the demand needs.
+  const availableReplicaSlots = layout.billedInstances > 0
+    ? Math.floor(layout.billedInstances / layout.instancesPerReplica) * layout.replicasPerInstance
+    : 0
+  const planningTokenCapacity = availableReplicaSlots * deployment.capacityPerReplica
+  const planningCapacityUsedPct = deployment.capacityPerReplica > 0 && availableReplicaSlots > 0
+    ? Math.min(safeVolume / planningTokenCapacity * 100, 100)
+    : null
 
   return {
     key: 'rented',
     label: candidate.label,
     ...costs,
     costPerMillionTokens: safeVolume > 0 ? costs.monthlyCost / safeVolume * MILLION : 0,
+    costPerMillionOutputTokens: outputUnitCost(
+      costs.monthlyCost,
+      outputTokensAtVolume(safeVolume, workloadMix(workload).outputShare),
+    ),
     costPerRequest: requests > 0 ? costs.monthlyCost / requests : 0,
     candidate,
     gpuCount: deployment.gpuCount,
     billedGpuCount: layout.billedGpuCount,
     replicas: deployment.replicas,
-    utilizationPct: deployment.capacityPerReplica > 0 && deployment.replicas > 0
-      ? Math.min(safeVolume / (deployment.capacityPerReplica * deployment.replicas) * 100, 100)
-      : null,
+    utilizationPct: planningCapacityUsedPct,
     breakdown,
+    deployment: {
+      requiredReplicas: deployment.replicas,
+      requiredGpus: deployment.gpuCount,
+      billedGpus: layout.billedGpuCount,
+      wholeUnits: layout.billedInstances,
+      availableReplicaSlots,
+      planningTokenCapacity,
+      planningOutputCapacity: planningTokenCapacity * workloadMix(workload).outputShare,
+      planningCapacityUsedPct,
+      effectiveBillingMode,
+      billableInstanceHours,
+    },
   }
 }
 
-function ownedCostForCandidate(
+export function ownedCostForCandidate(
   workload: HybridWorkload,
   candidate: InfrastructureCandidate,
   assumptions: CostAssumptions,
   volume: number,
+  frozen?: FrozenDeploymentLayout,
 ): CostOption | null {
   if (candidate.purchasePricePerReplica == null || candidate.purchasePricePerReplica <= 0) {
     return null
   }
+  // Unknown GPU power is not zero power. Do not rank an incomplete energy
+  // estimate as cheaper when electricity is part of the user's cost basis.
+  if (assumptions.electricityPerKwh > 0 &&
+      (candidate.tdpWattsPerGpu == null || !Number.isFinite(candidate.tdpWattsPerGpu) || candidate.tdpWattsPerGpu <= 0)) return null
   if (candidateCapacityTokens(workload, candidate, assumptions.planningCapacityUsePct) <= 0) {
     return null
   }
@@ -477,8 +590,13 @@ function ownedCostForCandidate(
     Math.floor(purchaseGpusPerServer / deployment.gpusPerReplica),
     1,
   )
-  const serverCount = deployment.replicas > 0
-    ? Math.ceil(deployment.replicas / replicasPerServer)
+  // Frozen exploration keeps the captured whole servers; the workload
+  // forecast derives the layout from demand.
+  const layoutReplicas = frozen
+    ? Math.max(Math.ceil(frozen.availableReplicaSlots), 0)
+    : deployment.replicas
+  const serverCount = layoutReplicas > 0
+    ? Math.ceil(layoutReplicas / replicasPerServer)
     : 0
   const billedGpuCount = serverCount * purchaseGpusPerServer
   const acquisition = serverCount * candidate.purchasePricePerReplica
@@ -561,21 +679,40 @@ function ownedCostForCandidate(
   ]
   const costs = optionCosts(breakdown, assumptions.costLens)
   const requests = requestsAtVolume(workload, safeVolume)
+  const availableReplicaSlots = serverCount * replicasPerServer
+  const planningTokenCapacity = availableReplicaSlots * deployment.capacityPerReplica
+  const planningCapacityUsedPct = deployment.capacityPerReplica > 0 && availableReplicaSlots > 0
+    ? Math.min(safeVolume / planningTokenCapacity * 100, 100)
+    : null
 
   return {
     key: 'owned',
     label: candidate.label,
     ...costs,
     costPerMillionTokens: safeVolume > 0 ? costs.monthlyCost / safeVolume * MILLION : 0,
+    costPerMillionOutputTokens: outputUnitCost(
+      costs.monthlyCost,
+      outputTokensAtVolume(safeVolume, workloadMix(workload).outputShare),
+    ),
     costPerRequest: requests > 0 ? costs.monthlyCost / requests : 0,
     candidate,
     gpuCount: deployment.gpuCount,
     billedGpuCount,
     replicas: deployment.replicas,
-    utilizationPct: deployment.capacityPerReplica > 0 && serverCount > 0
-      ? Math.min(safeVolume / (deployment.capacityPerReplica * serverCount * replicasPerServer) * 100, 100)
-      : null,
+    utilizationPct: planningCapacityUsedPct,
     breakdown,
+    deployment: {
+      requiredReplicas: deployment.replicas,
+      requiredGpus: deployment.gpuCount,
+      billedGpus: billedGpuCount,
+      wholeUnits: serverCount,
+      availableReplicaSlots,
+      planningTokenCapacity,
+      planningOutputCapacity: planningTokenCapacity * workloadMix(workload).outputShare,
+      planningCapacityUsedPct,
+      effectiveBillingMode: null,
+      billableInstanceHours: null,
+    },
   }
 }
 
@@ -725,7 +862,7 @@ function chartMaximum(
   // focus rather than imposing a large fixed minimum on them.
   const raw = found.length > 0
     ? Math.max(currentVolume, ...found) * 1.18
-    : Math.max(currentVolume * 3, 1_000_000_000)
+    : Math.max(currentVolume * 3, 1)
   // Round upwards to a readable three-significant-digit limit without
   // introducing another long tail (less than 1% additional range).
   const step = 10 ** (Math.floor(Math.log10(Math.max(raw, 1))) - 2)
@@ -745,6 +882,14 @@ function chartVolumes(
   const uniformSamples = 160
   for (let index = 0; index <= uniformSamples; index += 1) {
     volumes.add(Math.round(maximum * index / uniformSamples))
+  }
+  // Unit-cost curves are reciprocal in volume and steep near zero. Bounded
+  // logarithmic samples keep their early shape visible without enumerating
+  // every capacity step, and the Set deduplicates rounded overlap.
+  const logarithmicSamples = 64
+  for (let index = 0; index <= logarithmicSamples; index += 1) {
+    const sampled = maximum ** (index / logarithmicSamples)
+    volumes.add(Number.isFinite(sampled) ? Math.round(sampled) : 0)
   }
   const stepped = curves.filter((curve): curve is Extract<CostCurve, { kind: 'step' }> => curve.kind === 'step')
   const stepsPerCurve = Math.max(Math.floor(120 / Math.max(stepped.length, 1)), 1)
@@ -816,7 +961,8 @@ export function calculateHybridComparison(
     kind: 'linear',
     fixed: hostedCostAtVolume(workload, hostedPrice, assumptions, 0).monthlyCost,
     rate: (inputShare * finiteNonNegative(hostedPrice.inputPerMillion)
-      + (1 - inputShare) * finiteNonNegative(hostedPrice.outputPerMillion)) / MILLION,
+      + (1 - inputShare) * finiteNonNegative(hostedPrice.outputPerMillion)) / MILLION
+      + workloadMix(workload).requestsPerBilledToken * finiteNonNegative(hostedPrice.requestPerRequest ?? 0),
   }
   let rentedBreakEvenTokens: number | null = null
   let ownedBreakEvenTokens: number | null = null

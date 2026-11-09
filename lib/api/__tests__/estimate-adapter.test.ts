@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchEstimateAsInferenceResult, type EstimateAdapterInput, EstimateError } from '../estimate-adapter'
+import {
+  buildPredictRequestBody,
+  fetchEstimateAsInferenceResult,
+  isMoeConfig,
+  type EstimateAdapterInput,
+  EstimateError,
+} from '../estimate-adapter'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -11,11 +17,13 @@ const VALID_INPUT: EstimateAdapterInput = {
   batch_size: 32,
   tp_size: 1,
   backend: 'vllm',
+  simulator: 'aisimulate',
   gpu_memory_utilization: 0.9,
 }
 
 const VALID_RESPONSE = {
   status: 'success',
+  simulator: 'aisimulate',
   memory_breakdown: {
     weights_bytes: 16_000_000_000,
     kv_cache_bytes: 4_000_000_000,
@@ -514,6 +522,71 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     expect(body).toHaveProperty('moe_tp_size', 4)
   })
 
+  it('does not invent MoE widths when none are given', async () => {
+    const mockFetch = mockFetchOk(VALID_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await fetchEstimateAsInferenceResult({ ...VALID_INPUT, tp_size: 4 })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body).not.toHaveProperty('moe_ep_size')
+    expect(body).not.toHaveProperty('moe_tp_size')
+  })
+
+  it('forwards explicit MoE widths unchanged, regardless of model family', async () => {
+    const mockFetch = mockFetchOk(VALID_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      tp_size: 4,
+      moe_ep_size: 4,
+      moe_tp_size: 1,
+      hf_model_config: {
+        model_type: 'gemma4',
+        text_config: { num_experts: null, enable_moe_block: false },
+      },
+    })
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string)
+    expect(body).toHaveProperty('moe_ep_size', 4)
+    expect(body).toHaveProperty('moe_tp_size', 1)
+  })
+
+  it('does not send per-pool MoE widths for a disaggregated request', () => {
+    const body = buildPredictRequestBody({
+      ...VALID_INPUT,
+      mode: 'disagg',
+      prefill: { tp: 8, pp: 1, workers: 1, batch: 8 },
+      decode: { tp: 2, pp: 1, workers: 1, batch: 8 },
+    })
+
+    expect(body).not.toHaveProperty('prefill_moe_tp_size')
+    expect(body).not.toHaveProperty('prefill_moe_ep_size')
+    expect(body).not.toHaveProperty('decode_moe_tp_size')
+    expect(body).not.toHaveProperty('decode_moe_ep_size')
+  })
+
+  it('does not let a low expert count mask a higher one', () => {
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_experts: 128 } })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, num_local_experts: 64 })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_local_experts: 8 } })).toBe(true)
+    expect(isMoeConfig({ num_experts: 1, text_config: { num_experts: 1 } })).toBe(false)
+  })
+
+  it('builds the same body that is submitted', () => {
+    const input: EstimateAdapterInput = {
+      ...VALID_INPUT,
+      tp_size: 4,
+      hf_model_config: { text_config: { num_experts: 128 } },
+    }
+    const body = buildPredictRequestBody(input)
+    expect(body).not.toHaveProperty('moe_ep_size')
+    expect(body).not.toHaveProperty('moe_tp_size')
+    expect(body).toHaveProperty('model_config', input.hf_model_config)
+    expect(body).not.toHaveProperty('hf_model_config')
+  })
+
   it('includes include=config,memory in query params', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
@@ -578,6 +651,39 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result).toHaveProperty('parallelism_strategy')
     expect(result).toHaveProperty('bottleneck_analysis')
     expect(result).toHaveProperty('diagnostics')
+  })
+
+  it('reports the resolved MoE widths from an aggregated estimate', async () => {
+    const mockFetch = mockFetchOk({ ...VALID_RESPONSE, moe_tp: 4, moe_ep: 1 })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, tp_size: 4 })
+
+    expect(result.mode).toBe('agg')
+    expect(result.moe_tp_size).toBe(4)
+    expect(result.moe_ep_size).toBe(1)
+  })
+
+  it('reports each pool resolved MoE widths from a disaggregated estimate', async () => {
+    const mockFetch = mockFetchOk({
+      ...VALID_RESPONSE,
+      mode: 'disagg',
+      prefill_config: { tp: 8, pp: 1, num_workers: 1, batch_size: 8, moe_tp: 8, moe_ep: 1 },
+      decode_config: { tp: 2, pp: 1, num_workers: 1, batch_size: 8, moe_tp: 2, moe_ep: 1 },
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      mode: 'disagg',
+      prefill: { tp: 8, pp: 1, workers: 1, batch: 8 },
+      decode: { tp: 2, pp: 1, workers: 1, batch: 8 },
+    })
+
+    expect(result.mode).toBe('disagg')
+    expect(result.moe_tp_size).toBeNull()
+    expect(result.disagg?.prefill).toMatchObject({ tp_size: 8, moe_tp_size: 8, moe_ep_size: 1 })
+    expect(result.disagg?.decode).toMatchObject({ tp_size: 2, moe_tp_size: 2, moe_ep_size: 1 })
   })
 
   it('includes weight and KV cache memory in response', async () => {

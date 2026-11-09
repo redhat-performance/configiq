@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { RecommendRequestSchema } from '@/lib/api/schemas'
-import { callRecommend, generateRequestId, incrementalRecommend, type RecommendProgressEvent } from '@/lib/api/recommend'
+import { callPareto, callRecommend, generateRequestId, type RecommendProgressEvent } from '@/lib/api/recommend'
 import { gatewayTimeoutSeconds } from '@/lib/api/timeout'
 import { recordErrorCode, recordModelRequest } from '@/lib/otel-metrics'
 
@@ -11,6 +11,8 @@ const ERROR_STATUS_MAP: Record<string, number> = {
   AISIM_TIMEOUT: 504,
   AISIM_INVALID_RESPONSE: 502,
   AISIM_NO_CONFIGURATION: 422,
+  AISIM_BUSY: 429,
+  AISIM_UNSUPPORTED: 422,
   SIMULATOR_MISMATCH: 502,
   INTERNAL_ERROR: 500,
 }
@@ -122,7 +124,8 @@ function streamRecommendation(
       }
 
       try {
-        for await (const event of incrementalRecommend(request, abortController.signal)) send(event)
+        const response = await callRecommend(request, { signal: abortController.signal })
+        send({ type: 'completed', response })
         finish()
       } catch (err: unknown) {
         if (!abortController.signal.aborted) {
@@ -182,6 +185,22 @@ export async function POST(req: NextRequest) {
     }
 
     const validated = RecommendRequestSchema.parse(body)
+
+    // A Pareto sweep is a companion request, not a sizing search. It returns
+    // the ledger and views as JSON; it is never streamed or run as GPU windows.
+    if (validated.objective === 'pareto') {
+      const pareto = await callPareto(validated, { signal: req.signal })
+      if (pareto.status === 'failed') {
+        const httpStatus = ERROR_STATUS_MAP[pareto.error.code] ?? 500
+        recordErrorCode('/api/recommend', pareto.error.code, httpStatus, validated.model_path)
+        return NextResponse.json(pareto, { status: httpStatus })
+      }
+      return NextResponse.json(pareto, {
+        status: 200,
+        headers: { 'Cache-Control': 'no-store' },
+      })
+    }
+
     if (req.headers.get('accept')?.includes('text/event-stream')) {
       return streamRecommendation(validated, req.signal)
     }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { RecommendRequestSchema } from '../schemas'
-import { callRecommend, generateRequestId, incrementalRecommend } from '../recommend'
+import { callPareto, callRecommend, generateRequestId } from '../recommend'
 import type { RecommendResult, RecommendErrorResponse } from '../recommend'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -38,6 +38,75 @@ const EXTERNAL_RESPONSE = {
     dp: 1,
   }],
   chosen_mode: 'agg',
+}
+
+const CAPACITY_OUTCOME = {
+  target_concurrency: 64,
+  context_per_sequence_tokens: 2176,
+  capacity_tokens: 150000,
+  capacity_sequences: 68,
+  fits: true,
+  shortfall_sequences: null,
+  shortfall_tokens: null,
+  minimum_gpus: 2,
+  per_rank_tokens: 75000,
+  replicas: 2,
+  attention_dp: 1,
+  evaluated_shapes: 5,
+  feasible_shapes: 5,
+  exhaustive: true,
+  performance_available: true,
+  performance_unavailable_reason: null,
+  simulator: 'aisimulate',
+}
+
+const CAPACITY_OPTION_OUTCOME = {
+  ...CAPACITY_OUTCOME,
+  mode: 'disagg',
+  prefill_replicas: 1,
+  decode_replicas: 2,
+  prefill_gpus: 2,
+  decode_gpus: 4,
+  replicas: 2,
+}
+
+const CAPACITY_OPTIONS_RESPONSE = {
+  ...EXTERNAL_RESPONSE,
+  capacity: CAPACITY_OUTCOME,
+  capacity_options: [
+    {
+      option_id: 'agg-t2-d1-mt2-me1-r2',
+      rank: 1,
+      role: 'minimum',
+      gpus_over_minimum: 0,
+      config: { ...EXTERNAL_RESPONSE.configs[0] },
+      capacity: CAPACITY_OUTCOME,
+    },
+    {
+      option_id: 'disagg-pt2-pd1-pr1-dt2-dd1-dr2-me1',
+      rank: 2,
+      role: 'disaggregated',
+      gpus_over_minimum: 2,
+      config: {
+        total_gpus_needed: 6,
+        replicas_needed: 1,
+        num_total_gpus: 6,
+        bs: 64,
+        ttft: 700,
+        tpot: 20,
+        request_latency: 1980,
+        concurrency: 64,
+        tokens_per_second: 1200,
+        tokens_per_second_per_gpu: 200,
+        tokens_per_second_per_user: 18.75,
+        memory: 50,
+        mode: 'disagg',
+        prefill_config: { tp: 2, pp: 1, dp: 1, num_workers: 1, batch_size: 64 },
+        decode_config: { tp: 2, pp: 1, dp: 1, num_workers: 2, batch_size: 32 },
+      },
+      capacity: CAPACITY_OPTION_OUTCOME,
+    },
+  ],
 }
 
 const BLIS_EXTERNAL_RESPONSE = {
@@ -127,6 +196,158 @@ describe('RecommendRequestSchema', () => {
     const { target_concurrency, ...rest } = VALID_REQUEST
     const result = RecommendRequestSchema.safeParse(rest)
     expect(result.success).toBe(false)
+  })
+
+  it('accepts a throughput-demand request without latency bounds', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a demand request that enforces a latency SLA', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'enforce',
+      target_request_rate: 10,
+      ttft: 1000,
+      tpot: 30,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a demand request that carries a latency bound', () => {
+    const { target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+      ttft: 1000,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a concurrency-capacity request without latency bounds', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a capacity request that enforces a latency SLA', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'enforce',
+      ttft: 1000,
+      tpot: 30,
+      target_concurrency: 64,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request that carries an arrival rate', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+      target_request_rate: 10,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request with a fractional sequence target', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64.5,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a capacity request that carries a latency bound', () => {
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+      ttft: 1000,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a pareto sweep that asks for a load target', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      objective: 'pareto',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a demand-mode pareto sweep without latency bounds', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an enforced pareto sweep with no latency bound', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'enforce',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects P/D transfer bandwidth outside a pareto sweep', () => {
+    const minGpus = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(minGpus.success).toBe(false)
+
+    const demand = RecommendRequestSchema.safeParse({
+      model_path: 'meta-llama/Llama-3.1-70B-Instruct',
+      system: 'h200_sxm',
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(demand.success).toBe(false)
+  })
+
+  it('accepts P/D transfer bandwidth for a pareto sweep', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+      kv_transfer_bandwidth_gb_per_second: 50,
+    })
+    expect(result.success).toBe(true)
   })
 
   it('accepts a model_config object', () => {
@@ -428,8 +649,20 @@ describe('callRecommend', () => {
     expect(sentBody.target_concurrency).toBe(32)
     expect(sentBody.tpot).toBe(30)
     expect(sentBody.database_mode).toBe('HYBRID')
+    expect(sentBody.top_n).toBe(5)
     expect(sentBody).not.toHaveProperty('username')
     expect(sentBody).not.toHaveProperty('password')
+  })
+
+  it('omits top_n when the caller did not choose one', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+    const { top_n, ...request } = VALID_REQUEST
+
+    await callRecommend(request)
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody).not.toHaveProperty('top_n')
   })
 
   it('forwards model_config to the upstream request when present', async () => {
@@ -447,7 +680,7 @@ describe('callRecommend', () => {
     const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
 
-    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', fabric: 'ib-400g' }, { timeoutSeconds: 45 })
+    await callRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single', fabric: 'ib-400g' }, { timeoutSeconds: 45 })
 
     const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
     expect(sentBody.simulator).toBe('blis')
@@ -465,8 +698,8 @@ describe('callRecommend', () => {
     expect(sentBody).toHaveProperty('fabric', null)
   })
 
-  it('rejects a BLIS request when the API does not confirm BLIS provenance', async () => {
-    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+  it('rejects a request when the API confirms a different simulator', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'aisimulate' }))
 
     const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis' })
 
@@ -504,15 +737,134 @@ describe('callRecommend', () => {
     }
   })
 
-  it('does not fabricate AISimulate GPU windows for BLIS', async () => {
-    vi.stubGlobal('fetch', mockFetchOk(BLIS_EXTERNAL_RESPONSE))
-    const events: string[] = []
+  it('sends one request without GPU bounds for a single-search simulator', async () => {
+    const fetchMock = mockFetchOk(BLIS_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
 
-    for await (const event of incrementalRecommend({ ...VALID_REQUEST, simulator: 'blis' })) {
-      events.push(event.type)
-    }
+    const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single' })
 
-    expect(events).toEqual(['completed'])
+    expect(result.status).toBe('completed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
+  it('runs a demand request once without forwarding GPU bounds', async () => {
+    const fetchMock = mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      demand: {
+        target_rps: 10,
+        achieved_rps: 12,
+        met: true,
+        best_observed_rps: 12,
+        evaluated_configurations: 3,
+        simulator: 'aisimulate',
+      },
+      sweep: {
+        algorithm: 'random',
+        seed: 42,
+        max_trials: 16,
+        evaluated: 3,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+
+    const result = await callRecommend({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('throughput_demand')
+    expect(body.target_request_rate).toBe(10)
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
+  it('runs a capacity request once without forwarding GPU bounds', async () => {
+    const fetchMock = mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      capacity: CAPACITY_OUTCOME,
+      sweep: {
+        algorithm: 'enumerate',
+        max_trials: 5,
+        evaluated: 5,
+        feasible: 5,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })
+
+    expect(result.status).toBe('completed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('concurrency_capacity')
+    expect(body.sla_mode).toBe('none')
+    expect(body.target_concurrency).toBe(64)
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
+  })
+
+  it('parses ranked capacity options and their promotable configs', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(CAPACITY_OPTIONS_RESPONSE))
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    })
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.capacityOptions?.map(option => [
+      option.optionId,
+      option.rank,
+      option.role,
+      option.gpusOverMinimum,
+    ])).toEqual([
+      ['agg-t2-d1-mt2-me1-r2', 1, 'minimum', 0],
+      ['disagg-pt2-pd1-pr1-dt2-dd1-dr2-me1', 2, 'disaggregated', 2],
+    ])
+
+    const disagg = result.capacityOptions?.[1]
+    expect(disagg?.capacity.mode).toBe('disagg')
+    expect(disagg?.capacity.prefillGpus).toBe(2)
+    expect(disagg?.capacity.decodeGpus).toBe(4)
+    expect(disagg?.result.mode).toBe('disagg')
+    expect(disagg?.result.recommendation.gpusNeeded).toBe(6)
+    expect(disagg?.result.capacityOptions).toBeUndefined()
+  })
+
+  it('does not parse capacity options for a non-capacity request', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(CAPACITY_OPTIONS_RESPONSE))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') return
+    expect(result.capacityOptions).toBeUndefined()
   })
 
   it('forwards context window limits to the upstream request', async () => {
@@ -542,17 +894,6 @@ describe('callRecommend', () => {
     expect(sentBody).not.toHaveProperty('model_config')
   })
 
-  it('sends recommendation GPU window bounds upstream', async () => {
-    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
-    vi.stubGlobal('fetch', mockFetch)
-
-    await callRecommend(VALID_REQUEST, { window: { minGpus: 2, maxGpus: 4 } })
-
-    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
-    expect(sentBody.min_candidate_gpus).toBe(2)
-    expect(sentBody.max_candidate_gpus).toBe(4)
-  })
-
   it('treats a legacy NoViableParallelConfig 500 as an empty search window', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
@@ -562,48 +903,12 @@ describe('callRecommend', () => {
       }),
     }))
 
-    const result = await callRecommend(VALID_REQUEST, { window: { minGpus: 1, maxGpus: 1 } })
+    const result = await callRecommend(VALID_REQUEST)
 
     expect(result).toMatchObject({
       status: 'failed',
       error: { code: 'AISIM_NO_CONFIGURATION' },
     })
-  })
-
-  it('refines a feasible GPU window before completing', async () => {
-    const noConfiguration = {
-      ok: false,
-      status: 422,
-      json: () => Promise.resolve({ detail: 'No configuration meets the specified requirements.' }),
-    }
-    const feasible = {
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve(EXTERNAL_RESPONSE),
-    }
-    const refineEmpty = {
-      ok: false,
-      status: 422,
-      json: () => Promise.resolve({ detail: 'No configuration meets the specified requirements.' }),
-    }
-    vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(noConfiguration)
-      .mockResolvedValueOnce(noConfiguration)
-      .mockResolvedValueOnce(feasible)
-      .mockResolvedValueOnce(refineEmpty))
-
-    const events = []
-    for await (const event of incrementalRecommend(VALID_REQUEST)) events.push(event)
-
-    expect(events.map(event => event.type)).toEqual([
-      'search_started', 'window_started', 'window_completed',
-      'window_started', 'window_completed',
-      'window_started', 'window_completed', 'refining',
-      'window_started', 'window_completed', 'completed',
-    ])
-    expect(events[5]).toMatchObject({ type: 'window_started', window: { minGpus: 3, maxGpus: 4 } })
-    expect(events[7]).toMatchObject({ type: 'refining', window: { minGpus: 3, maxGpus: 3 }, candidateGpus: 4 })
-    expect(events.at(-1)).toMatchObject({ type: 'completed', response: { status: 'completed' } })
   })
 
   it('returns AISIM_NOT_CONFIGURED when API URL is missing', async () => {
@@ -659,6 +964,26 @@ describe('callRecommend', () => {
 
     expect(result.status).toBe('failed')
     expect((result as RecommendErrorResponse).error.code).toBe('AISIM_NO_CONFIGURATION')
+  })
+
+  it('maps a Pydantic validation detail on 422 to INVALID_REQUEST', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({
+        detail: [{
+          loc: ['body', 'model_path'],
+          msg: 'Field required',
+          type: 'missing',
+        }],
+      }),
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('failed')
+    expect((result as RecommendErrorResponse).error.code).toBe('INVALID_REQUEST')
+    expect((result as RecommendErrorResponse).error.message).toContain('body.model_path')
   })
 
   it('returns AISIM_INVALID_RESPONSE on non-JSON response', async () => {
@@ -731,6 +1056,308 @@ describe('callRecommend', () => {
 
     expect(result.metadata.durationMs).toBeTypeOf('number')
     expect(result.metadata.durationMs).toBeGreaterThanOrEqual(0)
+  })
+
+  it('parses a throughput-demand outcome and does not require a latency bound', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      demand: {
+        target_rps: 10,
+        achieved_rps: 12.5,
+        met: true,
+        observed_concurrency: 25,
+        window_seconds: 10,
+        completed_requests: 125,
+        evaluated_configurations: 4,
+        best_observed_rps: 12.5,
+        simulator: 'aisimulate',
+      },
+      sweep: {
+        algorithm: 'random',
+        seed: 42,
+        max_trials: 16,
+        evaluated: 4,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    }))
+
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+    }) as RecommendResult
+
+    expect(result.demand).toMatchObject({
+      targetRps: 10,
+      achievedRps: 12.5,
+      met: true,
+      observedConcurrency: 25,
+      windowSeconds: 10,
+      evaluatedConfigurations: 4,
+      simulator: 'aisimulate',
+    })
+    expect(result.sweep).toMatchObject({ evaluated: 4, strictSla: false, budgetExhausted: false })
+  })
+
+  it('reports an unmet demand target as a completed 200 result', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      demand: {
+        target_rps: 10,
+        achieved_rps: 4,
+        met: false,
+        best_observed_rps: 4,
+        evaluated_configurations: 2,
+        simulator: 'aisimulate',
+      },
+    }))
+
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'throughput_demand',
+      sla_mode: 'none',
+      target_request_rate: 10,
+    }) as RecommendResult
+
+    expect(result.status).toBe('completed')
+    expect(result.demand).toMatchObject({ met: false, achievedRps: 4, bestObservedRps: 4 })
+  })
+
+  it('parses a concurrency-capacity outcome without requiring timing values', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        tokens_per_second: null,
+        tokens_per_second_per_gpu: null,
+        tokens_per_second_per_user: null,
+        ttft: null,
+        tpot: null,
+        request_latency: null,
+      }],
+      capacity: CAPACITY_OUTCOME,
+      sweep: {
+        algorithm: 'enumerate',
+        max_trials: 5,
+        evaluated: 5,
+        feasible: 5,
+        budget_exhausted: false,
+        strict_sla: false,
+      },
+    }))
+
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    }) as RecommendResult
+
+    expect(result.status).toBe('completed')
+    expect(result.capacity).toMatchObject({
+      targetConcurrency: 64,
+      contextPerSequenceTokens: 2176,
+      capacitySequences: 68,
+      fits: true,
+      shortfallSequences: null,
+      minimumGpus: 2,
+      replicas: 2,
+      attentionDp: 1,
+      exhaustive: true,
+      performanceAvailable: true,
+      simulator: 'aisimulate',
+    })
+    expect(result.sweep).toMatchObject({ algorithm: 'enumerate', evaluated: 5 })
+  })
+
+  it('reports an unmet capacity target as a completed 200 result', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      capacity: {
+        ...CAPACITY_OUTCOME,
+        capacity_tokens: 87040,
+        capacity_sequences: 40,
+        fits: false,
+        shortfall_sequences: 24,
+        shortfall_tokens: 52224,
+        performance_available: false,
+        performance_unavailable_reason: 'no timing coverage',
+      },
+    }))
+
+    const { ttft, tpot, ...rest } = VALID_REQUEST
+    const result = await callRecommend({
+      ...rest,
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+    }) as RecommendResult
+
+    expect(result.status).toBe('completed')
+    expect(result.capacity).toMatchObject({
+      fits: false,
+      capacitySequences: 40,
+      shortfallSequences: 24,
+      shortfallTokens: 52224,
+      performanceAvailable: false,
+      performanceUnavailableReason: 'no timing coverage',
+    })
+  })
+})
+
+// ─── callPareto Tests ────────────────────────────────────────────────────────
+
+const PARETO_EXTERNAL_RESPONSE = {
+  simulator: 'aisimulate',
+  chosen_mode: 'agg',
+  configs: EXTERNAL_RESPONSE.configs,
+  candidates: [{
+    candidate_id: 'candidate-000001',
+    status: 'feasible',
+    reason_category: null,
+    mode: 'agg',
+    topology: { deployment_mode: 'agg', tp: 2 },
+    used_gpus: 2,
+    metrics: { mean_ttft_ms: 400, mean_tpot_ms: 20 },
+    objectives: { throughput_per_user: 30, throughput_per_gpu: 50 },
+    transfer_delay_modeled: false,
+    provenance_sources: ['perf_db'],
+  }],
+  views: { pareto_front: ['candidate-000001'], top_n: ['candidate-000001'] },
+  sweep: {
+    max_trials: 20,
+    evaluated: 1,
+    budget_exhausted: false,
+    strict_sla: true,
+    algorithm: 'random',
+    seed: 42,
+    window_min_gpus: 1,
+    window_max_gpus: 32,
+  },
+}
+
+describe('callPareto', () => {
+  beforeEach(() => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.unstubAllGlobals()
+  })
+
+  it('strips the sizing load target and asks for the pareto objective', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callPareto({
+      ...VALID_REQUEST,
+      objective: 'pareto',
+      simulator: 'aisimulate',
+    })
+
+    expect(result.status).toBe('completed')
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.objective).toBe('pareto')
+    expect(body.simulator).toBe('aisimulate')
+    expect(body).not.toHaveProperty('target_concurrency')
+    expect(body).not.toHaveProperty('target_request_rate')
+    expect(body.ttft).toBe(1000)
+    expect(body.tpot).toBe(30)
+  })
+
+  it('drops every latency bound for a demand-mode sweep', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    await callPareto({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+    })
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body.sla_mode).toBe('none')
+    expect(body).not.toHaveProperty('ttft')
+    expect(body).not.toHaveProperty('tpot')
+    expect(body).not.toHaveProperty('request_latency')
+  })
+
+  it('returns the ledger, simulator views, and sweep facts', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(PARETO_EXTERNAL_RESPONSE))
+
+    const result = await callPareto({ ...VALID_REQUEST, objective: 'pareto' })
+
+    if (result.status !== 'completed') throw new Error('expected a Pareto result')
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0]).toMatchObject({
+      candidate_id: 'candidate-000001',
+      status: 'feasible',
+      used_gpus: 2,
+      simulator: 'aisimulate',
+    })
+    expect(result.views?.pareto_front).toEqual(['candidate-000001'])
+    expect(result.sweep).toMatchObject({ evaluated: 1, windowMaxGpus: 32, strictSla: true })
+  })
+
+  it('keeps a single-search sweep inside the gateway timeout', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'blis', search_strategy: 'single' },
+      { timeoutSeconds: 45 },
+    )
+    const single = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(single.search_budget_seconds).toBe(40)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'aisimulate', search_strategy: 'windowed' },
+      { timeoutSeconds: 45 },
+    )
+    const windowed = JSON.parse(fetchMock.mock.calls[1][1]?.body as string)
+    expect(windowed).not.toHaveProperty('search_budget_seconds')
+  })
+
+  it('floors a fractional gateway timeout to a whole-second search budget', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'blis', search_strategy: 'single' },
+      { timeoutSeconds: 45.5 },
+    )
+    const single = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(single.search_budget_seconds).toBe(40)
+  })
+
+  it('surfaces the API rejection without substituting a simulator', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({ detail: 'Pareto is not supported by this simulator.' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await callPareto({
+      ...VALID_REQUEST,
+      objective: 'pareto',
+      simulator: 'blis',
+      fabric: 'roce-200g',
+    })
+
+    expect(result.status).toBe('failed')
+    if (result.status === 'failed') expect(result.error.message).toContain('not supported')
+    // The request is forwarded with the selected simulator; the service owns
+    // the refusal, so the adapter never substitutes or invents one.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).simulator).toBe('blis')
   })
 })
 

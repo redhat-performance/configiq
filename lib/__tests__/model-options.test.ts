@@ -14,11 +14,12 @@ const BASE: AppConfig = {
   defaultModel: '',
   defaultOpenModel: '',
   defaultFrontierModel: '',
-  testedModels: [],
+  approvedModels: [],
   huggingFaceModels: [],
   suggestedModelNames: [],
   modelRequestUrl: '',
   workloadPresets: [],
+  concurrencyPresets: [],
 }
 
 const CATALOG_MODELS = ['org-a/catalog-model', 'org-a/tested-in-catalog', 'plain-model']
@@ -28,9 +29,7 @@ const APPROVED_MODELS = ['org-b/tested-only', 'org-d/approved-only']
 beforeEach(() => {
   mockGetAppConfig.mockReturnValue({
     ...BASE,
-    // The config field remains the approved-for-measurement list during the
-    // transition to approvedModels.
-    testedModels: APPROVED_MODELS,
+    approvedModels: APPROVED_MODELS,
     huggingFaceModels: ['org-c/hf-only', 'org-a/tested-in-catalog'],
   })
 })

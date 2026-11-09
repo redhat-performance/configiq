@@ -11,6 +11,7 @@ export async function GET() {
         status: 'available',
         schemaVersion: registry.schemaVersion,
         generatedAt: registry.generatedAt,
+        dataset: registry.dataset ?? null,
         gate: registry.gate,
         approvedModels: registry.approvedModels,
         pairs: registry.pairs.map(pair => ({

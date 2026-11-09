@@ -23,11 +23,12 @@ MODELED_ENGINE_VERSIONS = ("0.29.0", "0.31.0", "0.32.0")
 #: models prefill/decode disaggregation *and* accepts max_model_len: auto.
 DEFAULT_ENGINE_VERSION = "0.31.0"
 #: What each modeled release can express. 0.32.0 runs blis-vllm's translated vLLM
-#: engine, which models colocated serving only and requires max_model_len stated.
+#: engine, which models colocated and prefill/decode serving but requires
+#: max_model_len stated.
 ENGINE_VERSION_SUPPORT: dict[str, dict[str, bool]] = {
     "0.29.0": {"disaggregated": True, "max_model_len_auto": True},
     "0.31.0": {"disaggregated": True, "max_model_len_auto": True},
-    "0.32.0": {"disaggregated": False, "max_model_len_auto": False},
+    "0.32.0": {"disaggregated": True, "max_model_len_auto": False},
 }
 #: Releases that can run a prefill/decode topology, newest last.
 DISAGGREGATED_ENGINE_VERSIONS = tuple(

@@ -9,12 +9,17 @@ requiring the Rust native extension or performance databases.
 
 from __future__ import annotations
 
+import sys
+import threading
+import time
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from configiq.systems import load_device_names_from_perf_data, supported_systems
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
@@ -29,6 +34,22 @@ def _sdk_available() -> bool:
         return len(SupportedSystems) > 0
     except Exception:
         return False
+
+
+@pytest.fixture(autouse=True)
+def _default_fit_floor(monkeypatch):
+    """Keep API-flow tests independent of model files and KV preflight.
+
+    The service starts a min-GPU search at the model's fit floor by enumerating
+    KV-feasible shapes. Tests that exercise the request/response contract only
+    need a deterministic floor; discovery and ceiling policy have dedicated
+    tests that override this patch.
+    """
+    monkeypatch.setattr(
+        app_module,
+        "_capacity_shapes",
+        lambda *args, **kwargs: [_capacity_shape(tp=1)],
+    )
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -108,6 +129,9 @@ class MockCandidate:
             }},
         },
     })
+    provenance: object = field(
+        default_factory=lambda: types.SimpleNamespace(topology={}, performance_data=[])
+    )
 
 
 @dataclass
@@ -117,6 +141,82 @@ class MockRecommendationResult:
 
 def make_mock_recommendation_result(candidates=None):
     return MockRecommendationResult(selected_candidates=candidates or [MockCandidate()])
+
+
+#: Request shape for a throughput-demand run: no latency bound, an offered
+#: arrival rate instead of closed-loop concurrency.
+VALID_DEMAND_BODY = {
+    "model_path": "Qwen/Qwen3-32B",
+    "system": "h200_sxm",
+    "isl": 2048,
+    "osl": 128,
+    "objective": "throughput_demand",
+    "sla_mode": "none",
+    "target_request_rate": 10.0,
+    "backend": "vllm",
+}
+
+#: Request shape for a concurrency-capacity run: a residency target, no SLA.
+VALID_CAPACITY_BODY = {
+    "model_path": "Qwen/Qwen3-32B",
+    "system": "h200_sxm",
+    "isl": 2048,
+    "osl": 128,
+    "objective": "concurrency_capacity",
+    "sla_mode": "none",
+    "target_concurrency": 32,
+    "backend": "vllm",
+}
+
+
+@dataclass
+class MockLedgerProvenance:
+    topology: dict = field(default_factory=lambda: {
+        "deployment_mode": "agg",
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "replicas": 1,
+    })
+
+
+@dataclass
+class MockLedgerCandidate:
+    """A candidate as it appears in the SDK result ledger (not `selected_candidates`).
+
+    The demand path reads `status`, `used_gpus`, `metrics`, `candidate_id`, and
+    `provenance.topology` from every evaluated record, then converts only the
+    winner into a RecommendConfig.
+    """
+
+    candidate_id: str = "candidate-000001"
+    used_gpus: int = 2
+    status: str = "feasible"
+    metrics: dict = field(default_factory=dict)
+    provenance: MockLedgerProvenance = field(default_factory=MockLedgerProvenance)
+
+
+@dataclass
+class MockRecommendationCounts:
+    evaluated: int = 2
+    feasible: int = 2
+    timed_out: int = 0
+
+
+@dataclass
+class MockRecommendationProvenance:
+    run_id: str = "run-test-1"
+
+
+@dataclass
+class MockLedgerRecommendationResult:
+    candidates: list[MockLedgerCandidate] = field(default_factory=list)
+    counts: MockRecommendationCounts | None = None
+    provenance: MockRecommendationProvenance | None = None
+
+    @property
+    def selected_candidates(self) -> list[MockLedgerCandidate]:
+        return self.candidates[:1]
 
 
 @dataclass
@@ -140,7 +240,9 @@ class TestRecommend:
         config = app_module._aisimulate_recommendation_config(request)
 
         assert config.optimization.constraints.max_candidate_gpus == 1024
-        assert config.optimizer.max_trials == 8
+        # A windowless config uses the full configured range, so the trial
+        # budget is the escalation cap rather than one trial per GPU.
+        assert config.optimizer.max_trials == 32
 
     def test_recommendation_search_budget_is_configurable(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "4096")
@@ -149,39 +251,15 @@ class TestRecommend:
 
         assert config.optimization.constraints.max_candidate_gpus == 4096
 
-    def test_requested_gpu_window_is_clamped_to_server_budget(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        body = {**VALID_RECOMMEND_BODY, "max_candidate_gpus": 64}
-        request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
-
-        assert config.optimization.constraints.max_candidate_gpus == 8
-
-    def test_rejects_window_lower_bound_above_effective_server_budget(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        body = {**VALID_RECOMMEND_BODY, "min_candidate_gpus": 9, "max_candidate_gpus": 64}
-        request = app_module.RecommendRequest.model_validate(body)
-
-        with pytest.raises(ValueError, match="effective max_candidate_gpus"):
-            app_module._aisimulate_recommendation_config(request)
-
-    def test_recommendation_window_bounds_are_forwarded(self):
-        body = {**VALID_RECOMMEND_BODY, "min_candidate_gpus": 2, "max_candidate_gpus": 4}
-        request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
-
-        assert config.optimization.constraints.min_candidate_gpus == 2
-        assert config.optimization.constraints.max_candidate_gpus == 4
-
     def test_one_gpu_window_avoids_disaggregated_trials(self):
-        body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1, "min_candidate_gpus": 1, "max_candidate_gpus": 1}
+        body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1}
         request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
+        config = app_module._aisimulate_recommendation_config(request, window=(1, 1))
 
         assert config.engine.mode.choices == ["aggregated"]
         assert config.optimizer.max_trials == 1
         assert config.optimizer.parallelism == 1
-        assert config.optimizer.candidate_timeout_seconds == 15
+        assert config.optimizer.candidate_timeout_seconds == 30
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_success(self, mock_recommend):
@@ -431,7 +509,7 @@ class TestRecommend:
         mock_recommend.return_value = MockRecommendationResult(selected_candidates=[])
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
-        assert "No configuration" in resp.json()["detail"]
+        assert "No GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_value_error_returns_422(self, mock_recommend):
@@ -458,7 +536,9 @@ class TestRecommend:
         )
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
-        assert "no deployment_mode" in resp.json()["detail"]
+        # The ladder exhausts every window and reports the range it searched,
+        # rather than the last window's internal optimizer message.
+        assert "No GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_unexpected_error_returns_500(self, mock_recommend):
@@ -469,7 +549,13 @@ class TestRecommend:
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_defaults_applied(self, mock_recommend):
         mock_recommend.return_value = make_mock_recommendation_result()
-        body = {"model_path": "Qwen/Qwen3-32B", "system": "h200_sxm", "target_concurrency": 32}
+        body = {
+            "model_path": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "target_concurrency": 32,
+            "ttft": 2000.0,
+            "tpot": 30.0,
+        }
         resp = client.post("/recommend", json=body)
         assert resp.status_code == 200
         request = mock_recommend.call_args.args[0]
@@ -495,6 +581,2001 @@ class TestRecommend:
         resp = client.post("/recommend?include=memory", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 200
         assert resp.json()["configs"][0]["memory_breakdown"] is not None
+
+    @patch("tools.api_service.app._blis_recommend")
+    def test_blis_recommendation_reports_an_enumerated_sweep(self, mock_blis):
+        mock_blis.return_value = MagicMock(
+            configs=[{"mode": "agg", "total_gpus_needed": 1}],
+            search_summary={
+                "candidate_configurations": 4,
+                "evaluated_configurations": 3,
+                "budget_exhausted": False,
+                "effective_max_gpus": 4,
+            },
+            demand=None,
+        )
+
+        resp = client.post(
+            "/recommend", json={**VALID_RECOMMEND_BODY, "simulator": "blis"}
+        )
+
+        assert resp.status_code == 200
+        sweep = resp.json()["sweep"]
+        assert sweep["algorithm"] == "enumerate"
+        assert sweep["max_trials"] == 4
+        assert sweep["evaluated"] == 3
+        assert sweep["window_max_gpus"] == 4
+        assert sweep["strict_sla"] is True
+
+
+# ─── throughput-demand tests ─────────────────────────────────────────────────
+
+
+def _demand_metrics(
+    offered_rps: float,
+    *,
+    gpus: int = 2,
+    e2e_ms: float = 2000.0,
+    window_s: float = 10.0,
+    completed: float | None = None,
+) -> dict:
+    """Metrics for a run that offered `offered_rps` for `window_s` seconds.
+
+    A replay is timed from the first arrival to the last completion, so the
+    recorded throughput is `completed / (window + e2e)` while the arrival-window
+    rate is `completed / window`. Deriving both from the same numbers keeps the
+    fixture physically consistent with the compliance check.
+    """
+    requests = completed if completed is not None else round(offered_rps * window_s)
+    duration_ms = window_s * 1000.0 + e2e_ms
+    return {
+        "request_throughput_rps": requests / (duration_ms / 1000.0),
+        "mean_e2e_latency_ms": e2e_ms,
+        "duration_ms": duration_ms,
+        "completed_requests": requests,
+        "mean_ttft_ms": 180.0,
+        "mean_tpot_ms": 18.0,
+        "output_throughput_tok_s": offered_rps * 128,
+    }
+
+
+VALID_PARETO_BODY = {
+    "model_path": "Qwen/Qwen3-32B",
+    "system": "h200_sxm",
+    "isl": 4096,
+    "osl": 512,
+    "objective": "pareto",
+    "sla_mode": "none",
+    "backend": "vllm",
+}
+
+
+class TestFitFloorAndCeiling:
+    """The service owns the fit floor and the soft search ceiling."""
+
+    def test_small_floor_does_not_raise_the_configured_ceiling(self):
+        assert app_module._effective_search_ceiling(1024, 8) == 1024
+
+    def test_large_floor_raises_the_ceiling_to_twice_the_floor(self):
+        assert app_module._effective_search_ceiling(1024, 800) == 1600
+
+    def test_floor_above_the_configured_budget_is_discovered_by_doubling(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        budgets: list[int] = []
+
+        def shapes(*args, **kwargs):
+            budgets.append(kwargs["gpu_budget"])
+            return [_capacity_shape(tp=64)] if kwargs["gpu_budget"] >= 64 else []
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        floor = app_module._discover_fit_floor(
+            request,
+            configured=app_module._max_candidate_gpus(),
+            deadline=time.monotonic() + 5,
+        )
+
+        assert floor == 64
+        assert budgets == [8, 16, 32, 64]
+
+    def test_discovery_budget_exhaustion_falls_back_to_no_floor(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: [])
+
+        assert (
+            app_module._discover_fit_floor(
+                request, configured=8, deadline=time.monotonic() - 1
+            )
+            is None
+        )
+
+    def test_failed_preflight_falls_back_to_no_floor(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        def shapes(*args, **kwargs):
+            raise RuntimeError("estimator unavailable")
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert (
+            app_module._discover_fit_floor(
+                request, configured=8, deadline=time.monotonic() + 5
+            )
+            is None
+        )
+
+    def test_discovery_uses_the_sweep_runtime_envelope(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        captured: dict[str, object] = {}
+
+        def shapes(*args, **kwargs):
+            captured.update(kwargs)
+            return [_capacity_shape(tp=1)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        app_module._discover_fit_floor(
+            request, configured=8, deadline=time.monotonic() + 5
+        )
+
+        # The sweep reserves these engine defaults; discovery must agree.
+        assert captured["max_num_tokens"] == 32768
+        assert captured["max_batch_size"] == 1024
+        assert captured["memory_fraction"] == 0.9
+
+    def test_sglang_discovery_uses_its_lower_memory_fraction(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_PARETO_BODY, "backend": "sglang"}
+        )
+        captured: dict[str, object] = {}
+
+        def shapes(*args, **kwargs):
+            captured.update(kwargs)
+            return [_capacity_shape(tp=1)]
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        app_module._discover_fit_floor(
+            request, configured=8, deadline=time.monotonic() + 5
+        )
+
+        assert captured["memory_fraction"] == 0.88
+
+
+class TestParetoAutoWindow:
+    """A Pareto window starts at the model's own fit floor."""
+
+    @pytest.mark.parametrize(
+        ("floor", "expected"),
+        [
+            (1, (1, 16)),
+            (4, (4, 16)),
+            (8, (8, 16)),
+            (16, (16, 32)),
+            (20, (20, 40)),
+            (64, (64, 128)),
+        ],
+    )
+    def test_floor_and_ceiling_follow_the_minimum_fit(self, monkeypatch, floor, expected):
+        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(
+            app_module,
+            "_capacity_shapes",
+            lambda *args, **kwargs: [_capacity_shape(tp=floor)],
+        )
+
+        assert app_module._pareto_auto_window(request) == expected
+
+    def test_discovery_failure_uses_the_wide_fallback(self, monkeypatch):
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: None)
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        assert app_module._pareto_auto_window(request) == (1, 16)
+
+    def test_a_large_floor_gets_headroom_above_the_configured_budget(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        def shapes(*args, **kwargs):
+            return [_capacity_shape(tp=100)] if kwargs["gpu_budget"] >= 100 else []
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert app_module._pareto_auto_window(request) == (100, 200)
+
+    def test_resolved_window_is_applied_and_reported(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(app_module, "_pareto_auto_window", lambda req: (4, 16))
+        captured: list[tuple[int, int] | None] = []
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda req, *, window=None, **kwargs: captured.append(window) or object(),
+        )
+
+        _, window = app_module._run_pareto_recommendation(request)
+
+        assert window == (4, 16)
+        assert captured == [(4, 16)]
+        sweep = app_module._sweep_meta(
+            types.SimpleNamespace(counts=None, provenance=None, candidates=[]),
+            request,
+            window=window,
+        )
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 16
+        assert sweep.configured_max_gpus == 1024
+        assert sweep.effective_max_gpus == 1024
+
+    def test_window_searches_both_deployment_modes(self):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
+
+        assert config.engine.mode.choices == ["aggregated", "disaggregated"]
+        assert config.optimization.constraints.min_candidate_gpus == 4
+        assert config.optimization.constraints.max_candidate_gpus == 16
+
+
+@dataclass
+class MockParetoResult:
+    selected_candidates: list = field(default_factory=lambda: [MockCandidate()])
+    candidates: list = field(default_factory=lambda: [MockCandidate()])
+    counts: object = field(
+        default_factory=lambda: types.SimpleNamespace(evaluated=20, feasible=20, timed_out=0)
+    )
+    provenance: object = field(
+        default_factory=lambda: types.SimpleNamespace(run_id="run-1")
+    )
+    views: object = field(
+        default_factory=lambda: types.SimpleNamespace(pareto_front=[], top_n=[])
+    )
+
+
+class TestParetoEndpointWindow:
+    @patch("tools.api_service.app._candidate_record_to_response")
+    @patch("tools.api_service.app._aisimulate_candidate_config")
+    @patch("tools.api_service.app._run_pareto_recommendation")
+    def test_service_resolves_and_reports_the_window(
+        self, mock_run, mock_config, mock_candidate
+    ):
+        mock_run.return_value = (MockParetoResult(), (1, 16))
+        mock_config.return_value = app_module.RecommendConfig(total_gpus_needed=4)
+        mock_candidate.return_value = app_module.CandidateResponse(
+            candidate_id="candidate-000001",
+            status="feasible",
+            mode="agg",
+            topology={},
+            used_gpus=4,
+        )
+
+        response = client.post("/recommend", json=VALID_PARETO_BODY)
+
+        assert response.status_code == 200
+        mock_run.assert_called_once()
+        sweep = response.json()["sweep"]
+        assert sweep["window_min_gpus"] == 1
+        assert sweep["window_max_gpus"] == 16
+        assert sweep["configured_max_gpus"] == 1024
+        assert sweep["effective_max_gpus"] == 1024
+
+    def test_common_error_handler_preserves_an_explicit_status(self):
+        with pytest.raises(HTTPException) as raised:
+            app_module._common_error_handler(
+                HTTPException(status_code=422, detail="no fitting shape"),
+                "recommend",
+                "Qwen/Qwen3-32B",
+                "vllm",
+                "h200_sxm",
+            )
+
+        assert raised.value.status_code == 422
+        assert raised.value.detail == "no fitting shape"
+
+
+class TestRecommendDemand:
+    def test_config_uses_open_loop_rate_and_no_sla(self):
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+        config = app_module._aisimulate_recommendation_config(request)
+
+        dumped = config.model_dump()
+        assert dumped["traffic"]["load"]["type"] == "constant_rate"
+        assert dumped["traffic"]["load"]["requests_per_second"] == 10.0
+        # A demand run stops after enough requests to measure the offered rate,
+        # not after a fixed handful of requests.
+        assert dumped["traffic"]["stop"]["requests_per_load_unit"] == (
+            app_module._demand_requests_per_load_unit()
+        )
+        assert (dumped.get("evaluation") or {}).get("sla") is None
+        assert dumped["optimization"]["strict_sla"] is False
+        assert dumped["optimization"]["target"] == "throughput_per_gpu"
+
+    def test_demand_trial_budget_is_separate_from_sizing(self, monkeypatch):
+        monkeypatch.setenv("DEMAND_MAX_TRIALS", "12")
+        monkeypatch.setenv("DEMAND_PARALLELISM", "3")
+        monkeypatch.setenv("DEMAND_CANDIDATE_TIMEOUT_S", "9")
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+        config = app_module._aisimulate_recommendation_config(request)
+
+        assert config.optimizer.max_trials == 12
+        assert config.optimizer.parallelism == 3
+        assert config.optimizer.candidate_timeout_seconds == 9
+
+    def test_demand_rejects_an_enforced_sla(self):
+        body = {**VALID_DEMAND_BODY, "sla_mode": "enforce"}
+        with pytest.raises(ValueError, match="sla_mode='none'"):
+            app_module.RecommendRequest.model_validate(body)
+
+    def test_demand_rejects_latency_targets(self):
+        for field_name, value in (("ttft", 1000.0), ("tpot", 30.0), ("request_latency", 3000.0)):
+            body = {**VALID_DEMAND_BODY, field_name: value}
+            with pytest.raises(ValueError, match="does not accept"):
+                app_module.RecommendRequest.model_validate(body)
+
+    def test_demand_requires_rate_and_hides_concurrency(self):
+        body = {**VALID_DEMAND_BODY}
+        del body["target_request_rate"]
+        with pytest.raises(ValueError, match="requires target_request_rate"):
+            app_module.RecommendRequest.model_validate(body)
+
+        with pytest.raises(ValueError, match="no target_concurrency"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_DEMAND_BODY, "target_concurrency": 8}
+            )
+
+    def test_min_gpus_still_requires_an_enforced_sla(self):
+        body = {**VALID_RECOMMEND_BODY, "sla_mode": "none"}
+        with pytest.raises(ValueError, match="min_gpus"):
+            app_module.RecommendRequest.model_validate(body)
+
+    def test_transfer_bandwidth_is_rejected_outside_pareto(self):
+        for body in (VALID_RECOMMEND_BODY, VALID_DEMAND_BODY):
+            with pytest.raises(ValueError, match="only supported with objective='pareto'"):
+                app_module.RecommendRequest.model_validate(
+                    {**body, "kv_transfer_bandwidth_gb_per_second": 50.0}
+                )
+
+    def test_transfer_bandwidth_is_accepted_for_pareto(self):
+        request = app_module.RecommendRequest.model_validate({
+            "model_path": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "objective": "pareto",
+            "sla_mode": "none",
+            "kv_transfer_bandwidth_gb_per_second": 50.0,
+        })
+        assert request.kv_transfer_bandwidth_gb_per_second == 50.0
+
+    def test_closed_loop_rate_skips_the_arrival_window_correction(self):
+        # A closed-loop replay starts every request together, so its duration is
+        # about one wave. Subtracting a mean latency would inflate the rate.
+        metrics = _demand_metrics(10.0, e2e_ms=4000.0, window_s=10.0)
+        raw = metrics["request_throughput_rps"]
+
+        assert app_module._measured_request_rate(metrics, open_loop=False) == raw
+        assert app_module._measured_request_rate(metrics, open_loop=True) > raw
+
+    def test_closed_loop_concurrency_does_not_use_the_arrival_window(self):
+        request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+        metrics = _demand_metrics(10.0, e2e_ms=4000.0, window_s=10.0)
+
+        concurrency = app_module._recommendation_concurrency(metrics, request)
+
+        assert concurrency == round(metrics["request_throughput_rps"] * 4)
+
+    def test_enforced_sla_requires_a_bound(self):
+        body = {**VALID_RECOMMEND_BODY}
+        del body["ttft"]
+        del body["tpot"]
+        with pytest.raises(ValueError, match="requires request_latency"):
+            app_module.RecommendRequest.model_validate(body)
+
+    def test_e2e_bound_replaces_decomposed_bounds(self):
+        body = {**VALID_RECOMMEND_BODY, "request_latency": 2500.0}
+        del body["ttft"]
+        del body["tpot"]
+        request = app_module.RecommendRequest.model_validate(body)
+        assert request.request_latency == 2500.0
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_RECOMMEND_BODY, "request_latency": 2500.0, "ttft": 1000.0}
+            )
+
+    def test_sla_block_maps_each_bound_shape(self):
+        token_request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+        token_config = app_module._aisimulate_recommendation_config(token_request)
+        token_sla = (token_config.model_dump().get("evaluation") or {}).get("sla") or {}
+        assert token_sla.get("ttft_ms") == 2000.0
+        assert token_sla.get("itl_ms") == 30.0
+        # The SDK serializes an unused bound as None rather than omitting it.
+        assert token_sla.get("e2e_ms") is None
+
+        e2e_request = app_module.RecommendRequest.model_validate({
+            "model_path": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "target_concurrency": 32,
+            "request_latency": 2500.0,
+        })
+        e2e_config = app_module._aisimulate_recommendation_config(e2e_request)
+        e2e_sla = (e2e_config.model_dump().get("evaluation") or {}).get("sla") or {}
+        assert e2e_sla.get("e2e_ms") == 2500.0
+        assert e2e_sla.get("ttft_ms") is None
+
+
+class TestSelectDemandRecord:
+    def test_prefers_fewest_gpus_that_sustains_the_rate(self):
+        small = MockLedgerCandidate(
+            candidate_id="small", used_gpus=1, metrics=_demand_metrics(12.0)
+        )
+        medium = MockLedgerCandidate(
+            candidate_id="medium", used_gpus=2, metrics=_demand_metrics(40.0)
+        )
+        winner, met, best, measured = app_module._select_demand_record(
+            [small, medium], 10.0
+        )
+
+        assert winner is small
+        assert met is True
+        assert best == 40.0
+        assert measured == 2
+
+    def test_accepts_legacy_throughput_metric_names(self):
+        # The engine runner has used both names for measured request rate. With
+        # no completion count or duration, the reported rate is used directly.
+        record = MockLedgerCandidate(used_gpus=2, metrics={"requests_per_second": 12.0})
+
+        winner, met, _, _ = app_module._select_demand_record([record], 10.0)
+        assert winner is record
+        assert met is True
+
+    def test_ties_on_gpus_break_by_highest_rate_then_latency(self):
+        faster = MockLedgerCandidate(
+            candidate_id="faster", used_gpus=2, metrics=_demand_metrics(20.0)
+        )
+        slower = MockLedgerCandidate(
+            candidate_id="slower", used_gpus=2, metrics=_demand_metrics(15.0)
+        )
+        winner, _, _, _ = app_module._select_demand_record([slower, faster], 10.0)
+        assert winner is faster
+
+        lower_latency = MockLedgerCandidate(
+            candidate_id="low-latency",
+            used_gpus=2,
+            metrics=_demand_metrics(20.0, e2e_ms=1500.0),
+        )
+        same_rate = MockLedgerCandidate(
+            candidate_id="same-rate", used_gpus=2, metrics=_demand_metrics(20.0, e2e_ms=2500.0)
+        )
+        winner, _, _, _ = app_module._select_demand_record([same_rate, lower_latency], 10.0)
+        assert winner is lower_latency
+
+    def test_unmet_target_returns_best_observed_at_200(self):
+        weak = MockLedgerCandidate(
+            candidate_id="weak", used_gpus=1, metrics=_demand_metrics(3.0)
+        )
+        better = MockLedgerCandidate(
+            candidate_id="better", used_gpus=4, metrics=_demand_metrics(7.0)
+        )
+        winner, met, best, measured = app_module._select_demand_record(
+            [weak, better], 10.0
+        )
+
+        assert winner is better
+        assert met is False
+        assert best == 7.0
+        assert measured == 2
+
+    def test_ignores_infeasible_and_unmeasured_records(self):
+        infeasible = MockLedgerCandidate(
+            candidate_id="infeasible",
+            used_gpus=1,
+            status="infeasible",
+            metrics=_demand_metrics(99.0),
+        )
+        unmeasured = MockLedgerCandidate(
+            candidate_id="unmeasured",
+            used_gpus=1,
+            status="timed_out",
+            metrics={},
+        )
+        zero_completed = MockLedgerCandidate(
+            candidate_id="zero",
+            used_gpus=1,
+            metrics=_demand_metrics(50.0, completed=0.0),
+        )
+        usable = MockLedgerCandidate(
+            candidate_id="usable", used_gpus=2, metrics=_demand_metrics(11.0)
+        )
+
+        winner, met, _, measured = app_module._select_demand_record(
+            [infeasible, unmeasured, zero_completed, usable], 10.0
+        )
+        assert winner is usable
+        assert met is True
+        assert measured == 1
+
+    def test_no_measured_records_returns_nothing(self):
+        winner, met, best, measured = app_module._select_demand_record(
+            [MockLedgerCandidate(status="infeasible", metrics={})], 10.0
+        )
+        assert winner is None
+        assert met is False
+        assert best is None
+        assert measured == 0
+
+    def test_unknown_gpu_count_is_not_ranked_cheapest(self):
+        unknown = MockLedgerCandidate(
+            candidate_id="unknown", used_gpus=None, metrics=_demand_metrics(12.0)
+        )
+        known = MockLedgerCandidate(
+            candidate_id="known", used_gpus=2, metrics=_demand_metrics(12.0)
+        )
+
+        winner, _, _, _ = app_module._select_demand_record([unknown, known], 10.0)
+        assert winner is known
+
+    def test_compliance_excludes_the_final_response_drain(self):
+        # 100 requests offered over 10 s, timed to the last completion. The
+        # recorded throughput is below target, but the arrival-window rate is
+        # exactly the offered rate.
+        record = MockLedgerCandidate(
+            used_gpus=2,
+            metrics=_demand_metrics(10.0, e2e_ms=4000.0, window_s=10.0),
+        )
+        assert record.metrics["request_throughput_rps"] < 10.0
+
+        winner, met, _, _ = app_module._select_demand_record([record], 10.0)
+        assert winner is record
+        assert met is True
+
+
+class TestDemandWindows:
+    def test_ladder_doubles_from_the_start_window_to_the_ceiling(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
+        monkeypatch.delenv("DEMAND_WINDOW_START_GPUS", raising=False)
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        assert app_module._demand_gpu_windows(request) == [
+            (1, 8), (1, 16), (1, 32), (1, 64),
+        ]
+
+    def test_ceiling_below_the_start_window_yields_one_window(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "4")
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        assert app_module._demand_gpu_windows(request) == [(1, 4)]
+
+
+class TestRunDemandWindows:
+    def _request(self, **overrides):
+        return app_module.RecommendRequest.model_validate(
+            {**VALID_DEMAND_BODY, **overrides}
+        )
+
+    def test_stops_at_the_first_window_that_sustains_the_rate(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        windows: list[tuple[int, int]] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="fits", used_gpus=8, metrics=_demand_metrics(12.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+                provenance=MockRecommendationProvenance(run_id="run-demand"),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        records, sweep = app_module._run_demand_windows(self._request())
+
+        assert windows == [(1, 8)]
+        assert [record.candidate_id for record in records] == ["fits"]
+        assert sweep.window_min_gpus == 1
+        assert sweep.window_max_gpus == 8
+        assert sweep.run_id == "run-demand"
+        assert sweep.strict_sla is False
+        assert sweep.evaluated == 4
+
+    def test_skips_a_window_that_cannot_hold_the_model(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        windows: list[tuple[int, int]] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if len(windows) == 1:
+                raise NoViableParallelConfig(
+                    "no deployment_mode has a viable parallel config"
+                )
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="fits", used_gpus=16, metrics=_demand_metrics(12.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=2, feasible=1, timed_out=0),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        records, sweep = app_module._run_demand_windows(self._request())
+
+        assert windows == [(1, 8), (1, 16)]
+        assert [record.candidate_id for record in records] == ["fits"]
+        assert sweep.window_max_gpus == 16
+        assert sweep.evaluated == 2
+        assert sweep.feasible == 1
+
+    def test_merges_and_deduplicates_records_across_windows(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
+        windows: list[tuple[int, int]] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if len(windows) == 1:
+                return MockLedgerRecommendationResult(
+                    candidates=[
+                        MockLedgerCandidate(
+                            candidate_id="small", used_gpus=2, metrics=_demand_metrics(5.0)
+                        ),
+                        MockLedgerCandidate(
+                            candidate_id="medium", used_gpus=4, metrics=_demand_metrics(6.0)
+                        ),
+                    ],
+                    counts=MockRecommendationCounts(evaluated=2, feasible=2, timed_out=0),
+                )
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    # A re-measured shape from the previous window.
+                    MockLedgerCandidate(
+                        candidate_id="small-again", used_gpus=2, metrics=_demand_metrics(5.0)
+                    ),
+                    MockLedgerCandidate(
+                        candidate_id="large", used_gpus=8, metrics=_demand_metrics(12.0)
+                    ),
+                ],
+                counts=MockRecommendationCounts(evaluated=3, feasible=2, timed_out=1),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        records, sweep = app_module._run_demand_windows(self._request())
+
+        assert windows == [(1, 8), (1, 16)]
+        assert {record.candidate_id for record in records} == {"small", "medium", "large"}
+        assert sweep.evaluated == 5
+        assert sweep.feasible == 4
+        assert sweep.timed_out == 1
+        assert sweep.max_trials > 0
+
+    def test_a_spent_trial_budget_does_not_mark_the_ladder_exhausted(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            # Evaluate more trials than the window offered. That is trial spend,
+            # not a wall-clock stop, so it must not set budget_exhausted.
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="weak", used_gpus=2, metrics=_demand_metrics(1.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=12, feasible=1, timed_out=0),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _, sweep = app_module._run_demand_windows(self._request())
+
+        assert sweep.budget_exhausted is False
+        assert sweep.evaluated >= 12
+        assert sweep.max_trials is not None
+
+    def test_stops_growing_when_the_wall_clock_budget_is_spent(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
+        monkeypatch.setattr(app_module, "_demand_search_budget_seconds", lambda: 1)
+        windows: list[tuple[int, int]] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="weak", used_gpus=2, metrics=_demand_metrics(1.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=1, feasible=1, timed_out=0),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _, sweep = app_module._run_demand_windows(self._request())
+
+        assert windows == [(1, 8)]
+        assert sweep.budget_exhausted is True
+        assert sweep.window_max_gpus == 8
+
+
+class TestMinGpusTrialBudget:
+    """A min_gpus window budget comes from that window's upper bound."""
+
+    def test_budget_grows_with_the_window_upper_bound(self, monkeypatch):
+        monkeypatch.delenv("MIN_GPUS_MAX_TRIALS", raising=False)
+        monkeypatch.delenv("MIN_GPUS_PARALLELISM", raising=False)
+
+        assert app_module._recommendation_trial_budget("min_gpus", 8)[:2] == (8, 4)
+        assert app_module._recommendation_trial_budget("min_gpus", 16)[:2] == (16, 4)
+
+    def test_a_large_window_is_capped(self, monkeypatch):
+        monkeypatch.setenv("MIN_GPUS_MAX_TRIALS", "32")
+        monkeypatch.delenv("MIN_GPUS_PARALLELISM", raising=False)
+
+        assert app_module._recommendation_trial_budget("min_gpus", 256)[:2] == (32, 4)
+
+    def test_a_one_gpu_window_needs_one_trial(self):
+        assert app_module._recommendation_trial_budget("min_gpus", 1)[:2] == (1, 1)
+
+    def test_the_trial_budget_is_env_configurable(self, monkeypatch):
+        monkeypatch.setenv("MIN_GPUS_MAX_TRIALS", "12")
+        monkeypatch.setenv("MIN_GPUS_PARALLELISM", "3")
+        monkeypatch.setenv("MIN_GPUS_CANDIDATE_TIMEOUT_S", "7")
+
+        assert app_module._recommendation_trial_budget("min_gpus", 16) == (12, 3, 7)
+
+
+class TestRunMinGpusWindows:
+    def _request(self):
+        return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+
+    def _result(self, used_gpus: int, *, evaluated: int = 2):
+        return MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(candidate_id=f"g{used_gpus}", used_gpus=used_gpus)
+            ],
+            counts=MockRecommendationCounts(
+                evaluated=evaluated, feasible=1, timed_out=0
+            ),
+            provenance=MockRecommendationProvenance(run_id="run-min"),
+        )
+
+    def test_starts_with_a_wide_window_at_the_fit_floor(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        windows: list[tuple[int, int] | None] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(8, 16)]
+        assert sweep.window_min_gpus == 8
+        assert sweep.window_max_gpus == 16
+        assert sweep.configured_max_gpus == 32
+        assert sweep.effective_max_gpus == 32
+        assert sweep.run_id == "run-min"
+        assert sweep.evaluated == 2
+
+    def test_passes_the_window_parallelism_with_its_trial_budget(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        captured: dict[str, int | None] = {}
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            captured["max_trials"] = max_trials_override
+            captured["parallelism"] = parallelism_override
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        app_module._run_min_gpus_windows(self._request())
+
+        assert captured["max_trials"] is not None
+        assert captured["parallelism"] == min(4, captured["max_trials"])
+
+    def test_expands_past_an_infeasible_window_then_refines(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        windows: list[tuple[int, int] | None] = []
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (4, 16):
+                raise NoViableParallelConfig(
+                    "no deployment_mode has a viable parallel config"
+                )
+            return self._result(18 if window == (17, 32) else 17)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(4, 16), (17, 32), (17, 17)]
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 32
+
+    def test_an_infeasible_refinement_keeps_the_known_good_candidate(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        windows: list[tuple[int, int] | None] = []
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (8, 15):
+                # TP8 × 2 = 16, so no shape fits below the 16-GPU candidate.
+                raise NoViableParallelConfig(
+                    "no deployment_mode has a viable parallel config"
+                )
+            return self._result(16)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert result.selected_candidates[0].used_gpus == 16
+        # The refinement failed, so the known-good 16-GPU result stands and
+        # the ladder must not grow past it.
+        assert windows == [(8, 16), (8, 15)]
+        assert sweep.window_max_gpus == 16
+
+    def test_a_fitting_window_without_an_sla_candidate_still_grows(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        windows: list[tuple[int, int] | None] = []
+
+        empty = MockLedgerRecommendationResult(
+            candidates=[],
+            counts=MockRecommendationCounts(evaluated=1, feasible=0, timed_out=0),
+        )
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (17, 32):
+                return self._result(32)
+            return empty
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        # (4, 16) held the model but no SLA candidate; (17, 32) found one and
+        # a refinement below it found nothing, so 32 remains the minimum.
+        assert windows == [(4, 16), (17, 32), (17, 31)]
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 32
+        assert sweep.evaluated == 4  # two empty windows + one feasible window
+
+    def test_a_large_floor_raises_the_reported_ceiling(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, *, window=None, **kwargs: self._result(8),
+        )
+
+        _, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.configured_max_gpus == 8
+        assert sweep.effective_max_gpus == 16
+
+    def test_fit_floor_failure_uses_the_wide_one_gpu_fallback(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: None)
+        windows: list[tuple[int, int] | None] = []
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return self._result(1)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(1, 16)]
+        assert sweep.window_min_gpus == 1
+        assert sweep.window_max_gpus == 16
+
+    def test_no_fitting_window_is_an_explicit_error(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            raise NoViableParallelConfig(
+                "no deployment_mode has a viable parallel config"
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        with pytest.raises(HTTPException) as raised:
+            app_module._run_min_gpus_windows(self._request())
+
+        assert raised.value.status_code == 422
+        assert "between 4 and 8 GPUs" in raised.value.detail
+
+    def test_wall_clock_budget_sets_budget_exhausted(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        monkeypatch.setattr(app_module, "_min_gpus_search_budget_seconds", lambda: 1)
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            return MockLedgerRecommendationResult(
+                candidates=[],
+                counts=MockRecommendationCounts(evaluated=8, feasible=0, timed_out=0),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        with pytest.raises(HTTPException) as raised:
+            app_module._run_min_gpus_windows(self._request())
+
+        assert raised.value.status_code == 422
+        assert "time budget" in raised.value.detail
+
+    def test_a_spent_trial_budget_does_not_mark_the_search_exhausted(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            # Evaluate more trials than the window offered; this is trial
+            # spend, not a wall-clock stop.
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(candidate_id="g8", used_gpus=8)
+                ],
+                counts=MockRecommendationCounts(
+                    evaluated=max_trials_override + 10, feasible=1, timed_out=0
+                ),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.budget_exhausted is False
+        assert sweep.max_trials is not None
+        assert sweep.evaluated is not None
+        assert sweep.evaluated > sweep.max_trials
+
+
+class TestDemandConfigFromRecord:
+    def test_maps_aggregated_topology_and_measured_metrics(self):
+        record = MockLedgerCandidate(
+            used_gpus=4,
+            metrics=_demand_metrics(12.0),
+            provenance=MockLedgerProvenance(topology={
+                "deployment_mode": "agg",
+                "tp": 4,
+                "pp": 1,
+                "attention_dp": 1,
+                "replicas": 1,
+                "moe_tp": 2,
+                "moe_ep": 2,
+            }),
+        )
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        config = app_module._demand_config_from_record(record, request)
+
+        assert config.total_gpus_needed == 4
+        assert config.num_total_gpus == 4
+        assert config.replicas_needed == 1
+        assert config.tp == 4
+        assert config.moe_tp == 2
+        assert config.mode == "agg"
+        assert config.request_rate == 12.0
+        # Little's law: 12 req/s x 2 s mean E2E.
+        assert config.concurrency == 24
+        assert config.prefill_config is None
+        assert config.decode_config is None
+
+    def test_maps_disaggregated_topology_into_role_configs(self):
+        record = MockLedgerCandidate(
+            used_gpus=6,
+            metrics=_demand_metrics(9.0),
+            provenance=MockLedgerProvenance(topology={
+                "deployment_mode": "disagg",
+                "prefill_tp": 4,
+                "prefill_pp": 1,
+                "prefill_attention_dp": 1,
+                "prefill_replicas": 1,
+                "decode_tp": 2,
+                "decode_pp": 1,
+                "decode_attention_dp": 1,
+                "decode_replicas": 2,
+            }),
+        )
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        config = app_module._demand_config_from_record(record, request)
+
+        assert config.mode == "disagg"
+        # A complete P/D deployment is one scaling unit.
+        assert config.num_total_gpus == 6
+        assert config.prefill_config is not None
+        assert config.prefill_config.tp == 4
+        assert config.decode_config is not None
+        assert config.decode_config.tp == 2
+        assert config.decode_config.num_workers == 2
+
+
+class TestDemandOutcome:
+    def test_reports_replay_derived_window_and_concurrency(self):
+        record = MockLedgerCandidate(
+            used_gpus=2,
+            metrics=_demand_metrics(12.0, e2e_ms=2000.0, window_s=10.0),
+        )
+        outcome = app_module._demand_outcome(
+            record,
+            target_rps=10.0,
+            met=True,
+            best_observed_rps=40.0,
+            evaluated=5,
+        )
+
+        assert outcome.target_rps == 10.0
+        # 120 requests over the 10 s arrival window, excluding the e2e drain.
+        assert outcome.achieved_rps == 12.0
+        assert outcome.met is True
+        assert outcome.best_observed_rps == 40.0
+        assert outcome.evaluated_configurations == 5
+        # Little's law: 12 req/s x 2 s = 24 in flight.
+        assert outcome.observed_concurrency == 24.0
+        assert outcome.window_seconds == 10.0
+        assert outcome.completed_requests == 120
+        assert outcome.simulator == "aisimulate"
+
+    def test_omits_derived_values_when_metrics_are_missing(self):
+        record = MockLedgerCandidate(metrics={"request_throughput_rps": 4.0})
+        outcome = app_module._demand_outcome(
+            record,
+            target_rps=10.0,
+            met=False,
+            best_observed_rps=None,
+            evaluated=1,
+        )
+
+        assert outcome.achieved_rps == 4.0
+        # Falling back to the selected candidate's own rate is explicit.
+        assert outcome.best_observed_rps == 4.0
+        assert outcome.observed_concurrency is None
+        assert outcome.window_seconds is None
+
+
+class TestSweepMeta:
+    def test_trial_spend_does_not_set_the_time_budget_flag(self, monkeypatch):
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "4")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        result = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate()],
+            counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+            provenance=MockRecommendationProvenance(run_id="run-42"),
+        )
+
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
+
+        assert meta.run_id == "run-42"
+        assert meta.max_trials == 4
+        assert meta.evaluated == 4
+        # The sampled sweep is bounded by trials; trial spend is visible in
+        # max_trials/evaluated and is not a wall-clock exhaustion signal.
+        assert meta.budget_exhausted is False
+        assert meta.strict_sla is False
+        assert meta.window_min_gpus == 1
+        assert meta.window_max_gpus == 1024
+        assert meta.algorithm in {"random", "bayesian"}
+
+    def test_not_exhausted_when_the_search_stops_early(self, monkeypatch):
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "16")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        result = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(), MockLedgerCandidate(candidate_id="c2")],
+            counts=MockRecommendationCounts(evaluated=2, feasible=2, timed_out=0),
+        )
+
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
+        assert meta.budget_exhausted is False
+        assert meta.evaluated == 2
+
+    def test_falls_back_to_ledger_length_without_counts(self, monkeypatch):
+        monkeypatch.setenv("PARETO_MAX_TRIALS", "16")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        result = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(), MockLedgerCandidate(candidate_id="c2")],
+        )
+
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
+        assert meta.evaluated == 2
+
+
+class TestRecommendDemandEndpoint:
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_met_demand_returns_200_with_measured_outcome(self, mock_recommend):
+        small = MockLedgerCandidate(
+            candidate_id="small", used_gpus=1, metrics=_demand_metrics(4.0)
+        )
+        medium = MockLedgerCandidate(
+            candidate_id="medium", used_gpus=2, metrics=_demand_metrics(12.0)
+        )
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[small, medium],
+            counts=MockRecommendationCounts(evaluated=2),
+        )
+
+        resp = client.post("/recommend", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["demand"] is not None
+        assert data["demand"]["met"] is True
+        assert data["demand"]["target_rps"] == 10.0
+        assert data["demand"]["achieved_rps"] == 12.0
+        assert data["demand"]["evaluated_configurations"] == 2
+        assert data["demand"]["simulator"] == "aisimulate"
+        # The winner, not the SDK's throughput-per-GPU pick, is the response.
+        assert data["configs"][0]["total_gpus_needed"] == 2
+        assert data["sweep"]["strict_sla"] is False
+
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_unmet_demand_returns_200_with_best_observed(self, mock_recommend):
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(candidate_id="a", used_gpus=1, metrics=_demand_metrics(3.0)),
+                MockLedgerCandidate(candidate_id="b", used_gpus=4, metrics=_demand_metrics(7.0)),
+            ],
+            counts=MockRecommendationCounts(evaluated=2),
+        )
+
+        resp = client.post("/recommend", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        demand = resp.json()["demand"]
+        assert demand["met"] is False
+        assert demand["achieved_rps"] == 7.0
+        assert demand["best_observed_rps"] == 7.0
+        assert demand["target_rps"] == 10.0
+
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_no_feasible_candidate_returns_422(self, mock_recommend):
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(status="infeasible", metrics={}),
+                MockLedgerCandidate(candidate_id="c2", status="timed_out", metrics={}),
+            ],
+        )
+
+        resp = client.post("/recommend", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 422
+        assert "demand traffic" in resp.json()["detail"]
+
+    def test_rejects_an_enforced_sla_before_running(self):
+        body = {**VALID_DEMAND_BODY, "sla_mode": "enforce", "ttft": 1000.0}
+        resp = client.post("/recommend", json=body)
+        assert resp.status_code == 422
+
+    @patch("tools.api_service.app._backend_memory_fraction_kind", return_value="of_total")
+    @patch("tools.api_service.app._backend_memory_fraction", return_value=0.9)
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_include_config_sizes_from_measured_concurrency(self, mock_recommend, _fraction, _kind):
+        # 12 req/s at 2 s mean latency is 24 concurrent requests. A demand
+        # winner has no requested `bs`, so the config must fall back to the
+        # measured concurrency instead of a placeholder of 1.
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(used_gpus=2, metrics=_demand_metrics(12.0))],
+            counts=MockRecommendationCounts(evaluated=1),
+        )
+
+        resp = client.post("/recommend?include=config", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        serving = resp.json()["configs"][0]["serving_config"]
+        assert serving["max_num_seqs"] == 24
+
+    @patch("tools.api_service.app._build_memory_breakdown")
+    @patch("tools.api_service.app._run_aisimulate_recommendation")
+    def test_include_memory_sizes_from_measured_concurrency(self, mock_recommend, mock_breakdown):
+        mock_recommend.return_value = MockLedgerRecommendationResult(
+            candidates=[MockLedgerCandidate(used_gpus=2, metrics=_demand_metrics(12.0))],
+            counts=MockRecommendationCounts(evaluated=1),
+        )
+        mock_breakdown.return_value = None
+
+        resp = client.post("/recommend?include=memory", json=VALID_DEMAND_BODY)
+
+        assert resp.status_code == 200
+        # Positional args: ..., isl, osl, concurrency.
+        assert mock_breakdown.call_args.args[8] == 24
+
+
+# ─── concurrency-capacity tests ──────────────────────────────────────────────
+
+
+def _capacity_shape(
+    *,
+    tp: int = 1,
+    dp: int = 1,
+    per_rank_tokens: int = 100_000,
+    moe_tp: int | None = None,
+    moe_ep: int | None = None,
+) -> app_module._CapacityShape:
+    return app_module._CapacityShape(
+        tp=tp,
+        dp=dp,
+        moe_tp=tp if moe_tp is None else moe_tp,
+        moe_ep=dp if moe_ep is None else moe_ep,
+        per_rank_tokens=per_rank_tokens,
+    )
+
+
+def _stub_capacity_sdk(monkeypatch):
+    """Replace the SDK modules capacity imports lazily (the stub env has no sweeper)."""
+    kv_estimate = types.ModuleType("aisimulate.sweeper.kv_estimate")
+    kv_estimate.resolve_backend_version = lambda system, backend: "0.24.0"
+    monkeypatch.setitem(sys.modules, "aisimulate.sweeper", types.ModuleType("aisimulate.sweeper"))
+    monkeypatch.setitem(sys.modules, "aisimulate.sweeper.kv_estimate", kv_estimate)
+
+
+class TestCapacityRequestValidation:
+    def test_capacity_accepts_a_whole_sequence_target_without_an_sla(self):
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+        assert request.objective == "concurrency_capacity"
+        assert request.target_concurrency == 32
+        assert request.sla_mode == "none"
+
+    def test_capacity_accepts_blis(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "simulator": "blis"}
+        )
+        assert request.simulator == "blis"
+        assert request.objective == "concurrency_capacity"
+        assert request.target_concurrency == 32
+
+    def test_capacity_rejects_an_enforced_sla(self):
+        with pytest.raises(ValueError, match="sla_mode='none'"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_CAPACITY_BODY, "sla_mode": "enforce"}
+            )
+
+    def test_capacity_rejects_an_arrival_rate(self):
+        with pytest.raises(ValueError, match="does not accept target_request_rate"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_CAPACITY_BODY, "target_request_rate": 10.0}
+            )
+
+    def test_capacity_requires_concurrency(self):
+        body = {**VALID_CAPACITY_BODY}
+        del body["target_concurrency"]
+        with pytest.raises(ValueError, match="requires target_concurrency"):
+            app_module.RecommendRequest.model_validate(body)
+
+    @pytest.mark.parametrize("target", [0, -1, 2.5])
+    def test_capacity_requires_a_positive_whole_number(self, target):
+        with pytest.raises(ValueError, match="positive whole number"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_CAPACITY_BODY, "target_concurrency": target}
+            )
+
+    def test_capacity_rejects_latency_targets(self):
+        for field_name, value in (("ttft", 1000.0), ("tpot", 30.0), ("request_latency", 3000.0)):
+            with pytest.raises(ValueError, match="does not accept"):
+                app_module.RecommendRequest.model_validate(
+                    {**VALID_CAPACITY_BODY, field_name: value}
+                )
+
+
+class TestCapacityContextTokens:
+    def test_max_seq_len_is_the_residency_bound(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "max_seq_len": 8192}
+        )
+        assert app_module._capacity_context_tokens(request) == 8192
+
+    def test_falls_back_to_isl_plus_osl_with_no_prefix_credit(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "isl": 2048, "osl": 128, "prefix": 1024}
+        )
+        assert app_module._capacity_context_tokens(request) == 2176
+
+
+class TestSelectCapacity:
+    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+        return app_module._capacity_aggregate_candidates(
+            shapes,
+            target_concurrency=target,
+            context_tokens=context,
+            lower_gpus=lower,
+            upper_gpus=upper,
+        )
+
+    def _select(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+        fitting, best_effort, minimum = self._aggregate(
+            shapes, target=target, context=context, lower=lower, upper=upper
+        )
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=6,
+        )
+        return selected, minimum
+
+    def test_picks_the_fewest_gpus_that_hold_the_target(self):
+        selected, minimum = self._select([
+            _capacity_shape(tp=1, per_rank_tokens=100_000),
+            _capacity_shape(tp=2, per_rank_tokens=300_000),
+        ])
+        role, winner = selected[0]
+        assert role == "minimum"
+        assert winner.shape.tp == 1
+        assert winner.replicas == 1
+        assert winner.total_gpus == 1
+        assert winner.capacity_sequences == 100
+        assert minimum == 1
+
+    def test_attention_dp_multiplies_capacity_per_replica(self):
+        shape = _capacity_shape(tp=2, dp=4, per_rank_tokens=30_000)
+        candidate = app_module._CapacityCandidate(shape=shape, replicas=2, context_tokens=1000)
+        assert candidate.total_gpus == 16
+        assert candidate.capacity_tokens == 240_000
+        assert candidate.capacity_sequences == 240
+
+    def test_adds_replicas_to_reach_the_target(self):
+        selected, minimum = self._select(
+            [_capacity_shape(tp=2, per_rank_tokens=40_000)], upper=16
+        )
+        winner = selected[0][1]
+        assert winner.replicas == 3
+        assert winner.total_gpus == 6
+        assert winner.capacity_sequences == 120
+        assert minimum == 2
+
+    def test_lower_bound_is_met_with_replicas_not_a_bigger_shape(self):
+        selected, minimum = self._select(
+            [_capacity_shape(tp=1, per_rank_tokens=100_000)], lower=8, upper=8
+        )
+        winner = selected[0][1]
+        # The shape stays a one-GPU worker; only the replica count grows.
+        assert winner.shape.gpus_per_worker == 1
+        assert winner.replicas == 8
+        assert winner.total_gpus == 8
+        assert minimum == 8
+
+    def test_sequences_cannot_span_replicas(self):
+        fitting, _best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=10_000)],
+            target=9,
+            context=2176,
+            upper=4,
+        )
+        winner = min(fitting, key=app_module._capacity_order)
+        # Each replica holds 4 whole sequences, so 9 need 3 replicas (12).
+        # Pooled-token math would pick 2 replicas and claim 9 fit.
+        assert winner.replicas == 3
+        assert winner.capacity_sequences == 12
+        assert minimum == 1
+
+    def test_shape_that_cannot_hold_one_sequence_is_not_a_candidate(self):
+        fitting, best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=2_000)],
+            target=1,
+            context=2176,
+            upper=4,
+        )
+        assert fitting == []
+        assert best_effort == []
+        assert minimum is None
+
+    def test_target_miss_reports_the_largest_deployment_inside_the_window(self):
+        _fitting, best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=10_000)], upper=4
+        )
+        winner = min(best_effort, key=app_module._capacity_shortfall_order)
+        assert winner.total_gpus == 4
+        assert winner.capacity_sequences == 40
+        assert minimum == 1
+
+    def test_returns_none_when_the_window_cannot_fit_any_shape(self):
+        _fitting, _best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=2, per_rank_tokens=100_000)], target=10, lower=3, upper=3
+        )
+        assert minimum is None
+
+    def test_selection_does_not_depend_on_shape_order(self):
+        shapes = [
+            _capacity_shape(tp=1, per_rank_tokens=10_000),
+            _capacity_shape(tp=2, per_rank_tokens=60_000),
+            _capacity_shape(tp=4, per_rank_tokens=160_000),
+        ]
+
+        def selection(order):
+            selected, minimum = self._select(order, upper=16)
+            return [
+                (role, candidate.shape.tp, candidate.replicas, candidate.total_gpus)
+                for role, candidate in selected
+            ], minimum
+
+        forward, forward_minimum = selection(shapes)
+        backward, backward_minimum = selection(list(reversed(shapes)))
+
+        assert forward == backward
+        # The 4-GPU tie is broken by more capacity per replica, not list order.
+        assert forward[0] == ("minimum", 4, 1, 4)
+        assert forward_minimum == backward_minimum == 1
+
+
+class TestCapacityConfig:
+    def _prediction(self, **summary):
+        prediction = MagicMock()
+        prediction.summary = summary
+        prediction.warnings = []
+        return prediction
+
+    def _config(self, *, replicas=3, prediction=None):
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+        return app_module._capacity_config(
+            request,
+            backend_version="0.24.0",
+            candidate=app_module._CapacityCandidate(
+                shape=_capacity_shape(tp=2, dp=1, per_rank_tokens=100_000),
+                replicas=replicas,
+                context_tokens=1000,
+            ),
+            target_concurrency=100,
+            prediction=prediction,
+        )
+
+    def test_reports_cluster_totals_with_one_replica_as_the_scalable_unit(self):
+        config = self._config(prediction=self._prediction(
+            output_throughput_tok_s=250.0,
+            power_w=700.0,
+            ttft_ms=100.0,
+            tpot_ms=20.0,
+            e2e_latency_ms=2100.0,
+            memory_gb=80.0,
+            gemm="bf16",
+            kvcache="auto",
+        ))
+        assert config.total_gpus_needed == 6
+        assert config.num_total_gpus == 2
+        assert config.replicas_needed == 3
+        assert config.tp == 2
+        assert config.bs == 100
+        assert config.concurrency == 100
+        assert config.tokens_per_second == 750.0
+        assert config.tokens_per_second_per_gpu == 125.0
+        assert config.tokens_per_second_per_user == 7.5
+        assert config.power_w == 2100.0
+        assert config.mode == "agg"
+        assert config.simulator == "aisimulate"
+
+    def test_no_simulation_leaves_performance_empty_but_sizing_intact(self):
+        config = self._config(prediction=None)
+        assert config.total_gpus_needed == 6
+        assert config.tokens_per_second is None
+        assert config.ttft is None
+        assert config.power_w is None
+
+
+class TestCapacityOptionSelection:
+    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=16):
+        return app_module._capacity_aggregate_candidates(
+            shapes,
+            target_concurrency=target,
+            context_tokens=context,
+            lower_gpus=lower,
+            upper_gpus=upper,
+        )
+
+    def test_ranks_minimum_ties_and_larger_options(self):
+        shapes = [
+            _capacity_shape(tp=2, per_rank_tokens=100_000),
+            _capacity_shape(tp=1, dp=2, per_rank_tokens=50_000),
+        ]
+        fitting, best_effort, minimum = self._aggregate(shapes)
+        assert minimum == 2
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=6,
+        )
+        roles = [role for role, _candidate in selected]
+        assert roles[0] == "minimum"
+        assert "same_gpus" in roles
+        assert "larger" in roles
+        assert selected[0][1].total_gpus == 2
+        assert len(selected) <= 6
+
+    def test_option_count_limits_the_comparison(self):
+        shapes = [_capacity_shape(tp=1, per_rank_tokens=100_000)]
+        fitting, best_effort, _minimum = self._aggregate(shapes)
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=2,
+        )
+        assert len(selected) == 2
+
+    def test_disaggregated_options_are_added_as_larger_alternatives(self):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        fitting, best_effort, _minimum = self._aggregate(shapes)
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=1000,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=1000,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[disagg],
+            option_count=8,
+        )
+        roles = [role for role, _candidate in selected]
+        assert "disaggregated" in roles
+        disagg_index = roles.index("disaggregated")
+        assert selected[disagg_index][1].total_gpus == 6
+        assert roles[0] == "minimum"
+
+    def test_best_effort_is_used_when_the_target_does_not_fit(self):
+        shapes = [_capacity_shape(tp=1, per_rank_tokens=10_000)]
+        fitting, best_effort, minimum = self._aggregate(shapes, upper=4)
+        assert fitting == []
+        assert minimum == 1
+        selected = app_module._select_capacity_options(
+            aggregate_fitting=fitting,
+            aggregate_best_effort=best_effort,
+            disagg_candidates=[],
+            option_count=4,
+        )
+        assert [role for role, _candidate in selected] == ["shortfall"]
+        assert selected[0][1].total_gpus == 4
+
+
+class TestCapacityDisaggOutcome:
+    def _candidate(self):
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=1000,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=1000,
+        )
+        return app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+
+    def test_outcome_reports_the_decode_pool_as_the_resident_side(self):
+        outcome = app_module._capacity_option_outcome(
+            candidate=self._candidate(),
+            context_tokens=1000,
+            target_concurrency=100,
+            minimum_gpus=2,
+            evaluated_shapes=2,
+            feasible_shapes=2,
+            prediction=MagicMock(),
+            unavailable_reason=None,
+        )
+        assert outcome.mode == "disagg"
+        assert outcome.prefill_gpus == 2
+        assert outcome.decode_gpus == 4
+        assert outcome.prefill_replicas == 1
+        assert outcome.decode_replicas == 2
+        assert outcome.replicas == 2
+        assert outcome.per_rank_tokens == 200_000
+        assert outcome.fits is True
+
+    def test_disagg_config_sums_pool_gpus_and_keeps_one_scalable_unit(self):
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+        config = app_module._capacity_disagg_config(
+            request,
+            backend_version="0.24.0",
+            candidate=self._candidate(),
+            target_concurrency=100,
+            prediction=None,
+        )
+        assert config.mode == "disagg"
+        assert config.total_gpus_needed == 6
+        assert config.num_total_gpus == 6
+        assert config.replicas_needed == 1
+        assert config.prefill_config is not None
+        assert config.decode_config is not None
+        assert config.prefill_config.num_workers == 1
+        assert config.decode_config.num_workers == 2
+        assert config.prefill_config.tp == 2
+        assert config.decode_config.tp == 2
+
+
+class TestRunCapacityRecommendation:
+    def _run(self, monkeypatch, shapes, *, prediction=None, reason=None, disagg=None, **overrides):
+        _stub_capacity_sdk(monkeypatch)
+        max_candidate_gpus = overrides.pop("max_candidate_gpus", None)
+        if max_candidate_gpus is not None:
+            monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", str(max_candidate_gpus))
+        monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: shapes)
+        monkeypatch.setattr(
+            app_module, "_capacity_disagg_candidates", lambda *args, **kwargs: disagg or []
+        )
+        monkeypatch.setattr(
+            app_module, "_capacity_prediction", lambda *args, **kwargs: (prediction, reason)
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, **overrides}
+        )
+        return app_module._run_capacity_recommendation(request, include=set())
+
+    def _available_prediction(self):
+        prediction = MagicMock()
+        prediction.summary = {"output_throughput_tok_s": 250.0, "power_w": 700.0}
+        prediction.warnings = []
+        return prediction
+
+    def test_capacity_is_decided_by_kv_residency_not_the_simulation(self, monkeypatch):
+        config, capacity, _sweep, options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=100_000)],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=8,
+        )
+        assert capacity.fits is True
+        assert capacity.capacity_sequences == 45  # 100_000 // 2_176
+        assert capacity.target_concurrency == 32
+        assert capacity.context_per_sequence_tokens == 2176
+        assert capacity.performance_available is True
+        assert capacity.performance_unavailable_reason is None
+        assert config.total_gpus_needed == 1
+        assert config.replicas_needed == 1
+        assert config.tokens_per_second == 250.0
+        assert options[0].role == "minimum"
+        assert options[0].config is config
+
+    def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
+        _config, capacity, _sweep, options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=20_000)],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=8,
+        )
+        # One GPU holds a single 2_176-token sequence, but the target needs four.
+        assert capacity.minimum_gpus == 1
+        assert options[0].role == "minimum"
+        assert options[0].config.total_gpus_needed == 4
+        assert options[0].gpus_over_minimum == 0
+        assert any(option.gpus_over_minimum > 0 for option in options[1:])
+
+    def test_target_miss_is_still_200_shaped_data_with_a_shortfall(self, monkeypatch):
+        config, capacity, _sweep, _options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=25_000)],
+            prediction=self._available_prediction(),
+            target_concurrency=100,
+            max_candidate_gpus=4,
+        )
+        # 4 replicas × 25_000 tokens hold 11 whole sequences each, so 44 of
+        # the 100 requested sequences — not the 45 the pooled tokens suggest.
+        assert capacity.fits is False
+        assert capacity.capacity_sequences == 44
+        assert capacity.shortfall_sequences == 56
+        assert capacity.shortfall_tokens == 56 * 2176
+        assert capacity.minimum_gpus == 1
+        assert config.total_gpus_needed == 4
+        assert config.replicas_needed == 4
+
+    def test_performance_gap_keeps_the_capacity_answer_and_adds_a_warning(self, monkeypatch):
+        config, capacity, _sweep, options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=100_000)],
+            prediction=None,
+            reason="no timing coverage",
+            max_candidate_gpus=8,
+        )
+        assert capacity.fits is True
+        assert capacity.performance_available is False
+        assert capacity.performance_unavailable_reason == "no timing coverage"
+        assert config.tokens_per_second is None
+        assert any(
+            "Performance simulation was unavailable" in warning
+            for warning in config.warnings
+        )
+        assert options[0].capacity.performance_available is False
+        assert options[0].capacity.performance_unavailable_reason == "no timing coverage"
+
+    def test_disaggregated_candidates_become_larger_options(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, _sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+        )
+        assert next(option.role for option in options) == "minimum"
+        disagg_option = next(option for option in options if option.role == "disaggregated")
+        assert disagg_option.capacity.mode == "disagg"
+        assert disagg_option.config.mode == "disagg"
+        assert disagg_option.gpus_over_minimum > 0
+
+    def test_sweep_reports_an_exhaustive_deterministic_enumeration(self, monkeypatch):
+        shapes = [
+            _capacity_shape(tp=1, per_rank_tokens=100_000),
+            _capacity_shape(tp=2, per_rank_tokens=300_000),
+        ]
+        _config, _capacity, sweep, _options = self._run(
+            monkeypatch, shapes, max_candidate_gpus=8
+        )
+        assert sweep.algorithm == "enumerate"
+        assert sweep.evaluated == 2
+        assert sweep.feasible == 2
+        assert sweep.max_trials == 2
+        assert sweep.budget_exhausted is False
+        assert sweep.strict_sla is False
+        assert (sweep.window_min_gpus, sweep.window_max_gpus) == (1, 8)
+        assert sweep.configured_max_gpus == 8
+        assert sweep.effective_max_gpus == 8
+
+    def test_empty_shape_space_names_the_budget(self, monkeypatch):
+        with pytest.raises(HTTPException) as excinfo:
+            self._run(monkeypatch, [], max_candidate_gpus=8)
+        assert excinfo.value.status_code == 422
+        assert "no aggregated parallel configuration" in excinfo.value.detail
+        assert "1-8 GPUs" in excinfo.value.detail
+
+    def test_shape_above_the_ceiling_is_an_explicit_error(self, monkeypatch):
+        with pytest.raises(HTTPException) as excinfo:
+            self._run(
+                monkeypatch,
+                [_capacity_shape(tp=8, per_rank_tokens=100_000)],
+                max_candidate_gpus=4,
+            )
+        assert excinfo.value.status_code == 422
+        assert "holds even one" in excinfo.value.detail
+        assert "1-4 GPUs" in excinfo.value.detail
+
+
+class TestCapacitySimulationBudget:
+    def test_abandoned_simulation_holds_its_process_slot(self, monkeypatch):
+        slots = threading.BoundedSemaphore(2)
+        monkeypatch.setattr(app_module, "_CAPACITY_SIMULATION_SLOTS", slots)
+        monkeypatch.setattr(app_module, "_CAPACITY_OPTION_SIMULATION_BUDGET_S", 0.5)
+        started = threading.Semaphore(0)
+        release = threading.Event()
+
+        def blocking_prediction(*_args, **_kwargs):
+            started.release()
+            assert release.wait(timeout=10)
+            return (None, None)
+
+        monkeypatch.setattr(app_module, "_capacity_prediction", blocking_prediction)
+        request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
+
+        results = app_module._simulate_capacity_option_predictions(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidates=[MagicMock() for _ in range(3)],
+            target_concurrency=32,
+        )
+
+        assert started.acquire(timeout=2)
+        assert started.acquire(timeout=2)
+        # The response budget expired and the request returned, but both
+        # abandoned simulations still occupy their process-wide slots.
+        assert slots.acquire(blocking=False) is False
+        assert slots.acquire(blocking=False) is False
+        assert all(reason is not None for _prediction, reason in results.values())
+
+        release.set()
+        # Slots are only returned once the abandoned simulations finish.
+        assert slots.acquire(timeout=10)
+        slots.release()
+        assert slots.acquire(timeout=10)
+        slots.release()
+
+
+class TestRecommendCapacityEndpoint:
+    @patch("tools.api_service.app._run_capacity_recommendation")
+    def test_capacity_is_200_with_a_capacity_block_and_enumeration_sweep(self, mock_run):
+        config = app_module.RecommendConfig(total_gpus_needed=4, replicas_needed=2)
+        capacity = app_module.CapacityOutcome(
+            target_concurrency=32,
+            context_per_sequence_tokens=2176,
+            capacity_tokens=500_000,
+            capacity_sequences=229,
+            fits=True,
+            minimum_gpus=2,
+            per_rank_tokens=125_000,
+            replicas=2,
+            attention_dp=1,
+            evaluated_shapes=3,
+            feasible_shapes=3,
+            performance_available=True,
+        )
+        mock_run.return_value = (
+            config,
+            capacity,
+            app_module.SweepMeta(
+                algorithm="enumerate",
+                max_trials=3,
+                evaluated=3,
+                feasible=3,
+                timed_out=0,
+                budget_exhausted=False,
+                strict_sla=False,
+            ),
+            [
+                app_module.CapacityOption(
+                    option_id="agg-t2-d1-mt2-me1-r2",
+                    rank=1,
+                    role="minimum",
+                    gpus_over_minimum=0,
+                    config=config,
+                    capacity=capacity,
+                )
+            ],
+        )
+
+        response = client.post("/recommend", json=VALID_CAPACITY_BODY)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["capacity"]["fits"] is True
+        assert data["capacity"]["capacity_sequences"] == 229
+        assert data["capacity"]["simulator"] == "aisimulate"
+        assert data["configs"][0]["total_gpus_needed"] == 4
+        assert data["sweep"]["algorithm"] == "enumerate"
+        assert data["demand"] is None
+        assert data["capacity_options"][0]["option_id"] == "agg-t2-d1-mt2-me1-r2"
+        assert data["capacity_options"][0]["role"] == "minimum"
+        assert data["capacity_options"][0]["capacity"]["capacity_sequences"] == 229
+
+    @patch("tools.api_service.app._run_capacity_recommendation")
+    def test_capacity_inclusive_tpot_is_not_transformed_twice(self, mock_run):
+        config = app_module.RecommendConfig(
+            total_gpus_needed=4,
+            replicas_needed=2,
+            ttft=100.0,
+            tpot=20.0,
+        )
+        capacity = app_module.CapacityOutcome(
+            target_concurrency=32,
+            context_per_sequence_tokens=2176,
+            capacity_tokens=500_000,
+            capacity_sequences=229,
+            fits=True,
+            minimum_gpus=2,
+            per_rank_tokens=125_000,
+            replicas=2,
+            attention_dp=1,
+            evaluated_shapes=3,
+            feasible_shapes=3,
+            performance_available=True,
+        )
+        mock_run.return_value = (
+            config,
+            capacity,
+            app_module.SweepMeta(
+                algorithm="enumerate",
+                max_trials=3,
+                evaluated=3,
+                feasible=3,
+                timed_out=0,
+                budget_exhausted=False,
+                strict_sla=False,
+            ),
+            [
+                app_module.CapacityOption(
+                    option_id="agg-t2-d1-mt2-me1-r2",
+                    rank=1,
+                    role="minimum",
+                    gpus_over_minimum=0,
+                    config=config,
+                    capacity=capacity,
+                )
+            ],
+        )
+
+        response = client.post(
+            "/recommend", json={**VALID_CAPACITY_BODY, "inclusive_tpot": True}
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # `_run_capacity_recommendation` already applied the transform to the
+        # shared config, so a second pass would report 20.625 instead of 20.0.
+        assert data["configs"][0]["tpot"] == pytest.approx(20.0)
+        assert data["capacity_options"][0]["config"]["tpot"] == pytest.approx(20.0)
+
+    def test_capacity_rejects_an_explicit_fabric_for_blis(self):
+        response = client.post(
+            "/recommend",
+            json={
+                **VALID_CAPACITY_BODY,
+                "simulator": "blis",
+                "fabric": "ib-400g",
+            },
+        )
+        assert response.status_code == 422
+        assert "aggregate-only" in response.text
+
+
+class TestBackendObjectives:
+    def test_aisimulate_advertises_every_implemented_sizing_goal(self, monkeypatch):
+        backend = MagicMock()
+        backend.get_default_free_gpu_memory_fraction.return_value = 0.9
+        backend.memory_fraction_of_free.return_value = True
+        monkeypatch.setattr(app_module, "get_supported_databases", lambda: {
+            "h200_sxm": {"vllm": ["0.24.0"]},
+        })
+        monkeypatch.setattr(app_module, "get_backend", lambda _id: backend)
+        monkeypatch.setattr(
+            app_module, "get_version_slots", lambda _system, _sdk: {"0.24.0": object()}
+        )
+        data = client.get("/backends").json()
+        assert data["objectives"] == [
+            "min_gpus",
+            "throughput_demand",
+            "pareto",
+            "concurrency_capacity",
+        ]
+        assert data["backends"][0]["capacity_options"] == {"disaggregated": True}
+
+    def test_blis_advertises_the_goals_it_implements(self):
+        data = client.get("/backends?simulator=blis").json()
+        assert data["objectives"] == [
+            "min_gpus",
+            "throughput_demand",
+            "pareto",
+            "concurrency_capacity",
+        ]
+        assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
 
 
 # ─── /memory tests ───────────────────────────────────────────────────────────
@@ -880,6 +2961,7 @@ class TestSystems:
 # ever reached in an environment that genuinely lacks perf data.
 _NO_PERF_DATA_MARKERS = (
     "no performance data available",   # _common_error_handler perf-data path
+    "no empirical performance data",   # _PerfDataGap (version/shape coverage)
     "no configuration meets",          # /recommend fallback (no config found)
     "no feasible",                     # NoFeasibleConfigError
 )
@@ -927,6 +3009,8 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "target_concurrency": 32,
+            "ttft": 2000.0,
+            "tpot": 30.0,
             "top_n": 1,
         })
         _skip_if_missing_perf_data(resp)
@@ -944,6 +3028,8 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "target_concurrency": 32,
+            "ttft": 2000.0,
+            "tpot": 30.0,
             "top_n": 1,
         })
         _skip_if_missing_perf_data(resp)
@@ -1125,6 +3211,10 @@ class TestEstimate:
 
         assert resp.status_code == 200
         assert resp.json()["ttft"] == pytest.approx(471.378)
+        # VALID_ESTIMATE_BODY uses TP=2 with no widths: the API reports the
+        # resolved default layout it sent.
+        assert resp.json()["moe_tp"] == 2
+        assert resp.json()["moe_ep"] == 1
         assert resp.json()["provenance"]["simulator"] == "aisimulate"
         assert resp.json()["provenance"]["requested_model"] == VALID_ESTIMATE_BODY["model_path"]
 
@@ -1235,6 +3325,7 @@ class TestEstimate:
             "backend": "vllm",
             "tensor_parallel_size": 2,
             "max_model_len": 5000,
+            "max_model_len_policy": None,
             "max_num_seqs": 64,
             "max_num_batched_tokens": None,
             "gpu_memory_utilization": 0.97,
@@ -1266,6 +3357,37 @@ class TestEstimate:
         assert resp.status_code == 200
         assert resp.json()["serving_config"] is not None
         assert resp.json()["memory_breakdown"] is not None
+
+    def test_zero_moe_width_is_rejected(self):
+        for name in ("moe_tp_size", "moe_ep_size"):
+            resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, name: 0})
+            assert resp.status_code == 422
+
+    def test_zero_pool_moe_width_is_rejected(self):
+        for name in (
+            "prefill_moe_tp_size",
+            "prefill_moe_ep_size",
+            "decode_moe_tp_size",
+            "decode_moe_ep_size",
+        ):
+            resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, name: 0})
+            assert resp.status_code == 422
+
+    @patch("tools.api_service.app.estimate_kv_cache")
+    @patch("tools.api_service.app._run_aisimulate_prediction")
+    def test_include_memory_uses_resolved_attention_width(self, mock_estimate, mock_kv):
+        mock_estimate.return_value = make_mock_estimate_result()
+        mock_kv.return_value = MOCK_KV_CACHE_RESULT
+        resp = client.post(
+            "/estimate?include=memory",
+            json={**VALID_ESTIMATE_BODY, "tp_size": 2, "attention_dp_size": 2},
+        )
+        assert resp.status_code == 200
+        kwargs = mock_kv.call_args.kwargs
+        assert kwargs["tp_size"] == 2
+        assert kwargs["attention_dp_size"] == 2
+        assert kwargs["moe_tp_size"] == 4
+        assert kwargs["moe_ep_size"] == 1
 
     @patch("tools.api_service.app._run_aisimulate_prediction")
     def test_calls_sdk_with_correct_params(self, mock_estimate):
@@ -1311,6 +3433,55 @@ class TestEstimate:
         assert config.engine.gemm_quant_mode == "fp8"
         assert config.engine.kvcache_quant_mode == "fp8"
 
+    def test_prediction_config_defaults_moe_widths_to_attention_group(self):
+        body = {**VALID_ESTIMATE_BODY, "tp_size": 4}
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 4
+        assert parallel.moe_expert == 1
+
+    def test_prediction_config_preserves_explicit_moe_widths(self):
+        body = {
+            **VALID_ESTIMATE_BODY,
+            "tp_size": 4,
+            "moe_tp_size": 2,
+            "moe_ep_size": 2,
+        }
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 2
+        assert parallel.moe_expert == 2
+
+    def test_prediction_config_infers_the_missing_moe_width(self):
+        body = {**VALID_ESTIMATE_BODY, "tp_size": 4, "moe_ep_size": 4}
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+        parallel = config.engine.workers.aggregated.parallelism
+
+        assert parallel.moe_tensor == 1
+        assert parallel.moe_expert == 4
+
+    def test_prediction_config_resolves_each_disagg_pool_width(self):
+        body = {
+            **VALID_ESTIMATE_BODY,
+            "mode": "disagg",
+            "prefill_tp_size": 8,
+            "decode_tp_size": 2,
+        }
+        request = app_module.EstimateRequest.model_validate(body)
+        config = app_module._aisimulate_prediction_config(request)
+
+        prefill = config.engine.workers.prefill.parallelism
+        decode = config.engine.workers.decode.parallelism
+        assert prefill.moe_tensor == 8
+        assert prefill.moe_expert == 1
+        assert decode.moe_tensor == 2
+        assert decode.moe_expert == 1
+
     @patch("tools.api_service.app._run_aisimulate_prediction")
     def test_disagg_mode(self, mock_estimate):
         mock_estimate.return_value = MockPredictionResult(
@@ -1332,9 +3503,13 @@ class TestEstimate:
         # Top-level parallelism is None for disagg; see prefill/decode_config.
         assert data["tp"] is None
         assert data["prefill_config"]["tp"] == 1
+        assert data["prefill_config"]["moe_tp"] == 1
+        assert data["prefill_config"]["moe_ep"] == 1
         assert data["prefill_config"]["num_workers"] == 4
         assert data["prefill_config"]["batch_size"] == 1
         assert data["decode_config"]["tp"] == 4
+        assert data["decode_config"]["moe_tp"] == 4
+        assert data["decode_config"]["moe_ep"] == 1
         assert data["decode_config"]["batch_size"] == 64
         assert data["tokens_per_second_per_gpu"] == pytest.approx(125.0)
         # Per-GPU peak is the worst case across pools, not summed.
@@ -1415,6 +3590,338 @@ class TestEstimate:
         mock_estimate.return_value = make_mock_estimate_result()
         resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
         assert resp.json()["tpot"] == pytest.approx(28.118)
+
+
+# ─── model-aware backend_version resolution ──────────────────────────────────
+
+# The real replay error for a model the selected data never measured. The runner
+# wraps it, so the service has to classify it by text, not by exception type.
+EMPIRICAL_GAP = (
+    "AISimulate replay failed: engine error: generalized engine worker 0 is now poisoned "
+    "because a rank may have been partially mutated: executing attention-DP rank 0: external "
+    "prefill prediction failed: AIC static_ctx evidence prediction failed: "
+    "EmpiricalNotImplementedError: empirical estimation not implemented: No empirical "
+    "utilisation data to estimate this op at query=[32.0, 2048.0, 1.0]: no own-shape, "
+    "cross-shape, or sibling transfer reference available."
+)
+
+
+class TestVersionFallback:
+    """A blank backend_version must find a version that can serve the model."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        app_module._clear_version_fallback_cache()
+        yield
+        app_module._clear_version_fallback_cache()
+
+    def _patch_versions(self, monkeypatch, supported, slots):
+        monkeypatch.setattr(app_module, "get_supported_databases", lambda: supported)
+        monkeypatch.setattr(
+            app_module, "get_version_slots",
+            lambda system, backend: slots.get((system, backend)),
+        )
+
+    def _patch_versions_h200(self, monkeypatch):
+        self._patch_versions(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.24.0", "0.31.0"]}},
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+        )
+
+    def test_system_default_follows_the_current_slot(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        assert app_module._system_default_version("h200_sxm", "vllm") == "0.24.0"
+
+    def test_system_default_is_newest_without_a_version_gate(self, monkeypatch):
+        self._patch_versions(
+            monkeypatch,
+            supported={"h200_sxm": {"vllm": ["0.9.0", "0.10.0"]}},
+            slots={},
+        )
+        assert app_module._system_default_version("h200_sxm", "vllm") == "0.10.0"
+
+    def test_blank_version_uses_a_version_that_can_serve_the_model(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        # Report the version that produced the numbers, not the caller's blank.
+        assert data["backend_version"] == "0.31.0"
+        assert calls == ["0.24.0", "0.31.0"]
+        assert data["provenance"]["engine_version"] == "0.31.0"
+        assert "used 0.31.0" in data["warnings"][0]
+
+    def test_the_fallback_is_cached_per_model_system_and_backend(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        calls.clear()
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        # The failed default is not retried on every request.
+        assert calls == ["0.31.0"]
+
+    def test_explicit_version_is_never_swapped_and_names_the_alternatives(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "0.24.0"})
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "No empirical performance data" in detail
+        assert "0.24.0" in detail
+        # The client is told which versions the SDK ships so it can retry.
+        assert "0.31.0" in detail
+        assert calls == ["0.24.0"]
+
+    def test_blank_version_reports_every_version_it_tried(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+
+        def fake_prediction(req, include):
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert "Tried 0.24.0, 0.31.0" in detail
+        assert "compute shape [32, 2048, 1]" in detail
+
+    def test_a_passed_deadline_stops_a_second_attempt(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str] = []
+
+        def run():
+            calls.append("attempt")
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        with pytest.raises(app_module._PerfDataGap):
+            app_module._run_with_version_fallback(
+                app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY),
+                run,
+                deadline=time.monotonic() - 1,
+            )
+
+        # The first attempt always runs; the retry must not restart the budget.
+        assert calls == ["attempt"]
+
+    def test_other_failures_are_not_retried(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError("crash")
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 500
+        assert calls == ["0.24.0"]
+
+    def test_recommend_resolves_a_blank_version_the_same_way(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_recommendation(req, *, window=None, **kwargs):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            # Report the version the SDK would have used for this attempt.
+            candidate = MockCandidate()
+            # Return a candidate at the window floor so the service ladder
+            # stops after one call per version attempt.
+            if window is not None:
+                candidate.used_gpus = window[0]
+            candidate.prediction_config["engine"]["backend_version"] = req.backend_version
+            return make_mock_recommendation_result([candidate])
+
+        monkeypatch.setattr(
+            app_module, "_run_aisimulate_recommendation", fake_recommendation
+        )
+
+        resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
+
+        assert resp.status_code == 200
+        # The recommendation searched the version that has the model's data.
+        assert calls == ["0.24.0", "0.31.0"]
+        # Every returned config reports the version that served the request and
+        # says the default could not.
+        configs = resp.json()["configs"]
+        assert configs
+        assert all(cfg["backend_version"] == "0.31.0" for cfg in configs)
+        assert all("used 0.31.0" in cfg["warnings"][0] for cfg in configs)
+
+    def test_the_current_alias_falls_back_like_a_blank_version(self, monkeypatch):
+        """``current`` means "the system default", not a pin on a literal version."""
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post(
+            "/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "current"}
+        )
+
+        assert resp.status_code == 200
+        assert calls == ["0.24.0", "0.31.0"]
+        assert resp.json()["backend_version"] == "0.31.0"
+
+    def test_other_slot_aliases_are_pins(self, monkeypatch):
+        """``previous`` and ``next`` name a slot; never swap them silently."""
+        self._patch_versions_h200(monkeypatch)
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            raise RuntimeError(EMPIRICAL_GAP)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post(
+            "/estimate", json={**VALID_ESTIMATE_BODY, "backend_version": "previous"}
+        )
+
+        assert resp.status_code == 422
+        assert calls == ["previous"]
+
+    def test_the_fallback_cache_is_scoped_to_the_request_shape(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        calls: list[tuple[int, str | None]] = []
+
+        def fake_prediction(req, include):
+            calls.append((req.isl, req.backend_version))
+            if req.isl == 8192 and req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        long_context = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": 8192})
+        assert long_context.status_code == 200
+        assert calls == [(8192, "0.24.0"), (8192, "0.31.0")]
+
+        calls.clear()
+        # A different shape still gets the default, which covers it.
+        short_context = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert short_context.status_code == 200
+        assert calls == [(4000, "0.24.0")]
+
+    def test_the_fallback_cache_evicts_least_recently_used_shapes(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        monkeypatch.setattr(app_module, "_VERSION_FALLBACK_CACHE_MAX", 2)
+
+        def fake_prediction(req, include):
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        for isl in (1024, 2048, 4096):
+            response = client.post("/estimate", json={**VALID_ESTIMATE_BODY, "isl": isl})
+            assert response.status_code == 200
+
+        assert len(app_module._VERSION_FALLBACK_CACHE) == 2
+
+    def test_the_cache_is_invalidated_when_the_system_default_changes(self, monkeypatch):
+        versions = {"h200_sxm": {"vllm": ["0.24.0", "0.28.0", "0.31.0"]}}
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.24.0", "next": "0.31.0"}},
+        )
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            if req.backend_version == "0.24.0":
+                raise RuntimeError(EMPIRICAL_GAP)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+        client.post("/estimate", json=VALID_ESTIMATE_BODY)
+        assert calls == ["0.24.0", "0.31.0"]
+
+        # The SDK moves `current` to 0.28.0; the cached 0.31.0 must not bypass it.
+        self._patch_versions(
+            monkeypatch,
+            supported=versions,
+            slots={("h200_sxm", "vllm"): {"current": "0.28.0", "next": "0.31.0"}},
+        )
+        calls.clear()
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert calls == ["0.28.0"]
+
+    def test_a_cached_fallback_that_is_no_longer_declared_is_ignored(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        request = app_module.EstimateRequest.model_validate(VALID_ESTIMATE_BODY)
+        key = app_module._fallback_cache_key(
+            request, app_module._system_default_version("h200_sxm", "vllm")
+        )
+        app_module._VERSION_FALLBACK_CACHE[key] = "0.99.0"
+        calls: list[str | None] = []
+
+        def fake_prediction(req, include):
+            calls.append(req.backend_version)
+            return make_mock_estimate_result()
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_prediction", fake_prediction)
+
+        resp = client.post("/estimate", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        # A data update can retire a version; the stale entry is not replayed.
+        assert calls == ["0.24.0"]
+
+    def test_unwrapped_coverage_error_is_mapped_to_422(self, monkeypatch):
+        self._patch_versions_h200(monkeypatch)
+        error = RuntimeError(EMPIRICAL_GAP)
+        with pytest.raises(app_module.HTTPException) as raised:
+            app_module._common_error_handler(error, "memory", "org/model", "vllm", "h200_sxm")
+        assert raised.value.status_code == 422
+        assert "No empirical performance data" in raised.value.detail
+        # /memory does not pick a version, so it names the ones the SDK ships.
+        assert "Versions the SDK ships for h200_sxm: 0.24.0, 0.31.0" in raised.value.detail
 
 
 # ─── model_config passthrough tests ──────────────────────────────────────────
@@ -1616,3 +4123,67 @@ class TestMetrics:
         scope_metrics = data["resourceMetrics"][0]["scopeMetrics"]
         assert len(scope_metrics) > 0
         assert len(scope_metrics[0]["metrics"]) > 0
+
+
+class TestSimulatorRevision:
+    """Each simulator reports the commit of the artifact this image runs."""
+
+    def test_sdk_commit_comes_from_the_direct_url_release_tag(self, monkeypatch):
+        import json
+        from importlib import metadata
+
+        payload = json.dumps({
+            "url": (
+                "https://github.com/redhat-performance/aisimulate/releases/download/"
+                "deploy-api-v0.14.0%2Ba14e97a8/"
+                "aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl"
+            )
+        })
+
+        class Dist:
+            def read_text(self, name: str) -> str:
+                assert name == "direct_url.json"
+                return payload
+
+        def distribution(name: str):
+            if name == "aisim":
+                return Dist()
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "distribution", distribution)
+
+        assert app_module._installed_aisimulate_commit() == "a14e97a8"
+
+    def test_sdk_commit_is_absent_without_a_direct_url(self, monkeypatch):
+        from importlib import metadata
+
+        def distribution(name: str):
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "distribution", distribution)
+
+        assert app_module._installed_aisimulate_commit() is None
+
+    def test_blis_commit_follows_its_release_and_never_drifts(self, monkeypatch):
+        monkeypatch.delenv("BLIS_COMMIT", raising=False)
+        monkeypatch.delenv("BLIS_VERSION", raising=False)
+        assert (
+            app_module.blis_commit()
+            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+        )
+
+        # An overridden release without its commit must report no revision
+        # rather than the default release's commit.
+        monkeypatch.setenv("BLIS_VERSION", "0.16.0")
+        assert app_module.blis_commit() is None
+
+        # The default release resolves its commit even when the build sets only
+        # BLIS_VERSION, as the Containerfile does.
+        monkeypatch.setenv("BLIS_VERSION", "0.15.0")
+        assert (
+            app_module.blis_commit()
+            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+        )
+
+        monkeypatch.setenv("BLIS_COMMIT", "abc1234")
+        assert app_module.blis_commit() == "abc1234"

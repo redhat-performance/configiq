@@ -12,7 +12,11 @@ from .manifest import BlisManifestError
 #: The BLIS release this build is pinned to. The image sets BLIS_VERSION from the
 #: Containerfile's build arg; the literal is the value a source checkout gets, so
 #: the reported release never silently drifts from the pin.
-DEFAULT_BLIS_RELEASE = "0.14.0"
+DEFAULT_BLIS_RELEASE = "0.15.0"
+#: The upstream commit the pinned BLIS release tag was built from. The release
+#: binary embeds no revision, so the image sets BLIS_COMMIT alongside
+#: BLIS_VERSION; the literal mirrors the tag a source checkout gets.
+DEFAULT_BLIS_COMMIT = "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
 
 
 @dataclass(frozen=True)
@@ -26,6 +30,22 @@ def blis_release() -> str:
     """Return the BLIS release this image was built from."""
     release = os.environ.get("BLIS_VERSION", "").strip()
     return release or DEFAULT_BLIS_RELEASE
+
+
+def blis_commit() -> str | None:
+    """Return the BLIS git commit this image was built from, if known.
+
+    The binary embeds no revision. A build that overrides BLIS_VERSION without
+    passing the matching BLIS_COMMIT must report no revision rather than the
+    default release's commit.
+    """
+    commit = os.environ.get("BLIS_COMMIT", "").strip()
+    if commit:
+        return commit
+    release = os.environ.get("BLIS_VERSION", "").strip()
+    if release and release != DEFAULT_BLIS_RELEASE:
+        return None
+    return DEFAULT_BLIS_COMMIT
 
 
 def _required_directory(name: str, default: str) -> str:

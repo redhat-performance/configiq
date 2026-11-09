@@ -5,6 +5,10 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 
+// Deliberately not a SemVer release: the UI renders whatever version the
+// catalog reports, and a plausible pin here would look like a real one.
+const BLIS_FIXTURE_VERSION = 'test-blis-version';
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
 }));
@@ -16,6 +20,12 @@ vi.mock('@/lib/app-config', async (importOriginal) => {
     getAppConfig: () => ({
       ...actual.getAppConfig(),
       defaultSystem: 'retired_gpu',
+      workloadPresets: [
+        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300 },
+      ],
+      concurrencyPresets: [
+        { key: 'small', label: 'Small (100)', concurrency: 100 },
+      ],
     }),
   };
 });
@@ -32,9 +42,20 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
     modelSpecs: new Map(),
     backendOptions: [],
     networkOptions: ['ib-400g'],
+    simulators: [
+      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+      { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
+    ],
     simulatorSupport: {
       blis: {
-        version: '0.14.0',
+        id: 'blis',
+        label: 'BLIS',
+        version: BLIS_FIXTURE_VERSION,
+        recommendSearch: 'single',
+        modelsExhaustive: true,
+        modelSpecs: new Map(),
+        networks: ['ib-400g'],
+        defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct', 'settings/default-model'],
         systems: ['h200_sxm', 'h100_sxm'],
         backends: [{
@@ -49,7 +70,9 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
           systemDefaults: {},
           versionSupport: {},
           disaggregationRequiresFabric: true,
+          capacityOptions: { disaggregated: false },
         }],
+        objectives: [],
       },
     },
     isLoading: false,
@@ -94,6 +117,8 @@ vi.mock('@/lib/hooks/useCostings', async (importOriginal) => {
 });
 vi.mock('@/lib/api/estimate-adapter', () => ({
   fetchEstimateAsInferenceResult: vi.fn(),
+  buildPredictRequestBody: (input: Record<string, unknown>) => input,
+  isMoeConfig: () => false,
   EstimateError: class EstimateError extends Error {},
 }));
 
@@ -149,7 +174,6 @@ const makeSettings = (
 ): ReturnType<typeof useSettings> => ({
   hydrated: true,
   defaultModel: 'settings/default-model',
-  testedModels: [],
   hfToken: '',
   inferenceBackend: 'vllm',
   simulator,
@@ -350,5 +374,39 @@ describe('performance page widget handoff', () => {
 
     expect(container.querySelector('[data-testid="cloud-cost-tile"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="self-hosted-cost-tile"]')).not.toBeNull();
+  });
+});
+
+describe('performance page parameter defaults', () => {
+  it('starts at one concurrent user without pre-selecting a concurrency preset', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const users = container.querySelector<HTMLInputElement>('input[aria-label="Concurrent users"]');
+    expect(users?.value).toBe('1');
+
+    const pressed = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]'))
+      .map((button) => button.textContent);
+    expect(pressed).not.toContain('Small (100)');
+  });
+
+  it('applies a concurrency preset to the concurrent users field', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Small (100)')
+        ?.click();
+    });
+
+    const users = container.querySelector<HTMLInputElement>('input[aria-label="Concurrent users"]');
+    expect(users?.value).toBe('100');
+  });
+
+  it('keeps current values visible on collapsed assumption rows', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const servingToggle = container.querySelector('#acc-serving');
+    expect(servingToggle?.textContent).toContain('Serving policy');
+    expect(servingToggle?.textContent).toContain('context limit');
   });
 });

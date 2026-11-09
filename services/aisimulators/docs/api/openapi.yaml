@@ -44,8 +44,110 @@ paths:
         The BLIS path generates a temporary Scenario and Deployment and runs the
         image-pinned BLIS CLI.
 
-        Exactly one of `target_request_rate` or `target_concurrency` must be
-        provided.
+        `objective` selects what is being sized:
+        - `min_gpus` (default) finds the fewest GPUs that clear the latency SLA.
+          Requires `sla_mode=enforce` (the default) and exactly one of
+          `target_request_rate` or `target_concurrency`. The service owns the
+          search window: it starts at the model's fit floor, the smallest
+          aggregated worker shape that holds one full-context sequence, and
+          whose feasibility is resolved with the same runtime envelope as the
+          sweep. The first window is wide —
+          `floor .. min(ceiling, max(16, floor × 2))` — so the search is not
+          spent below the model's size. A feasible candidate above the floor
+          narrows the next window to `floor .. candidate − 1`; a window with no
+          qualifying candidate grows to `upper + 1 .. upper × 2`. The configured
+          ceiling is `AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024); when the
+          fit floor is at or above it, the effective ceiling rises to twice the
+          floor so a large model still has room to search. Each window draws its
+          trial budget from its own upper bound
+          (`MIN_GPUS_MAX_TRIALS`/`MIN_GPUS_PARALLELISM`/
+          `MIN_GPUS_CANDIDATE_TIMEOUT_S`). The whole search shares one
+          wall-clock budget (`MIN_GPUS_SEARCH_BUDGET_S`, default 70 seconds)
+          across fit discovery, every window, and every backend-version
+          attempt. A failed fit-floor discovery is logged and starts from the
+          wide `1 .. min(ceiling, 16)` fallback window. The window actually
+          searched is reported as `sweep.window_min_gpus` /
+          `sweep.window_max_gpus`, alongside `sweep.configured_max_gpus` and
+          `sweep.effective_max_gpus`.
+        - `throughput_demand` finds the fewest GPUs that sustain
+          `target_request_rate` with no latency target. It requires
+          `sla_mode=none`, `target_request_rate`, and no `target_concurrency`;
+          any `ttft`, `tpot`, or `request_latency` is rejected rather than
+          silently dropped. A demand result reports a `demand` block. When no
+          sampled configuration meets the rate, the response is still 200 with
+          `demand.met=false` and the best observed rate. Compliance uses the
+          rate sustained over the arrival window (excluding the final response
+          drain), not `completed / duration`. AISimulate grows its GPU window
+          from 8 GPUs (default) until the rate is met, the ceiling is reached,
+          or the demand search budget is spent. The request carries no GPU
+          bounds; the service owns the demand ladder too.
+        - `concurrency_capacity` finds the fewest GPUs that hold
+          `target_concurrency` sequences at the per-sequence context length
+          (`max_seq_len`, else `isl + osl`) with no latency target. It requires
+          `sla_mode=none`, a positive whole `target_concurrency`, and no
+          `target_request_rate`; any `ttft`, `tpot`, or `request_latency` is
+          rejected. Selection is a deterministic enumeration of the parallel
+          search space, not a sampled sweep. The capacity answer comes from the
+          selected simulator: AISimulate derives weights plus KV cache, while
+          BLIS reads the KV pool the engine reports
+          (`engine.cluster.kv_capacity_tokens_per_replica`) and multiplies it by
+          the replicas needed. BLIS capacity is aggregate-only, so it returns no
+          `capacity_options` and rejects an explicit non-null `fabric`.
+          `configs[0]` is the fewest-GPU recommendation. For AISimulate,
+          `capacity_options` returns a ranked comparison set that starts with
+          that same minimum and adds same-GPU ties, larger aggregated
+          deployments, and disaggregated deployments where the backend
+          advertises them. A disaggregated deployment replicates weights in each
+          pool, so it is only offered as a larger option, never as the minimum.
+          When `top_n` is omitted the service returns up to 8 options when
+          disaggregated candidates exist and 6 otherwise; an explicit `top_n`
+          overrides that count. Each option carries its own config and capacity
+          block and can be used as the primary result. Performance is simulated
+          for a bounded set of AISimulate options under one shared budget;
+          options that do not complete remain valid capacity answers with
+          `performance_available=false` and a reason. BLIS does not simulate the
+          target concurrency during capacity sizing, so its capacity result also
+          reports `performance_available=false`. When the target does not fit
+          inside the GPU window, the response is still 200 with
+          `capacity.fits=false`, the best achievable configuration, and the
+          shortfall. A window that cannot schedule any aggregated shape returns
+          422 naming the window.
+        - `pareto` sweeps the throughput-per-user vs throughput-per-gpu
+          frontier and returns every evaluated candidate in `candidates` plus
+          simulator-computed `views`. It searches both aggregated and
+          disaggregated deployments (when the window can hold more than one
+          GPU); a workload may legitimately have no feasible disaggregated
+          point. `sla_mode=enforce` restricts the frontier to SLA-compliant
+          candidates; `sla_mode=none` sweeps capacity without an SLA.
+          `target_request_rate` and `target_concurrency` are rejected because
+          the sweep drives its own load. AISimulate owns the window for a
+          Pareto sweep: the floor is the model's fit floor (the smallest
+          aggregated shape that holds one full-context sequence) and the
+          ceiling is `max(configured ceiling, floor × 2)`, with the first
+          window ending at `max(16, floor × 2)` so a sweep is not spent below
+          the model's size. The resolved bounds are reported as
+          `sweep.window_min_gpus` / `sweep.window_max_gpus`. Fit-floor discovery
+          is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15 seconds); when no
+          aggregated shape fits within that budget, or the preflight estimate
+          fails, the service logs the failure and uses the wide
+          `1 .. min(ceiling, 16)` fallback window instead of returning an early
+          error. BLIS has no native Pareto
+          command, so the service enumerates topology and closed-loop
+          concurrency combinations, runs each, and computes the non-dominated
+          set itself; `sweep.algorithm="enumerate"` and
+          `sweep.budget_exhausted` report whether the whole grid ran. BLIS
+          includes P/D topologies only when the request names a supported
+          `fabric`, and a workload may still have no feasible disaggregated
+          point.
+
+        With `sla_mode=enforce`, provide either `request_latency` (end-to-end ms)
+        or both `ttft` and `tpot`; sending an end-to-end bound together with
+        token-level bounds is rejected.
+
+        BLIS supports `throughput_demand` on its pinned release by replaying
+        open-loop traffic with `--rate` and a request count scaled from the
+        rate. BLIS demand results are aggregate-only and report
+        `demand.simulator="blis"`.
 
         Use the `include` query parameter to enrich each config with optional
         detail sections:
@@ -136,7 +238,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/EstimateResponse'
         '422':
-          description: Unsupported model/backend/system combination
+          description: |
+            Unsupported model/backend/system combination, including a
+            `backend_version` whose performance data has no measurement for
+            the requested model or compute shape. The detail names the
+            versions the SDK ships for the system when another version may work.
           content:
             application/json:
               schema:
@@ -173,7 +279,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/MemoryResponse'
         '422':
-          description: Unsupported model/backend/system combination
+          description: |
+            Unsupported model/backend/system combination, including a
+            `backend_version` whose performance data has no measurement for
+            the requested model or compute shape. The detail names the
+            versions the SDK ships for the system when another version may work.
           content:
             application/json:
               schema:
@@ -191,18 +301,19 @@ paths:
       tags: [catalog]
       summary: List backend and engine-version support
       description: |
-        Returns backend version support and effective memory defaults. With
-        `simulator=blis`, reports the vLLM releases BLIS models, a literal
-        default version (never an AISimulate alias), a `version_support` map per
-        release, empty per-system maps, and `blis_version`.
+        Returns backend version support, the simulator's `simulator_version`
+        and `recommend_search` shape, the sizing `objectives` this simulator
+        implements, and effective memory defaults. With `simulator=blis`,
+        reports the vLLM releases BLIS models, a literal default version (never
+        an AISimulate alias), a `version_support` map per release, and empty
+        per-system maps.
       parameters:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose backend support is reported.
+          description: Simulator whose backend support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -212,16 +323,74 @@ paths:
               schema:
                 $ref: '#/components/schemas/BackendListResponse'
 
+  /simulators:
+    get:
+      operationId: listSimulators
+      tags: [catalog]
+      summary: List simulators this deployment can run
+      description: |
+        Returns simulator identity, label, description, version, revision, and
+        whether it is the default. Clients discover the list here and must not
+        hard-code an ID; every `simulator` parameter or field accepts one of
+        these `id` values.
+      responses:
+        '200':
+          description: Simulator list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [simulators, default_simulator]
+                properties:
+                  simulators:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, label, description, default, version, revision]
+                      properties:
+                        id:
+                          type: string
+                          example: blis
+                        label:
+                          type: string
+                          example: BLIS
+                        description:
+                          type: string
+                          description: Short explanation of what this simulator models, shown in Settings.
+                          example: Discrete-event simulation of a serving cluster.
+                        default:
+                          type: boolean
+                        version:
+                          type: string
+                          nullable: true
+                          description: |
+                            The simulator release this deployment runs, or null
+                            when the artifact does not report one.
+                        revision:
+                          type: string
+                          nullable: true
+                          description: |
+                            Git commit of the simulator artifact this deployment
+                            runs, or null when the artifact does not report one.
+                            For AISimulate this is the SDK wheel's release
+                            commit; for BLIS the upstream release tag's commit.
+                  default_simulator:
+                    type: string
+                    example: aisimulate
+
   /models:
     get:
       operationId: listModels
       tags: [catalog]
       summary: List supported models
       description: |
-        Returns supported model identifiers. Without include, returns a sorted list of strings.
-        Use include=specs to get per-model metadata (MoE fields, context length, attention heads, architecture).
+        Returns supported model identifiers. Without include, returns a sorted
+        list of strings. Use include=specs to get per-model metadata (MoE
+        fields, context length, attention heads, architecture).
 
-        With `simulator=blis`, returns only the AISimulate model IDs that BLIS can price.
+        With `simulator=blis`, returns the Hugging Face repo IDs in the pinned
+        blis-catalog that ship a derived model graph. A catalog slug is accepted
+        as an input alias for its Hugging Face ID.
       parameters:
         - name: include
           in: query
@@ -233,10 +402,9 @@ paths:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose model support is reported.
+          description: Simulator whose model support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -268,10 +436,9 @@ paths:
         - name: simulator
           in: query
           required: false
-          description: Simulator whose GPU system support is reported.
+          description: Simulator whose GPU system support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            enum: [aisimulate, blis]
             default: aisimulate
       responses:
         '200':
@@ -287,9 +454,19 @@ paths:
       tags: [catalog]
       summary: List supported network fabrics
       description: |
-        Returns network fabric identifiers available to network-aware simulations,
-        including prefill/decode KV transfer. Network fabric modeling is currently
-        provided by BLIS; AISimulate does not consume this catalog.
+        Returns network fabric identifiers available to the requested simulator,
+        including prefill/decode KV transfer. A simulator that does not model an
+        inter-node fabric returns an empty list rather than another simulator's
+        fabrics. `default_network` names the fabric a request uses when it omits
+        one; null means the simulator has no fabric default.
+      parameters:
+        - name: simulator
+          in: query
+          required: false
+          description: Simulator whose fabrics are reported. Discover supported values from GET /simulators.
+          schema:
+            type: string
+            default: aisimulate
       responses:
         '200':
           description: Available network fabrics
@@ -297,17 +474,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [networks, simulator]
+                required: [networks, simulator, default_network]
                 properties:
                   networks:
                     type: array
                     items: { type: string }
                   simulator:
                     type: string
-                    enum: [blis]
-                    description: Simulator providing the current network-fabric catalog.
+                    description: Simulator providing the network-fabric catalog.
+                  default_network:
+                    type: string
+                    nullable: true
+                    description: Fabric used when a P/D request omits one; null when none is modeled.
         '503':
-          description: BLIS support manifest unavailable
+          description: The selected simulator's catalog is unavailable
           content:
             application/json:
               schema:
@@ -354,7 +534,11 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator identifier. Discover supported values from GET /simulators.
+        simulator_version:
+          type: string
+          nullable: true
+          description: Release of the simulator that produced this result.
         requested_model:
           type: string
           nullable: true
@@ -394,9 +578,8 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          enum: [aisimulate, blis]
           default: aisimulate
-          description: Simulator to use. BLIS requests never fall back to AISimulate.
+          description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
           description: Inference backend.
@@ -406,19 +589,61 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null uses the latest available.
-            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
-            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
+            Backend version. AISimulate: null resolves to the system default
+            (`current`, the same value `/backends` reports in
+            `system_defaults`); the `current` alias behaves the same way. If
+            that version has no performance data for the model, the service
+            retries the newest declared versions and reports the one it used.
+            Literal versions, `previous`, and `next` are pins and are never
+            substituted: if the data cannot serve them, the request returns 422
+            naming the versions the SDK ships for the system. BLIS: must be one
+            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
+            0.31.0. Aliases and unmodeled releases return 422.
           default: null
         target_request_rate:
           type: number
           nullable: true
-          description: Target request rate in req/s. Set exactly one of this or target_concurrency.
+          description: |
+            Offered request rate in req/s. With objective=min_gpus this is a
+            minimum-goodput constraint; set exactly one of this or
+            target_concurrency. With objective=throughput_demand it is the
+            arrival rate the cluster must sustain and is required.
           default: null
         target_concurrency:
           type: number
           nullable: true
-          description: Target concurrent users. Set exactly one of this or target_request_rate.
+          description: |
+            Target concurrent users (closed-loop load). With
+            objective=concurrency_capacity it is the number of sequences the
+            deployment must hold, and must be a positive whole number. Rejected
+            with objective=throughput_demand and objective=pareto.
+          default: null
+        objective:
+          type: string
+          enum: [min_gpus, throughput_demand, pareto, concurrency_capacity]
+          default: min_gpus
+          description: Optimization objective. See the endpoint description for the supported request shape per objective.
+        sla_mode:
+          type: string
+          enum: [enforce, none]
+          default: enforce
+          description: |
+            Whether latency targets constrain the result. enforce requires a
+            TTFT/TPOT or end-to-end bound, and is required by
+            objective=min_gpus. none rejects every latency bound; it is
+            required by objective=throughput_demand and
+            objective=concurrency_capacity, and optional for objective=pareto
+            (an SLA-free capacity sweep).
+        kv_transfer_bandwidth_gb_per_second:
+          type: number
+          nullable: true
+          description: |
+            P/D KV transfer bandwidth to model with objective=pareto under
+            AISimulate. Omit to apply AISimulate's default of no modeled
+            transfer delay; omission is not a fabric default. BLIS models P/D
+            transfer through the selected `fabric` and rejects this field with
+            422. A non-null value for any other objective is rejected with 422
+            rather than silently ignored.
           default: null
         isl:
           type: integer
@@ -430,16 +655,18 @@ components:
           default: 1000
         ttft:
           type: number
-          description: Time to first token target (ms).
-          default: 2000.0
+          nullable: true
+          description: Time to first token target (ms). Required with sla_mode=enforce unless request_latency is set.
+          default: null
         tpot:
           type: number
-          description: Time per output token target (ms).
-          default: 30.0
+          nullable: true
+          description: Time per output token target (ms). Required with sla_mode=enforce unless request_latency is set.
+          default: null
         request_latency:
           type: number
           nullable: true
-          description: End-to-end request latency target (ms). Optional.
+          description: End-to-end request latency target (ms). Mutually exclusive with ttft/tpot. Optional.
           default: null
         prefix:
           type: integer
@@ -452,7 +679,11 @@ components:
           default: HYBRID
         top_n:
           type: integer
-          description: Number of top configurations to return.
+          description: |
+            Number of configurations to return. Omit to let the service use its
+            goal-specific default (5). For objective=concurrency_capacity the
+            default comparison set is 8 options when disaggregated candidates
+            exist and 6 otherwise; an explicit value overrides it.
           default: 5
           minimum: 1
           maximum: 20
@@ -478,7 +709,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. AISimulate does not consume this field.
+          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.
 
     RecommendResponse:
       type: object
@@ -486,7 +717,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         configs:
           type: array
           description: Top configurations ranked by fewest GPUs, then throughput.
@@ -504,21 +735,386 @@ components:
             strategy: { type: string, example: tensor_parallel_only }
             candidate_gpus: { type: array, items: { type: integer } }
             evaluated_gpus: { type: array, items: { type: integer } }
-            configured_max_gpus: { type: integer }
+            configured_max_gpus:
+              type: integer
+              description: |
+                Configured candidate ceiling for this search. AISimulate
+                responses leave `search_summary` null; read
+                `sweep.configured_max_gpus` and `sweep.effective_max_gpus`
+                there for fit-floor adjustments.
             hardware_max_gpus: { type: integer }
-            effective_max_gpus: { type: integer }
+            effective_max_gpus:
+              type: integer
+              description: |
+                Ceiling the selected search actually used. A simulator hardware
+                limit can make it lower than `configured_max_gpus`; an
+                AISimulate fit floor can make it higher. AISimulate reports
+                this in `sweep.effective_max_gpus`, not here.
             time_budget_seconds: { type: number }
             budget_exhausted: { type: boolean }
             modes_searched: { type: array, items: { type: string, enum: [agg, disagg] } }
             candidate_configurations: { type: integer }
             evaluated_configurations: { type: integer }
+        demand:
+          allOf:
+            - $ref: '#/components/schemas/DemandOutcome'
+          nullable: true
+          description: |
+            Measured throughput-demand outcome. Present only with
+            objective=throughput_demand, including when the target was not met
+            (200 with met=false). Values come from the selected candidate's
+            replay metrics, not from the requested target.
+        capacity:
+          allOf:
+            - $ref: '#/components/schemas/CapacityOutcome'
+          nullable: true
+          description: |
+            KV-residency outcome. Present only with
+            objective=concurrency_capacity, including when the target could not
+            fit (200 with fits=false). The fit comes from the selected
+            simulator's capacity answer (AISimulate's KV estimate or BLIS's
+            reported engine KV pool), not from the informational performance
+            simulation.
+        capacity_options:
+          type: array
+          description: |
+            Ranked deployment alternatives for objective=concurrency_capacity.
+            `capacity_options[0]` is the primary recommendation and matches
+            `configs[0]`. Empty for every other objective. Each entry is a
+            complete alternative with its own config and capacity outcome, so a
+            client can promote it without re-running the search. Options that
+            could not be simulated remain present with
+            `capacity.performance_available=false`.
+          items:
+            $ref: '#/components/schemas/CapacityOption'
+        sweep:
+          allOf:
+            - $ref: '#/components/schemas/SweepMeta'
+          nullable: true
+          description: Run-control facts for the search that produced this result.
+        candidates:
+          type: array
+          description: |
+            Every evaluated candidate from an objective=pareto sweep, including
+            infeasible and timed-out records. Empty for other objectives. Values
+            are copied verbatim from the selected simulator; unsupported detail
+            stays unavailable rather than being synthesized.
+          items:
+            $ref: '#/components/schemas/CandidateResponse'
+        views:
+          allOf:
+            - $ref: '#/components/schemas/CandidateViews'
+          nullable: true
+          description: |
+            Candidate-ID lists computed by the simulator. Present for
+            objective=pareto. `pareto_front` is authoritative for the
+            simulator's own objectives; clients must not substitute a locally
+            computed frontier for it.
+
+    DemandOutcome:
+      type: object
+      required: [target_rps, met, simulator]
+      properties:
+        target_rps:
+          type: number
+          description: Offered request rate the run was asked to sustain (req/s).
+        achieved_rps:
+          type: number
+          nullable: true
+          description: |
+            Request rate sustained over the arrival window of the selected
+            candidate (req/s). A replay is timed to its final completion, so
+            `completed / duration` includes one response drain; this value
+            subtracts the mean E2E latency instead and is directly comparable
+            to `target_rps`.
+        met:
+          type: boolean
+          description: |
+            True when the selected candidate sustained target_rps within a small
+            relative tolerance. This is the best of the evaluated candidates,
+            not a capacity guarantee.
+        observed_concurrency:
+          type: number
+          nullable: true
+          description: Little's-law estimate, achieved_rps x mean E2E latency / 1000. Omitted when the run completed no work.
+        window_seconds:
+          type: number
+          nullable: true
+          description: |
+            Arrival window in seconds: the replay duration minus one mean E2E
+            latency. Excludes the final response drain.
+        completed_requests:
+          type: integer
+          nullable: true
+          description: Requests completed during the replay window.
+        evaluated_configurations:
+          type: integer
+          nullable: true
+          description: Number of candidates with a usable rate measurement.
+        best_observed_rps:
+          type: number
+          nullable: true
+          description: Highest sustained arrival-window rate across evaluated candidates, reported when the target is unmet.
+        simulator:
+          type: string
+          description: Simulator that produced the result, as reported by the service.
+
+    CapacityOutcome:
+      type: object
+      required:
+        - target_concurrency
+        - context_per_sequence_tokens
+        - capacity_tokens
+        - capacity_sequences
+        - fits
+        - per_rank_tokens
+        - replicas
+        - attention_dp
+        - evaluated_shapes
+        - feasible_shapes
+        - simulator
+      properties:
+        target_concurrency:
+          type: integer
+          description: Sequences the deployment was asked to hold.
+        context_per_sequence_tokens:
+          type: integer
+          description: |
+            Peak tokens one resident sequence can occupy: `max_seq_len` when
+            set, otherwise `isl + osl`. No prefix-cache credit is applied.
+        capacity_tokens:
+          type: integer
+          description: |
+            Aggregate KV-cache tokens the selected deployment holds:
+            `per_rank_tokens × attention_dp × replicas`. Unused tokens in one
+            replica cannot serve a sequence on another.
+        capacity_sequences:
+          type: integer
+          description: |
+            Whole sequences of context_per_sequence_tokens the deployment
+            holds. Sequences cannot span replicas, so this is whole sequences
+            per replica multiplied by the replica count, not the pooled token
+            total divided by the context length.
+        fits:
+          type: boolean
+          description: True when capacity_sequences >= target_concurrency.
+        shortfall_sequences:
+          type: integer
+          nullable: true
+          description: Missing sequences when fits=false; null when the target fits.
+        shortfall_tokens:
+          type: integer
+          nullable: true
+          description: |
+            KV tokens for the sequences that do not fit when fits=false
+            (`shortfall_sequences × context_per_sequence_tokens`); null when
+            the target fits.
+        minimum_gpus:
+          type: integer
+          nullable: true
+          description: Fewest GPUs inside the requested window that hold one sequence.
+        per_rank_tokens:
+          type: integer
+          description: |
+            KV-cache tokens held by one attention rank of the capacity-bearing
+            pool. For a disaggregated option this is the decode pool. BLIS
+            capacity is aggregate-only; with attention DP 1 the reported
+            per-replica pool is also the per-rank figure.
+        replicas:
+          type: integer
+          description: |
+            Replicas of the selected worker shape. For a disaggregated option
+            this is the decode replica count; prefill is reported separately.
+        attention_dp:
+          type: integer
+          description: |
+            Attention data-parallel width of the capacity-bearing worker shape.
+            Each DP rank contributes its own KV budget. For a disaggregated
+            option this describes the decode pool.
+        mode:
+          type: string
+          enum: [agg, disagg]
+          description: Serving mode of this capacity option.
+        prefill_replicas:
+          type: integer
+          nullable: true
+          description: Prefill replicas for a disaggregated option; null for agg.
+        decode_replicas:
+          type: integer
+          nullable: true
+          description: Decode replicas for a disaggregated option; null for agg.
+        prefill_gpus:
+          type: integer
+          nullable: true
+          description: Total prefill-pool GPUs for a disaggregated option; null for agg.
+        decode_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Total decode-pool GPUs for a disaggregated option. The decode pool
+            holds the resident sequences; prefill only holds one transiently.
+            Null for agg.
+        evaluated_shapes:
+          type: integer
+          description: Aggregated shapes the capacity search evaluated.
+        feasible_shapes:
+          type: integer
+          description: Aggregated shapes that held at least one sequence.
+        exhaustive:
+          type: boolean
+          description: |
+            True when capacity enumerated the shape space instead of sampling
+            it. BLIS reports false when its search time budget stopped the
+            enumeration or a run failed, so the minimum is not confirmed.
+        performance_available:
+          type: boolean
+          description: |
+            True when the informational simulation at the requested concurrency
+            produced timing data. It never affects `fits`. Always false for BLIS
+            capacity sizing, which reads the KV pool without simulating the
+            target concurrency.
+        performance_unavailable_reason:
+          type: string
+          nullable: true
+          description: Why the informational simulation was unavailable, when it was.
+        simulator:
+          type: string
+          description: Simulator that produced this capacity result.
+
+    CapacityOption:
+      type: object
+      required: [option_id, rank, role, gpus_over_minimum, config, capacity]
+      properties:
+        option_id:
+          type: string
+          description: Stable identifier for this alternative within the response.
+        rank:
+          type: integer
+          description: 1-based rank. Rank 1 is the primary recommendation.
+        role:
+          type: string
+          enum: [minimum, same_gpus, larger, disaggregated, shortfall]
+          description: |
+            Why the option is in the comparison set: the fewest-GPU minimum,
+            a same-GPU tie, a larger deployment, a disaggregated deployment, or
+            the best-effort deployment when the target does not fit.
+        gpus_over_minimum:
+          type: integer
+          description: GPUs above the fewest-GPU minimum; 0 for the minimum.
+        config:
+          $ref: '#/components/schemas/RecommendConfig'
+        capacity:
+          $ref: '#/components/schemas/CapacityOutcome'
+
+    SweepMeta:
+      type: object
+      properties:
+        run_id: { type: string, nullable: true }
+        algorithm:
+          type: string
+          nullable: true
+          example: random
+          description: |
+            Sampler used by AISimulate (`random` or `bayesian`). BLIS enumerates
+            its candidate grid and reports `enumerate`. Capacity sizing also
+            enumerates and reports `enumerate` with `budget_exhausted=false`.
+        seed: { type: integer, nullable: true }
+        max_trials: { type: integer, nullable: true, description: Total trial budget, split across searched deployment modes. }
+        evaluated: { type: integer, nullable: true }
+        feasible: { type: integer, nullable: true }
+        timed_out: { type: integer, nullable: true }
+        budget_exhausted:
+          type: boolean
+          description: |
+            Whether a wall-clock search budget stopped the run. BLIS reports
+            true when its search time budget stopped the enumeration before
+            every grid point ran. AISimulate reports true when a window-ladder
+            search ran out of its whole-request time budget
+            (`MIN_GPUS_SEARCH_BUDGET_S` / `DEMAND_SEARCH_BUDGET_S`). A sampled
+            sweep's trial spend is reported separately by `max_trials` and
+            `evaluated`; `evaluated >= max_trials` means that budget was spent.
+            In no case does true imply the search was exhaustive.
+        strict_sla: { type: boolean, nullable: true }
+        window_min_gpus:
+          type: integer
+          nullable: true
+          description: Lowest GPU count in the window the service actually searched.
+        window_max_gpus:
+          type: integer
+          nullable: true
+          description: Highest GPU count in the window the service actually searched.
+        configured_max_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Configured candidate ceiling (`AISIMULATORS_MAX_CANDIDATE_GPUS`).
+            This is a soft budget, not a promise about the largest searchable
+            window.
+        effective_max_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Ceiling the selected search actually used. It can be lower than
+            `configured_max_gpus` when the simulator applies a hardware limit
+            (for example a single BLIS node), and higher when an AISimulate fit
+            floor needs headroom (`max(configured_max_gpus, floor × 2)`).
+
+    CandidateResponse:
+      type: object
+      required: [candidate_id, status, mode, topology, simulator]
+      description: |
+        One evaluated candidate from a pareto sweep. AISimulate candidates are
+        copied verbatim from the SDK record; BLIS candidates are constructed by
+        the service from its own measured runs.
+      properties:
+        candidate_id: { type: string }
+        status:
+          type: string
+          enum: [feasible, infeasible, unsupported, timed_out, failed, resource_limited]
+        reason_category: { type: string, nullable: true }
+        mode: { type: string, example: agg }
+        topology:
+          type: object
+          description: SDK flat parallelism keys (deployment_mode, tp, pp, prefill_tp, decode_tp, …), verbatim.
+          additionalProperties: true
+        used_gpus: { type: integer, nullable: true }
+        metrics:
+          type: object
+          additionalProperties: { type: number, nullable: true }
+          description: Measured replay metrics for this candidate.
+        objectives:
+          type: object
+          nullable: true
+          additionalProperties: { type: number }
+          description: SDK objective values, e.g. throughput_per_user and throughput_per_gpu.
+        transfer_delay_modeled:
+          type: boolean
+          description: True only when a P/D transfer delay was actually modeled for this candidate.
+        provenance_sources:
+          type: array
+          items: { type: string }
+        simulator:
+          type: string
+          description: Simulator that produced this candidate.
+
+    CandidateViews:
+      type: object
+      description: Candidate-ID lists computed by the selected simulator. IDs must exist in `candidates`.
+      properties:
+        pareto_front:
+          type: array
+          items: { type: string }
+          description: Non-dominated candidate IDs for the simulator's own objectives.
+        top_n:
+          type: array
+          items: { type: string }
 
     RecommendConfig:
       type: object
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         provenance:
           $ref: '#/components/schemas/SimulatorProvenance'
         warnings:
@@ -667,11 +1263,11 @@ components:
         moe_tp:
           type: integer
           nullable: true
-          description: MoE tensor parallel size.
+          description: Resolved MoE/FFN tensor width for this pool.
         moe_ep:
           type: integer
           nullable: true
-          description: MoE expert parallel size.
+          description: Resolved MoE/FFN expert width for this pool.
         num_workers:
           type: integer
           nullable: true
@@ -720,9 +1316,15 @@ components:
           type: integer
         max_model_len:
           type: integer
-          description: Maximum sequence length (ISL + OSL).
+          nullable: true
+          description: Resolved maximum sequence length; null when the simulator applied a context-length policy.
+        max_model_len_policy:
+          type: string
+          nullable: true
+          description: Policy name when `max_model_len` is null (for example `auto`).
         max_num_seqs:
           type: integer
+          nullable: true
           description: Maximum concurrent sequences.
         max_num_batched_tokens:
           type: integer
@@ -730,13 +1332,16 @@ components:
           description: Maximum tokens in a scheduled batch, when specified by the simulator.
         gpu_memory_utilization:
           type: number
-          description: Fraction of GPU memory to use (0.0-1.0).
+          nullable: true
+          description: Fraction of GPU memory to use (0.0-1.0), when the simulator reports one.
         enable_chunked_prefill:
           type: boolean
           nullable: true
           description: Null when the simulator's scenario does not state this backend setting.
         enable_prefix_caching:
           type: boolean
+          nullable: true
+          description: Null when the simulator's scenario does not state this backend setting.
         quantization:
           type: string
           description: Quantization mode (fp8, int8, auto, etc).
@@ -757,9 +1362,8 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          enum: [aisimulate, blis]
           default: aisimulate
-          description: Simulator to use. BLIS requests never fall back to AISimulate.
+          description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
           description: Inference backend.
@@ -769,9 +1373,16 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null uses the latest available.
-            BLIS: must be one of the modeled vLLM releases (0.29.0, 0.31.0,
-            0.32.0); null uses 0.31.0. Aliases and unmodeled releases return 422.
+            Backend version. AISimulate: null resolves to the system default
+            (`current`, the same value `/backends` reports in
+            `system_defaults`); the `current` alias behaves the same way. If
+            that version has no performance data for the model, the service
+            retries the newest declared versions and reports the one it used.
+            Literal versions, `previous`, and `next` are pins and are never
+            substituted: if the data cannot serve them, the request returns 422
+            naming the versions the SDK ships for the system. BLIS: must be one
+            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
+            0.31.0. Aliases and unmodeled releases return 422.
           default: null
         mode:
           type: string
@@ -826,9 +1437,13 @@ components:
         prefill_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE tensor width for the prefill pool. Falls back to `moe_tp_size`, then to `(prefill_tp_size * attention_dp_size)`.
         prefill_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE expert width for the prefill pool. Falls back to `moe_ep_size`, then to 1.
         prefill_batch_size:
           type: integer
           nullable: true
@@ -844,9 +1459,13 @@ components:
         decode_moe_tp_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE tensor width for the decode pool. Falls back to `moe_tp_size`, then to `(decode_tp_size * attention_dp_size)`.
         decode_moe_ep_size:
           type: integer
           nullable: true
+          minimum: 1
+          description: MoE expert width for the decode pool. Falls back to `moe_ep_size`, then to 1.
         decode_batch_size:
           type: integer
           nullable: true
@@ -888,10 +1507,24 @@ components:
           type: integer
           nullable: true
           default: null
+          minimum: 1
+          description: |
+            MoE/FFN tensor width. When both `moe_tp_size` and `moe_ep_size` are
+            omitted, the API resolves the pair to
+            `(tp_size * attention_dp_size, 1)`: the FFN or expert block is
+            tensor-sharded across the attention group with no expert
+            parallelism. This default also applies to dense variants of
+            MoE-capable families, such as dense Gemma 4. When only one width is
+            supplied, the other is inferred from the attention width.
         moe_ep_size:
           type: integer
           nullable: true
           default: null
+          minimum: 1
+          description: |
+            MoE/FFN expert width. Omitted alongside `moe_tp_size`, it resolves
+            to 1; supplied alone, `moe_tp_size` is inferred from the attention
+            width.
         attention_dp_size:
           type: integer
           default: 1
@@ -915,7 +1548,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         mode:
           type: string
           enum: [agg, disagg]
@@ -979,6 +1612,20 @@ components:
           type: integer
           nullable: true
           description: Data parallel size.
+        moe_tp:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN tensor width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_tp` and
+            `decode_config.moe_tp`.
+        moe_ep:
+          type: integer
+          nullable: true
+          description: |
+            Resolved MoE/FFN expert width for an aggregated prediction. Null for
+            disaggregated predictions; see `prefill_config.moe_ep` and
+            `decode_config.moe_ep`.
         system:
           type: string
           nullable: true
@@ -1026,6 +1673,10 @@ components:
           type: string
           description: GPU system identifier.
           example: h200_sxm
+        simulator:
+          type: string
+          default: aisimulate
+          description: Simulator to use. Only a simulator that reports the memory capability accepts this endpoint; others return 422.
         backend:
           type: string
           description: Inference backend.
@@ -1110,8 +1761,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate]
-          description: Memory estimation is provided by AISimulate.
+          description: Simulator that provided the memory estimate. Only a simulator that reports the memory capability answers this endpoint.
         total_gpu_capacity_bytes:
           type: integer
           description: Total GPU memory capacity (bytes).
@@ -1165,15 +1815,30 @@ components:
 
     BackendListResponse:
       type: object
-      required: [simulator, backends]
+      required: [simulator, simulator_version, recommend_search, objectives, backends]
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
-        blis_version:
+        simulator_version:
           type: string
           nullable: true
-          description: The BLIS release the image was built from. Present when simulator=blis.
+          description: The release of the selected simulator this deployment runs.
+        recommend_search:
+          type: string
+          enum: [windowed, single]
+          description: |
+            Shape of the service's recommendation search. `windowed` means the
+            service walks a GPU window ladder; `single` means one bounded
+            search per action. Both are one client request.
+        objectives:
+          type: array
+          description: |
+            Sizing goals this simulator implements. Clients gate a goal selector
+            on this list instead of on the simulator name. A goal absent from
+            this list is not answered by a different simulator.
+          items:
+            type: string
+            enum: [min_gpus, throughput_demand, pareto, concurrency_capacity]
         backends:
           type: array
           items:
@@ -1233,6 +1898,19 @@ components:
             Whether a prefill/decode topology needs an inter-node fabric selected
             before the request is sent. BLIS prices the KV transfer through a named
             fabric; AISimulate's P/D search takes none.
+        capacity_options:
+          type: object
+          description: |
+            Which comparison options a concurrency-capacity run can return for
+            this backend. Clients gate disaggregated option presentation on
+            these flags instead of inferring support from the simulator name.
+          properties:
+            disaggregated:
+              type: boolean
+              description: |
+                Whether capacity runs can include disaggregated alternatives.
+                AISimulate reports true; BLIS reports false because its
+                concurrency-capacity sizing is aggregate-only.
         version_support:
           type: object
           description: Per-version capabilities. Present when simulator=blis.
@@ -1248,11 +1926,17 @@ components:
 
     ModelListResponse:
       type: object
-      required: [simulator, models]
+      required: [simulator, model_catalog_complete, models]
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
+        model_catalog_complete:
+          type: boolean
+          description: |
+            True when `models` is the complete set this simulator can price.
+            False when the simulator can also resolve models outside the list,
+            so absence from the list is not an unsupported verdict.
         models:
           type: array
           description: Sorted list of models. Items are strings without include=specs, objects with include=specs.
@@ -1301,7 +1985,7 @@ components:
       properties:
         simulator:
           type: string
-          enum: [aisimulate, blis]
+          description: Simulator that produced the result, as reported by the service.
         systems:
           type: array
           items:

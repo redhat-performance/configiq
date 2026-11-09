@@ -16,12 +16,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
 from dataset_common import load_approved_models
+from stage5_common import _backend_name, backend_family
 
 GATE_MIN_RECORDS = 100
 GATE_MIN_TEST_AUC = 0.70
@@ -77,17 +79,27 @@ def coverage_for(pair_id: str, labeled_dir: Path | None, fallback_records: int) 
             "concurrencyLevels": [],
             "concurrencyLevelCount": 0,
             "backendVersions": [],
+            "backends": [],
         }
 
     frame = pd.concat(frames, ignore_index=True)
     concurrency = pd.to_numeric(frame.get("concurrency"), errors="coerce").dropna()
     levels = sorted({float(value) for value in concurrency.unique()})
     versions = frame.get("backend_version", pd.Series(dtype="object"))
+    backend_source = frame.get("backend", versions)
+    backends = sorted(
+        {
+            backend_family(_backend_name(value))
+            for value in backend_source.dropna().unique()
+        }
+        - {"unknown"}
+    )
     return {
         "records": len(frame),
         "concurrencyLevels": levels,
         "concurrencyLevelCount": len(levels),
         "backendVersions": sorted({str(value) for value in versions.dropna().unique()}),
+        "backends": backends,
     }
 
 
@@ -148,6 +160,17 @@ def build_registry(
         if not dashboard_path.is_file():
             raise FileNotFoundError(dashboard_path)
 
+        warnings = report_entry.get("warnings") or []
+        selection_basis = report_entry.get("selection_basis")
+        diagnostics: dict | None = None
+        if warnings or selection_basis == "train_fallback":
+            diagnostics = {
+                "trainingStatus": report_entry.get("status", "not_trained"),
+                "warnings": warnings,
+            }
+            if selection_basis:
+                diagnostics["selectionBasis"] = selection_basis
+
         entry: dict = {
             "id": pair_id,
             "modelId": source["model_id"],
@@ -181,20 +204,31 @@ def build_registry(
                 }
             )
         else:
-            entry["diagnostics"] = {
-                "trainingStatus": report_entry.get("status", "not_trained"),
-                "reasons": gate["reasons"],
-            }
+            if diagnostics is None:
+                diagnostics = {"trainingStatus": report_entry.get("status", "not_trained")}
+            diagnostics["reasons"] = gate["reasons"]
+
+        if diagnostics is not None:
+            entry["diagnostics"] = diagnostics
 
         registry_pairs.append(entry)
 
-    registry = {
+    registry: dict = {
         "schemaVersion": 2,
         "generatedAt": datetime.now(UTC).isoformat(),
         "gate": gate_thresholds(),
         "approvedModels": approved_models,
         "pairs": registry_pairs,
     }
+    dataset_repo = manifest.get("source")
+    dataset_revision = manifest.get("revision")
+    if (
+        isinstance(dataset_repo, str)
+        and dataset_repo.strip()
+        and isinstance(dataset_revision, str)
+        and re.fullmatch(r"[0-9a-f]{40}", dataset_revision)
+    ):
+        registry["dataset"] = {"repo": dataset_repo, "revision": dataset_revision}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "registry.json").write_text(
         json.dumps(registry, indent=2, sort_keys=True, allow_nan=False) + "\n"

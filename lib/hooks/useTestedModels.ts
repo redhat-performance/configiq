@@ -4,6 +4,7 @@ import * as React from 'react'
 import {
   modelStatus as deriveModelStatus,
   validatedModelIds,
+  type RegistryDatasetProvenance,
   type RegistryGateResult,
   type RegistryPair,
   type TestedModelStatus,
@@ -14,6 +15,7 @@ interface TestedModelsResponse {
   status?: string
   schemaVersion?: number | null
   generatedAt?: string | null
+  dataset?: RegistryDatasetProvenance | null
   gate?: ValidationGateThresholds | null
   approvedModels?: string[]
   pairs?: RegistryPair[]
@@ -30,6 +32,8 @@ export interface TestedModelsCatalog {
   modelStatus: (modelId: string) => TestedModelStatus | null
   gate: ValidationGateThresholds | null
   schemaVersion: number | null
+  /** Dataset revision the deployed bundle was built from, when recorded. */
+  dataset: RegistryDatasetProvenance | null
   isLoading: boolean
   isAvailable: boolean
 }
@@ -39,6 +43,7 @@ export function useTestedModels(): TestedModelsCatalog {
   const [approvedModels, setApprovedModels] = React.useState<string[]>([])
   const [gate, setGate] = React.useState<ValidationGateThresholds | null>(null)
   const [schemaVersion, setSchemaVersion] = React.useState<number | null>(null)
+  const [dataset, setDataset] = React.useState<RegistryDatasetProvenance | null>(null)
   const [isLoading, setIsLoading] = React.useState(true)
   const [isAvailable, setIsAvailable] = React.useState(false)
 
@@ -53,6 +58,7 @@ export function useTestedModels(): TestedModelsCatalog {
         setApprovedModels(available && Array.isArray(data.approvedModels) ? data.approvedModels : [])
         setGate(available && data.gate ? data.gate : null)
         setSchemaVersion(available ? data.schemaVersion ?? null : null)
+        setDataset(available && data.dataset ? data.dataset : null)
         setIsAvailable(available)
       })
       .catch(() => {
@@ -61,6 +67,7 @@ export function useTestedModels(): TestedModelsCatalog {
           setApprovedModels([])
           setGate(null)
           setSchemaVersion(null)
+          setDataset(null)
           setIsAvailable(false)
         }
       })
@@ -92,6 +99,7 @@ export function useTestedModels(): TestedModelsCatalog {
     modelStatus,
     gate,
     schemaVersion,
+    dataset,
     isLoading,
     isAvailable,
   }

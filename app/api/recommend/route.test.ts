@@ -27,7 +27,7 @@ afterEach(() => {
 })
 
 describe('POST /api/recommend through a ConfigIQ gateway', () => {
-  it('forwards progress as it arrives without waiting for the terminal event', async () => {
+  it('streams the single completed event without waiting for more', async () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://configiq.dev/api')
     const encoder = new TextEncoder()
     let upstreamController: ReadableStreamDefaultController<Uint8Array> | undefined
@@ -46,10 +46,7 @@ describe('POST /api/recommend through a ConfigIQ gateway', () => {
     expect(response.headers.get('content-type')).toContain('text/event-stream')
     expect(response.headers.get('x-accel-buffering')).toBe('no')
 
-    const onProgress = vi.fn()
-    const recommendation = readRecommendStream(response, onProgress)
-    upstreamController!.enqueue(encoder.encode('event: search_started\ndata: {"type":"search_started","maxGpus":8}\n\n'))
-    await vi.waitFor(() => expect(onProgress).toHaveBeenCalledWith({ type: 'search_started', maxGpus: 8 }))
+    const recommendation = readRecommendStream(response)
     upstreamController!.enqueue(encoder.encode('event: completed\ndata: {"type":"completed","response":{"requestId":"size_123","status":"failed","error":{"code":"AISIM_NO_CONFIGURATION","message":"No configuration"}}}\n\n'))
     upstreamController!.close()
     await expect(recommendation).resolves.toMatchObject({
@@ -98,7 +95,7 @@ describe('POST /api/recommend through a ConfigIQ gateway', () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://configiq.dev/api')
     const client = new AbortController()
     const fetchMock = vi.fn((_url: string, _init?: RequestInit) => Promise.resolve(new Response(new ReadableStream({
-      start(controller) { controller.enqueue(new TextEncoder().encode('event: search_started\n\n')) },
+      start(controller) { controller.enqueue(new TextEncoder().encode('event: started\n\n')) },
     }), { headers: { 'Content-Type': 'text/event-stream' } })))
     vi.stubGlobal('fetch', fetchMock)
 

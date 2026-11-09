@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 import math
+import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -67,10 +69,107 @@ def _per_million(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
     try:
-        rate = float(value) * 1_000_000
+        rate = float(Decimal(str(value)) * 1_000_000)
+    except (InvalidOperation, ValueError, TypeError, OverflowError):
+        return None
+    return rate if math.isfinite(rate) and rate >= 0 else None
+
+
+def _request_rate(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        rate = float(value)
     except (ValueError, TypeError, OverflowError):
         return None
-    return round(rate, 4) if math.isfinite(rate) and rate >= 0 else None
+    return rate if math.isfinite(rate) and rate >= 0 else None
+
+
+def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the standard uncached text tariff; never guess other charges."""
+    billing: dict[str, Any] = {"currency": "USD", "request_price": 0, "overrides": [], "unsupported": []}
+    fields = {"prompt": "input_per_million", "completion": "output_per_million", "request": "request_price"}
+    optional_prices = {"input_cache_read", "input_cache_write", "input_cache_write_1h", "input_audio_cache",
+                       "image", "image_output", "audio", "audio_output", "web_search"}
+    if pricing.keys() - {*fields, *optional_prices, "internal_reasoning", "overrides"}:
+        billing["unsupported"].append("Unrecognized pricing fields")
+    for source, target in {
+        "request": "request_price", "input_cache_read": "input_cache_read_per_million",
+        "input_cache_write": "input_cache_write_per_million",
+    }.items():
+        if source not in pricing:
+            continue
+        rate = (_request_rate if source == "request" else _per_million)(pricing[source])
+        if rate is None:
+            billing["unsupported"].append(f"Invalid {source} rate")
+        else:
+            billing[target] = rate
+    if "internal_reasoning" in pricing and _request_rate(pricing["internal_reasoning"]) != 0:
+        billing["unsupported"].append("Separately priced reasoning tokens require a reasoning-token volume")
+    overrides = pricing.get("overrides", [])
+    if not isinstance(overrides, list):
+        billing["unsupported"].append("Invalid pricing overrides")
+        return billing
+    for override in overrides:
+        if not isinstance(override, dict):
+            billing["unsupported"].append("Invalid pricing override")
+            continue
+        # Cache, tool and modality-specific prices do not apply to this text-only,
+        # uncached calculation. Time-window token tariffs cannot be guessed.
+        if not any(key in override for key in fields):
+            continue
+        threshold = override.get("min_prompt_tokens", 0)
+        if type(threshold) is not int or threshold < 0 or any(
+            key not in {*fields, *optional_prices, "min_prompt_tokens"}
+            for key in override
+        ):
+            billing["unsupported"].append("Unsupported token-pricing condition")
+            continue
+        tier: dict[str, Any] = {"min_prompt_tokens": threshold}
+        for source, target in fields.items():
+            if source not in override:
+                continue
+            rate = (_request_rate if source == "request" else _per_million)(override[source])
+            if rate is None:
+                billing["unsupported"].append(f"Invalid tier {source} rate")
+            else:
+                tier[target] = rate
+        billing["overrides"].append(tier)
+    return billing
+
+
+def _litellm_billing(model: dict[str, Any]) -> dict[str, Any]:
+    billing: dict[str, Any] = {"currency": "USD", "request_price": 0, "overrides": [], "unsupported": []}
+    for source, target in {
+        "input_cost_per_request": "request_price", "cache_read_input_token_cost": "input_cache_read_per_million",
+        "cache_creation_input_token_cost": "input_cache_write_per_million",
+    }.items():
+        if source not in model:
+            continue
+        rate = (_request_rate if source == "input_cost_per_request" else _per_million)(model[source])
+        if rate is None:
+            billing["unsupported"].append(f"Invalid {source} rate")
+        else:
+            billing[target] = rate
+    if "output_cost_per_reasoning_token" in model and _request_rate(model["output_cost_per_reasoning_token"]) != 0:
+        billing["unsupported"].append("Separately priced reasoning tokens require a reasoning-token volume")
+    tiers: dict[int, dict[str, Any]] = {}
+    for key, value in model.items():
+        match = re.fullmatch(r"(input|output)_cost_per_token_above_(\d+)k_tokens", key)
+        if match:
+            threshold = int(match[2]) * 1000
+            tier = tiers.setdefault(threshold, {"min_prompt_tokens": threshold})
+            rate = _per_million(value)
+            if rate is None:
+                billing["unsupported"].append(f"Invalid {key} rate")
+            else:
+                tier[f"{match[1]}_per_million"] = rate
+        elif re.match(r"(?:input|output)_cost_per_token_above_", key) and not key.endswith(
+            ("_batches", "_flex", "_priority", "_ultrafast", "_decisions")
+        ):
+            billing["unsupported"].append(f"Unsupported token-pricing condition: {key}")
+    billing["overrides"] = [tiers[threshold] for threshold in sorted(tiers)]
+    return billing
 
 
 def _context_window(value: Any) -> int | None:
@@ -94,6 +193,15 @@ def _parse_openrouter_model(m: dict[str, Any]) -> dict[str, Any] | None:
     if checkpoint is not None and not isinstance(checkpoint, str):
         return None
 
+    top_provider = m.get("top_provider")
+    top_provider = top_provider if isinstance(top_provider, dict) else {}
+    limits = [_context_window(m.get("context_length")), _context_window(top_provider.get("context_length"))]
+    context = min((limit for limit in limits if limit is not None), default=None)
+    billing = _openrouter_billing(pricing)
+    architecture = m.get("architecture")
+    if (isinstance(architecture, dict) and isinstance(architecture.get("output_modalities"), list)
+            and "text" not in architecture["output_modalities"]):
+        billing["unsupported"].append("No text output modality")
     return {
         "id": model_id,
         "name": model_name,
@@ -103,6 +211,11 @@ def _parse_openrouter_model(m: dict[str, Any]) -> dict[str, Any] | None:
         "price_per_m_output": price_per_m_output,
         "context_window": _context_window(m.get("context_length")),
         "source": "openrouter",
+        "model_author": _infer_provider(model_id),
+        "serving_provider": None,  # A router catalogue does not pin a serving endpoint.
+        "max_context_tokens": context,
+        "max_output_tokens": _context_window(top_provider.get("max_completion_tokens")),
+        "billing": billing,
         **({"hugging_face_id": checkpoint.strip()} if checkpoint and checkpoint.strip() else {}),
     }
 
@@ -164,6 +277,10 @@ def _parse_litellm_model(model_id: str, m: dict[str, Any]) -> dict[str, Any] | N
         "price_per_m_output": price_per_m_output,
         "context_window": _context_window(m.get("max_input_tokens")),
         "source": "litellm",
+        "serving_provider": provider.strip().title(),
+        "max_input_tokens": _context_window(m.get("max_input_tokens")),
+        "max_output_tokens": _context_window(m.get("max_output_tokens")),
+        "billing": _litellm_billing(m),
     }
 
 

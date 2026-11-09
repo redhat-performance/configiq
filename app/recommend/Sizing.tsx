@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent, FormSelect, FormSelectOption } from '@patternfly/react-core';
+import { Label, Button, Accordion, AccordionItem, AccordionToggle, AccordionContent, FormSelect, FormSelectOption, ToggleGroup, ToggleGroupItem } from '@patternfly/react-core';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
 import MemoryIcon from '@patternfly/react-icons/dist/esm/icons/memory-icon';
 import ClockIcon from '@patternfly/react-icons/dist/esm/icons/clock-icon';
@@ -12,13 +12,16 @@ import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/excl
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import DollarSignIcon from '@patternfly/react-icons/dist/esm/icons/dollar-sign-icon';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
+import { WarningPanel } from '@/components/ui/WarningPanel';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 
 import styles from './Sizing.module.css';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
-import { useRecommend } from '@/contexts/RecommendContext';
-import type { RecommendProgressEvent } from '@/lib/api/recommend';
+import { useRecommend, type RecommendObjective, type RecommendParams, type SizingGoal } from '@/contexts/RecommendContext';
+import type { RecommendSweepMeta } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
+import { FrontierPanel } from '@/components/frontier/FrontierPanel';
+import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
@@ -26,6 +29,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -34,15 +38,24 @@ import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
+import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 
-function modelSuggestions(): string {
-  const names = getAppConfig().suggestedModelNames;
-  return names.length > 0 ? names.join(', ') : 'Nemotron, DeepSeek V4, Gemma 4, Kimi';
-}
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
-import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
+import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/utils/format';
 
+/** Offered rate a demand run starts from; the UI labels it as the default. */
+const DEFAULT_DEMAND_RATE = 10;
+
+/** Match a retained request back to the sizing goal that produced it. */
+function goalFromParams(params: RecommendParams | null): SizingGoal {
+  if (!params) return 'demand';
+  const objective = params.objective
+    ?? (params.sla_mode === 'none' ? 'throughput_demand' : 'min_gpus');
+  if (objective === 'concurrency_capacity') return 'capacity';
+  if (objective === 'throughput_demand') return 'demand';
+  return 'latency';
+}
 
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
 
@@ -223,10 +236,13 @@ function friendlyErrorHint(code: string | null): string {
 export default function Sizing() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
+  // An unavailable simulator has an explicit empty support entry, so its pages
+  // never fall back to another simulator's catalogue.
   const support = simulatorSupport[simulator];
+  const simulatorUnavailable = support?.available === false;
   const catalogModels = support?.models ?? allCatalogModels;
   const catalogGpus = React.useMemo(
     () => (support
@@ -244,7 +260,10 @@ export default function Sizing() {
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
-  const defaultNetworkFabric = networkOptions.includes('roce-200g') ? 'roce-200g' : '';
+  const availableNetworks = support?.networks ?? networkOptions;
+  // The simulator names the fabric its P/D topology uses by default. Never
+  // invent a fabric name: an empty catalog means aggregate-only search.
+  const defaultNetworkFabric = support?.defaultNetwork ?? availableNetworks[0] ?? '';
   const selectedNetworkFabric = networkFabric ?? defaultNetworkFabric;
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -253,13 +272,20 @@ export default function Sizing() {
   // Input state
   const [model, setModel] = React.useState('');
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
+  // A simulator that models a catalog also says which models it cannot price.
+  // The default model may be one of them; surface that instead of replacing it.
+  const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !catalogModels.includes(model);
 
-  // Set model from settings after context has loaded from localStorage
+  // Set model from settings after context has loaded from localStorage.
+  // Track readiness separately from the value: an intentionally empty saved
+  // default is a valid, settled state.
   const modelFromSettings = React.useRef(false);
+  const [modelFromSettingsApplied, setModelFromSettingsApplied] = React.useState(false);
   React.useEffect(() => {
     if (!hydrated || modelFromSettings.current) return;
     modelFromSettings.current = true;
     setModel(settingsDefaultModel);
+    setModelFromSettingsApplied(true);
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
   const testedSystemsForModel = React.useMemo(
@@ -277,16 +303,69 @@ export default function Sizing() {
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [ttft, setTtft] = React.useState(1000);
   const [tpot, setTpot] = React.useState(30);
+  // Start at a single user so the first estimate sizes the smallest
+  // configuration; see d32b0dd and 0730b07. Users raise this with the presets.
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
 
+  // GPU sizer (persistent across navigation)
+  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset } = useRecommend();
+  // Three sizing goals share one Calculate flow. `demand` asks how many GPUs
+  // sustain an arrival rate; `latency` enforces the TTFT/TPOT (or E2E) SLA;
+  // `capacity` asks how many GPUs hold N sequences at full context. Both
+  // aggregate-only goals report performance without gating on it. Restore the
+  // retained request's goal so returning to the page does not force a reset
+  // just to reselect the goal that produced the visible result.
+  const [goal, setGoal] = React.useState<SizingGoal>(() => goalFromParams(params));
+  const [demandRate, setDemandRate] = React.useState(DEFAULT_DEMAND_RATE);
+  const isDemand = goal === 'demand';
+  const isCapacity = goal === 'capacity';
+  // The simulator advertises the goals it can answer. Gate the selector on that
+  // capability, never on the simulator's ID.
+  const availableObjectives = support?.objectives ?? catalogObjectives;
+  const capacitySupported = availableObjectives.includes('concurrency_capacity');
+  const paretoSupported = availableObjectives.includes('pareto');
+  const aggregateOnlyGoal = isDemand || isCapacity;
+  // A Pareto sweep always searches both aggregated and disaggregated
+  // deployments. It is not a sizing goal, so it is unavailable only when the
+  // simulator cannot compute one or the workload has no throughput trade-off.
+  const paretoDisabledReason = isCapacity
+    ? 'Pareto frontier is not available for concurrency-capacity sizing.'
+    : !paretoSupported
+      ? 'Pareto frontier is not available for the selected simulator.'
+      : null;
+
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
-  // GPU sizer (persistent across navigation)
-  const { params, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, startSizing } = useRecommend();
+  // Capacity runs return ranked alternatives. The result panel shows whichever
+  // option is promoted; every other view keeps the primary recommendation so
+  // the search summary and provenance still describe what was submitted.
+  const [selectedCapacityOptionId, setSelectedCapacityOptionId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    setSelectedCapacityOptionId(null);
+  }, [primaryResult]);
+  const capacityOptions = primaryResult?.capacityOptions ?? [];
+  const selectedCapacityOption = capacityOptions.find(
+    option => option.optionId === selectedCapacityOptionId,
+  ) ?? null;
+  const result = selectedCapacityOption?.result ?? primaryResult;
+  // The result outlives a remount, but the input goal does not. Derive the
+  // result's objective from the request that produced it so returning to
+  // /recommend does not relabel a demand or capacity result as a latency one.
+  const resultObjective = params?.objective
+    ?? (params?.sla_mode === 'none' ? 'throughput_demand' : 'min_gpus');
+  const resultIsDemand = resultObjective === 'throughput_demand';
+  const resultIsCapacity = resultObjective === 'concurrency_capacity';
+  const resultDemandRate = params?.target_request_rate ?? demandRate;
+  const resultRequestLatency = params?.request_latency ?? null;
+  const resultTtft = params?.ttft ?? ttft;
+  const resultDemandOutputTokPerSecond = resultIsDemand
+    ? resultDemandRate * (params?.osl ?? osl)
+    : 0;
   const [debugOpen, setDebugOpen] = React.useState(false);
+  const [inputsDirty, setInputsDirty] = React.useState(false);
 
   // Additional constraints accordion
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -301,6 +380,7 @@ export default function Sizing() {
   const [concurrencyInput, setConcurrencyInput] = React.useState('1');
   const [latencyInput, setLatencyInput] = React.useState('');
   const [prefixInput, setPrefixInput] = React.useState('0');
+  const [demandRateInput, setDemandRateInput] = React.useState(String(DEFAULT_DEMAND_RATE));
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
@@ -308,10 +388,24 @@ export default function Sizing() {
   const invalidTpot = tpotInput === '' || !Number.isFinite(Number(tpotInput)) || Number(tpotInput) <= 0;
   const invalidConcurrency = concurrencyInput === '' || parseInt(concurrencyInput, 10) < 1;
   const invalidLatency = latencyInput !== '' && (!Number.isFinite(Number(latencyInput)) || Number(latencyInput) <= 0);
+  const invalidDemandRate = demandRateInput === '' || !Number.isFinite(Number(demandRateInput)) || Number(demandRateInput) <= 0;
   const validSequenceLength = (value: string) => /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
   const invalidMaxSeqLen = maxSeqLenInput !== '' && !validSequenceLength(maxSeqLenInput);
   const invalidPrefillMaxSeqLen = prefillMaxSeqLenInput !== '' && !validSequenceLength(prefillMaxSeqLenInput);
   const invalidDecodeMaxSeqLen = decodeMaxSeqLenInput !== '' && !validSequenceLength(decodeMaxSeqLenInput);
+
+  // A Pareto sweep keeps only the fields buildFrontierRequest sends. It has no
+  // load target, so demand rate and concurrency never block it; in SLA-free
+  // mode it has no latency bound; with an end-to-end bound it drops TTFT/TPOT.
+  const invalidParetoInputs = isDemand
+    ? false
+    : requestLatency != null
+      ? invalidLatency
+      : invalidTTFT || invalidTpot;
+
+  const markInputsDirty = () => {
+    if (primaryResult || isLoading || frontier.status !== 'idle') setInputsDirty(true);
+  };
 
   const handleSequenceLengthChange = (
     raw: string,
@@ -322,6 +416,7 @@ export default function Sizing() {
     setInput(value);
     const n = Number(value);
     setValue(validSequenceLength(value) ? n : null);
+    markInputsDirty();
   };
 
   const handleIslChange = (raw: string) => {
@@ -329,6 +424,8 @@ export default function Sizing() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setIsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleOslChange = (raw: string) => {
@@ -336,6 +433,8 @@ export default function Sizing() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setOsl(n);
+    setActivePreset('');
+    markInputsDirty();
   };
 
   const handleTtftChange = (raw: string) => {
@@ -343,6 +442,7 @@ export default function Sizing() {
     setTtftInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTtft(n);
+    markInputsDirty();
   };
 
   const handleTpotChange = (raw: string) => {
@@ -350,6 +450,7 @@ export default function Sizing() {
     setTpotInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n > 0) setTpot(n);
+    markInputsDirty();
   };
 
   const handleConcurrencyChange = (raw: string) => {
@@ -357,6 +458,8 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
+    setActiveConcurrencyPreset('');
+    markInputsDirty();
   };
 
   const handleLatencyChange = (raw: string) => {
@@ -364,6 +467,7 @@ export default function Sizing() {
     setLatencyInput(cleaned);
     const n = Number(cleaned);
     setRequestLatency(cleaned === '' ? null : (Number.isFinite(n) && n > 0 ? n : null));
+    markInputsDirty();
   };
 
   const handlePrefixChange = (raw: string) => {
@@ -371,6 +475,15 @@ export default function Sizing() {
     setPrefixInput(digits);
     const n = parseInt(digits, 10);
     setPrefix(isNaN(n) ? 0 : n);
+    markInputsDirty();
+  };
+
+  const handleDemandRateChange = (raw: string) => {
+    const cleaned = raw.replace(/[^0-9.]/g, '');
+    setDemandRateInput(cleaned);
+    const n = Number(cleaned);
+    if (Number.isFinite(n) && n > 0) setDemandRate(n);
+    markInputsDirty();
   };
 
   // Model status check + fetch HF config. Catalog models resolve server-side;
@@ -476,15 +589,14 @@ export default function Sizing() {
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
 
-  const applyPreset = (p: WorkloadPreset) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+    reset();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
-    setTtft(p.ttft); setTtftInput(String(p.ttft));
-    setTpot(p.tpot); setTpotInput(String(p.tpot));
-    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setPrefix(p.prefix); setPrefixInput(String(p.prefix));
     setActivePreset(p.key);
+    setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
 
@@ -496,29 +608,116 @@ export default function Sizing() {
     setDecodeMaxSeqLen(null); setDecodeMaxSeqLenInput('');
   };
 
-  const handleCalculate = () => {
-    startSizing({
-      model_path: model, system: gpuSystem, isl, osl, ttft,
-      tpot, target_concurrency: targetConcurrency, prefix,
-      ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
-      ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-      ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
-      ...(requestLatency != null ? { request_latency: requestLatency } : {}),
-      backend: inferenceBackend,
-      ...(backendVersion ? { backend_version: backendVersion } : {}),
-      // Send the HF config for models AISimulators can't resolve from its catalog.
-      ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
-      simulator,
-      // A release without P/D modelling can only search aggregated candidates,
-      // so do not send a fabric that asks for a disaggregated topology.
-      ...(fabricRequired ? { fabric: disaggSupported ? selectedNetworkFabric || null : null } : {}),
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('');
+      return;
+    }
+    setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
+    setActiveConcurrencyPreset(p.key);
+    markInputsDirty();
+  };
+
+  // The recommend provider keeps the submitted request and its result across
+  // navigation, but this page's form starts from scratch. Compare each restored
+  // or newly submitted request with the visible form so a stale result is never
+  // presented as matching the inputs that produced it.
+  const checkedSubmittedParams = React.useRef<typeof params>(null);
+  const hasDisplayedResult = primaryResult != null || runMode === 'pareto';
+  React.useEffect(() => {
+    if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !hasDisplayedResult) return;
+    if (checkedSubmittedParams.current === params) return;
+    checkedSubmittedParams.current = params;
+    const currentObjective = isCapacity
+      ? 'concurrency_capacity'
+      : isDemand
+        ? 'throughput_demand'
+        : 'min_gpus';
+    const matches = submittedInputsMatch(params, {
+      model,
+      system: gpuSystem,
+      isl,
+      osl,
+      objective: currentObjective,
+      ttft,
+      tpot,
+      targetConcurrency,
+      demandRate,
+      requestLatency,
+      prefix,
+      maxSeqLen,
+      prefillMaxSeqLen,
+      decodeMaxSeqLen,
+      effectiveFabric: resolveEffectiveFabric(
+        fabricRequired,
+        aggregateOnlyGoal,
+        disaggSupported,
+        selectedNetworkFabric,
+      ),
     });
+    if (!matches) setInputsDirty(true);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+
+  const sizingObjective: RecommendObjective = isCapacity
+    ? 'concurrency_capacity'
+    : isDemand
+      ? 'throughput_demand'
+      : 'min_gpus';
+
+  const buildRecommendParams = (): RecommendParams => ({
+    model_path: model,
+    system: gpuSystem,
+    isl,
+    osl,
+    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
+    objective: sizingObjective,
+    ...(isCapacity
+      ? { target_concurrency: targetConcurrency }
+      : isDemand
+        ? { target_request_rate: demandRate }
+        : {
+            target_concurrency: targetConcurrency,
+            // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
+            // request schema rejects sending both shapes at once.
+            ...(requestLatency != null
+              ? { request_latency: requestLatency }
+              : { ttft, tpot }),
+          }),
+    prefix,
+    ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
+    ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+    ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+    backend: inferenceBackend,
+    ...(backendVersion ? { backend_version: backendVersion } : {}),
+    // Send the HF config for models AISimulators can't resolve from its catalog.
+    ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+    simulator,
+    // The simulator reports whether it answers one bounded search or streams
+    // GPU windows. This is a proxy hint and is never forwarded upstream.
+    search_strategy: support?.recommendSearch ?? 'windowed',
+    // A release without P/D modelling can only search aggregated candidates,
+    // so do not send a fabric that asks for a disaggregated topology. Demand
+    // and capacity sizing are aggregate-only regardless of the selected fabric.
+    ...(fabricRequired && !aggregateOnlyGoal
+      ? { fabric: disaggSupported ? selectedNetworkFabric || null : null }
+      : {}),
+  });
+
+  const handleCalculate = () => {
+    setInputsDirty(false);
+    startSizing(buildRecommendParams());
+  };
+
+  const handlePareto = () => {
+    setInputsDirty(false);
+    startPareto(buildRecommendParams());
   };
 
   // Local memory analysis using the same engine as Quick Estimate
   // Animated values
   const gpuCount = useCountUp(result?.recommendation.gpusNeeded ?? 0);
   const ttftMs = useCountUp(result?.performance.ttftLatencyMs ?? 0, 750, 0);
+  const e2eLatencyMs = useCountUp(result?.performance.requestLatencyMs ?? 0, 750, 0);
   const tpsVal = useCountUp(result?.throughput.tokensPerSecond ?? 0, 750, 0);
   const memVal = useCountUp(result?.memory.value ?? 0, 750, 1);
 
@@ -534,6 +733,10 @@ export default function Sizing() {
   // (replicas × gpus/replica), not per-replica/per-worker.
   const numGpus = result?.recommendation.gpusNeeded ?? 0;
   const monthlyCost = pricePerHour != null ? numGpus * pricePerHour * HOURS_PER_MONTH : null;
+  const demandOutputTokPerSecond = isDemand ? demandRate * osl : 0;
+  // Capacity reserves the peak context a resident sequence can reach. Prefix
+  // caching does not shrink that, so it is not subtracted.
+  const capacityContextTokens = maxSeqLen ?? isl + osl;
 
   return (
     <div className={styles.page}>
@@ -553,7 +756,7 @@ export default function Sizing() {
             <ComboBox
               id="adv-model"
               value={model}
-              onChange={setModel}
+              onChange={(value) => { setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
@@ -562,8 +765,22 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={setGpuSystem} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
+
+        {simulatorUnavailable && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            so it cannot size workloads. Choose another simulator in Settings.
+          </div>
+        )}
+
+        {modelUnsupported && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
+          </div>
+        )}
 
         {fabricRequired && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
@@ -572,21 +789,25 @@ export default function Sizing() {
               id="recommend-network-fabric"
               value={selectedNetworkFabric}
               aria-label="Inter-node fabric"
-              isDisabled={networkOptions.length === 0 || !disaggSupported}
-              onChange={(_, value) => setNetworkFabric(value)}
+              isDisabled={availableNetworks.length === 0 || !disaggSupported || aggregateOnlyGoal}
+              onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
-              {networkOptions.map(network => (
+              {availableNetworks.map(network => (
                 <FormSelectOption key={network} value={network} label={network} />
               ))}
             </FormSelect>
             <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-              {!disaggSupported
+              {isDemand
+                ? 'Throughput-demand sizing is aggregate-only, so the fabric selection does not affect this run.'
+                : isCapacity
+                  ? 'Concurrency-capacity sizing is aggregate-only, so the fabric selection does not affect this run.'
+                : !disaggSupported
                 ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}; only aggregate candidates are searched.`
-                : networkOptions.length === 0
+                : availableNetworks.length === 0
                   ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
-                  : selectedNetworkFabric === 'roce-200g' && networkFabric === null
-                    ? 'RoCE 200G is preselected; choose another fabric if needed. Select None for aggregate-only search.'
+                  : networkFabric === null && defaultNetworkFabric
+                    ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
                     : selectedNetworkFabric
                       ? 'The simulator searches aggregate and P/D candidates using this fabric.'
                       : 'No fabric selected; the simulator searches aggregate candidates only.'}
@@ -594,17 +815,53 @@ export default function Sizing() {
           </div>
         )}
 
-        {/* Calculate button */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 16 }}>
-          <button
-            className={styles.calcBtn}
-            onClick={handleCalculate}
-             disabled={isLoading || !model.includes('/') || invalidISL || invalidOSL || invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading}
+        {/* Calculate and Pareto are alternative actions, not a chain. */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+          <Button
+            variant="secondary"
+            onClick={handlePareto}
+            isDisabled={
+              isLoading ||
+              simulatorUnavailable ||
+              !paretoSupported ||
+              isCapacity ||
+              modelUnsupported ||
+              !model.includes('/') ||
+              invalidISL ||
+              invalidOSL ||
+              invalidMaxSeqLen ||
+              invalidPrefillMaxSeqLen ||
+              invalidDecodeMaxSeqLen ||
+              catalogLoading ||
+              invalidParetoInputs
+            }
           >
-            {isLoading ? 'Calculating...' : 'Calculate'}
-          </button>
+            {isLoading && runMode === 'pareto' ? 'Running Pareto...' : 'Pareto frontier'}
+          </Button>
+          <Button
+            variant="primary"
+            onClick={handleCalculate}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+          >
+            {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
+          </Button>
         </div>
+        {paretoDisabledReason && (
+          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 6, textAlign: 'right' }}>
+            {paretoDisabledReason}
+          </div>
+        )}
       </div>
+
+      {inputsDirty && (
+        <WarningPanel
+          warnings={[
+            runMode === 'pareto'
+              ? 'Inputs have changed since the last Pareto sweep. Click Pareto frontier to update the results.'
+              : 'Inputs have changed since the last submitted calculation. Click Calculate to update results.',
+          ]}
+        />
+      )}
 
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
@@ -618,11 +875,79 @@ export default function Sizing() {
         </div>
       )}
 
+      {/* ---------- concurrency presets ---------- */}
+      {!isDemand && hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- sizing goal ---------- */}
+      <div className={styles.goalRow}>
+        <span className={styles.goalLabel}>Sizing goal:</span>
+        <ToggleGroup aria-label="Sizing goal">
+          <ToggleGroupItem
+            text="Latency SLO"
+            isSelected={goal === 'latency'}
+            onChange={() => {
+              if (goal !== 'latency') { reset(); setGoal('latency'); }
+            }}
+          />
+          <ToggleGroupItem
+            text="Throughput demand"
+            isSelected={goal === 'demand'}
+            onChange={() => {
+              if (goal !== 'demand') { reset(); setGoal('demand'); }
+            }}
+          />
+          {capacitySupported && (
+            <ToggleGroupItem
+              text="Concurrency capacity"
+              isSelected={goal === 'capacity'}
+              onChange={() => {
+                if (goal !== 'capacity') { reset(); setGoal('capacity'); }
+              }}
+            />
+          )}
+        </ToggleGroup>
+        <span className={styles.goalHint}>
+          {isCapacity
+            ? 'Find the fewest GPUs whose weights and KV cache hold a number of concurrent sequences. Latency and throughput are reported, not gated.'
+            : isDemand
+              ? 'Find the fewest GPUs that sustain an arrival rate. No latency target is applied.'
+              : 'Find the fewest GPUs that meet TTFT/TPOT (or end-to-end) latency targets.'}
+        </span>
+      </div>
+
       <InfoStrip>
-        Based on your configuration — ISL {isl}, OSL {osl}, TTFT target {(() => {
-          const sec = (ttft / 1000).toFixed(3);
-          return sec.endsWith('000') ? (ttft / 1000).toFixed(0) : parseFloat(sec).toString();
-        })()}s{prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, concurrency {targetConcurrency}, TPOT {tpot} ms.
+        {isCapacity ? (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'sequence' : 'sequences'} at {capacityContextTokens.toLocaleString()} tokens each, no latency target.
+          </>
+        ) : isDemand ? (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, Demand: {demandRate} req/s
+            {demandRate === DEFAULT_DEMAND_RATE && (
+              <span style={{ color: 'var(--t2)' }}> (default — adjust)</span>
+            )}
+            {' '}(≈ {Math.round(demandOutputTokPerSecond).toLocaleString()} output tok/s at OSL {osl}), no latency target.
+          </>
+        ) : requestLatency != null ? (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, E2E target: {formatLatencyBound(requestLatency)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
+          </>
+        ) : (
+          <>
+            Based on your configuration — ISL: {isl}, OSL: {osl}, Maximum TTFT: {formatLatencyBound(ttft)}s
+            {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
+          </>
+        )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
@@ -654,15 +979,47 @@ export default function Sizing() {
                 />
               </div>
               <div>
-                <label className={styles.fieldLabel}>Max TTFT (ms) <Term k="ttft" /></label>
-                <input
-                  type="number"
-                  className={invalidTTFT ? styles.paramInputInvalid : styles.paramInput}
-                  value={ttftInput}
-                  onChange={e => handleTtftChange(e.target.value)}
-                  min={0.1}
-                  step={0.1}
-                />
+                <label className={styles.fieldLabel}>
+                  {isCapacity
+                    ? <>Concurrent sequences <Term k="concurrent" /></>
+                    : isDemand
+                      ? 'Demand (req/s)'
+                      : <>Max TTFT (ms) <Term k="ttft" /></>}
+                </label>
+                {isCapacity ? (
+                  <>
+                    <input
+                      type="number"
+                      className={invalidConcurrency ? styles.paramInputInvalid : styles.paramInput}
+                      value={concurrencyInput}
+                      onChange={e => handleConcurrencyChange(e.target.value)}
+                      min={1}
+                    />
+                    <div className={styles.helperText}>Sequences held at full context at the same time.</div>
+                  </>
+                ) : isDemand ? (
+                  <>
+                    <input
+                      type="number"
+                      className={invalidDemandRate ? styles.paramInputInvalid : styles.paramInput}
+                      value={demandRateInput}
+                      onChange={e => handleDemandRateChange(e.target.value)}
+                      min={0.1}
+                      step={0.1}
+                      placeholder="10"
+                    />
+                    <div className={styles.helperText}>Default 10 req/s — adjust for your workload.</div>
+                  </>
+                ) : (
+                  <input
+                    type="number"
+                    className={invalidTTFT ? styles.paramInputInvalid : styles.paramInput}
+                    value={ttftInput}
+                    onChange={e => handleTtftChange(e.target.value)}
+                    min={0.1}
+                    step={0.1}
+                  />
+                )}
               </div>
               <div>
                 <label className={styles.fieldLabel}>Shared prefix tokens <Term k="prefix" /></label>
@@ -676,40 +1033,93 @@ export default function Sizing() {
               </div>
             </div>
 
-            <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(3, 1fr)' }}>
-              <div>
-                <label className={styles.fieldLabel}>Target concurrency <Term k="concurrent" /></label>
-                <input
-                  type="number"
-                  className={invalidConcurrency ? styles.paramInputInvalid : styles.paramInput}
-                  value={concurrencyInput}
-                  onChange={e => handleConcurrencyChange(e.target.value)}
-                  min={1}
-                />
+            {isCapacity ? (
+              <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                <div>
+                  <div className={styles.fieldLabel}>Context per sequence</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    {capacityContextTokens.toLocaleString()} tokens
+                  </div>
+                  <div className={styles.helperText}>
+                    {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL, with no prefix-cache credit'}
+                  </div>
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>Sequences to hold</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    {targetConcurrency.toLocaleString()}
+                  </div>
+                  <div className={styles.helperText}>
+                    Weights plus KV cache must hold all of them concurrently.
+                  </div>
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>Latency targets</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    Not applied
+                  </div>
+                  <div className={styles.helperText}>
+                    Concurrency capacity sizes for memory residency only. Resulting latency and throughput are reported, not gated.
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className={styles.fieldLabel}>Max TPOT (ms) <Term k="tpot" /></label>
-                <input
-                  type="number"
-                  className={invalidTpot ? styles.paramInputInvalid : styles.paramInput}
-                  value={tpotInput}
-                  onChange={e => handleTpotChange(e.target.value)}
-                  min={0.1}
-                  step={0.1}
-                />
+            ) : isDemand ? (
+              <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                <div>
+                  <div className={styles.fieldLabel}>Derived output throughput</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    {Math.round(demandOutputTokPerSecond).toLocaleString()} tok/s
+                  </div>
+                  <div className={styles.helperText}>
+                    {demandRate} req/s × {osl} output tokens per request
+                  </div>
+                </div>
+                <div>
+                  <div className={styles.fieldLabel}>Latency targets</div>
+                  <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                    Not applied
+                  </div>
+                  <div className={styles.helperText}>
+                    Throughput demand mode sizes for the arrival rate only. Switch to Latency SLO to enforce TTFT, TPOT, or end-to-end targets.
+                  </div>
+                </div>
               </div>
-              <div>
-                <label className={styles.fieldLabel}>Max E2E latency (ms) <Term k="requestLatency" /></label>
-                <input
-                  type="number"
-                  className={invalidLatency ? styles.paramInputInvalid : styles.paramInput}
-                  value={latencyInput}
-                  onChange={e => handleLatencyChange(e.target.value)}
-                  placeholder="Auto"
-                  min={1}
-                />
+            ) : (
+              <div className={styles.paramGrid} style={{ marginTop: 12, gridTemplateColumns: 'repeat(3, 1fr)' }}>
+                <div>
+                  <label className={styles.fieldLabel}>Target concurrency <Term k="concurrent" /></label>
+                  <input
+                    type="number"
+                    className={invalidConcurrency ? styles.paramInputInvalid : styles.paramInput}
+                    value={concurrencyInput}
+                    onChange={e => handleConcurrencyChange(e.target.value)}
+                    min={1}
+                  />
+                </div>
+                <div>
+                  <label className={styles.fieldLabel}>Max TPOT (ms) <Term k="tpot" /></label>
+                  <input
+                    type="number"
+                    className={invalidTpot ? styles.paramInputInvalid : styles.paramInput}
+                    value={tpotInput}
+                    onChange={e => handleTpotChange(e.target.value)}
+                    min={0.1}
+                    step={0.1}
+                  />
+                </div>
+                <div>
+                  <label className={styles.fieldLabel}>Max E2E latency (ms) <Term k="requestLatency" /></label>
+                  <input
+                    type="number"
+                    className={invalidLatency ? styles.paramInputInvalid : styles.paramInput}
+                    value={latencyInput}
+                    onChange={e => handleLatencyChange(e.target.value)}
+                    placeholder="Auto"
+                    min={1}
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <Accordion style={{ marginTop: 16 }}>
               <AccordionItem isExpanded={expanded.includes('context-window')}>
@@ -775,9 +1185,9 @@ export default function Sizing() {
       )}
 
       {/* ─── Loading ─── */}
-      {isLoading && (
+      {isLoading && runMode === 'sizing' && (
         <div className={styles.card}>
-          <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} progressMessages={recommendProgressMessages(progressHistory)} />
+          <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} />
         </div>
       )}
 
@@ -792,25 +1202,42 @@ export default function Sizing() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={params?.model_path ?? model} systemId={params?.system ?? gpuSystem} />
+      <TestedPerformanceFeedback
+        prediction={classifierPrediction}
+        isLoading={classifierLoading}
+        modelId={params?.model_path ?? model}
+        systemId={params?.system ?? gpuSystem}
+        headerRight={result ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+            <SimulatorBadge simulator={result.simulator} />
+            <span style={{ fontSize: 13, color: '#3c3f42' }}>Sizing recommendation</span>
+          </div>
+        ) : undefined}
+      >
+        {primaryResult && (primaryResult.searchSummary || primaryResult.sweep?.windowMinGpus != null || !primaryResult.memoryAvailable) && (
+          <div style={{ fontSize: 13, color: '#3c3f42' }}>
+            {primaryResult.searchSummary && (
+              <span>
+                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
+              </span>
+            )}
+            {primaryResult.sweep?.windowMinGpus != null && primaryResult.sweep.windowMaxGpus != null && (
+              <div style={{ marginTop: primaryResult.searchSummary ? 4 : 0 }}>
+                {sweepCoverageLabel(primaryResult.sweep)}
+              </div>
+            )}
+            {!primaryResult.memoryAvailable && (
+              <div style={{ marginTop: primaryResult.searchSummary || primaryResult.sweep?.windowMinGpus != null ? 4 : 0 }}>
+                This simulator does not provide memory estimates; the memory tile is hidden.
+              </div>
+            )}
+          </div>
+        )}
+      </TestedPerformanceFeedback>
 
       {/* ─── Result tiles ─── */}
       {result && (
         <>
-          <div className={styles.card} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px' }}>
-            <SimulatorBadge simulator={result.simulator} />
-            <span style={{ fontSize: 13, color: '#3c3f42' }}>Sizing recommendation</span>
-            {result.searchSummary && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
-                Search: {result.searchSummary.strategy.replaceAll('_', ' ')} · {result.searchSummary.modes_searched?.join(' + ') ?? result.simulator} · tested {result.searchSummary.evaluated_configurations ?? result.searchSummary.evaluated_gpus.length} configurations across {result.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {result.searchSummary.effective_max_gpus} (configured {result.searchSummary.configured_max_gpus}, hardware {result.searchSummary.hardware_max_gpus}) · {result.searchSummary.time_budget_seconds}s{result.searchSummary.budget_exhausted ? ' budget reached' : ''}.
-              </span>
-            )}
-            {!result.memoryAvailable && (
-              <span style={{ fontSize: 13, color: '#3c3f42' }}>
-                This simulator does not provide memory estimates; the memory tile is hidden.
-              </span>
-            )}
-          </div>
           <div className={styles.tilesGrid}>
             {/* GPUs Required */}
             <FlipTile
@@ -828,8 +1255,14 @@ export default function Sizing() {
                   </span>
                   <span className={styles.tileSub}>
                     {result.mode === 'disagg'
-                      ? `${result.recommendation.replicasNeeded} replicas × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
-                      : `${parallelLabel(result.recommendation)} · ${result.performance.concurrency} concurrent users`}
+                      ? `${result.recommendation.replicasNeeded} ${result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} × ${result.recommendation.gpusPerReplica} GPUs/replica · ${result.performance.concurrency} concurrent users`
+                      : `${parallelLabel(result.recommendation)} · ${
+                          resultIsDemand
+                            ? `${result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'} observed concurrent`
+                            : resultIsCapacity
+                              ? `${result.capacity?.capacitySequences ?? result.performance.concurrency} sequences fit · ${result.capacity?.targetConcurrency ?? result.performance.concurrency} requested`
+                              : `${result.performance.concurrency} concurrent users`
+                        }`}
                   </span>
                 </>
               }
@@ -856,7 +1289,7 @@ export default function Sizing() {
                           .map(p => p.workers * p.gpusPerWorker)
                           .join(' + '))} = {result.recommendation.gpusPerReplica}
                       </span><br />
-                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} replicas = {result.recommendation.gpusNeeded} GPUs</span>
+                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} {result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} = {result.recommendation.gpusNeeded} GPUs</span>
                     </div>
                   </>
                 ) : (
@@ -873,44 +1306,176 @@ export default function Sizing() {
                       {result.recommendation.moeTensorParallelSize != null && result.recommendation.moeTensorParallelSize > 1 &&
                         <>expert tensor parallel (ETP) = <span className={styles.em}>{result.recommendation.moeTensorParallelSize}</span><br /></>}
                       gpus/worker = <span className={styles.em}>{result.recommendation.gpusPerReplica}</span><br />
-                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} replicas = {result.recommendation.gpusNeeded} GPUs</span>
+                      total = <span className={styles.em}>{result.recommendation.gpusPerReplica} × {result.recommendation.replicasNeeded} {result.recommendation.replicasNeeded === 1 ? 'replica' : 'replicas'} = {result.recommendation.gpusNeeded} GPUs</span>
                     </div>
                   </>
                 )
               }
             />
 
-            {/* TTFT */}
-            <FlipTile
-              front={
-                <>
-                  <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
-                  <span className={styles.tileValue} data-testid="recommend-ttft">
-                    {ttftMs}<span className={styles.tileUnit}>ms</span>
-                  </span>
-                  <span className={styles.tileSub}>
-                    {result.performance.ttftLatencyMs <= ttft ? (
-                      <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
-                    ) : (
-                      <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
-                    )}
-                  </span>
-                </>
-              }
-              back={
-                <>
-                  <div className={styles.backTitle}>Time to first token</div>
-                  <div className={styles.formula}>
-                    target: <span className={styles.em}>{ttft.toLocaleString()} ms</span><br />
-                    estimated: <span className={styles.em}>{result.performance.ttftLatencyMs.toFixed(1)} ms</span><br />
-                    headroom: <span className={styles.em}>{(ttft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
-                    TPOT: <span className={styles.em}>{result.performance.tpotMs.toFixed(1)} ms</span>
-                  </div>
-                </>
-              }
-            />
+            {/* Capacity outcome, demand outcome, or TTFT */}
+            {resultIsCapacity ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><MemoryIcon /> Capacity</span>
+                    <span className={styles.tileValue}>
+                      {result.capacity?.capacitySequences ?? '—'}<span className={styles.tileUnit}>seq</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.capacity?.fits ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>holds target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>
+                          short by {result.capacity?.shortfallSequences ?? '—'}
+                        </Label>
+                      )}
+                      <span> · target {result.capacity?.targetConcurrency ?? targetConcurrency} sequences</span>
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>Concurrency capacity</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{result.capacity?.targetConcurrency ?? targetConcurrency} sequences</span><br />
+                      context per sequence: <span className={styles.em}>
+                        {(result.capacity?.contextPerSequenceTokens ?? capacityContextTokens).toLocaleString()} tokens
+                      </span><br />
+                      KV capacity: <span className={styles.em}>
+                        {(result.capacity?.capacityTokens ?? 0).toLocaleString()} tokens
+                      </span><br />
+                      fits: <span className={styles.em}>{result.capacity?.capacitySequences ?? '—'} sequences</span><br />
+                      {result.capacity?.shortfallTokens != null && (
+                        <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} tokens</span><br /></>
+                      )}
+                      {result.capacity?.minimumGpus != null && (
+                        <>fewest GPUs for one sequence: <span className={styles.em}>{result.capacity.minimumGpus}</span><br /></>
+                      )}
+                      replicas: <span className={styles.em}>{result.capacity?.replicas ?? result.recommendation.replicasNeeded}</span>
+                      {result.capacity && result.capacity.attentionDp > 1 && (
+                        <> · attention DP: <span className={styles.em}>{result.capacity.attentionDp}</span></>
+                      )}
+                    </div>
+                    <p className={styles.formulaNote}>
+                      Capacity is decided by the KV-cache estimate for the selected aggregated shape.
+                      Performance is informational and never gates the fit.
+                    </p>
+                  </>
+                }
+              />
+            ) : resultIsDemand ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><TachometerAltIcon /> Demand</span>
+                    <span className={styles.tileValue}>
+                      {result.demand?.achievedRps != null
+                        ? result.demand.achievedRps.toFixed(1)
+                        : '—'}<span className={styles.tileUnit}>req/s</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.demand?.met === false ? (
+                        <>
+                          <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>
+                            below target
+                          </Label>
+                          <span> · target {result.demand?.targetRps ?? resultDemandRate} req/s</span>
+                        </>
+                      ) : result.demand?.met ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <span>target {resultDemandRate} req/s</span>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>Throughput demand</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{result.demand?.targetRps ?? resultDemandRate} req/s</span><br />
+                      sustained: <span className={styles.em}>
+                        {result.demand?.achievedRps != null ? `${result.demand.achievedRps.toFixed(2)} req/s` : 'not measured'}
+                      </span><br />
+                      best observed: <span className={styles.em}>
+                        {result.demand?.bestObservedRps != null ? `${result.demand.bestObservedRps.toFixed(2)} req/s` : '—'}
+                      </span><br />
+                      observed concurrency: <span className={styles.em}>
+                        {result.demand?.observedConcurrency != null ? result.demand.observedConcurrency.toFixed(1) : '—'}
+                      </span><br />
+                      arrival window: <span className={styles.em}>
+                        {result.demand?.windowSeconds != null ? `${result.demand.windowSeconds.toFixed(2)} s` : '—'}
+                      </span>
+                    </div>
+                    <p className={styles.formulaNote}>
+                      Sustained rate excludes the final response drain, so it is directly comparable to
+                      the offered rate.
+                    </p>
+                  </>
+                }
+              />
+            ) : resultRequestLatency != null ? (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><ClockIcon /> E2E latency</span>
+                    <span className={styles.tileValue}>
+                      {e2eLatencyMs.toLocaleString()}<span className={styles.tileUnit}>ms</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.performance.requestLatencyMs <= resultRequestLatency ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>End-to-end latency</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{resultRequestLatency.toLocaleString()} ms</span><br />
+                      estimated: <span className={styles.em}>{result.performance.requestLatencyMs.toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(resultRequestLatency - result.performance.requestLatencyMs).toFixed(1)} ms</span>
+                    </div>
+                  </>
+                }
+              />
+            ) : (
+              <FlipTile
+                front={
+                  <>
+                    <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
+                    <span className={styles.tileValue} data-testid="recommend-ttft">
+                      {ttftMs}<span className={styles.tileUnit}>ms</span>
+                    </span>
+                    <span className={styles.tileSub}>
+                      {result.performance.ttftLatencyMs <= resultTtft ? (
+                        <Label color="green" isCompact icon={<CheckCircleIcon />}>meets target</Label>
+                      ) : (
+                        <Label color="orange" isCompact icon={<ExclamationTriangleIcon />}>above target</Label>
+                      )}
+                    </span>
+                  </>
+                }
+                back={
+                  <>
+                    <div className={styles.backTitle}>Time to first token</div>
+                    <div className={styles.formula}>
+                      target: <span className={styles.em}>{resultTtft.toLocaleString()} ms</span><br />
+                      estimated: <span className={styles.em}>{result.performance.ttftLatencyMs.toFixed(1)} ms</span><br />
+                      headroom: <span className={styles.em}>{(resultTtft - result.performance.ttftLatencyMs).toFixed(1)} ms</span><br />
+                      TPOT: <span className={styles.em}>{result.performance.tpotMs.toFixed(1)} ms</span>
+                    </div>
+                  </>
+                }
+              />
+            )}
 
-            {/* Throughput */}
+            {/* Throughput (hidden when a capacity run had no performance simulation) */}
+            {(!resultIsCapacity || result.capacity?.performanceAvailable) && (
             <FlipTile
               front={
                 <>
@@ -919,7 +1484,9 @@ export default function Sizing() {
                     {tpsVal}<span className={styles.tileUnit}>tok/s</span>
                   </span>
                   <span className={styles.tileSub}>
-                    {result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · {result.throughput.tokensPerSecondPerUser.toFixed(2)}/user
+                    {resultIsDemand
+                      ? `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ≈ ${Math.round(resultDemandOutputTokPerSecond).toLocaleString()} demanded tok/s`
+                      : `${result.throughput.tokensPerSecondPerGpu.toFixed(1)}/GPU · ${result.throughput.tokensPerSecondPerUser.toFixed(2)}/user`}
                   </span>
                 </>
               }
@@ -935,6 +1502,7 @@ export default function Sizing() {
                 </>
               }
             />
+            )}
 
             {/* Peak memory per GPU (only when supplied by the selected simulator) */}
             {result.memoryAvailable && <FlipTile
@@ -1049,35 +1617,44 @@ export default function Sizing() {
                 </AccordionToggle>
                 <AccordionContent>
                   <div className={styles.cardBody}>
-                    <div className={styles.paramGrid}>
-                      <div>
-                        <div className={styles.fieldLabel}>Request latency</div>
-                        <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
-                          {(result.performance.requestLatencyMs / 1000).toFixed(1)}s
+                    {resultIsCapacity && !result.capacity?.performanceAvailable ? (
+                      <div style={{ fontSize: 13, color: '#3c3f42' }}>
+                        Performance simulation was unavailable for this configuration
+                        {result.capacity?.performanceUnavailableReason
+                          ? `: ${result.capacity.performanceUnavailableReason}`
+                          : ''}. The capacity result does not depend on it.
+                      </div>
+                    ) : (
+                      <div className={styles.paramGrid}>
+                        <div>
+                          <div className={styles.fieldLabel}>Request latency</div>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                            {(result.performance.requestLatencyMs / 1000).toFixed(1)}s
+                          </div>
+                          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                            End-to-end for {osl} output tokens
+                          </div>
                         </div>
-                        <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                          End-to-end for {osl} output tokens
+                        <div>
+                          <div className={styles.fieldLabel}>Concurrency</div>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                            {result.performance.concurrency}
+                          </div>
+                          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                            Concurrent users supported
+                          </div>
+                        </div>
+                        <div>
+                          <div className={styles.fieldLabel}>TPOT</div>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                            {result.performance.tpotMs.toFixed(1)} ms
+                          </div>
+                          <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                            Time per output token
+                          </div>
                         </div>
                       </div>
-                      <div>
-                        <div className={styles.fieldLabel}>Concurrency</div>
-                        <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
-                          {result.performance.concurrency}
-                        </div>
-                        <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                          Concurrent users supported
-                        </div>
-                      </div>
-                      <div>
-                        <div className={styles.fieldLabel}>TPOT</div>
-                        <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
-                          {result.performance.tpotMs.toFixed(1)} ms
-                        </div>
-                        <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                          Time per output token
-                        </div>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 </AccordionContent>
               </AccordionItem>
@@ -1100,6 +1677,32 @@ export default function Sizing() {
         </>
       )}
 
+      {/* ─── Capacity comparison (promote any option to the result above) ─── */}
+      {resultIsCapacity && capacityOptions.length > 0 && (
+        <CapacityOptionsPanel
+          options={capacityOptions}
+          selectedOptionId={selectedCapacityOption?.optionId ?? null}
+          gpuLabel={currentGpuOption?.label ?? gpuSystem}
+          onSelect={setSelectedCapacityOptionId}
+        />
+      )}
+
+      {/* ─── Pareto frontier (standalone action, exclusive of the sizing result) ─── */}
+      {runMode === 'pareto' && (
+        <FrontierPanel
+          state={frontier}
+          gpuLabel={
+            selectableGpus.find(option => option.systemId === params?.system)?.label
+            ?? params?.system
+            ?? currentGpuOption?.label
+            ?? gpuSystem
+          }
+          onRetry={handlePareto}
+          elapsed={elapsed}
+          timeoutSeconds={gatewayTimeout}
+        />
+      )}
+
       {/* ─── Debug panel ─── */}
       <DebugPanel
         request={debugRequest}
@@ -1114,30 +1717,11 @@ export default function Sizing() {
   );
 }
 
-// ─── Status chip ─────────────────────────────────────────────────────────────
-
-function StatusChip({ status }: { status: string }) {
-  if (status === 'idle') return null;
-  return null; // Chip is rendered inside the input wrapper instead
-}
-
-function recommendProgressMessages(progressHistory: RecommendProgressEvent[]): string[] {
-  return progressHistory.flatMap(progress => {
-    switch (progress.type) {
-      case 'search_started':
-        return [`Searching up to ${progress.maxGpus} GPUs`];
-      case 'window_started':
-        return [progress.window.minGpus === progress.window.maxGpus
-          ? `Evaluating ${progress.window.minGpus} GPU`
-          : `Evaluating ${progress.window.minGpus}–${progress.window.maxGpus} GPUs`];
-      case 'window_completed':
-        return [progress.candidateGpus == null
-          ? `${progress.window.minGpus}–${progress.window.maxGpus} GPUs — no qualifying configuration`
-          : `${progress.window.minGpus}–${progress.window.maxGpus} GPUs — provisional candidate at ${progress.candidateGpus} GPUs`];
-      case 'refining':
-        return [`Refining below ${progress.candidateGpus} GPUs: checking ${progress.window.minGpus}–${progress.window.maxGpus}`];
-      case 'completed':
-        return [];
-    }
-  });
+function sweepCoverageLabel(sweep: RecommendSweepMeta): string {
+  const min = sweep.windowMinGpus ?? 1
+  const max = sweep.windowMaxGpus ?? min
+  const range = min === max ? `${min} GPU${min === 1 ? '' : 's'}` : `${min}–${max} GPUs`
+  const evaluated = sweep.evaluated ?? 0
+  const budget = sweep.budgetExhausted ? ' · time budget reached' : ''
+  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}`
 }

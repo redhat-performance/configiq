@@ -1,71 +1,34 @@
 import { describe, expect, it } from 'vitest'
-import {
-  hasRentedCloudOffer,
-  resolveRentedCloudOffers,
-} from './cloud-offer-catalog'
+import { hasRentedCloudOffer, resolveRentedCloudOffers } from './cloud-offer-catalog'
+import { TEST_OFFERS, rentalOffer } from './__fixtures__/offers'
 
-const liveSystems = [
-  'a100_sxm',
-  'b200_sxm',
-  'b300_sxm',
-  'b60',
-  'gb200',
-  'gb300',
-  'h100_sxm',
-  'h200_sxm',
-  'l40s',
-  'rtx_pro_6000_server',
-]
-
-describe('complete rented cloud offers', () => {
-  it('has defensible stable whole-instance offers for seven of the ten live systems', () => {
-    const ready = liveSystems.filter(systemId => hasRentedCloudOffer(systemId))
-    expect(ready).toEqual([
-      'a100_sxm',
-      'b200_sxm',
-      'gb200',
-      'h100_sxm',
-      'h200_sxm',
-      'l40s',
-      'rtx_pro_6000_server',
-    ])
+describe('API-supplied rental eligibility', () => {
+  it('discovers supported systems from supplied offers, including future validated systems', () => {
+    expect(hasRentedCloudOffer([], 'l40s')).toBe(false)
+    expect(hasRentedCloudOffer(TEST_OFFERS.rented, 'l40s')).toBe(true)
+    expect(hasRentedCloudOffer([rentalOffer({ systemId: 'future' })], 'future')).toBe(true)
   })
-
-  it('retains different whole-instance sizes until after sizing', () => {
-    const offers = resolveRentedCloudOffers('l40s')
+  it('retains whole-instance sizes and exact prices', () => {
+    const offers = resolveRentedCloudOffers(TEST_OFFERS.rented, 'l40s')
     expect(new Set(offers.map(offer => offer.gpuCount))).toEqual(new Set([1, 4, 8]))
-    expect(offers.every(offer => offer.hourlyCost > 0)).toBe(true)
+    expect(offers.find(offer => offer.id === 'aws-g6e-xlarge')?.hourlyCost).toBe(1.861)
   })
-
-  it('keeps the exact instance price and provenance rather than an aggregate family rate', () => {
-    const offers = resolveRentedCloudOffers('a100_sxm')
-    const awsOffer = offers.find(offer => offer.id === 'aws-p4de-24xlarge')
-
-    expect(awsOffer).toMatchObject({
-      providerRegion: 'aws.us-east-1',
-      instanceName: 'EC2 p4de.24xlarge',
-      hourlyCost: 40.96,
-      sourceLabel: 'AWS P4de public On-Demand price',
-    })
+  it('honors exact provider regions, then provider, without inventing missing offers', () => {
+    for (const [preference, provider] of [['aws.us-east-1', 'aws'], ['coreweave.other', 'coreweave']]) {
+      const offers = resolveRentedCloudOffers(TEST_OFFERS.rented, 'l40s', preference)
+      expect(offers.length).toBeGreaterThan(0)
+      expect(offers.every(offer => offer.provider === provider)).toBe(true)
+    }
+    expect(resolveRentedCloudOffers([], 'l40s', 'aws.us-east-1')).toEqual([])
   })
-
-  it('honors the selected provider without collapsing its instance shapes', () => {
-    const offers = resolveRentedCloudOffers('a100_sxm', 'gcp.us-central1')
-    expect(offers.every(offer => offer.provider === 'gcp')).toBe(true)
-    expect(new Set(offers.map(offer => offer.gpuCount))).toEqual(new Set([1, 2, 4, 8]))
-  })
-
-  it('does not let a spot rate silently beat stable on-demand offers', () => {
-    const offers = resolveRentedCloudOffers('h200_sxm')
-    expect(offers.some(offer => offer.rateKind === 'spot')).toBe(false)
-  })
-
-  it('does not treat a spot-only system as cost-ready by default', () => {
-    expect(resolveRentedCloudOffers('b300_sxm')).toEqual([])
-    expect(hasRentedCloudOffer('b300_sxm')).toBe(false)
-  })
-
-  it('does not rank a system without a complete instance identity', () => {
-    expect(resolveRentedCloudOffers('gb300')).toHaveLength(0)
+  it('does not silently rank spot, committed blocks or inference-only prices as general rentals', () => {
+    expect(resolveRentedCloudOffers(TEST_OFFERS.rented, 'l40s').some(offer => offer.id === 'restricted')).toBe(false)
+    expect(hasRentedCloudOffer(TEST_OFFERS.rented, 'b300_sxm')).toBe(false)
+    expect(resolveRentedCloudOffers(TEST_OFFERS.rented, 'gb300')).toEqual([])
+    const restrictedProvider = [rentalOffer({ provider: 'restricted', providerRegion: 'restricted.region', eligibility: 'inference_platform' }), rentalOffer()]
+    expect(resolveRentedCloudOffers(restrictedProvider, 'l40s', 'restricted.region')).toEqual([restrictedProvider[1]])
+    const conditional = [rentalOffer({ provider: 'restricted', providerRegion: 'restricted.region', rateKind: 'capacity_block' }), rentalOffer()]
+    expect(resolveRentedCloudOffers(conditional, 'l40s', 'restricted.region')).toEqual([conditional[1]])
+    expect(hasRentedCloudOffer(conditional.slice(0, 1), 'l40s')).toBe(false)
   })
 })

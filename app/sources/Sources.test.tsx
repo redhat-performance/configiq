@@ -18,7 +18,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
   localStorage.clear()
   vi.mocked(useSettings).mockReturnValue({
-    hydrated: true, defaultModel: '', testedModels: [], hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
+    hydrated: true, defaultModel: '', hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: false, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(), setBackendVersion: vi.fn(),
     setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(), setPricingSource: vi.fn(),
@@ -39,15 +39,15 @@ async function click(text: string) {
 }
 
 describe('Sources shared assumptions', () => {
-  it('keeps the editor available without requesting live pricing when costings is disabled', async () => {
+  it('shows live sources and one assumptions editor without the experimental toggle', async () => {
     await render()
-    expect(host.textContent).toContain('Costings features are disabled')
-    expect(host.textContent).not.toContain('Pricing data sources')
+    expect(host.textContent).toContain('Pricing data sources')
+    expect(host.textContent).not.toContain('Costings features are disabled')
     expect(host.querySelectorAll('#cost-assumptions')).toHaveLength(1)
-    expect(useCostings).toHaveBeenCalledWith(false, 'merged')
-    expect(fetch).not.toHaveBeenCalled()
+    expect(useCostings).toHaveBeenCalledWith(true, 'merged')
+    expect(fetch).toHaveBeenCalled()
   })
-  it('allows editing and resetting saved overrides with costings disabled', async () => {
+  it('allows editing and resetting saved overrides', async () => {
     localStorage.setItem(COST_ASSUMPTIONS_STORAGE_KEY, JSON.stringify({ hardwareLifeYears: 6 }))
     await render(); await click('Purchased hardware')
     const field = host.querySelector<HTMLInputElement>('#cost-assumption-hardwareLifeYears')!
@@ -62,13 +62,5 @@ describe('Sources shared assumptions', () => {
     await click('Reset assumptions'); await click('Purchased hardware')
     expect(host.querySelector<HTMLInputElement>('#cost-assumption-hardwareLifeYears')!.value).toBe('4')
     expect(JSON.parse(localStorage.getItem(COST_ASSUMPTIONS_STORAGE_KEY)!)).toEqual({})
-    expect(fetch).not.toHaveBeenCalled()
-  })
-  it('renders only one editor when live costings is enabled', async () => {
-    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), costingsEnabled: true })
-    await render()
-    expect(host.textContent).toContain('Pricing data sources')
-    expect(host.querySelectorAll('#cost-assumptions')).toHaveLength(1)
-    expect(useCostings).toHaveBeenCalledWith(true, 'merged')
   })
 })

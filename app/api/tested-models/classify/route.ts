@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { buildFeatureVector } from '@/lib/tested-models/feature-vector'
+import { backendFamily, buildFeatureVector } from '@/lib/tested-models/feature-vector'
 import type { CanonicalClassifierInput, ClassifierStatus } from '@/lib/tested-models/types'
 import { modelStatus, readTestedModelsRegistry, type RegistryPair } from '@/lib/tested-models/registry'
 import { testedModelsFilterHref, testedPairHref } from '@/lib/tested-models/links'
@@ -71,6 +71,17 @@ export async function POST(request: Request) {
 
   const dashboardHref = testedPairHref(pair.id)
   const boundaryHref = testedPairHref(pair.id, 'boundary')
+  const requestedBackend = backendFamily(input.effective.backend)
+  const measuredBackends = pair.coverage?.backends ?? []
+  if (requestedBackend !== 'unknown' && measuredBackends.length > 0 && !measuredBackends.includes(requestedBackend)) {
+    return unavailable(
+      [
+        `Measurements for ${modelId} on ${systemId} cover ${measuredBackends.join(', ')}, not ${requestedBackend}. No classifier verdict is available for this backend.`,
+      ],
+      'no_measurements',
+      { pair_id: pair.id, dashboard_href: dashboardHref, boundary_href: boundaryHref },
+    )
+  }
   if (pair.status !== 'validated') {
     return unavailable(
       [

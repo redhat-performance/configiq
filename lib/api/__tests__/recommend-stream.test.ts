@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { readRecommendStream } from '../recommend-stream'
 
 function streamResponse(chunks: string[], status = 200): Response {
@@ -15,8 +15,7 @@ function streamResponse(chunks: string[], status = 200): Response {
 }
 
 describe('readRecommendStream', () => {
-  it('reads progress and a completed recommendation across chunk boundaries', async () => {
-    const onProgress = vi.fn()
+  it('reads the completed recommendation across chunk boundaries', async () => {
     const completed = {
       type: 'completed',
       response: {
@@ -26,22 +25,17 @@ describe('readRecommendStream', () => {
       },
     }
     const response = streamResponse([
-      'event: window_started\r',
-      '\ndata: {"type":"window_started","window":{"minGpus":1,',
-      '"maxGpus":1}}\r\n\r\nevent: completed\r\ndata: ',
+      'event: started\r',
+      '\ndata: {"type":"started"}\r\n\r\nevent: completed\r\ndata: ',
       `${JSON.stringify(completed)}\r\n\r\n`,
     ])
 
-    await expect(readRecommendStream(response, onProgress)).resolves.toEqual(completed.response)
-    expect(onProgress).toHaveBeenCalledWith({
-      type: 'window_started',
-      window: { minGpus: 1, maxGpus: 1 },
-    })
+    await expect(readRecommendStream(response)).resolves.toEqual(completed.response)
   })
 
   it('reports a stream that ends without a terminal result', async () => {
     const response = streamResponse([
-      'event: search_started\ndata: {"type":"search_started","maxGpus":1024}\n\n',
+      'event: started\ndata: {"type":"started"}\n\n',
     ])
 
     await expect(readRecommendStream(response)).rejects.toThrow(

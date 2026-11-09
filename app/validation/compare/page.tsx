@@ -148,12 +148,12 @@ async function mapWithLimit<T, R>(
 
 export default function GroundTruthComparisonPage() {
   const { simulator } = useSettings()
-  const { gpuOptions, modelOptions, modelSpecs, backendOptions, simulatorSupport, isLoading: catalogLoading, error: catalogError } = useCatalog()
+  const { gpuOptions, modelOptions, modelSpecs, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading, error: catalogError } = useCatalog()
   const support = simulatorSupport[simulator]
   const predictionBackendOptions = support?.backends ?? backendOptions
   const predictionModelIds = support?.models ?? modelOptions
   const predictionSystemIds = support?.systems ?? gpuOptions.map(gpu => gpu.systemId)
-  const simulatorLabel = simulator === 'blis' ? 'BLIS' : 'AISimulate'
+  const simulatorLabel = simulators.find(entry => entry.id === simulator)?.label ?? simulator
   const [filters, setFilters] = React.useState<GroundTruthFilters>(EMPTY_FILTERS)
   const [filterOptions, setFilterOptions] = React.useState<Record<GroundTruthFilterKey, string[]>>({
     accelerator: [], model: [], backend: [], backendVersion: [], isl: [], osl: [], tp: [],
@@ -253,15 +253,15 @@ export default function GroundTruthComparisonPage() {
         return data.configurations?.length === 1 ? data.configurations[0].key : ''
       })
       setNotice(data.groundTruthError ? {
-        variant: 'warning', title: 'Internal GT unavailable',
+        variant: 'warning', title: 'Red Hat data unavailable',
         message: `InferenceX measurements remain available. ${data.groundTruthError}`,
       } : data.inferencexError ? {
         variant: 'warning', title: 'InferenceX unavailable',
-        message: `Internal GT measurements remain available. ${data.inferencexError}`,
+        message: `Red Hat measurements remain available. ${data.inferencexError}`,
       } : refresh ? {
         variant: 'success',
         title: 'Dataset refreshed',
-        message: `${(data.source?.rowCount ?? 0).toLocaleString('en-US')} internal GT rows and ${(data.inferencexSource?.rowCount ?? 0).toLocaleString('en-US')} InferenceX rows available.`,
+        message: `${(data.source?.rowCount ?? 0).toLocaleString('en-US')} Red Hat rows and ${(data.inferencexSource?.rowCount ?? 0).toLocaleString('en-US')} InferenceX rows available.`,
       } : null)
     } catch (error) {
       if (requestId === filterRequestId.current) {
@@ -536,7 +536,9 @@ export default function GroundTruthComparisonPage() {
   const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
   const measuredCount = new Set([...groundTruth, ...inferencex].map(point => point.concurrency)).size
   const safeInferenceXRuns = inferencexRuns.filter(run => isHttpsUrl(run.url))
-  const predictionLabel = predictedBy === 'blis' ? 'BLIS' : predictedBy === 'aisimulate' ? 'AISimulate' : simulatorLabel
+  const predictionLabel = predictedBy == null
+    ? simulatorLabel
+    : simulators.find(entry => entry.id === predictedBy)?.label ?? predictedBy
 
   return (
     <PageSection className={styles.page}>
@@ -551,7 +553,7 @@ export default function GroundTruthComparisonPage() {
         {(source || inferencexSource) && (
           <div className={styles.sourceBadges}>
             {source && <div className={styles.sourceBadge}>
-              <a href={source.url} target="_blank" rel="noreferrer">Internal GT · Hugging Face</a>
+              <a href={source.url} target="_blank" rel="noreferrer">Benchmark data from Red Hat · Hugging Face</a>
               <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
             </div>}
             {inferencexSource && <div className={styles.sourceBadge}>
@@ -620,7 +622,7 @@ export default function GroundTruthComparisonPage() {
                   placeholderIsSelectable
                   options={filterOptions[key].map(value => ({ value, label: optionLabel(key, value) }))}
                 />
-                {key === 'backendVersion' && <p className={styles.helperText}>Shared measurement version for internal GT and InferenceX. The AISimulators prediction version is selected separately below.</p>}
+                {key === 'backendVersion' && <p className={styles.helperText}>Shared measurement version for Red Hat and InferenceX. The AISimulators prediction version is selected separately below.</p>}
               </>}
             </div>
           ))}
@@ -762,7 +764,7 @@ export default function GroundTruthComparisonPage() {
             <p>{measuredCount > 0 ? `${measuredCount} measured concurrency levels` : 'Run a comparison to load measured and predicted performance.'}</p>
           </div>
           <div className={styles.legend} aria-label="Chart series">
-            {groundTruth.length > 0 && <span><i className={styles.groundTruthSwatch} />Internal GT</span>}
+            {groundTruth.length > 0 && <span><i className={styles.groundTruthSwatch} />Red Hat</span>}
             {inferencex.length > 0 && <span><i className={styles.inferencexSwatch} />InferenceX · SemiAnalysis</span>}
             {estimates.length > 0 && <span><i className={styles.aisimSwatch} />{predictionLabel} · {activePredictionBackend} {activePredictionVersion}{predictionRuntimeMismatch ? ' (different backend/version)' : ''}</span>}
           </div>
@@ -783,7 +785,7 @@ export default function GroundTruthComparisonPage() {
         ) : (
           <div className={styles.emptyResults}>
             <h3>Choose benchmark inputs to begin</h3>
-            <p>Select an internal GT or InferenceX runtime configuration to compare its measurements with AISimulators predictions.</p>
+            <p>Select a Red Hat or InferenceX runtime configuration to compare its measurements with AISimulators predictions.</p>
           </div>
         )}
       </section>

@@ -47,3 +47,5 @@ __pycache__/
 # Playwright output
 playwright-report/
 test-results/
+# Local-only dev scratch (container runner, logs)
+.local-dev/

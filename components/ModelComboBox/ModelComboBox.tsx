@@ -15,6 +15,7 @@ import {
 } from '@patternfly/react-core'
 import TimesIcon from '@patternfly/react-icons/dist/esm/icons/times-icon'
 import { getAppConfig } from '@/lib/app-config'
+import { contextChip, paramsChip } from '@/lib/model-chips'
 import type { ModelFacets } from '@/lib/model-metadata'
 import { searchModels } from '@/lib/model-search'
 import styles from './ModelComboBox.module.css'
@@ -49,6 +50,8 @@ interface ComboBoxProps {
   label?: string
   portalMenu?: boolean
   preserveOrder?: boolean
+  /** When set, prepend an option with an empty value that clears the filter. */
+  allLabel?: string
 }
 
 interface GroupedItems {
@@ -66,22 +69,6 @@ function groupItems(items: ComboBoxItem[], preserveOrder: boolean): GroupedItems
     group,
     items: preserveOrder ? groupItems : groupItems.toSorted((a, b) => a.label.localeCompare(b.label)),
   })).toSorted((a, b) => a.group.localeCompare(b.group))
-}
-
-/** Compact parameter count for a chip: 0.6B, 32B, 2.4T. Matches modelSizeLabel. */
-function paramsChip(paramsB: number | null): string | null {
-  if (paramsB === null) return null
-  if (paramsB >= 1_000) return `${Number((paramsB / 1_000).toFixed(2))}T`
-  if (paramsB >= 0.1) return `${Number(paramsB.toFixed(1))}B`
-  return `${Math.round(paramsB * 1_000)}M`
-}
-
-/** Compact context window for a chip: 128K, 1M. */
-function contextChip(contextLength: number | null): string | null {
-  if (!contextLength) return null
-  if (contextLength >= 1_048_576) return `${Number((contextLength / 1_048_576).toFixed(1))}M ctx`
-  if (contextLength >= 1_024) return `${Math.round(contextLength / 1_024)}K ctx`
-  return `${contextLength} ctx`
 }
 
 function suggestedNames(): string {
@@ -127,7 +114,7 @@ function RowMeta({ item }: { item: ComboBoxItem }) {
   )
 }
 
-export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false }: ComboBoxProps) {
+export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel }: ComboBoxProps) {
   const [open, setOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
   const [supportedOnly, setSupportedOnly] = React.useState(false)
@@ -161,8 +148,6 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     }
   }
 
-  const selectedItem = activeItems.find(i => i.value === value)
-
   const isSearching = filter.trim().length > 0
   const modelSearch = activeItems.every(isModelItem)
   const filtered = React.useMemo(() => {
@@ -173,19 +158,27 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
       .some(text => text?.toLowerCase().includes(query)))
   }, [activeItems, filter])
 
+  const allItem = React.useMemo<ComboBoxItem | null>(
+    () => (allLabel ? { value: '', label: allLabel, group: '' } : null),
+    [allLabel],
+  )
+  const selectedItem = allItem && value === '' ? allItem : activeItems.find(i => i.value === value)
+
   /**
    * Browsing groups by vendor. Searching returns one relevance-ranked list —
-   * regrouping a ranked set would sort the best match back under "Q".
+   * regrouping a ranked set would sort the best match back under "Q". The
+   * "all" option is only offered while browsing.
    */
   const groups = React.useMemo<GroupedItems[]>(
     () => {
-      if (!isSearching || !modelSearch) return groupItems(filtered, preserveOrder)
+      const visible = allItem && !isSearching ? [allItem, ...filtered] : filtered
+      if (!isSearching || !modelSearch) return groupItems(visible, preserveOrder)
       // A single unlabelled group, and none at all when nothing matched, so
       // the "No matches" row below still renders.
-      if (filtered.length === 0) return []
-      return [{ group: '', items: filtered }]
+      if (visible.length === 0) return []
+      return [{ group: '', items: visible }]
     },
-    [filtered, isSearching, modelSearch, preserveOrder],
+    [allItem, filtered, isSearching, modelSearch, preserveOrder],
   )
 
   const flatItems = React.useMemo(() => groups.flatMap(g => g.items), [groups])

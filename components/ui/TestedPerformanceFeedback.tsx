@@ -2,6 +2,7 @@
 
 import { Label } from '@patternfly/react-core'
 import Link from 'next/link'
+import type { ReactNode } from 'react'
 import type { ClassifierStatus, ClassifierPrediction } from '@/lib/tested-models/types'
 import { testedPairHref, testedModelsFilterHref } from '@/lib/tested-models/links'
 
@@ -10,6 +11,10 @@ interface TestedPerformanceFeedbackProps {
   isLoading?: boolean
   modelId?: string
   systemId?: string
+  /** Result provenance shown right-aligned on the status row, e.g. the simulator badge. */
+  headerRight?: ReactNode
+  /** Supporting detail shown below the validation message, e.g. search summary. */
+  children?: ReactNode
 }
 
 const STATUS_DETAILS: Record<ClassifierStatus, { label: string; color: 'green' | 'orange' | 'red' | 'blue' | 'grey' }> = {
@@ -29,12 +34,32 @@ const BORDER_COLOR: Record<'green' | 'orange' | 'red' | 'blue' | 'grey', string>
   grey: '#8a8d90',
 }
 
-export function TestedPerformanceFeedback({ prediction, isLoading = false, modelId, systemId }: TestedPerformanceFeedbackProps) {
-  if (!prediction && !isLoading) return null
+export function TestedPerformanceFeedback({ prediction, isLoading = false, modelId, systemId, headerRight, children }: TestedPerformanceFeedbackProps) {
+  if (!prediction && !isLoading && !headerRight && !children) return null
   if (!prediction && isLoading) {
-    return <div style={{ marginBottom: 20, color: '#3c3f42', fontSize: 13 }}>Checking the tested performance envelope...</div>
+    if (!headerRight && !children) {
+      return <div style={{ marginBottom: 20, color: '#3c3f42', fontSize: 13 }}>Checking the tested performance envelope...</div>
+    }
+    return (
+      <div style={{ marginBottom: 20, padding: '14px 18px', border: '1px solid #d2d2d2', borderLeft: '4px solid #8a8d90', background: '#fff' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <span style={{ color: '#3c3f42', fontSize: 13 }}>Checking the tested performance envelope...</span>
+          {headerRight}
+        </div>
+        {children && <div style={{ marginTop: 8 }}>{children}</div>}
+      </div>
+    )
   }
-  if (!prediction) return null
+  if (!prediction) {
+    return (
+      <div style={{ marginBottom: 20, padding: '14px 18px', border: '1px solid #d2d2d2', background: '#fff' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          {headerRight}
+        </div>
+        {children && <div style={{ marginTop: 8 }}>{children}</div>}
+      </div>
+    )
+  }
 
   const detail = STATUS_DETAILS[prediction.status]
   if (!detail) return null
@@ -64,9 +89,12 @@ export function TestedPerformanceFeedback({ prediction, isLoading = false, model
 
   return (
     <div style={{ marginBottom: 20, padding: '14px 18px', border: '1px solid #d2d2d2', borderLeft: `4px solid ${BORDER_COLOR[detail.color]}`, background: '#fff' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <Label color={detail.color} isCompact>{detail.label}</Label>
-        {confidence && <span style={{ color: '#3c3f42', fontSize: 12 }}>{confidence}</span>}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Label color={detail.color} isCompact>{detail.label}</Label>
+          {confidence && <span style={{ color: '#3c3f42', fontSize: 12 }}>{confidence}</span>}
+        </div>
+        {headerRight}
       </div>
       <div style={{ color: '#3c3f42', fontSize: 14 }}>{message}</div>
       {prediction.reasons.length > 0 && prediction.status !== 'within_validated_range' && (
@@ -74,6 +102,7 @@ export function TestedPerformanceFeedback({ prediction, isLoading = false, model
           {prediction.reasons.map(reason => <li key={reason}>{reason}</li>)}
         </ul>
       )}
+      {children && <div style={{ marginTop: 8 }}>{children}</div>}
       {href && (
         <Link href={href} style={{ display: 'inline-block', marginTop: 8, color: '#0066cc', fontSize: 13 }}>
           {linkLabel}

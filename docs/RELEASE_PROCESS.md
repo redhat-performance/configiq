@@ -39,11 +39,17 @@ Keep the image versions compatible when releasing the frontend and services.
 ## Version Display in UI
 
 The sidebar footer shows:
-- **Version**: From git tag (via `NEXT_PUBLIC_GIT_VERSION`)
-- **Commit**: Short git hash (via `NEXT_PUBLIC_GIT_COMMIT`)
-- **Build time**: UTC timestamp (via `NEXT_PUBLIC_BUILD_TIME`)
+- **ConfigIQ build**: version (from git tag, via `NEXT_PUBLIC_GIT_VERSION`) and
+  short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
+- **Every simulator**: label, version, and git commit, from `GET /simulators`,
+  in that endpoint's order. Each simulator reports the commit of the artifact
+  this image runs: AISimulate's comes from the SDK wheel's direct-URL release
+  tag; BLIS's from the `BLIS_COMMIT` build arg. `revision` is null when the
+  artifact does not report a commit, and the footer then shows the version
+  only.
 
-These are injected at build time by `scripts/inject-build-metadata.js`.
+The footer lives in `components/layout/AppShell.tsx` and reads simulator identity
+from the catalog API, so adding a simulator needs no footer change.
 
 ## Container Tags
 
@@ -74,19 +80,20 @@ Published containers:
 
 ## Bumping the simulation SDK
 
-The `aisimulators` and `aicostings` services install the **aisimulate** SDK as a
+The `aisimulators` and `aicostings` services install the **aisim** SDK as a
 single unified wheel from the Red Hat `redhat-performance/aisimulate` fork's
-GitHub Release assets — not PyPI. The one wheel bundles the Rust-compiled core
-and provides the `aisimulate` / `aisimulate_core` namespaces the services import
-(`aisimulators` directly for sizing;
-`aicostings` indirectly via `configiq.systems` for the GPU catalog). It is
-referenced by **exact download URL** rather than `name==version`, because the
-wheel is published only via the fork's Release (never PyPI); a direct URL forces
-pip to install that exact artifact.
+GitHub Release assets — not PyPI. The distribution is named `aisim`, while the
+import packages keep their historical names: the services import the
+`aisimulate` / `aisimulate_core` namespaces (`aisimulators` directly for
+sizing; `aicostings` indirectly via `configiq.systems` for the GPU catalog). It
+is referenced by **exact download URL** rather than `name==version`, because
+the wheel is published only via the fork's Release (never PyPI); a direct URL
+forces pip to install that exact artifact. The requirement name must match the
+wheel metadata (`aisim @ …/aisim-<version>-…whl`), or the install is rejected.
 
-To move to a new SDK build, update the single `aisimulate @ …` wheel URL — keep
-it **identical in both files** — in `[project.dependencies]`, then regenerate
-each `uv.lock` (`uv lock`):
+To move to a new SDK build, update the single `aisim @ …` wheel URL — keep it
+**identical in both files** — in `[project.dependencies]`, then regenerate each
+`uv.lock` (`uv lock`):
 
 1. `services/aisimulators/pyproject.toml`
 2. `services/aicostings/pyproject.toml`
@@ -96,63 +103,59 @@ The URL points at a specific `deploy-api-v<version>+<hash>` release asset (the
 so rebuilds are reproducible. The wheel is produced by the fork's
 `deploy-api-wheels.yml` workflow on its `deploy/api` branch.
 
-> **Note:** the aisimulate wheel pulls in a large JAX/optimization dependency
+> **Note:** the aisim wheel pulls in a large JAX/optimization dependency
 > stack (jax, jaxlib, optax, google-vizier, tfp-nightly) as base dependencies,
 > so both service images are substantially larger than under the previous
 > two-wheel aiconfigurator 0.11/0.12 SDK.
 
 After bumping the SDK, rebuild the `aisimulators` image before assuming the new
-model configs are live: its build merges the wheel's configs into the BLIS
-catalog and regenerates `/opt/blis/support.json`. Check the exporter's summary
-(`N added, M shared, K skipped`) and the `skipped` list in the manifest for
-configs that stopped loading.
+model configs are live. BLIS does not read the wheel's model configs: it prices
+only models in the pinned blis-catalog, so an SDK model absent from the catalog
+is an explicit unsupported response rather than a build-time import.
 
 ## Bumping BLIS
 
-BLIS is built from source inside `services/aisimulators/Containerfile`; there is
-no published BLIS image to copy. Upstream's own `Dockerfile` named a Go base
-older than its `go.mod` required, so the v0.12.0 through v0.14.0 images were never
-published — do not expect a GHCR tag to appear for a release.
+BLIS is copied from the upstream multi-arch release image
+`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. The Containerfile
+also clones the catalog and registry at commits, because their pins advance
+independently of the binary:
 
-The build pins five things as `ARG`s at the top of the Containerfile, each a
-commit rather than a tag:
-
-| Argument | Upstream repo |
+| Argument | Upstream |
 |---|---|
-| `BLIS_COMMIT` | `inference-sim/inference-sim` |
-| `BLIS_VERSION` | the release the image reports (`/backends`, provenance) |
-| `BLIS_GO_VERSION` | the `golang:<version>-alpine` builder base |
+| `BLIS_IMAGE` | `ghcr.io/inference-sim/blis:vX.Y.Z@sha256:…` |
+| `BLIS_VERSION` | the release the image reports (`/simulators`, `/backends`, provenance) |
+| `BLIS_COMMIT` | the upstream git commit the release tag was built from (`/simulators` revision) |
 | `BLIS_CATALOG_COMMIT` | `inference-sim/blis-catalog` |
 | `BLIS_REGISTRY_COMMIT` | `inference-sim/blis-registry` |
 
 To move to a new BLIS release:
 
-1. Read the release's `go.mod` and set `BLIS_GO_VERSION` to its `go` directive;
-   a mismatch fails the image build with a Go toolchain error.
-2. Set `BLIS_COMMIT` and the human-facing `BLIS_VERSION` to the release tag's
-   commit and version, and bump the catalog and registry commits to the releases
-   that release is tested against (its `README.md` names them).
+1. Resolve the release image's multi-arch index digest and put the tag plus
+   digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release. The
+   Containerfile fails the build when the `BLIS_IMAGE` tag and `BLIS_VERSION`
+   disagree, so the reported version cannot drift from the binary. Set
+   `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
+   vX.Y.Z`): the release binary embeds no revision, so this is the only source
+   for the git commit the footer shows. The default `BLIS_VERSION` may omit it,
+   because the service resolves the default release's commit; any other release
+   without a commit reports no revision.
+2. Bump the catalog and registry commits to the releases that BLIS tag is tested
+   against (its `README.md` names them).
 3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and
    `ENGINE_VERSION_SUPPORT` in `tools/api_service/blis/scenario.py` if the
    release changes which vLLM versions it models. The API refuses any
    `backend_version` outside that set rather than substituting one.
-4. Rebuild the image and confirm the exporter summary is plausible. A release
-   that adds an architecture the catalog's `scripts/derive_graph.py` cannot
-   derive will show up under `skipped` in `/opt/blis/support.json` rather than
-   disappearing.
-5. Verify the merged catalog still loads through BLIS's production loader by
-   running `scripts/catalog-load-gate.sh` from the BLIS checkout with
-   `BLIS_CATALOG` pointing at the merged catalog.
+4. Rebuild the image and confirm the new binary reports the release:
+   `/usr/local/bin/blis --help`, then `GET /simulators` and
+   `GET /backends?simulator=blis`.
+5. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
+   then a BLIS `/predict` for a listed model) so a catalog/binary mismatch fails
+   before deployment.
 
 BLIS never fetches at run time, so the catalog and registry must be baked into
-the image. `/opt/blis/support.json` is the API contract: which models BLIS can
-price, where each came from, how an AISimulate config relates to a same-named
-upstream entry, which hardware and fabrics are bundled, and which `aisimulate`
-wheel supplied the configs.
-
-> **Note:** ConfigIQ deliberately keeps building BLIS from source. A published
-> image would need upstream to fix its Go base first, and would give up the
-> per-release catalog/registry pins the exporter relies on.
+the image. The catalog is read directly by the API and is the only source of
+BLIS support facts: models with a derived `graph.yaml`, hardware files, and
+network files.
 
 
 ## Deployment
@@ -177,8 +180,10 @@ podman pull ghcr.io/redhat-performance/configiq:dev
 ## Tested-model bundle releases
 
 Tested-model classifiers are data artifacts, not container-image contents. The
-`tested-models.yml` workflow builds a sanitized bundle from the pinned
-`TESTED_DATASET_REVISION` and uploads it as a workflow artifact. Follow
+`tested-models.yml` workflow builds a sanitized bundle from the ground-truth
+dataset's current default branch (resolved to an immutable commit SHA) and
+uploads it as a workflow artifact. The publish workflow dispatches that build
+when it uploads changed data; manual dispatches can pin a `revision`. Follow
 [`docs/tested-models.md`](tested-models.md) to publish ground truth, reproduce
 the build, and install the bundle with `configiq-deploy/deploy-tested-models.sh`.
 

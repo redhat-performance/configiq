@@ -33,12 +33,14 @@ import {
   ListIcon,
   ChartLineIcon,
 } from "@patternfly/react-icons";
-import { getVersionString, getBuildTimeString, getShortCommit } from "@/lib/version";
+import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
+import { useCatalog } from "@/lib/hooks/useCatalog";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { costingsEnabled } = useSettings();
+  const { simulators } = useCatalog();
 
   const masthead = (
     <Masthead display={{ default: 'inline' }} style={{ backgroundColor: "#1a1a1a", borderBottom: "1px solid #2d2d2d" }}>
@@ -215,7 +217,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               isActive={pathname === "/validation/compare"}
             />
 
-            {costingsEnabled && <>
             <div style={groupLabelStyle}>COSTINGS</div>
 
             <NavItemWithIcon
@@ -224,19 +225,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/hybrid-savings"
               isActive={pathname === "/hybrid-savings"}
             />
-            <NavItemWithIcon
-              icon={CubesIcon}
-              label="Cluster cost"
-              href="/cluster-cost"
-              isActive={pathname === "/cluster-cost"}
-            />
-            <NavItemWithIcon
-              icon={RouteIcon}
-              label="Routing economics"
-              href="/routing"
-              isActive={pathname === "/routing"}
-            />
-            </>}
+            {costingsEnabled && (
+              <>
+                <NavItemWithIcon
+                  icon={CubesIcon}
+                  label="Cluster cost"
+                  href="/cluster-cost"
+                  isActive={pathname === "/cluster-cost"}
+                />
+                <NavItemWithIcon
+                  icon={RouteIcon}
+                  label="Routing economics"
+                  href="/routing"
+                  isActive={pathname === "/routing"}
+                />
+              </>
+            )}
 
             <div style={groupLabelStyle}>SYSTEM</div>
 
@@ -246,18 +250,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/settings"
               isActive={pathname === "/settings"}
             />
-            {costingsEnabled && (
-              <NavItemWithIcon
-                icon={DatabaseIcon}
-                label="Sources"
-                href="/sources"
-                isActive={pathname === "/sources"}
-              />
-            )}
+            <NavItemWithIcon
+              icon={DatabaseIcon}
+              label="Sources"
+              href="/sources"
+              isActive={pathname === "/sources"}
+            />
           </NavList>
         </Nav>
 
-        {/* Version Footer */}
+        {/* Version Footer
+            Intentional typography exception: this is chrome, not console
+            content, and stays at 11px/10px rather than the 11.5px floor. */}
         <div style={{
           position: 'absolute',
           bottom: 0,
@@ -270,10 +274,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           color: 'rgba(255,255,255,0.4)',
           lineHeight: '1.4'
         }}>
-          <div>{getVersionString()} · {getShortCommit()}</div>
-          <div style={{ fontSize: '10px', marginTop: '2px' }}>
-            {getBuildTimeString()}
-          </div>
+          <div>ConfigIQ {getVersionString()} · {getShortCommit()}</div>
+          {simulators.map(simulator => (
+            <div key={simulator.id} style={{ fontSize: '10px', marginTop: '2px' }}>
+              {simulator.label} {simulator.version ?? 'version unavailable'}
+              {simulator.revision ? ` · ${simulator.revision.slice(0, 7)}` : ''}
+            </div>
+          ))}
         </div>
       </PageSidebarBody>
     </PageSidebar>

@@ -59,10 +59,14 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
     validated_pair = "model__h200"
     weak_pair = "model__b200"
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"pairs": [
-        {"id": validated_pair, "model_id": "model", "accelerator": "H200", "records": 600},
-        {"id": weak_pair, "model_id": "model", "accelerator": "B200", "records": 600},
-    ]}))
+    manifest.write_text(json.dumps({
+        "source": "org/ground-truth",
+        "revision": "a" * 40,
+        "pairs": [
+            {"id": validated_pair, "model_id": "model", "accelerator": "H200", "records": 600},
+            {"id": weak_pair, "model_id": "model", "accelerator": "B200", "records": 600},
+        ],
+    }))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"approvedModels": ["model", "approved-only"]}))
     labeled_dir = tmp_path / "labeled"
@@ -99,11 +103,13 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
         "minConcurrencyLevels": 5,
     }
     assert registry["approvedModels"] == ["model", "approved-only"]
+    assert registry["dataset"] == {"repo": "org/ground-truth", "revision": "a" * 40}
     by_id = {pair["id"]: pair for pair in registry["pairs"]}
     assert by_id[validated_pair]["status"] == "validated"
     assert by_id[validated_pair]["coverage"]["records"] == 600
     assert by_id[validated_pair]["coverage"]["concurrencyLevelCount"] == 5
     assert by_id[validated_pair]["coverage"]["backendVersions"] == ["vLLM-0.10.2"]
+    assert by_id[validated_pair]["coverage"]["backends"] == ["vllm"]
     assert by_id[weak_pair]["status"] == "measured_no_envelope"
     assert by_id[weak_pair]["diagnostics"]["reasons"] == ["test_auc_below_minimum", "test_f1_below_minimum"]
     assert "classifier" not in by_id[weak_pair]
@@ -116,6 +122,18 @@ def test_registry_v2_publishes_validated_pairs_and_keeps_weak_pairs_measured(tmp
     (registry_dir / "triton" / validated_pair / "config.pbtxt").unlink()
     with pytest.raises(FileNotFoundError):
         _run_validator(registry_dir)
+
+
+def test_validator_rejects_non_immutable_dataset_revision(tmp_path) -> None:
+    registry = {
+        "schemaVersion": 2,
+        "gate": {"minRecords": 100, "minTestAuc": 0.7, "minTestF1": 0.3, "minConcurrencyLevels": 5},
+        "approvedModels": [],
+        "dataset": {"repo": "org/data", "revision": "main"},
+        "pairs": [],
+    }
+    with pytest.raises(ValueError, match="40-character"):
+        validate_artifacts._validate_v2(registry, tmp_path)
 
 
 def test_registry_keeps_pairs_that_were_never_trained(tmp_path) -> None:
@@ -143,6 +161,68 @@ def test_registry_keeps_pairs_that_were_never_trained(tmp_path) -> None:
         "test_auc_unavailable",
         "test_f1_unavailable",
     ]
+    assert _run_validator(registry_dir) == 0
+
+
+def test_registry_surfaces_split_warnings_and_selection_basis(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200", "records": 120}]}))
+    labeled_dir = tmp_path / "labeled"
+    _write_labeled_pair(labeled_dir, pair, records=120)
+    model_dir = tmp_path / "models"
+    triton_dir = tmp_path / "triton"
+    dashboard_dir = tmp_path / "dashboard"
+    _write_artifacts(model_dir, triton_dir, dashboard_dir, pair, {
+        "status": "trained",
+        "warnings": ["validation_single_class", "test_single_class"],
+        "selection_basis": "train_fallback",
+        "test": {"roc_auc": None, "f1": 0.0},
+    })
+
+    registry_dir = tmp_path / "registry"
+    registry = build_registry.build_registry(
+        manifest, model_dir, triton_dir, registry_dir, dashboard_dir, labeled_dir=labeled_dir,
+    )
+
+    entry = registry["pairs"][0]
+    assert entry["status"] == "measured_no_envelope"
+    assert entry["diagnostics"]["warnings"] == ["validation_single_class", "test_single_class"]
+    assert entry["diagnostics"]["selectionBasis"] == "train_fallback"
+    # reasons mirror the gate only; split warnings are reported separately.
+    assert entry["diagnostics"]["reasons"] == ["test_auc_unavailable", "test_f1_below_minimum"]
+    assert _run_validator(registry_dir) == 0
+
+
+def test_validated_pair_keeps_split_warnings_out_of_gate_reasons(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200", "records": 600}]}))
+    labeled_dir = tmp_path / "labeled"
+    _write_labeled_pair(labeled_dir, pair)
+    model_dir = tmp_path / "models"
+    triton_dir = tmp_path / "triton"
+    dashboard_dir = tmp_path / "dashboard"
+    _write_artifacts(model_dir, triton_dir, dashboard_dir, pair, {
+        "status": "trained",
+        "model_format": "xgboost-json",
+        "feature_schema": {"feature_names": ["tp"]},
+        "warnings": ["validation_single_class"],
+        "selection_basis": "train_fallback",
+        "test": {"roc_auc": 0.88, "f1": 0.66},
+    })
+
+    registry_dir = tmp_path / "registry"
+    registry = build_registry.build_registry(
+        manifest, model_dir, triton_dir, registry_dir, dashboard_dir, labeled_dir=labeled_dir,
+    )
+
+    entry = registry["pairs"][0]
+    assert entry["status"] == "validated"
+    assert entry["gate"] == {"passed": True, "reasons": [], "thresholds": registry["gate"]}
+    assert entry["diagnostics"]["warnings"] == ["validation_single_class"]
+    assert entry["diagnostics"]["selectionBasis"] == "train_fallback"
+    assert "reasons" not in entry["diagnostics"]
     assert _run_validator(registry_dir) == 0
 
 

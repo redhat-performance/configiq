@@ -28,8 +28,8 @@ def seed_data():
         {"id": "openai/gpt-5.6-terra", "name": "GPT-5.6 Terra", "provider": "OpenAI",
          "tier": "balanced", "price_per_m_input": 2.5, "price_per_m_output": 10.0, "context_window": 128000},
     ])
-    store._mark_scrape("models.openrouter")
-    store._mark_scrape("models.litellm")
+    store.mark_scrape("models.openrouter")
+    store.mark_scrape("models.litellm")
     store.set_cloud_rates("h200_sxm", {
         "cloud_rates": {
             "aws.us-east-1": {"on_demand": 4.50, "spot_median": 1.80},
@@ -67,12 +67,14 @@ class TestGetModels:
                 assert result["hugging_face_id"] == offer["hugging_face_id"]
                 assert result["id"] == offer["id"]
                 assert result["price_per_m_input"] == input_rate
+                assert result["billing"] == offer["billing"]
+                assert result["serving_provider"] is None
 
     @pytest.mark.asyncio
     async def test_failed_collection_keeps_last_good_source_and_records_error(self):
         previous = [{"id": "provider/model", "price_per_m_input": 1}]
         store.set_models(previous, source="litellm")
-        store._mark_scrape("models.litellm")
+        store.mark_scrape("models.litellm")
         last_success = store.get_scrape_times()["models.litellm"]
         with (
             patch("tools.api_service.scrapers.models.fetch_litellm_models", side_effect=RuntimeError("bad feed")),
@@ -133,8 +135,8 @@ class TestGetModels:
              "tier": "balanced", "price_per_m_input": 0.2, "price_per_m_output": 0.3,
              "context_window": 128000, "source": "litellm"},
         ], source="litellm")
-        store._mark_scrape("models.openrouter")
-        store._mark_scrape("models.litellm")
+        store.mark_scrape("models.openrouter")
+        store.mark_scrape("models.litellm")
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             or_resp = await client.get("/models?source=openrouter")

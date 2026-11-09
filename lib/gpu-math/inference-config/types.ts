@@ -50,12 +50,18 @@ export interface MemoryAnalysis {
 
 export interface VLLMConfig {
   tensor_parallel_size: number
-  max_model_len: number
+  /**
+   * Null when the simulator resolved the window by policy rather than
+   * reporting a number; `max_model_len_policy` then names the policy.
+   */
+  max_model_len: number | null
+  max_model_len_policy?: string | null
   max_num_seqs: number
   gpu_memory_utilization: number
   max_num_batched_tokens: number
   enable_chunked_prefill: boolean | null
-  enable_prefix_caching: boolean
+  /** Null when the run did not state the setting; do not assume a default. */
+  enable_prefix_caching: boolean | null
   quantization: string
 }
 
@@ -105,6 +111,9 @@ export interface EstimatePhase {
   pp_size: number
   batch_size: number
   memory_gb: number | null
+  /** Resolved FFN/expert widths reported by the API, when present. */
+  moe_tp_size: number | null
+  moe_ep_size: number | null
 }
 
 export interface PerformanceMetrics {
@@ -118,7 +127,8 @@ export interface PerformanceMetrics {
 }
 
 export interface InferenceConfigResult {
-  simulator: 'aisimulate' | 'blis'
+  /** Simulator that produced this estimate, as reported by the API. */
+  simulator: string
   memory_available: boolean
   memory_analysis: MemoryAnalysis
   vllm_config: VLLMConfig
@@ -128,6 +138,9 @@ export interface InferenceConfigResult {
   llmd_config?: LLMDConfig
   /** Serving mode. Defaults to 'agg' when absent. */
   mode?: 'agg' | 'disagg'
+  /** Resolved FFN/expert widths reported by the API (aggregated only). */
+  moe_tp_size?: number | null
+  moe_ep_size?: number | null
   /** Per-pool detail (disagg only). */
   disagg?: {
     prefill: EstimatePhase

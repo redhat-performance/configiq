@@ -83,7 +83,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow an upload to delete pairs that exist only in the remote dataset.",
     )
+    parser.add_argument(
+        "--github-output",
+        type=Path,
+        default=None,
+        help="Optional GitHub Actions output file; receives changed, revision, and check_only.",
+    )
     return parser.parse_args()
+
+
+def write_github_output(path: Path | None, **values: object) -> None:
+    """Append step outputs without assuming the runner-provided file exists."""
+    if path is None:
+        return
+    with path.open("a", encoding="utf-8") as output:
+        for key, value in values.items():
+            output.write(f"{key}={value}\n")
 
 
 def _content_signature(manifest: dict) -> list[tuple[str, int, tuple[str, ...], str | None]]:
@@ -180,6 +195,7 @@ def _missing_remote_pairs(local_manifest: dict, remote_manifest: dict) -> list[s
 def main() -> int:
     args = parse_args()
     args.repo_id = resolve_dataset_repo_id(args.repo_id)
+    github_output = getattr(args, "github_output", None)
     manifest = prepare(args.manifest, args.datasets_dir, args.output_dir)
     api = HfApi()
     parent_commit = api.repo_info(args.repo_id, repo_type="dataset", revision=args.revision, token=False).sha
@@ -197,12 +213,14 @@ def main() -> int:
         remote_manifest = {"pairs": []}
     if _content_signature(manifest) == _content_signature(remote_manifest):
         print(f"ground truth is unchanged from {args.repo_id}@{parent_commit}; no upload needed")
+        write_github_output(github_output, changed="false", revision=parent_commit, check_only=str(args.check_only).lower())
         return 0
     missing = _missing_remote_pairs(manifest, remote_manifest)
     if missing and args.check_only:
         print(f"prepared data would remove remote pairs: {', '.join(missing)}")
     if args.check_only:
         print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
+        write_github_output(github_output, changed="true", revision=parent_commit, check_only="true")
         return 0
     if missing and not args.allow_removal:
         raise SystemExit(
@@ -220,6 +238,7 @@ def main() -> int:
         commit_message=f"Publish {len(manifest['pairs'])} ground-truth model hardware pairs",
     )
     print(f"published {len(manifest['pairs'])} pairs to {args.repo_id} at revision {commit.oid}")
+    write_github_output(github_output, changed="true", revision=commit.oid, check_only="false")
     return 0
 
 

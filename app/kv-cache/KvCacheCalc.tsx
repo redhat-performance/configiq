@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Alert, Label, Spinner } from '@patternfly/react-core'
+import { Alert, Button, Label, Spinner } from '@patternfly/react-core'
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
 import { formatBytes } from '@/lib/utils/format'
 import { useCountUp } from '@/app/predict/performanceHelpers'
@@ -9,11 +9,15 @@ import { hasDefaultMemoryFractionForVersion, systemMemoryFraction, useCatalog } 
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
+import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
+import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
+import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
+import { WarningPanel } from '@/components/ui/WarningPanel'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
@@ -83,7 +87,8 @@ export default function KvCacheCalc() {
     setBackendVersion(settingsBackendVersion)
   }, [hydrated, settingsDefaultModel, inferenceBackend, settingsBackendVersion])
 
-  const [maxNumTokens, setMaxNumTokens] = React.useState(8192)
+  const defaultMaxNumTokens = DEFAULT_WORKLOAD.isl + DEFAULT_WORKLOAD.osl
+  const [maxNumTokens, setMaxNumTokens] = React.useState(defaultMaxNumTokens)
   const [maxBatchSize, setMaxBatchSize] = React.useState(128)
   const [tpSize, setTpSize] = React.useState(1)
   const [ppSize, setPpSize] = React.useState(1)
@@ -96,21 +101,54 @@ export default function KvCacheCalc() {
   const [memFractionKind, setMemFractionKind] = React.useState('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
-  const [advancedOpen, setAdvancedOpen] = React.useState(false)
+  const [expanded, setExpanded] = React.useState<string[]>([])
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
   const [error, setError] = React.useState<string | null>(null)
+  const calcAbortRef = React.useRef<AbortController | null>(null)
   const [debugOpen, setDebugOpen] = React.useState(false)
+  const [inputsDirty, setInputsDirty] = React.useState(false)
+  const markInputsDirty = () => {
+    if (results.length > 0 || loading) setInputsDirty(true)
+  }
   const [debugRequest, setDebugRequest] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
   const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | Record<string, unknown>[] | null>(null)
   const [debugStatus, setDebugStatus] = React.useState<number | null>(null)
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null)
 
-  const [maxNumTokensInput, setMaxNumTokensInput] = React.useState('8192')
+  const [maxNumTokensInput, setMaxNumTokensInput] = React.useState(String(defaultMaxNumTokens))
   const [maxBatchSizeInput, setMaxBatchSizeInput] = React.useState('128')
   const [tpSizeInput, setTpSizeInput] = React.useState('1')
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
+
+  const [activePreset, setActivePreset] = React.useState<string>('default')
+
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+    if (calcAbortRef.current) {
+      setLoading(false)
+      calcAbortRef.current.abort()
+    }
+    const tokens = p.isl + p.osl
+    setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
+    setActivePreset(p.key)
+    setResults([])
+    setInputsDirty(false)
+  }
+
+  const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD)
+
+  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
+
+  const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
+    if (activeConcurrencyPreset === p.key) {
+      setActiveConcurrencyPreset('')
+      return
+    }
+    setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
+    setActiveConcurrencyPreset(p.key)
+    markInputsDirty()
+  }
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -154,6 +192,8 @@ export default function KvCacheCalc() {
     setMaxNumTokensInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxNumTokens(n);
+    setActivePreset('');
+    markInputsDirty();
   };
   
   const handleMaxBatchSizeChange = (raw: string) => {
@@ -161,6 +201,8 @@ export default function KvCacheCalc() {
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
+    setActiveConcurrencyPreset('');
+    markInputsDirty();
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
@@ -188,6 +230,7 @@ export default function KvCacheCalc() {
     setTpSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTpSize(n);
+    markInputsDirty();
   };
 
   const handlePpSizeChange = (raw: string) => {
@@ -195,6 +238,7 @@ export default function KvCacheCalc() {
     setPpSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setPpSize(n);
+    markInputsDirty();
   };
 
   const handleMemFractionValueChange = (raw: string) => {
@@ -203,6 +247,7 @@ export default function KvCacheCalc() {
     setMemFractionValueInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n >= 0 && n <= 1) setMemFractionValue(n);
+    markInputsDirty();
   };
 
   const catalogMatch = MODEL_OPTIONS.includes(model)
@@ -232,6 +277,11 @@ export default function KvCacheCalc() {
   }
 
   async function handleCalculate() {
+    if (calcAbortRef.current) calcAbortRef.current.abort()
+    const controller = new AbortController()
+    calcAbortRef.current = controller
+
+    setInputsDirty(false)
     setLoading(true)
     setError(null)
     setResults([])
@@ -261,11 +311,14 @@ export default function KvCacheCalc() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: controller.signal,
           })
           const data = await res.json()
           return { label, status: res.status, data }
         }),
       )
+
+      if (controller.signal.aborted) return
 
       const failed = responses.find(r => r.data?.status === 'failed')
 
@@ -280,10 +333,11 @@ export default function KvCacheCalc() {
 
       setResults(responses.map(r => ({ label: r.label, result: r.data as KvCacheCalcResult })))
     } catch {
+      if (controller.signal.aborted) return
       setDebugDuration(Math.round(performance.now() - t0))
       setError('Failed to connect to the server. Please try again.')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
   }
 
@@ -301,13 +355,13 @@ export default function KvCacheCalc() {
       </div>
 
       {/* Input card */}
-      <div className={styles.inputCard}>
+      <div className={`${styles.card} ${styles.inputCard}`}>
         <div className={styles.inputRow}>
           <div className={styles.field}>
             <ComboBox
               id="kv-model"
               value={model}
-              onChange={setModel}
+              onChange={(value) => { setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
@@ -315,45 +369,64 @@ export default function KvCacheCalc() {
             />
           </div>
 
-          <GpuSystemInput id="kv-gpu" value={system} onChange={setSystem} gpuOptions={catalogGpus} />
+          <GpuSystemInput id="kv-gpu" value={system} onChange={(value) => { setSystem(value); markInputsDirty(); }} gpuOptions={catalogGpus} />
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <button
-            type="button"
-            className={styles.calcBtn}
-            onClick={handleCalculate} 
-            disabled={loading || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
+          <Button
+            variant="primary"
+            onClick={handleCalculate}
+            isDisabled={loading || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
           >
             {loading ? 'Calculating…' : 'Calculate'}
-          </button>
+          </Button>
         </div>
+      </div>
         {needsExplicitMemFraction && (
           <div className={styles.helperText} role="status" aria-live="polite">
             This version differs from the system default. Enter a memory fraction for the pinned version.
           </div>
         )}
 
-        {/* Advanced settings accordion */}
-        <button
-          type="button"
-          className={styles.advancedToggle}
-          onClick={() => setAdvancedOpen(prev => !prev)}
-          aria-expanded={advancedOpen}
-        >
-          <span className={styles.advancedToggleIcon}>{advancedOpen ? '▾' : '▸'}</span>
-          Advanced settings
-          {!advancedOpen && (
-            <span className={styles.advancedSummary}>
-              {backend}{backendVersion ? ` v${backendVersion}` : ''} · tokens: {maxNumTokens.toLocaleString()} · batch: {maxBatchSize}
-              {servingMode === 'disagg'
-                ? ` · disagg · P: TP ${prefillPar.tp}/PP ${prefillPar.pp} · D: TP ${decodePar.tp}/PP ${decodePar.pp}`
-                : ` · TP ${tpSize}${ppSize > 1 ? ` · PP ${ppSize}` : ''}${moeTpSize ? ` · MoE TP ${moeTpSize}` : ''}`}
-            </span>
-          )}
-        </button>
-        {advancedOpen && (
-          <div className={styles.advancedBody}>
+      {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
+
+      {/* ---------- workload presets ---------- */}
+      {hydrated && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
+          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          {getAppConfig().workloadPresets.map(p => (
+            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- concurrency presets ---------- */}
+      {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
+          {getAppConfig().concurrencyPresets.map(p => (
+            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* ---------- info strip ---------- */}
+      <InfoStrip>
+        Based on your configuration — Maximum Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
+        {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
+          Adjust? (edit fields below)
+        </InfoStripAction>
+      </InfoStrip>
+
+      {/* ---------- customization section ---------- */}
+      {expanded.includes('customize') && (
+        <div className={styles.card} style={{ marginBottom: 16 }}>
+          <div className={styles.advancedBody} style={{ padding: 20 }}>
             {/* Serving config */}
             <div className={styles.advancedSectionLabel}>Serving config</div>
             <div className={styles.advancedRow4}>
@@ -368,6 +441,7 @@ export default function KvCacheCalc() {
                       memFractionValueUserEdited.current = false
                     }
                     setBackend(nextBackend)
+                    markInputsDirty()
                   }}
                   className={styles.gpuSelect}
                 >
@@ -382,7 +456,7 @@ export default function KvCacheCalc() {
                   type="text"
                   id="kv-backend-ver"
                   value={backendVersion}
-                  onChange={e => setBackendVersion(e.target.value)}
+                  onChange={e => { setBackendVersion(e.target.value); markInputsDirty(); }}
                   placeholder={backendOptions.find(option => option.id === backend)?.defaultVersion ?? 'latest'}
                   className={styles.numberInput}
                 />
@@ -411,29 +485,19 @@ export default function KvCacheCalc() {
               </div>
             </div>
 
-            {/* Serving mode */}
-            <div className={styles.advancedSectionLabel}>Serving mode</div>
-            <div className={styles.modeToggle}>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'agg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('agg'); setResults([]); }}
-                aria-pressed={servingMode === 'agg'}
-              >
-                Aggregated
-              </button>
-              <button
-                type="button"
-                className={`${styles.modeButton} ${servingMode === 'disagg' ? styles.modeButtonActive : ''}`}
-                onClick={() => { setServingMode('disagg'); setResults([]); }}
-                aria-pressed={servingMode === 'disagg'}
-              >
-                Disaggregated
-              </button>
-            </div>
-
             {/* Parallelism */}
             <div className={styles.advancedSectionLabel}>Parallelism</div>
+
+            {/* Serving mode (agg / disagg) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+              <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
+              <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
+              {servingMode === 'disagg' && (
+                <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+              )}
+            </div>
+
             {servingMode === 'agg' ? (
               <div className={styles.advancedRow4}>
                 <div className={styles.field}>
@@ -464,7 +528,7 @@ export default function KvCacheCalc() {
                     type="text"
                     id="kv-moe-tp"
                     value={moeTpSize}
-                    onChange={e => setMoeTpSize(e.target.value.replace(/[^0-9]/g, ''))}
+                    onChange={e => { setMoeTpSize(e.target.value.replace(/[^0-9]/g, '')); markInputsDirty(); }}
                     placeholder="auto"
                     className={styles.numberInput}
                   />
@@ -475,17 +539,63 @@ export default function KvCacheCalc() {
                     type="text"
                     id="kv-moe-ep"
                     value={moeEpSize}
-                    onChange={e => setMoeEpSize(e.target.value.replace(/[^0-9]/g, ''))}
+                    onChange={e => { setMoeEpSize(e.target.value.replace(/[^0-9]/g, '')); markInputsDirty(); }}
                     placeholder="auto"
                     className={styles.numberInput}
                   />
                 </div>
               </div>
             ) : (
-              <>
-                <PhaseParallelFields title="Prefill pool" par={prefillPar} onChange={setPrefillPar} idPrefix="kv-p" />
-                <PhaseParallelFields title="Decode pool" par={decodePar} onChange={setDecodePar} idPrefix="kv-d" />
-              </>
+              <div className={styles.advancedRow4}>
+                <div className={styles.field}>
+                  <label htmlFor="kv-p-tp" className={styles.fieldLabel}>Prefill TP</label>
+                  <input type="number" id="kv-p-tp" value={prefillPar.tp} min={1}
+                    onChange={e => { setPrefillPar(p => ({ ...p, tp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={prefillPar.tp === '' || parseInt(prefillPar.tp, 10) < 1 ? styles.paramInputInvalid : styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-p-pp" className={styles.fieldLabel}>Prefill PP</label>
+                  <input type="number" id="kv-p-pp" value={prefillPar.pp} min={1}
+                    onChange={e => { setPrefillPar(p => ({ ...p, pp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={prefillPar.pp === '' || parseInt(prefillPar.pp, 10) < 1 ? styles.paramInputInvalid : styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-p-moe-tp" className={styles.fieldLabel}>Prefill MoE TP</label>
+                  <input type="text" id="kv-p-moe-tp" value={prefillPar.moeTp} placeholder="auto"
+                    onChange={e => { setPrefillPar(p => ({ ...p, moeTp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-p-moe-ep" className={styles.fieldLabel}>Prefill MoE EP</label>
+                  <input type="text" id="kv-p-moe-ep" value={prefillPar.moeEp} placeholder="auto"
+                    onChange={e => { setPrefillPar(p => ({ ...p, moeEp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-d-tp" className={styles.fieldLabel}>Decode TP</label>
+                  <input type="number" id="kv-d-tp" value={decodePar.tp} min={1}
+                    onChange={e => { setDecodePar(p => ({ ...p, tp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={decodePar.tp === '' || parseInt(decodePar.tp, 10) < 1 ? styles.paramInputInvalid : styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-d-pp" className={styles.fieldLabel}>Decode PP</label>
+                  <input type="number" id="kv-d-pp" value={decodePar.pp} min={1}
+                    onChange={e => { setDecodePar(p => ({ ...p, pp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={decodePar.pp === '' || parseInt(decodePar.pp, 10) < 1 ? styles.paramInputInvalid : styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-d-moe-tp" className={styles.fieldLabel}>Decode MoE TP</label>
+                  <input type="text" id="kv-d-moe-tp" value={decodePar.moeTp} placeholder="auto"
+                    onChange={e => { setDecodePar(p => ({ ...p, moeTp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={styles.numberInput} />
+                </div>
+                <div className={styles.field}>
+                  <label htmlFor="kv-d-moe-ep" className={styles.fieldLabel}>Decode MoE EP</label>
+                  <input type="text" id="kv-d-moe-ep" value={decodePar.moeEp} placeholder="auto"
+                    onChange={e => { setDecodePar(p => ({ ...p, moeEp: e.target.value.replace(/[^0-9]/g, '') })); markInputsDirty(); }}
+                    className={styles.numberInput} />
+                </div>
+              </div>
             )}
 
             {/* Memory */}
@@ -509,7 +619,7 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-mem-kind"
                   value={memFractionKind}
-                  onChange={e => setMemFractionKind(e.target.value)}
+                  onChange={e => { setMemFractionKind(e.target.value); markInputsDirty(); }}
                   className={styles.gpuSelect}
                 >
                   <option value="of_total">of_total</option>
@@ -518,8 +628,8 @@ export default function KvCacheCalc() {
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Error */}
       {error && (
@@ -576,56 +686,6 @@ export default function KvCacheCalc() {
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
 
-/** Four inputs (TP/PP/MoE TP/MoE EP) for one disagg pool. */
-function PhaseParallelFields({ title, par, onChange, idPrefix }: {
-  title: string
-  par: PhaseParallelInput
-  onChange: (p: PhaseParallelInput) => void
-  idPrefix: string
-}) {
-  const digits = (v: string) => v.replace(/[^0-9]/g, '')
-  const invalidTp = par.tp === '' || parseInt(par.tp, 10) < 1
-  const invalidPp = par.pp === '' || parseInt(par.pp, 10) < 1
-  return (
-    <>
-      <div className={styles.phaseFieldsLabel}>{title}</div>
-      <div className={styles.advancedRow4}>
-        <div className={styles.field}>
-          <label htmlFor={`${idPrefix}-tp`} className={styles.fieldLabel}>TP size</label>
-          <input
-            type="number" id={`${idPrefix}-tp`} value={par.tp} min={1}
-            onChange={e => onChange({ ...par, tp: digits(e.target.value) })}
-            className={invalidTp ? styles.paramInputInvalid : styles.numberInput}
-          />
-        </div>
-        <div className={styles.field}>
-          <label htmlFor={`${idPrefix}-pp`} className={styles.fieldLabel}>PP size</label>
-          <input
-            type="number" id={`${idPrefix}-pp`} value={par.pp} min={1}
-            onChange={e => onChange({ ...par, pp: digits(e.target.value) })}
-            className={invalidPp ? styles.paramInputInvalid : styles.numberInput}
-          />
-        </div>
-        <div className={styles.field}>
-          <label htmlFor={`${idPrefix}-moe-tp`} className={styles.fieldLabel}>MoE TP size</label>
-          <input
-            type="text" id={`${idPrefix}-moe-tp`} value={par.moeTp} placeholder="auto"
-            onChange={e => onChange({ ...par, moeTp: digits(e.target.value) })}
-            className={styles.numberInput}
-          />
-        </div>
-        <div className={styles.field}>
-          <label htmlFor={`${idPrefix}-moe-ep`} className={styles.fieldLabel}>MoE EP size</label>
-          <input
-            type="text" id={`${idPrefix}-moe-ep`} value={par.moeEp} placeholder="auto"
-            onChange={e => onChange({ ...par, moeEp: digits(e.target.value) })}
-            className={styles.numberInput}
-          />
-        </div>
-      </div>
-    </>
-  )
-}
 
 /** Full result rendering for one pool: tiles + memory breakdown + request detail. */
 function PhaseResults({ label, result, gpuLabel }: PhaseResult & { gpuLabel?: string }) {
@@ -653,10 +713,10 @@ function PhaseResults({ label, result, gpuLabel }: PhaseResult & { gpuLabel?: st
           backContent={
             <>
               <div className={styles.backTitle}>KV cache / GPU detail</div>
-              <BackRow label="Raw bytes" value={result.kvCache.totalBytes.toLocaleString()} dark />
-              <BackRow label="Total tokens" value={result.kvCache.totalTokens.toLocaleString()} dark />
-              <BackRow label="Per token" value={`${result.kvCache.perTokenBytes.toLocaleString()} B`} dark />
-              <BackRow label="Source" value={result.metadata.source} dark />
+              <BackRow label="Raw bytes" value={result.kvCache.totalBytes.toLocaleString()} />
+              <BackRow label="Total tokens" value={result.kvCache.totalTokens.toLocaleString()} />
+              <BackRow label="Per token" value={`${result.kvCache.perTokenBytes.toLocaleString()} B`} />
+              <BackRow label="Source" value={result.metadata.source} />
             </>
           }
         />
@@ -713,22 +773,7 @@ function PhaseResults({ label, result, gpuLabel }: PhaseResult & { gpuLabel?: st
       </div>
 
       <MemoryBreakdownSection result={result} />
-
-      <div className={styles.configSection}>
-        <div className={styles.configTitle}>Request details{label ? ` — ${label}` : ''}</div>
-        <div className={styles.configGrid}>
-          <ConfigItem label="Model" value={result.metadata.modelPath} />
-          <ConfigItem label="Backend" value={result.metadata.backendVersion ? `${result.metadata.backend} v${result.metadata.backendVersion}` : result.metadata.backend} />
-          <ConfigItem label="GPU system" value={result.metadata.system} />
-          <ConfigItem label="Max tokens" value={result.metadata.maxNumTokens.toLocaleString()} />
-          <ConfigItem label="Batch size" value={result.metadata.maxBatchSize.toLocaleString()} />
-          <ConfigItem label="TP / PP" value={`${result.metadata.tpSize} / ${result.metadata.ppSize}`} />
-          {result.metadata.moeTpSize != null && <ConfigItem label="MoE TP" value={String(result.metadata.moeTpSize)} />}
-          {result.metadata.moeEpSize != null && <ConfigItem label="MoE EP" value={String(result.metadata.moeEpSize)} />}
-          <ConfigItem label="Mem fraction" value={`${result.metadata.memoryFractionValue} (${result.metadata.memoryFractionKind})`} />
-          <ConfigItem label="Source" value={result.metadata.source} />
-        </div>
-      </div>
+      
     </div>
   )
 }
@@ -784,20 +829,11 @@ function TileCard({ id, dark, label, value, sub, flipped, onFlip, backContent }:
   )
 }
 
-function BackRow({ label, value }: { label: string; value: string; dark?: boolean }) {
+function BackRow({ label, value }: { label: string; value: string }) {
   return (
     <div className={styles.backRow}>
       <span className={styles.backRowLabel}>{label}</span>
       <span className={styles.backRowValue}>{value}</span>
-    </div>
-  )
-}
-
-function ConfigItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className={styles.configItem}>
-      <span className={styles.configLabel}>{label}</span>
-      <span className={styles.configValue}>{value}</span>
     </div>
   )
 }

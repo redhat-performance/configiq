@@ -51,14 +51,14 @@ function formatValue(value: number | null, digits: number): string {
 
 function formatComparison(internal: number | null, inferencex: number | null, estimate: number | null, digits: number, showDifference: boolean, predictionLabel: string): string {
   const values = [
-    internal === null ? null : `GT ${formatValue(internal, digits)}`,
+    internal === null ? null : `Red Hat ${formatValue(internal, digits)}`,
     inferencex === null ? null : `InferenceX ${formatValue(inferencex, digits)}`,
     estimate === null ? null : `${predictionLabel} ${formatValue(estimate, digits)}`,
   ].filter((value): value is string => value !== null)
   const baseline = internal ?? inferencex
   if (showDifference && baseline !== null && baseline !== 0 && estimate !== null) {
     const difference = ((estimate - baseline) / Math.abs(baseline)) * 100
-    values.push(`Δ vs ${internal === null ? 'InferenceX' : 'GT'} ${difference >= 0 ? '+' : ''}${difference.toFixed(1)}%`)
+    values.push(`Δ vs ${internal === null ? 'InferenceX' : 'Red Hat'} ${difference >= 0 ? '+' : ''}${difference.toFixed(1)}%`)
   }
   return values.join(' · ') || '—'
 }
@@ -89,7 +89,7 @@ function ChartCard({
     ? concurrencyValues.filter((_, index) => index === 0 || index === concurrencyValues.length - 1 || index % Math.ceil(concurrencyValues.length / 8) === 0)
     : concurrencyValues
   const groundTruthData = groundTruth
-    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'Internal GT' }))
+    .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'Red Hat' }))
     .filter((point): point is { x: number; y: number; series: string } => point.y !== null)
   const inferencexData = inferencex
     .map(point => ({ x: point.concurrency, y: numberValue(point, metric.key), series: 'InferenceX' }))
@@ -111,7 +111,7 @@ function ChartCard({
         {mounted && concurrencyValues.length > 0 ? (
           <Chart
             ariaTitle={`${metric.title} by concurrency`}
-            ariaDesc={`Internal GT, InferenceX, and ${predictionLabel} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
+            ariaDesc={`Red Hat, InferenceX, and ${predictionLabel} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
             domain={{ x: [0, Math.max(...concurrencyValues) * 1.04], y: [0, max * 1.14] }}
             height={278}
             width={600}
