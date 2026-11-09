@@ -236,7 +236,10 @@ export default function Sizing() {
   const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
+  // An unavailable simulator has an explicit empty support entry, so its pages
+  // never fall back to another simulator's catalogue.
   const support = simulatorSupport[simulator];
+  const simulatorUnavailable = support?.available === false;
   const catalogModels = support?.models ?? allCatalogModels;
   const catalogGpus = React.useMemo(
     () => (support
@@ -759,6 +762,13 @@ export default function Sizing() {
           <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
+        {simulatorUnavailable && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            so it cannot size workloads. Choose another simulator in Settings.
+          </div>
+        )}
+
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
             <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
@@ -806,6 +816,7 @@ export default function Sizing() {
             onClick={handlePareto}
             isDisabled={
               isLoading ||
+              simulatorUnavailable ||
               !paretoSupported ||
               isCapacity ||
               modelUnsupported ||
@@ -824,7 +835,7 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>

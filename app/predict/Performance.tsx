@@ -169,7 +169,10 @@ export default function Performance() {
 
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
+  // An unavailable simulator has an explicit empty support entry, so its pages
+  // never fall back to another simulator's catalogue.
   const support = simulatorSupport[simulator];
+  const simulatorUnavailable = support?.available === false;
   const catalogModels = support?.models ?? allCatalogModels;
   const catalogGpus = React.useMemo(
     () => (support
@@ -1477,6 +1480,13 @@ export default function Performance() {
 
         </div>
 
+        {simulatorUnavailable && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            so it cannot predict performance. Choose another simulator in Settings.
+          </div>
+        )}
+
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
             <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
@@ -1488,7 +1498,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
+            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>

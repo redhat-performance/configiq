@@ -94,6 +94,12 @@ export interface SimulatorDescriptor {
 export interface SimulatorSupport {
   id: string
   label: string
+  /**
+   * False when the catalog listed the simulator but its capabilities could not
+   * be read. Such an entry carries empty capability lists so pages do not fall
+   * back to another simulator's catalogue under this simulator's name.
+   */
+  available: boolean
   /** Release of the simulator itself (not the engine/backend version). */
   version: string | null
   /**
@@ -142,9 +148,9 @@ export interface Catalog {
   backendOptions: BackendOption[]
   networkOptions: string[]
   /**
-   * Capabilities for each simulator whose catalogue could be read, keyed by
-   * ID. An unavailable simulator is absent rather than represented by empty
-   * lists, so pages fall back to the top-level catalogue.
+   * Capabilities for each listed simulator, keyed by ID. An unavailable
+   * simulator is present with `available: false` and empty capability lists,
+   * so pages never render another simulator's catalogue in its place.
    */
   simulatorSupport: Record<string, SimulatorSupport>
   /** Simulator identity list from the combined catalog, in service order. */
@@ -275,6 +281,7 @@ function mapSimulatorSupportEntry(entry: Record<string, unknown>): SimulatorSupp
   return {
     id: entry.id as string,
     label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id as string,
+    available: true,
     version: typeof entry.version === 'string' && entry.version.trim().length > 0
       ? entry.version.trim()
       : null,
@@ -301,13 +308,36 @@ interface MappedSimulators {
   support: Record<string, SimulatorSupport>
 }
 
+/** An unavailable simulator's identity with deliberately empty capabilities. */
+function unavailableSimulatorSupport(entry: Record<string, unknown>): SimulatorSupport {
+  return {
+    id: entry.id as string,
+    label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id as string,
+    available: false,
+    version: typeof entry.version === 'string' && entry.version.trim().length > 0
+      ? entry.version.trim()
+      : null,
+    recommendSearch: 'windowed',
+    models: [],
+    modelsExhaustive: false,
+    modelSpecs: new Map(),
+    systems: [],
+    backends: [],
+    networks: [],
+    defaultNetwork: null,
+    objectives: [],
+  }
+}
+
 /**
  * Split the combined catalogue's self-describing simulator entries into the
  * identity list used for selection and the capability map used by pages.
  *
- * An entry marked unavailable keeps its identity but contributes no support,
- * so callers fall back to the top-level catalogue instead of reading empty
- * capability lists as "this simulator prices nothing".
+ * Every listed simulator gets a support entry. An unavailable one keeps its
+ * identity with `available: false` and empty capabilities, so pages never fall
+ * back to the default simulator's catalogue and present it as this simulator's
+ * own. Only a catalogue with no simulator entries at all uses the legacy
+ * top-level fallback.
  */
 function mapSimulators(raw: unknown): MappedSimulators {
   const descriptors: SimulatorDescriptor[] = []
@@ -328,9 +358,13 @@ function mapSimulators(raw: unknown): MappedSimulators {
         : null,
       default: entry.default === true,
     })
-    if (entry.available === false) continue
-    if (!Array.isArray(entry.backends) || !Array.isArray(entry.models) || !Array.isArray(entry.systems)) continue
-    support[entry.id] = mapSimulatorSupportEntry(entry)
+    const readable = entry.available !== false &&
+      Array.isArray(entry.backends) &&
+      Array.isArray(entry.models) &&
+      Array.isArray(entry.systems)
+    support[entry.id] = readable
+      ? mapSimulatorSupportEntry(entry)
+      : unavailableSimulatorSupport(entry)
   }
   return { descriptors, support }
 }

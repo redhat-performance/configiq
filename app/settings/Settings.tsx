@@ -323,7 +323,7 @@ export function Settings() {
                     <li key={entry.id}>
                       <strong>{entry.label}</strong>
                       {entry.description ? `: ${entry.description}` : ''}
-                      {entrySupport
+                      {entrySupport?.available
                         ? ` · goals: ${goals.length > 0 ? goals.map(goalLabel).join(', ') : 'none reported'}`
                         : ' · capabilities unavailable'}
                       {backends.length > 0 ? ` · backends: ${backends.map(b => BACKEND_LABELS[b.id] ?? b.id).join(', ')}` : ''}

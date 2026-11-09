@@ -245,9 +245,60 @@ describe('mapCatalogResponse', () => {
 
     expect(mapped.gpuOptions.map(option => option.systemId)).toEqual(['h200_sxm'])
     expect(mapped.objectives).toEqual(['pareto'])
-    // The identity is kept so Settings can still explain why it is unavailable.
+    // The identity is kept so Settings can still explain why it is unavailable,
+    // and the support entry stays present but empty so pages do not silently
+    // present the fallback catalogue as this simulator's own.
     expect(mapped.simulators[0]).toMatchObject({ id: 'blis', default: true })
-    expect(mapped.simulatorSupport.blis).toBeUndefined()
+    expect(mapped.simulatorSupport.blis).toMatchObject({
+      id: 'blis',
+      available: false,
+      models: [],
+      systems: [],
+      backends: [],
+      objectives: [],
+    })
+  })
+
+  it('keeps an unavailable non-default simulator out of the default catalogue', () => {
+    const mapped = mapCatalogResponse({
+      simulators: [
+        {
+          id: 'aisimulate',
+          label: 'AISimulate',
+          default: true,
+          available: true,
+          systems,
+          models,
+          backends,
+          networks: [],
+          objectives: ['pareto'],
+        },
+        {
+          id: 'blis',
+          label: 'BLIS',
+          default: false,
+          available: false,
+          systems: [],
+          models: [],
+          backends: [],
+          networks: [],
+          objectives: [],
+        },
+      ],
+    })
+
+    // The default entry still drives the page catalogue...
+    expect(mapped.gpuOptions.map(option => option.systemId)).toEqual(['h200_sxm'])
+    expect(mapped.modelOptions).toEqual(['Qwen/Qwen3-8B'])
+    // ...but BLIS keeps an empty, explicitly unavailable support entry rather
+    // than inheriting AISimulate's models, systems, or goals.
+    expect(mapped.simulatorSupport.blis).toMatchObject({
+      id: 'blis',
+      available: false,
+      models: [],
+      systems: [],
+      objectives: [],
+    })
   })
 
   it('rejects a catalogue that cannot render a page', () => {

@@ -303,7 +303,7 @@ describe('Hybrid page composition', () => {
         { id: 'blis', label: 'BLIS', description: null, version: BLIS_FIXTURE_VERSION, default: false },
       ],
       simulatorSupport: { blis: {
-      id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, recommendSearch: 'single', modelsExhaustive: true,
+      id: 'blis', label: 'BLIS', available: true, version: BLIS_FIXTURE_VERSION, recommendSearch: 'single', modelsExhaustive: true,
       modelSpecs: new Map(), networks: [], defaultNetwork: null,
       systems: ['l40s'], models: ['Qwen/Qwen3-8B'], backends: [{
         id: 'vllm', aisimulateId: 'vllm', versions: ['0.11.0'], defaultVersion: '0.11.0',
