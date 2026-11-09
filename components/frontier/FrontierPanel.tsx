@@ -23,6 +23,7 @@ import {
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
+import { formatCandidateId } from '@/lib/pareto/format';
 import { describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -351,7 +352,7 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
                       onSelect(candidate.candidate_id);
                     }}
                   >
-                    {candidate.candidate_id}
+                    {formatCandidateId(candidate.candidate_id)}
                     {onFrontier && <Label isCompact color="blue" className={styles.frontierLabel}>frontier</Label>}
                   </button>
                 </td>
@@ -389,7 +390,7 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
     <dl className={styles.detail}>
       <div>
         <dt>Candidate</dt>
-        <dd>{candidate.candidate_id}</dd>
+        <dd>{formatCandidateId(candidate.candidate_id)}</dd>
       </div>
       <div>
         <dt>Topology</dt>
