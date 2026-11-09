@@ -21,6 +21,7 @@ export default defineConfig([
     'coverage/**',
     'playwright-report/**',
     'test-results/**',
+    'data/tested-models/**',
     'docs/**',
     'public/widgets/**',
   ]),

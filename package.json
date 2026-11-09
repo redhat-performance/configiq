@@ -14,6 +14,7 @@
     "test:watch": "vitest",
     "pretype-check": "npm run docs:build",
     "test:e2e:live": "playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
+    "test:e2e:nightly": "PLAYWRIGHT_NIGHTLY_SAMPLE=1 playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
     "type-check": "tsc --noEmit",
     "prepare": "husky",
     "docs:build": "node scripts/build-docs.mjs",
