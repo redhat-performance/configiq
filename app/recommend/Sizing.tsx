@@ -47,6 +47,16 @@ import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/uti
 /** Offered rate a demand run starts from; the UI labels it as the default. */
 const DEFAULT_DEMAND_RATE = 10;
 
+/** Match a retained request back to the sizing goal that produced it. */
+function goalFromParams(params: RecommendParams | null): SizingGoal {
+  if (!params) return 'demand';
+  const objective = params.objective
+    ?? (params.sla_mode === 'none' ? 'throughput_demand' : 'min_gpus');
+  if (objective === 'concurrency_capacity') return 'capacity';
+  if (objective === 'throughput_demand') return 'demand';
+  return 'latency';
+}
+
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
 
 function FlipTile({ dark = false, front, back }: {
@@ -298,11 +308,16 @@ export default function Sizing() {
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
   const [prefix, setPrefix] = React.useState(0);
+
+  // GPU sizer (persistent across navigation)
+  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, startPareto, reset } = useRecommend();
   // Three sizing goals share one Calculate flow. `demand` asks how many GPUs
   // sustain an arrival rate; `latency` enforces the TTFT/TPOT (or E2E) SLA;
   // `capacity` asks how many GPUs hold N sequences at full context. Both
-  // aggregate-only goals report performance without gating on it.
-  const [goal, setGoal] = React.useState<SizingGoal>('demand');
+  // aggregate-only goals report performance without gating on it. Restore the
+  // retained request's goal so returning to the page does not force a reset
+  // just to reselect the goal that produced the visible result.
+  const [goal, setGoal] = React.useState<SizingGoal>(() => goalFromParams(params));
   const [demandRate, setDemandRate] = React.useState(DEFAULT_DEMAND_RATE);
   const isDemand = goal === 'demand';
   const isCapacity = goal === 'capacity';
@@ -324,8 +339,6 @@ export default function Sizing() {
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
 
-  // GPU sizer (persistent across navigation)
-  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, startPareto, reset } = useRecommend();
   // Capacity runs return ranked alternatives. The result panel shows whichever
   // option is promoted; every other view keeps the primary recommendation so
   // the search summary and provenance still describe what was submitted.

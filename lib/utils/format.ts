@@ -13,10 +13,14 @@ export function formatMemory(gb: number): string {
   return `${formatNumber(gb, 1)} GB`;
 }
 
-/** Render a millisecond latency bound in seconds, dropping a trailing `.000`. */
+/** Render a millisecond latency bound in seconds without trailing zeros. */
 export function formatLatencyBound(ms: number): string {
-  const sec = (ms / 1000).toFixed(3)
-  return sec.endsWith('000') ? (ms / 1000).toFixed(0) : parseFloat(sec).toString()
+  const seconds = ms / 1000
+  // Keep sub-millisecond precision: rounding to three decimals would turn a
+  // 1.4 ms target into 0.001 s.
+  return Number.isInteger(seconds)
+    ? String(seconds)
+    : String(Number(seconds.toPrecision(15)))
 }
 
 /** Format a USD cost */
