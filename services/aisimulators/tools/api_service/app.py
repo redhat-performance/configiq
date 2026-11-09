@@ -3530,6 +3530,7 @@ def _run_aisimulate_recommendation(
     *,
     window: tuple[int, int] | None = None,
     max_trials_override: int | None = None,
+    parallelism_override: int | None = None,
     candidate_timeout_override: int | None = None,
 ):
     from aisimulate.recommend import run_recommendation
@@ -3541,6 +3542,7 @@ def _run_aisimulate_recommendation(
                 window=window,
                 model_path=effective_path,
                 max_trials_override=max_trials_override,
+                parallelism_override=parallelism_override,
                 candidate_timeout_override=candidate_timeout_override,
             ),
             stack="engine",

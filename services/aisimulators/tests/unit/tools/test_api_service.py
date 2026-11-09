@@ -240,7 +240,9 @@ class TestRecommend:
         config = app_module._aisimulate_recommendation_config(request)
 
         assert config.optimization.constraints.max_candidate_gpus == 1024
-        assert config.optimizer.max_trials == 8
+        # A windowless config uses the full configured range, so the trial
+        # budget is the escalation cap rather than one trial per GPU.
+        assert config.optimizer.max_trials == 32
 
     def test_recommendation_search_budget_is_configurable(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "4096")
