@@ -308,18 +308,24 @@ export function Settings() {
                 ))}
               </select>
               <div className={styles.helperText}>
-                Predict, Recommend and Hybrid savings use this simulator. KV cache uses a simulator that reports the memory capability.
+                Predict, Recommend and Hybrid savings use the selected simulator. Each tool appears only
+                when that simulator reports the capability it needs, such as a memory breakdown for KV
+                cache or a Pareto sweep and capacity sizing for Recommend.
               </div>
               <ul className={styles.capabilityList}>
                 {simulators.map(entry => {
+                  const entrySupport = simulatorSupport[entry.id];
                   const backends = entry.id === simulator && support
                     ? support.backends
-                    : simulatorSupport[entry.id]?.backends ?? [];
-                  const goals = simulatorSupport[entry.id]?.objectives ?? [];
+                    : entrySupport?.backends ?? [];
+                  const goals = entrySupport?.objectives ?? [];
                   return (
                     <li key={entry.id}>
                       <strong>{entry.label}</strong>
-                      {goals.length > 0 ? `: ${goals.map(goalLabel).join(', ')}` : ': no sizing goals reported'}
+                      {entry.description ? `: ${entry.description}` : ''}
+                      {entrySupport?.available
+                        ? ` · goals: ${goals.length > 0 ? goals.map(goalLabel).join(', ') : 'none reported'}`
+                        : ' · capabilities unavailable'}
                       {backends.length > 0 ? ` · backends: ${backends.map(b => BACKEND_LABELS[b.id] ?? b.id).join(', ')}` : ''}
                     </li>
                   );

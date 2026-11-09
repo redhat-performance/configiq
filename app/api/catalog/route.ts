@@ -25,6 +25,8 @@ const DEFAULT_TIMEOUT_SECONDS = 30
 export interface SimulatorDescriptor {
   id: string
   label: string
+  /** Short, service-authored explanation of what this simulator models. */
+  description: string | null
   version: string | null
   default: boolean
 }
@@ -67,22 +69,21 @@ function emptyCapabilities(): SimulatorCapabilities {
   }
 }
 
-function catalogResponse(
-  systems: unknown[],
-  models: unknown[],
-  backends: unknown[],
-  networks: string[],
-  simulators: SimulatorCatalogEntry[],
-  objectives: string[],
-) {
+/** The unscoped catalogue shape from a service older than /simulators. */
+interface LegacyCatalog {
+  systems: unknown[]
+  models: unknown[]
+  backends: unknown[]
+  networks: string[]
+  objectives: string[]
+}
+
+function catalogResponse(simulators: SimulatorCatalogEntry[], legacy?: LegacyCatalog) {
   return NextResponse.json(
     {
-      systems,
-      models,
-      backends,
-      networks,
+      // Only a service that cannot report simulators falls back to this view.
+      ...(legacy ?? {}),
       simulators,
-      objectives,
       timeoutSeconds: gatewayTimeoutSeconds(),
     },
     {
@@ -131,6 +132,7 @@ function simulatorDescriptors(data: unknown): SimulatorDescriptor[] {
     return [{
       id: value.id,
       label: typeof value.label === 'string' && value.label.trim().length > 0 ? value.label : value.id,
+      description: catalogString(value, 'description'),
       version: normalizedVersion(value.version),
       default: value.default === true,
     }]
@@ -212,6 +214,7 @@ function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntr
     entries.push({
       id,
       label: catalogString(value, 'label') ?? id,
+      description: catalogString(value, 'description') ?? catalogString(support[id], 'description'),
       version: normalizedVersion(value.version),
       default: value.default === true,
       available: capabilities !== null,
@@ -229,6 +232,7 @@ function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntr
       entries.push({
         id,
         label: catalogString(value, 'label') ?? id,
+        description: catalogString(value, 'description'),
         version: normalizedVersion(value.version),
         default: false,
         available: true,
@@ -321,6 +325,21 @@ function invalidCatalogResponse() {
   )
 }
 
+/**
+ * Read the unscoped catalogue an older service or shared gateway exposes.
+ * Used only when no simulator list is available; the current API reports the
+ * same facts inside each simulator entry.
+ */
+function legacyCatalog(data: unknown): LegacyCatalog | null {
+  const systems = catalogList(data, 'systems')
+  const models = catalogList(data, 'models')
+  const backends = catalogList(data, 'backends') ?? []
+  if (!systems || !models || !validCatalogEntries(systems, models, backends)) return null
+  const networks = (catalogList(data, 'networks') ?? [])
+    .filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
+  return { systems, models, backends, networks, objectives: catalogObjectives(data) }
+}
+
 function isSelfReferentialGateway(gatewayUrl: string, request: Request): boolean {
   const gatewayHost = new URL(gatewayUrl).host.toLowerCase()
   const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0].trim()
@@ -348,6 +367,12 @@ export async function GET(request: Request) {
     // A shared ConfigIQ deployment can expose the same AISimulators service
     // through its combined same-origin /api/catalog proxy. That response is
     // already normalized, so pass it through instead of re-parsing it.
+    //
+    // The reduced { simulators, timeoutSeconds } shape is this deployment's
+    // same-origin contract, shipped with its own frontend. When ConfigIQ
+    // instances are chained, upgrade the downstream reader before the upstream
+    // it reads: this route still accepts an older upstream's legacy top-level
+    // lists, but an older downstream expects lists this route no longer sends.
     const combinedCatalogUrl = /\/api\/?$/.test(baseUrl)
       ? `${baseUrl.replace(/\/$/, '')}/catalog`
       : null
@@ -384,17 +409,24 @@ export async function GET(request: Request) {
           { status: 502, headers: { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' } },
         )
       }
-      const systems = catalogList(catalogData, 'systems')
-      const models = catalogList(catalogData, 'models')
-      const backends = catalogList(catalogData, 'backends') ?? []
-      const networks = (catalogList(catalogData, 'networks') ?? [])
-        .filter((network): network is string => typeof network === 'string')
-      if (!systems || !models || !validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
-      return catalogResponse(
-        systems, models, backends, networks,
-        combinedSimulators(catalogData as Record<string, unknown>),
-        catalogObjectives(catalogData),
-      )
+      const simulatorEntries = combinedSimulators(catalogData as Record<string, unknown>)
+      if (simulatorEntries.length === 0) {
+        // No simulator list: an older gateway exposes only the unscoped
+        // catalogue. Pass it through for clients that predate simulator
+        // selection.
+        const legacy = legacyCatalog(catalogData)
+        if (!legacy) return invalidCatalogResponse()
+        return catalogResponse([], legacy)
+      }
+
+      // The default simulator's own catalogue is what the client renders; if
+      // it cannot be read, every page that lists models or systems is unusable.
+      const defaultEntry = simulatorEntries.find(entry => entry.default)
+      if (!defaultEntry || !defaultEntry.available) return invalidCatalogResponse()
+      if (!validCatalogEntries(defaultEntry.systems, defaultEntry.models, defaultEntry.backends)) {
+        return invalidCatalogResponse()
+      }
+      return catalogResponse(simulatorEntries)
     }
 
     const simulators = simulatorDescriptors(await fetchJson(`${baseUrl}/simulators`, timeoutSeconds))
@@ -415,9 +447,15 @@ export async function GET(request: Request) {
       if (!systems || !models || !validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
       const networks = (catalogList(networksData, 'networks') ?? [])
         .filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
-      return catalogResponse(
-        systems, models, backends, networks, [], catalogObjectives(backendsData),
-      )
+      const legacy = legacyCatalog({
+        systems,
+        models,
+        backends,
+        networks,
+        objectives: catalogObjectives(backendsData),
+      })
+      if (!legacy) return invalidCatalogResponse()
+      return catalogResponse([], legacy)
     }
 
     const capabilities = await Promise.all(
@@ -439,18 +477,10 @@ export async function GET(request: Request) {
       // cannot be read, every page that lists models or systems is unusable.
       return invalidCatalogResponse()
     }
-    const systems = defaultEntry.systems
-    const models = defaultEntry.models
-    const backends = defaultEntry.backends
-    if (!validCatalogEntries(systems, models, backends)) return invalidCatalogResponse()
-    return catalogResponse(
-      systems,
-      models,
-      backends,
-      defaultEntry.networks,
-      simulatorEntries,
-      defaultEntry.objectives,
-    )
+    if (!validCatalogEntries(defaultEntry.systems, defaultEntry.models, defaultEntry.backends)) {
+      return invalidCatalogResponse()
+    }
+    return catalogResponse(simulatorEntries)
   } catch (err: unknown) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       recordErrorCode('/api/catalog', 'AISIM_TIMEOUT', 504)

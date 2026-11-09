@@ -84,6 +84,8 @@ export interface EngineVersionSupport {
 export interface SimulatorDescriptor {
   id: string
   label: string
+  /** Short, service-authored explanation of what this simulator models. */
+  description: string | null
   version: string | null
   default: boolean
 }
@@ -92,6 +94,12 @@ export interface SimulatorDescriptor {
 export interface SimulatorSupport {
   id: string
   label: string
+  /**
+   * False when the catalog listed the simulator but its capabilities could not
+   * be read. Such an entry carries empty capability lists so pages do not fall
+   * back to another simulator's catalogue under this simulator's name.
+   */
+  available: boolean
   /** Release of the simulator itself (not the engine/backend version). */
   version: string | null
   /**
@@ -140,9 +148,9 @@ export interface Catalog {
   backendOptions: BackendOption[]
   networkOptions: string[]
   /**
-   * Capabilities for each simulator whose catalogue could be read, keyed by
-   * ID. An unavailable simulator is absent rather than represented by empty
-   * lists, so pages fall back to the top-level catalogue.
+   * Capabilities for each listed simulator, keyed by ID. An unavailable
+   * simulator is present with `available: false` and empty capability lists,
+   * so pages never render another simulator's catalogue in its place.
    */
   simulatorSupport: Record<string, SimulatorSupport>
   /** Simulator identity list from the combined catalog, in service order. */
@@ -273,6 +281,7 @@ function mapSimulatorSupportEntry(entry: Record<string, unknown>): SimulatorSupp
   return {
     id: entry.id as string,
     label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id as string,
+    available: true,
     version: typeof entry.version === 'string' && entry.version.trim().length > 0
       ? entry.version.trim()
       : null,
@@ -299,13 +308,36 @@ interface MappedSimulators {
   support: Record<string, SimulatorSupport>
 }
 
+/** An unavailable simulator's identity with deliberately empty capabilities. */
+function unavailableSimulatorSupport(entry: Record<string, unknown>): SimulatorSupport {
+  return {
+    id: entry.id as string,
+    label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id as string,
+    available: false,
+    version: typeof entry.version === 'string' && entry.version.trim().length > 0
+      ? entry.version.trim()
+      : null,
+    recommendSearch: 'windowed',
+    models: [],
+    modelsExhaustive: false,
+    modelSpecs: new Map(),
+    systems: [],
+    backends: [],
+    networks: [],
+    defaultNetwork: null,
+    objectives: [],
+  }
+}
+
 /**
  * Split the combined catalogue's self-describing simulator entries into the
  * identity list used for selection and the capability map used by pages.
  *
- * An entry marked unavailable keeps its identity but contributes no support,
- * so callers fall back to the top-level catalogue instead of reading empty
- * capability lists as "this simulator prices nothing".
+ * Every listed simulator gets a support entry. An unavailable one keeps its
+ * identity with `available: false` and empty capabilities, so pages never fall
+ * back to the default simulator's catalogue and present it as this simulator's
+ * own. Only a catalogue with no simulator entries at all uses the legacy
+ * top-level fallback.
  */
 function mapSimulators(raw: unknown): MappedSimulators {
   const descriptors: SimulatorDescriptor[] = []
@@ -318,16 +350,115 @@ function mapSimulators(raw: unknown): MappedSimulators {
     descriptors.push({
       id: entry.id,
       label: typeof entry.label === 'string' && entry.label.length > 0 ? entry.label : entry.id,
+      description: typeof entry.description === 'string' && entry.description.trim().length > 0
+        ? entry.description.trim()
+        : null,
       version: typeof entry.version === 'string' && entry.version.trim().length > 0
         ? entry.version.trim()
         : null,
       default: entry.default === true,
     })
-    if (entry.available === false) continue
-    if (!Array.isArray(entry.backends) || !Array.isArray(entry.models) || !Array.isArray(entry.systems)) continue
-    support[entry.id] = mapSimulatorSupportEntry(entry)
+    const readable = entry.available !== false &&
+      Array.isArray(entry.backends) &&
+      Array.isArray(entry.models) &&
+      Array.isArray(entry.systems)
+    support[entry.id] = readable
+      ? mapSimulatorSupportEntry(entry)
+      : unavailableSimulatorSupport(entry)
   }
   return { descriptors, support }
+}
+
+/** The page-ready view of a `/api/catalog` payload. */
+export interface MappedCatalog {
+  gpuOptions: GpuOption[]
+  modelOptions: string[]
+  modelSpecs: Map<string, ModelSpec>
+  backendOptions: BackendOption[]
+  networkOptions: string[]
+  simulatorSupport: Record<string, SimulatorSupport>
+  simulators: SimulatorDescriptor[]
+  objectives: string[]
+  timeoutSeconds: number | null
+}
+
+/**
+ * Turn a `/api/catalog` payload into the view pages consume.
+ *
+ * The default simulator's entry is authoritative: its systems, models,
+ * backends, fabrics, and objectives become the top-level catalogue. A response
+ * without simulator entries (an older gateway) keeps reporting those facts at
+ * the top level, which is the only fallback.
+ *
+ * Throws when the resolved catalogue cannot render a page, matching the hook's
+ * existing "empty catalog" failure.
+ */
+export function mapCatalogResponse(data: unknown): MappedCatalog {
+  const record = (data && typeof data === 'object' ? data : {}) as Record<string, unknown>
+  const rawSimulators = Array.isArray(record.simulators)
+    ? record.simulators as Record<string, unknown>[]
+    : []
+  const mapped = mapSimulators(rawSimulators)
+  const defaultRaw = rawSimulators.find(entry => entry.default === true) ?? rawSimulators[0]
+  const defaultEntry = defaultRaw !== undefined
+    && defaultRaw.available !== false
+    && Array.isArray(defaultRaw.systems)
+    && Array.isArray(defaultRaw.models)
+    && Array.isArray(defaultRaw.backends)
+    ? defaultRaw
+    : null
+
+  const systems = (defaultEntry?.systems ?? record.systems ?? []) as Record<string, unknown>[]
+  const gpus = systems.map(mapSystem)
+
+  const rawModels = (defaultEntry?.models ?? record.models ?? []) as unknown[]
+  const backendList = (defaultEntry?.backends ?? record.backends ?? []) as Record<string, unknown>[]
+  const rawNetworks = defaultEntry?.networks ?? record.networks
+  const networks = Array.isArray(rawNetworks)
+    ? rawNetworks.filter((network: unknown): network is string => typeof network === 'string' && network.trim().length > 0)
+    : []
+  const backends: BackendOption[] = backendList.flatMap(backend => {
+    const option = mapBackendOption(backend)
+    return option ? [option] : []
+  })
+  const modelList: string[] = []
+  const specsMap = new Map<string, ModelSpec>()
+  for (const m of rawModels) {
+    if (typeof m === 'string') {
+      modelList.push(m)
+    } else if (m && typeof m === 'object' && typeof (m as Record<string, unknown>).id === 'string') {
+      const spec = m as ModelSpec
+      modelList.push(spec.id)
+      specsMap.set(spec.id, spec)
+    }
+  }
+
+  if (gpus.length === 0 || modelList.length === 0) {
+    throw new Error('AISimulators returned empty catalog')
+  }
+
+  const defaultSupport = defaultEntry
+    ? mapped.support[defaultEntry.id as string]
+    : undefined
+  const objectives = defaultSupport?.objectives
+    ?? (Array.isArray(record.objectives)
+      ? record.objectives.filter((objective): objective is string => typeof objective === 'string' && objective.trim().length > 0)
+      : [])
+  const timeoutSeconds = typeof record.timeoutSeconds === 'number' && record.timeoutSeconds > 0
+    ? record.timeoutSeconds
+    : null
+
+  return {
+    gpuOptions: gpus,
+    modelOptions: modelList,
+    modelSpecs: specsMap,
+    backendOptions: backends,
+    networkOptions: networks,
+    simulatorSupport: mapped.support,
+    simulators: mapped.descriptors,
+    objectives,
+    timeoutSeconds,
+  }
 }
 
 const GB = 1_073_741_824
@@ -413,48 +544,18 @@ export function useCatalog(): Catalog {
           if (!res.ok) throw new Error(`Catalog fetch failed (${res.status})`)
 
           const data = await res.json()
+          const catalog = mapCatalogResponse(data)
 
-          const systems = (data.systems ?? []) as Record<string, unknown>[]
-          const gpus = systems.map(mapSystem)
-
-          const rawModels = (data.models ?? []) as unknown[]
-          const backendList = (data.backends ?? []) as Record<string, unknown>[]
-          const networks = Array.isArray(data.networks)
-            ? data.networks.filter((network: unknown): network is string => typeof network === 'string' && network.trim().length > 0)
-            : []
-          const backends: BackendOption[] = backendList.flatMap(backend => {
-            const option = mapBackendOption(backend)
-            return option ? [option] : []
-          })
-          const modelList: string[] = []
-          const specsMap = new Map<string, ModelSpec>()
-          for (const m of rawModels) {
-            if (typeof m === 'string') {
-              modelList.push(m)
-            } else if (m && typeof m === 'object' && typeof (m as Record<string, unknown>).id === 'string') {
-              const spec = m as ModelSpec
-              modelList.push(spec.id)
-              specsMap.set(spec.id, spec)
-            }
-          }
-
-          if (gpus.length === 0 || modelList.length === 0) {
-            throw new Error('AISimulators returned empty catalog')
-          }
-
-          cachedGpus = gpus
-          cachedModels = modelList
-          cachedModelSpecs = specsMap
-          cachedBackends = backends
-          cachedNetworks = networks
-          const mapped = mapSimulators(data.simulators)
-          cachedSimulatorSupport = mapped.support
-          cachedSimulators = mapped.descriptors
-          cachedObjectives = Array.isArray(data.objectives)
-            ? data.objectives.filter((objective: unknown): objective is string => typeof objective === 'string' && objective.trim().length > 0)
-            : []
-          if (typeof data.timeoutSeconds === 'number' && data.timeoutSeconds > 0) {
-            cachedTimeoutSeconds = data.timeoutSeconds
+          cachedGpus = catalog.gpuOptions
+          cachedModels = catalog.modelOptions
+          cachedModelSpecs = catalog.modelSpecs
+          cachedBackends = catalog.backendOptions
+          cachedNetworks = catalog.networkOptions
+          cachedSimulatorSupport = catalog.simulatorSupport
+          cachedSimulators = catalog.simulators
+          cachedObjectives = catalog.objectives
+          if (catalog.timeoutSeconds !== null) {
+            cachedTimeoutSeconds = catalog.timeoutSeconds
           }
           cacheTimestamp = Date.now()
         })()

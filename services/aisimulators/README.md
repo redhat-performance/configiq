@@ -21,7 +21,7 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/systems` | Supported GPU systems (per `simulator`) |
 | GET | `/backends` | Backend/engine versions and memory defaults (per `simulator`) |
 | GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
-| GET | `/simulators` | Simulator identity, label, and version |
+| GET | `/simulators` | Simulator identity, label, description, and version |
 
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 

@@ -63,7 +63,7 @@ beforeEach(async () => {
     gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
     modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
     modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
-    simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
+    simulators: [{ id: 'aisimulate', label: 'AISimulate', description: null, version: null, default: true }],
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
@@ -299,11 +299,11 @@ describe('Hybrid page composition', () => {
     const catalog = vi.mocked(useCatalog)()
     vi.mocked(useCatalog).mockReturnValue({ ...catalog,
       simulators: [
-        { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
-        { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
+        { id: 'aisimulate', label: 'AISimulate', description: null, version: null, default: true },
+        { id: 'blis', label: 'BLIS', description: null, version: BLIS_FIXTURE_VERSION, default: false },
       ],
       simulatorSupport: { blis: {
-      id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, recommendSearch: 'single', modelsExhaustive: true,
+      id: 'blis', label: 'BLIS', available: true, version: BLIS_FIXTURE_VERSION, recommendSearch: 'single', modelsExhaustive: true,
       modelSpecs: new Map(), networks: [], defaultNetwork: null,
       systems: ['l40s'], models: ['Qwen/Qwen3-8B'], backends: [{
         id: 'vllm', aisimulateId: 'vllm', versions: ['0.11.0'], defaultVersion: '0.11.0',
@@ -660,7 +660,7 @@ describe('Hybrid page composition', () => {
       ],
       modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
       modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
+      simulators: [{ id: 'aisimulate', label: 'AISimulate', description: null, version: null, default: true }],
       isLoading: false, error: null,
     })
     vi.mocked(useInfrastructureOffers).mockReturnValue({
