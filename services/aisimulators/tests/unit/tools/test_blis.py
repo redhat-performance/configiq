@@ -1111,10 +1111,8 @@ def test_recommend_pareto_enumerates_topologies_and_concurrency(
     assert len(result.candidates) == 4
     assert all(candidate["status"] == "feasible" for candidate in result.candidates)
     assert all(candidate["simulator"] == "blis" for candidate in result.candidates)
-    # Both shapes are non-dominated at each load level.
-    assert set(result.views["pareto_front"]) == {
-        "agg-tp1-c1", "agg-tp2-c1", "agg-tp1-c8", "agg-tp2-c8",
-    }
+    # Higher load wins both axes, so the c8 shapes dominate the c1 shapes.
+    assert set(result.views["pareto_front"]) == {"agg-tp1-c8", "agg-tp2-c8"}
     assert len(result.configs) == 4
     assert all(config["simulator"] == "blis" for config in result.configs)
 
@@ -1157,7 +1155,7 @@ def test_recommend_pareto_marks_sla_violations_infeasible(monkeypatch, catalog):
 def test_recommend_pareto_rejects_a_load_target(monkeypatch, catalog):
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
 
-    with pytest.raises(BlisUnsupportedRequest, match="does not accept target_concurrency"):
+    with pytest.raises(BlisUnsupportedRequest, match="drive their own load"):
         blis_service.recommend(_capacity_input(
             capacity=False,
             concurrency=8,

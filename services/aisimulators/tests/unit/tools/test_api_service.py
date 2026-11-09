@@ -1593,11 +1593,13 @@ class TestCapacityRequestValidation:
         assert request.target_concurrency == 32
         assert request.sla_mode == "none"
 
-    def test_capacity_rejects_blis(self):
-        with pytest.raises(ValueError, match="not supported by the BLIS simulator"):
-            app_module.RecommendRequest.model_validate(
-                {**VALID_CAPACITY_BODY, "simulator": "blis"}
-            )
+    def test_capacity_accepts_blis(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "simulator": "blis"}
+        )
+        assert request.simulator == "blis"
+        assert request.objective == "concurrency_capacity"
+        assert request.target_concurrency == 32
 
     def test_capacity_rejects_an_enforced_sla(self):
         with pytest.raises(ValueError, match="sla_mode='none'"):
@@ -2243,12 +2245,17 @@ class TestRecommendCapacityEndpoint:
         assert data["configs"][0]["tpot"] == pytest.approx(20.0)
         assert data["capacity_options"][0]["config"]["tpot"] == pytest.approx(20.0)
 
-    def test_capacity_rejects_blis_before_running(self):
+    def test_capacity_rejects_an_explicit_fabric_for_blis(self):
         response = client.post(
-            "/recommend", json={**VALID_CAPACITY_BODY, "simulator": "blis"}
+            "/recommend",
+            json={
+                **VALID_CAPACITY_BODY,
+                "simulator": "blis",
+                "fabric": "ib-400g",
+            },
         )
         assert response.status_code == 422
-        assert "BLIS" in response.text
+        assert "aggregate-only" in response.text
 
 
 class TestBackendObjectives:
@@ -2272,10 +2279,14 @@ class TestBackendObjectives:
         ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": True}
 
-    def test_blis_does_not_advertise_capacity(self):
+    def test_blis_advertises_the_goals_it_implements(self):
         data = client.get("/backends?simulator=blis").json()
-        assert "concurrency_capacity" not in data["objectives"]
-        assert "throughput_demand" in data["objectives"]
+        assert data["objectives"] == [
+            "min_gpus",
+            "throughput_demand",
+            "pareto",
+            "concurrency_capacity",
+        ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
 
 
