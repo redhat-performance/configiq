@@ -4123,3 +4123,59 @@ class TestMetrics:
         scope_metrics = data["resourceMetrics"][0]["scopeMetrics"]
         assert len(scope_metrics) > 0
         assert len(scope_metrics[0]["metrics"]) > 0
+
+
+class TestSimulatorRevision:
+    """Each simulator reports the commit of the artifact this image runs."""
+
+    def test_sdk_commit_comes_from_the_direct_url_release_tag(self, monkeypatch):
+        import json
+        from importlib import metadata
+
+        payload = json.dumps({
+            "url": (
+                "https://github.com/redhat-performance/aisimulate/releases/download/"
+                "deploy-api-v0.14.0%2Ba14e97a8/"
+                "aisim-0.14.0-cp311-abi3-manylinux_2_28_x86_64.whl"
+            )
+        })
+
+        class Dist:
+            def read_text(self, name: str) -> str:
+                assert name == "direct_url.json"
+                return payload
+
+        def distribution(name: str):
+            if name == "aisim":
+                return Dist()
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "distribution", distribution)
+
+        assert app_module._installed_aisimulate_commit() == "a14e97a8"
+
+    def test_sdk_commit_is_absent_without_a_direct_url(self, monkeypatch):
+        from importlib import metadata
+
+        def distribution(name: str):
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "distribution", distribution)
+
+        assert app_module._installed_aisimulate_commit() is None
+
+    def test_blis_commit_follows_its_release_and_never_drifts(self, monkeypatch):
+        monkeypatch.delenv("BLIS_COMMIT", raising=False)
+        monkeypatch.delenv("BLIS_VERSION", raising=False)
+        assert (
+            app_module.blis_commit()
+            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+        )
+
+        # An overridden release without its commit must report no revision
+        # rather than the default release's commit.
+        monkeypatch.setenv("BLIS_VERSION", "0.16.0")
+        assert app_module.blis_commit() is None
+
+        monkeypatch.setenv("BLIS_COMMIT", "abc1234")
+        assert app_module.blis_commit() == "abc1234"

@@ -87,6 +87,8 @@ export interface SimulatorDescriptor {
   /** Short, service-authored explanation of what this simulator models. */
   description: string | null
   version: string | null
+  /** Git commit of the simulator artifact, when the service reports one. */
+  revision: string | null
   default: boolean
 }
 
@@ -356,6 +358,9 @@ function mapSimulators(raw: unknown): MappedSimulators {
         : null,
       version: typeof entry.version === 'string' && entry.version.trim().length > 0
         ? entry.version.trim()
+        : null,
+      revision: typeof entry.revision === 'string' && entry.revision.trim().length > 0
+        ? entry.revision.trim()
         : null,
       default: entry.default === true,
     })

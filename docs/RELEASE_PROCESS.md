@@ -41,8 +41,12 @@ Keep the image versions compatible when releasing the frontend and services.
 The sidebar footer shows:
 - **ConfigIQ build**: version (from git tag, via `NEXT_PUBLIC_GIT_VERSION`) and
   short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
-- **Every simulator**: label and version, from `GET /simulators`, in that
-  endpoint's order
+- **Every simulator**: label, version, and git commit, from `GET /simulators`,
+  in that endpoint's order. Each simulator reports the commit of the artifact
+  this image runs: AISimulate's comes from the SDK wheel's direct-URL release
+  tag; BLIS's from the `BLIS_COMMIT` build arg. `revision` is null when the
+  artifact does not report a commit, and the footer then shows the version
+  only.
 
 The footer lives in `components/layout/AppShell.tsx` and reads simulator identity
 from the catalog API, so adding a simulator needs no footer change.
@@ -76,19 +80,20 @@ Published containers:
 
 ## Bumping the simulation SDK
 
-The `aisimulators` and `aicostings` services install the **aisimulate** SDK as a
+The `aisimulators` and `aicostings` services install the **aisim** SDK as a
 single unified wheel from the Red Hat `redhat-performance/aisimulate` fork's
-GitHub Release assets — not PyPI. The one wheel bundles the Rust-compiled core
-and provides the `aisimulate` / `aisimulate_core` namespaces the services import
-(`aisimulators` directly for sizing;
-`aicostings` indirectly via `configiq.systems` for the GPU catalog). It is
-referenced by **exact download URL** rather than `name==version`, because the
-wheel is published only via the fork's Release (never PyPI); a direct URL forces
-pip to install that exact artifact.
+GitHub Release assets — not PyPI. The distribution is named `aisim`, while the
+import packages keep their historical names: the services import the
+`aisimulate` / `aisimulate_core` namespaces (`aisimulators` directly for
+sizing; `aicostings` indirectly via `configiq.systems` for the GPU catalog). It
+is referenced by **exact download URL** rather than `name==version`, because
+the wheel is published only via the fork's Release (never PyPI); a direct URL
+forces pip to install that exact artifact. The requirement name must match the
+wheel metadata (`aisim @ …/aisim-<version>-…whl`), or the install is rejected.
 
-To move to a new SDK build, update the single `aisimulate @ …` wheel URL — keep
-it **identical in both files** — in `[project.dependencies]`, then regenerate
-each `uv.lock` (`uv lock`):
+To move to a new SDK build, update the single `aisim @ …` wheel URL — keep it
+**identical in both files** — in `[project.dependencies]`, then regenerate each
+`uv.lock` (`uv lock`):
 
 1. `services/aisimulators/pyproject.toml`
 2. `services/aicostings/pyproject.toml`
@@ -98,7 +103,7 @@ The URL points at a specific `deploy-api-v<version>+<hash>` release asset (the
 so rebuilds are reproducible. The wheel is produced by the fork's
 `deploy-api-wheels.yml` workflow on its `deploy/api` branch.
 
-> **Note:** the aisimulate wheel pulls in a large JAX/optimization dependency
+> **Note:** the aisim wheel pulls in a large JAX/optimization dependency
 > stack (jax, jaxlib, optax, google-vizier, tfp-nightly) as base dependencies,
 > so both service images are substantially larger than under the previous
 > two-wheel aiconfigurator 0.11/0.12 SDK.
@@ -119,6 +124,7 @@ independently of the binary:
 |---|---|
 | `BLIS_IMAGE` | `ghcr.io/inference-sim/blis:vX.Y.Z@sha256:…` |
 | `BLIS_VERSION` | the release the image reports (`/simulators`, `/backends`, provenance) |
+| `BLIS_COMMIT` | the upstream git commit the release tag was built from (`/simulators` revision) |
 | `BLIS_CATALOG_COMMIT` | `inference-sim/blis-catalog` |
 | `BLIS_REGISTRY_COMMIT` | `inference-sim/blis-registry` |
 
@@ -127,7 +133,10 @@ To move to a new BLIS release:
 1. Resolve the release image's multi-arch index digest and put the tag plus
    digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release. The
    Containerfile fails the build when the `BLIS_IMAGE` tag and `BLIS_VERSION`
-   disagree, so the reported version cannot drift from the binary.
+   disagree, so the reported version cannot drift from the binary. Set
+   `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
+   vX.Y.Z`): the release binary embeds no revision, so this is the only source
+   for the git commit the footer shows.
 2. Bump the catalog and registry commits to the releases that BLIS tag is tested
    against (its `README.md` names them).
 3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and

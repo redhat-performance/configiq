@@ -329,10 +329,10 @@ paths:
       tags: [catalog]
       summary: List simulators this deployment can run
       description: |
-        Returns simulator identity, label, description, version, and whether it
-        is the default. Clients discover the list here and must not hard-code an
-        ID; every `simulator` parameter or field accepts one of these `id`
-        values.
+        Returns simulator identity, label, description, version, revision, and
+        whether it is the default. Clients discover the list here and must not
+        hard-code an ID; every `simulator` parameter or field accepts one of
+        these `id` values.
       responses:
         '200':
           description: Simulator list
@@ -346,7 +346,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, label, description, default, version]
+                      required: [id, label, description, default, version, revision]
                       properties:
                         id:
                           type: string
@@ -366,6 +366,14 @@ paths:
                           description: |
                             The simulator release this deployment runs, or null
                             when the artifact does not report one.
+                        revision:
+                          type: string
+                          nullable: true
+                          description: |
+                            Git commit of the simulator artifact this deployment
+                            runs, or null when the artifact does not report one.
+                            For AISimulate this is the SDK wheel's release
+                            commit; for BLIS the upstream release tag's commit.
                   default_simulator:
                     type: string
                     example: aisimulate

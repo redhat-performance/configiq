@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote
 
 import pandas as pd
 import uvicorn
@@ -43,7 +44,7 @@ from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
 from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_catalog
 from .blis.runner import BlisExecutionError, BlisTimeoutError
-from .blis.runtime import blis_release
+from .blis.runtime import blis_commit, blis_release
 from .blis.scenario import DEFAULT_ENGINE_VERSION, ENGINE_VERSION_SUPPORT, MODELED_ENGINE_VERSIONS
 from .blis.service import EstimateInput as BlisEstimateInput
 from .blis.service import RecommendInput as BlisRecommendInput
@@ -86,16 +87,53 @@ def _installed_aisimulate_version() -> str | None:
             "aisimulate.__version__ unavailable; using package metadata",
             exc_info=True,
         )
-    try:
-        from importlib.metadata import version as distribution_version
+    from importlib.metadata import version as distribution_version
 
-        return distribution_version("aisimulate")
-    except Exception:  # pragma: no cover - only when the package is missing
-        logger.warning("Could not determine the installed aisimulate version")
-        return None
+    # The distribution was renamed from `aisimulate` to `aisim`; the import
+    # package kept its name.
+    for name in ("aisim", "aisimulate"):
+        try:
+            return distribution_version(name)
+        except Exception:
+            logger.debug("No installed distribution metadata for %s", name, exc_info=True)
+    logger.warning("Could not determine the installed AISimulate SDK version")
+    return None
+
+
+def _installed_aisimulate_commit() -> str | None:
+    """The SDK commit recorded by the direct-URL wheel this deployment installed.
+
+    The release tag (``deploy-api-v<version>+<sha>``) is the only place the
+    wheel records its source commit. PEP 610 writes ``direct_url.json`` for a
+    direct-URL install, which is how both service images install the SDK. A
+    source checkout has no such file, so the footer shows the version only.
+    """
+    from importlib.metadata import distribution
+
+    # The distribution was renamed from `aisimulate` to `aisim`; the import
+    # package kept its name, so try both.
+    for name in ("aisim", "aisimulate"):
+        try:
+            raw = distribution(name).read_text("direct_url.json")
+        except Exception:
+            logger.debug("Could not read direct_url.json for %s", name, exc_info=True)
+            continue
+        if not raw:
+            continue
+        try:
+            url = json.loads(raw).get("url")
+        except ValueError:
+            continue
+        if not isinstance(url, str):
+            continue
+        match = re.search(r"\+([0-9a-f]{7,40})(?:/|$)", unquote(url))
+        if match is not None:
+            return match.group(1)
+    return None
 
 
 _AISIMULATE_VERSION = _installed_aisimulate_version()
+_AISIMULATE_COMMIT = _installed_aisimulate_commit()
 
 # ─── Simulator registry ─────────────────────────────────────────────────────
 #
@@ -110,6 +148,7 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "description": "Analytical sizing powered by the AISimulate SDK; prices the full GPU and model catalogue.",
         "default": True,
         "version": _AISIMULATE_VERSION,
+        "revision": _AISIMULATE_COMMIT,
         "recommend_search": "windowed",
         "networks": False,
         # /memory is an AISimulate capability; a simulator that does not model
@@ -122,6 +161,7 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "description": "Discrete-event simulation of a serving cluster, including disaggregated prefill/decode and network fabrics.",
         "default": False,
         "version": blis_release(),
+        "revision": blis_commit(),
         "recommend_search": "single",
         "networks": True,
         "memory": False,

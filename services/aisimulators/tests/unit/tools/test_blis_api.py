@@ -114,6 +114,13 @@ def test_simulators_endpoint_lists_identity_label_description_and_version():
         "blis": app_module.blis_release(),
     }
     assert all(isinstance(version, str) and version for version in versions.values())
+    # Each simulator also reports the git commit of the artifact it runs, so
+    # the footer can identify the build rather than only the release.
+    revisions = {entry["id"]: entry["revision"] for entry in body["simulators"]}
+    assert revisions == {
+        "aisimulate": app_module._AISIMULATE_COMMIT,
+        "blis": app_module.blis_commit(),
+    }
     # Settings explains each simulator from service text, so every entry must
     # carry its own non-empty description rather than a frontend name table.
     descriptions = {entry["id"]: entry["description"] for entry in body["simulators"]}
