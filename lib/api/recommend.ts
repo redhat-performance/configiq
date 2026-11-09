@@ -124,6 +124,10 @@ export interface RecommendSweepMeta {
   strictSla: boolean | null
   windowMinGpus: number | null
   windowMaxGpus: number | null
+  /** Deployment's configured candidate ceiling. */
+  configuredMaxGpus: number | null
+  /** Ceiling the search actually used; may exceed the configured value. */
+  effectiveMaxGpus: number | null
 }
 
 export interface RecommendResult {
@@ -208,17 +212,7 @@ export interface RecommendErrorResponse {
 
 export type RecommendResponse = RecommendResult | RecommendErrorResponse
 
-export interface RecommendWindow {
-  minGpus: number
-  maxGpus: number
-}
-
-export type RecommendProgressEvent =
-  | { type: 'search_started'; maxGpus: number }
-  | { type: 'window_started'; window: RecommendWindow }
-  | { type: 'window_completed'; window: RecommendWindow; candidateGpus: number | null }
-  | { type: 'refining'; window: RecommendWindow; candidateGpus: number }
-  | { type: 'completed'; response: RecommendResponse }
+export type RecommendProgressEvent = { type: 'completed'; response: RecommendResponse }
 
 // ─── Request ID ──────────────────────────────────────────────────────────────
 
@@ -327,12 +321,6 @@ function baseRequestPayload(request: RecommendRequest): Record<string, unknown> 
   if (request.model_config != null) externalPayload.model_config = request.model_config
   if (request.simulator != null) externalPayload.simulator = request.simulator
   if (request.objective) externalPayload.objective = request.objective
-  if (request.min_candidate_gpus != null) {
-    externalPayload.min_candidate_gpus = request.min_candidate_gpus
-  }
-  if (request.max_candidate_gpus != null) {
-    externalPayload.max_candidate_gpus = request.max_candidate_gpus
-  }
   if (request.kv_transfer_bandwidth_gb_per_second != null) {
     externalPayload.kv_transfer_bandwidth_gb_per_second = request.kv_transfer_bandwidth_gb_per_second
   }
@@ -341,7 +329,7 @@ function baseRequestPayload(request: RecommendRequest): Record<string, unknown> 
 
 export async function callRecommend(
   request: RecommendRequest,
-  options: { window?: RecommendWindow; timeoutSeconds?: number; signal?: AbortSignal } = {},
+  options: { timeoutSeconds?: number; signal?: AbortSignal } = {},
 ): Promise<RecommendResponse> {
   const requestId = generateRequestId()
   const startTime = performance.now()
@@ -370,8 +358,6 @@ export async function callRecommend(
     }
     externalPayload.search_budget_seconds = searchBudgetSeconds
   }
-  if (options.window?.minGpus != null) externalPayload.min_candidate_gpus = options.window.minGpus
-  if (options.window?.maxGpus != null) externalPayload.max_candidate_gpus = options.window.maxGpus
 
   let response: Response
   try {
@@ -591,6 +577,8 @@ function parseRecommendPayload(
         strictSla: typeof sweepRaw.strict_sla === 'boolean' ? sweepRaw.strict_sla : null,
         windowMinGpus: typeof sweepRaw.window_min_gpus === 'number' ? sweepRaw.window_min_gpus : null,
         windowMaxGpus: typeof sweepRaw.window_max_gpus === 'number' ? sweepRaw.window_max_gpus : null,
+        configuredMaxGpus: typeof sweepRaw.configured_max_gpus === 'number' ? sweepRaw.configured_max_gpus : null,
+        effectiveMaxGpus: typeof sweepRaw.effective_max_gpus === 'number' ? sweepRaw.effective_max_gpus : null,
       }
     : undefined
 
@@ -983,116 +971,10 @@ export async function callPareto(
 }
 
 /**
- * Search progressively larger GPU windows, then refine the first feasible
- * window. A feasible result from a range is provisional until its lower
- * sub-range has been checked.
+ * Helpers for the server-side recommend proxy. The SSE route emits one
+ * `completed` event; the service owns the GPU search window, so the browser
+ * never replays windows or forwards candidate bounds.
  */
-export async function* incrementalRecommend(
-  request: RecommendRequest,
-  signal?: AbortSignal,
-): AsyncGenerator<RecommendProgressEvent> {
-  if (request.search_strategy === 'single') {
-    if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
-    const totalTimeoutSeconds = gatewayTimeoutSeconds()
-    // A single-search simulator owns a bounded search in the service. It is one
-    // request, not a sequence of GPU windows; avoid publishing a guessed
-    // max-GPU range that would misstate the search the service actually ran.
-    const response = await callRecommend(request, {
-      timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),
-      signal,
-    })
-    yield { type: 'completed', response }
-    return
-  }
-
-  if ((request.sla_mode ?? 'enforce') === 'none') {
-    if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
-    const totalTimeoutSeconds = gatewayTimeoutSeconds()
-    // Demand and capacity sizing are each one bounded call over the full GPU
-    // window: the service itself selects the fewest GPUs that meet the goal.
-    // Replaying them as shrinking windows would repeat the same search and
-    // could return an unmet window before a larger one was ever tried.
-    const response = await callRecommend(request, {
-      timeoutSeconds: Math.max(1, totalTimeoutSeconds - 1),
-      signal,
-    })
-    yield { type: 'completed', response }
-    return
-  }
-
-  const maxGpus = configuredMaxCandidateGpus()
-  const totalTimeoutSeconds = gatewayTimeoutSeconds()
-  const deadline = performance.now() + Math.max(1, totalTimeoutSeconds - 1) * 1000
-  let windowMin = 1
-  let windowMax = 1
-  let best: RecommendResult | null = null
-
-  yield { type: 'search_started', maxGpus }
-
-  while (windowMin <= maxGpus) {
-    if (signal?.aborted) throw new DOMException('Recommendation search aborted', 'AbortError')
-    const window = { minGpus: windowMin, maxGpus: windowMax }
-    yield { type: 'window_started', window }
-    const remainingSeconds = Math.ceil((deadline - performance.now()) / 1000)
-    if (remainingSeconds <= 0) {
-      yield {
-        type: 'completed',
-        response: best ?? makeError(generateRequestId(), 'AISIM_TIMEOUT', 'The incremental recommendation search exceeded its overall time budget.'),
-      }
-      return
-    }
-    const response = await callRecommend(request, {
-      window,
-      timeoutSeconds: remainingSeconds,
-      signal,
-    })
-
-    if (response.status === 'failed') {
-      if (response.error.code !== 'AISIM_NO_CONFIGURATION') {
-        yield { type: 'completed', response: best ?? response }
-        return
-      }
-
-      yield { type: 'window_completed', window, candidateGpus: null }
-      if (best != null) {
-        yield { type: 'completed', response: best }
-        return
-      }
-      windowMin = windowMax + 1
-      windowMax = Math.min(maxGpus, Math.max(windowMin, windowMax * 2))
-      continue
-    }
-
-    const candidateGpus = response.recommendation.gpusNeeded
-    if (best == null || candidateGpus < best.recommendation.gpusNeeded) best = response
-    yield { type: 'window_completed', window, candidateGpus }
-
-    if (candidateGpus <= windowMin) {
-      yield { type: 'completed', response: best }
-      return
-    }
-
-    const refinementMax = candidateGpus - 1
-    if (refinementMax >= windowMin) {
-      yield { type: 'refining', window: { minGpus: windowMin, maxGpus: refinementMax }, candidateGpus }
-      windowMax = refinementMax
-      continue
-    }
-
-    yield { type: 'completed', response: best }
-    return
-  }
-
-  yield {
-    type: 'completed',
-    response: makeError(generateRequestId(), 'AISIM_NO_CONFIGURATION', 'No valid GPU configuration found for this workload.'),
-  }
-}
-
-export function configuredMaxCandidateGpus(): number {
-  const value = Number(process.env.AISIMULATORS_MAX_CANDIDATE_GPUS)
-  return Number.isInteger(value) && value > 0 ? value : 1024
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

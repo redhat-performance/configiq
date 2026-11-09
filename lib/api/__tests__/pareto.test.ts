@@ -66,19 +66,6 @@ describe('buildFrontierRequest', () => {
     expect(body).not.toHaveProperty('max_candidate_gpus')
   })
 
-  it('passes explicit bounds through for direct API callers', () => {
-    const body = buildFrontierRequest({
-      model_path: 'org/model',
-      system: 'h200_sxm',
-      sla_mode: 'none',
-      min_candidate_gpus: 2,
-      max_candidate_gpus: 32,
-    })
-
-    expect(body.min_candidate_gpus).toBe(2)
-    expect(body.max_candidate_gpus).toBe(32)
-  })
-
   it('preserves the caller simulator rather than substituting AISimulate', () => {
     expect(buildFrontierRequest({ simulator: 'blis' }).simulator).toBe('blis')
     expect(buildFrontierRequest({ simulator: 'aisimulate' }).simulator).toBe('aisimulate')

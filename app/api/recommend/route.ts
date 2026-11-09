@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { RecommendRequestSchema } from '@/lib/api/schemas'
-import { callPareto, callRecommend, generateRequestId, incrementalRecommend, type RecommendProgressEvent } from '@/lib/api/recommend'
+import { callPareto, callRecommend, generateRequestId, type RecommendProgressEvent } from '@/lib/api/recommend'
 import { gatewayTimeoutSeconds } from '@/lib/api/timeout'
 import { recordErrorCode, recordModelRequest } from '@/lib/otel-metrics'
 
@@ -124,7 +124,8 @@ function streamRecommendation(
       }
 
       try {
-        for await (const event of incrementalRecommend(request, abortController.signal)) send(event)
+        const response = await callRecommend(request, { signal: abortController.signal })
+        send({ type: 'completed', response })
         finish()
       } catch (err: unknown) {
         if (!abortController.signal.aborted) {

@@ -18,7 +18,7 @@ import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 import styles from './Sizing.module.css';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { useRecommend, type RecommendObjective, type RecommendParams, type SizingGoal } from '@/contexts/RecommendContext';
-import type { RecommendProgressEvent } from '@/lib/api/recommend';
+import type { RecommendSweepMeta } from '@/lib/api/recommend';
 import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
 import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
@@ -310,7 +310,7 @@ export default function Sizing() {
   const [prefix, setPrefix] = React.useState(0);
 
   // GPU sizer (persistent across navigation)
-  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progressHistory, frontier, startSizing, startPareto, reset } = useRecommend();
+  const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset } = useRecommend();
   // Three sizing goals share one Calculate flow. `demand` asks how many GPUs
   // sustain an arrival rate; `latency` enforces the TTFT/TPOT (or E2E) SLA;
   // `capacity` asks how many GPUs hold N sequences at full context. Both
@@ -1187,7 +1187,7 @@ export default function Sizing() {
       {/* ─── Loading ─── */}
       {isLoading && runMode === 'sizing' && (
         <div className={styles.card}>
-          <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} progressMessages={recommendProgressMessages(progressHistory)} />
+          <GpuChipLoader elapsed={elapsed} timeoutSeconds={gatewayTimeout} />
         </div>
       )}
 
@@ -1214,15 +1214,20 @@ export default function Sizing() {
           </div>
         ) : undefined}
       >
-        {primaryResult && (primaryResult.searchSummary || !primaryResult.memoryAvailable) && (
+        {primaryResult && (primaryResult.searchSummary || primaryResult.sweep?.windowMinGpus != null || !primaryResult.memoryAvailable) && (
           <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {primaryResult.searchSummary && (
               <span>
                 Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' budget reached' : ''}.
               </span>
             )}
-            {!primaryResult.memoryAvailable && (
+            {primaryResult.sweep?.windowMinGpus != null && primaryResult.sweep.windowMaxGpus != null && (
               <div style={{ marginTop: primaryResult.searchSummary ? 4 : 0 }}>
+                {sweepCoverageLabel(primaryResult.sweep)}
+              </div>
+            )}
+            {!primaryResult.memoryAvailable && (
+              <div style={{ marginTop: primaryResult.searchSummary || primaryResult.sweep?.windowMinGpus != null ? 4 : 0 }}>
                 This simulator does not provide memory estimates; the memory tile is hidden.
               </div>
             )}
@@ -1712,23 +1717,11 @@ export default function Sizing() {
   );
 }
 
-function recommendProgressMessages(progressHistory: RecommendProgressEvent[]): string[] {
-  return progressHistory.flatMap(progress => {
-    switch (progress.type) {
-      case 'search_started':
-        return [`Searching up to ${progress.maxGpus} GPUs`];
-      case 'window_started':
-        return [progress.window.minGpus === progress.window.maxGpus
-          ? `Evaluating ${progress.window.minGpus} GPU`
-          : `Evaluating ${progress.window.minGpus}–${progress.window.maxGpus} GPUs`];
-      case 'window_completed':
-        return [progress.candidateGpus == null
-          ? `${progress.window.minGpus}–${progress.window.maxGpus} GPUs — no qualifying configuration`
-          : `${progress.window.minGpus}–${progress.window.maxGpus} GPUs — provisional candidate at ${progress.candidateGpus} GPUs`];
-      case 'refining':
-        return [`Refining below ${progress.candidateGpus} GPUs: checking ${progress.window.minGpus}–${progress.window.maxGpus}`];
-      case 'completed':
-        return [];
-    }
-  });
+function sweepCoverageLabel(sweep: RecommendSweepMeta): string {
+  const min = sweep.windowMinGpus ?? 1
+  const max = sweep.windowMaxGpus ?? min
+  const range = min === max ? `${min} GPU${min === 1 ? '' : 's'}` : `${min}–${max} GPUs`
+  const evaluated = sweep.evaluated ?? 0
+  const budget = sweep.budgetExhausted ? ' · budget reached' : ''
+  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}`
 }

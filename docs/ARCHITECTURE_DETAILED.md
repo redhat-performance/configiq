@@ -72,10 +72,12 @@ GPU sizing formulas or call external service URLs directly from the browser.
 2. `lib/api/recommend.ts` calls AISimulators `/recommend` and normalizes the
    selected configuration, simulator provenance, topology, phases, throughput,
    and any memory data the selected simulator provides.
-3. Streaming clients request `text/event-stream`; AISimulate emits search-window
-   progress while `incrementalRecommend` searches and refines GPU bounds. BLIS
-   performs one bounded aggregate TP search, plus a bounded P/D grid when a
-   fabric is selected, and returns the actual search summary.
+3. Streaming clients request `text/event-stream`; the route emits one
+   `completed` event. The service owns the GPU search window for both
+   simulators, so the browser never replays windows or forwards candidate
+   bounds. AISimulate resolves its fit floor and window ladder server-side;
+   BLIS performs one bounded aggregate TP search, plus a bounded P/D grid when
+   a fabric is selected, and returns the actual search summary.
 
 ### Catalog and pricing
 

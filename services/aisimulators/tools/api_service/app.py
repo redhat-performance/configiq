@@ -205,8 +205,6 @@ class RecommendRequest(BaseModel):
         le=60,
         description="BLIS total search budget in seconds. Capped to keep the search within gateway timeouts.",
     )
-    min_candidate_gpus: int | None = Field(default=None, gt=0, description="Lower bound for the recommendation GPU window.")
-    max_candidate_gpus: int | None = Field(default=None, gt=0, description="Upper bound for the recommendation GPU window.")
     inclusive_tpot: bool = Field(
         default=False,
         description="Report TPOT as (ttft + tpot * (osl - 1)) / osl, spreading TTFT across all output tokens. "
@@ -343,12 +341,6 @@ class RecommendRequest(BaseModel):
         if self.kv_transfer_bandwidth_gb_per_second is not None and self.objective != "pareto":
             raise ValueError("kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'.")
 
-        if (
-            self.min_candidate_gpus is not None
-            and self.max_candidate_gpus is not None
-            and self.min_candidate_gpus > self.max_candidate_gpus
-        ):
-            raise ValueError("min_candidate_gpus cannot exceed max_candidate_gpus.")
         if self.simulator == "aisimulate" and self.fabric is not None:
             raise ValueError("AISimulate does not currently consume a network-fabric selection")
         if self.simulator == "blis" and "fabric" not in self.model_fields_set:
@@ -615,8 +607,15 @@ class SweepMeta(BaseModel):
     timed_out: int | None = None
     budget_exhausted: bool = False
     strict_sla: bool | None = None
+    #: GPU range actually searched, resolved by the service from the model's
+    #: fit floor. Clients must render this rather than derive a window.
     window_min_gpus: int | None = None
     window_max_gpus: int | None = None
+    #: The configured candidate ceiling and the ceiling the search actually
+    #: used. They differ when a large fit floor required more headroom than
+    #: `AISIMULATORS_MAX_CANDIDATE_GPUS` allowed.
+    configured_max_gpus: int | None = None
+    effective_max_gpus: int | None = None
 
 
 class RecommendConfig(BaseModel):
@@ -988,15 +987,36 @@ def _max_candidate_gpus() -> int:
     return _positive_int_env("AISIMULATORS_MAX_CANDIDATE_GPUS", _DEFAULT_MAX_CANDIDATE_GPUS)
 
 
-#: Largest GPU count an omitted Pareto window will reach automatically. The
-#: auto window starts at the smallest shape that holds one full-context
-#: sequence and doubles that floor up to this cap, so a model that needs more
-#: than this must pass explicit `min_candidate_gpus` / `max_candidate_gpus`.
-_DEFAULT_PARETO_MAX_WINDOW_GPUS = 64
+#: Wall-clock budget for discovering the model fit floor. Discovery may raise
+#: the enumeration budget above the configured candidate ceiling when a very
+#: large model needs more headroom, so this bounds the doubling loop rather
+#: than the GPU count.
+_FIT_DISCOVERY_BUDGET_S = 15
+#: Wall-clock budget for the min_gpus window ladder. Kept below the gateway
+#: timeout so the caller receives the best observed result instead of a proxy
+#: timeout.
+_MIN_GPUS_SEARCH_BUDGET_S = 50
+#: Do not start another min_gpus window with less time than this remaining.
+_MIN_GPUS_MIN_WINDOW_S = 5
 
 
-def _pareto_max_window_gpus() -> int:
-    return _positive_int_env("PARETO_MAX_WINDOW_GPUS", _DEFAULT_PARETO_MAX_WINDOW_GPUS)
+def _fit_discovery_budget_seconds() -> int:
+    return _positive_int_env("FIT_DISCOVERY_BUDGET_S", _FIT_DISCOVERY_BUDGET_S)
+
+
+def _min_gpus_search_budget_seconds() -> int:
+    return _positive_int_env("MIN_GPUS_SEARCH_BUDGET_S", _MIN_GPUS_SEARCH_BUDGET_S)
+
+
+def _effective_search_ceiling(configured: int, fit_floor: int) -> int:
+    """Search ceiling: the configured limit, raised only when the fit floor needs it.
+
+    A model whose smallest single-replica shape is at or above the configured
+    candidate ceiling would otherwise have no room to search. The service
+    guarantees at least twice the floor in that case, but never lowers the
+    configured ceiling for small-floor workloads.
+    """
+    return max(configured, fit_floor * 2)
 
 
 #: Simulated traffic per demand run: `requests_per_load_unit × offered rate`.
@@ -1049,9 +1069,13 @@ def _demand_start_window_gpus() -> int:
 
 
 def _effective_gpu_window(req: "RecommendRequest") -> tuple[int, int]:
-    server_max = _max_candidate_gpus()
-    window_max = min(req.max_candidate_gpus, server_max) if req.max_candidate_gpus else server_max
-    return req.min_candidate_gpus or 1, window_max
+    """Default GPU window for objectives the service does not fit-resolve.
+
+    The public request has no window fields: the service owns the search range.
+    Objectives that start from the model's fit floor pass an explicit window
+    internally; capacity and demand use this full configured range.
+    """
+    return 1, _max_candidate_gpus()
 
 
 def _demand_gpu_windows(req: "RecommendRequest") -> list[tuple[int, int]]:
@@ -1063,13 +1087,8 @@ def _demand_gpu_windows(req: "RecommendRequest") -> list[tuple[int, int]]:
     thousand-shape space effectively randomises the cluster size. Bounding the
     first window keeps every candidate near the low end, and doubling it only
     when the rate is unmet grows the search instead of skipping over it.
-
-    An explicit `max_candidate_gpus` pins a single window: the caller has
-    already chosen the range it wants measured.
     """
     lower, ceiling = _effective_gpu_window(req)
-    if req.max_candidate_gpus is not None:
-        return [(lower, ceiling)]
     upper = min(ceiling, max(lower, _demand_start_window_gpus()))
     windows: list[tuple[int, int]] = []
     while True:
@@ -1093,8 +1112,6 @@ def _is_no_viable_config(error: Exception) -> bool:
 def _recommendation_trial_budget(
     objective: str,
     window_max_gpus: int,
-    *,
-    has_requested_max: bool,
 ) -> tuple[int, int, int]:
     """Return `(max_trials, parallelism, candidate_timeout_seconds)`.
 
@@ -1119,9 +1136,9 @@ def _recommendation_trial_budget(
             _positive_int_env("DEMAND_CANDIDATE_TIMEOUT_S", 15),
         )
     return (
-        1 if window_max_gpus == 1 else 4 if has_requested_max else 8,
-        1 if window_max_gpus == 1 else 2 if has_requested_max else 4,
-        15 if has_requested_max else 30,
+        1 if window_max_gpus == 1 else 8,
+        1 if window_max_gpus == 1 else 4,
+        30,
     )
 
 
@@ -1147,6 +1164,7 @@ def _pareto_slots() -> threading.BoundedSemaphore:
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
+    window: tuple[int, int] | None = None,
     model_path: str | None = None,
     max_trials_override: int | None = None,
     candidate_timeout_override: int | None = None,
@@ -1154,12 +1172,12 @@ def _aisimulate_recommendation_config(
     from aisimulate.config.cli import CoreRecommendationConfig
 
     context_length = req.max_seq_len or req.isl + req.osl
-    window_min_gpus, window_max_gpus = _effective_gpu_window(req)
+    window_min_gpus, window_max_gpus = window or _effective_gpu_window(req)
     if window_min_gpus > window_max_gpus:
-        raise ValueError("min_candidate_gpus cannot exceed the effective max_candidate_gpus.")
+        raise ValueError("The resolved GPU window is empty.")
     # A one-GPU total window cannot contain a disaggregated deployment: it
     # requires at least one prefill and one decode GPU. Narrow windows also
-    # need a small trial budget so incremental search does not spend the full
+    # need a small trial budget so a window ladder does not spend its full
     # per-window timeout on redundant optimizer trials.
     is_pareto = req.objective == "pareto"
     is_demand = req.objective == "throughput_demand"
@@ -1168,7 +1186,6 @@ def _aisimulate_recommendation_config(
     max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
         req.objective,
         window_max_gpus,
-        has_requested_max=req.max_candidate_gpus is not None,
     )
     # A demand ladder shares one wall-clock budget across several windows and
     # shrinks each window's trial budget to fit the time that remains.
@@ -1230,7 +1247,7 @@ def _aisimulate_recommendation_config(
             # demand-mode frontiers sweep capacity and must not filter on one.
             "strict_sla": req.sla_mode == "enforce",
             "constraints": {
-                "min_candidate_gpus": req.min_candidate_gpus,
+                "min_candidate_gpus": window_min_gpus,
                 "max_candidate_gpus": window_max_gpus,
             },
         }
@@ -1243,7 +1260,7 @@ def _aisimulate_recommendation_config(
             "target": "throughput_per_gpu",
             "strict_sla": False,
             "constraints": {
-                "min_candidate_gpus": req.min_candidate_gpus,
+                "min_candidate_gpus": window_min_gpus,
                 "max_candidate_gpus": window_max_gpus,
             },
         }
@@ -1252,7 +1269,7 @@ def _aisimulate_recommendation_config(
             "target": "min_gpus",
             "strict_sla": True,
             "constraints": {
-                "min_candidate_gpus": req.min_candidate_gpus,
+                "min_candidate_gpus": window_min_gpus,
                 "max_candidate_gpus": window_max_gpus,
                 **({"min_goodput_rps": req.target_request_rate} if req.target_request_rate is not None else {}),
             },
@@ -1853,18 +1870,18 @@ def _demand_outcome(
     )
 
 
-def _sweep_meta(result: Any, req: RecommendRequest) -> SweepMeta:
+def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) -> SweepMeta:
     """Summarise a sweep's run control from SDK counts/provenance."""
     counts = getattr(result, "counts", None)
     provenance = getattr(result, "provenance", None)
     evaluated = getattr(counts, "evaluated", None)
     if not isinstance(evaluated, int):
         evaluated = len(getattr(result, "candidates", []) or [])
-    _, window_max_gpus = _effective_gpu_window(req)
+    window_min_gpus, window_max_gpus = window
+    configured_max_gpus = _max_candidate_gpus()
     max_trials, _, _ = _recommendation_trial_budget(
         req.objective,
         window_max_gpus,
-        has_requested_max=req.max_candidate_gpus is not None,
     )
     return SweepMeta(
         run_id=getattr(provenance, "run_id", None),
@@ -1878,8 +1895,12 @@ def _sweep_meta(result: Any, req: RecommendRequest) -> SweepMeta:
         # never that it enumerated the whole space.
         budget_exhausted=evaluated >= max_trials,
         strict_sla=req.sla_mode == "enforce",
-        window_min_gpus=max(req.min_candidate_gpus or 1, 1),
+        window_min_gpus=window_min_gpus,
         window_max_gpus=window_max_gpus,
+        configured_max_gpus=configured_max_gpus,
+        # The sweep started at the fit floor, so the ceiling it was allowed to
+        # reach follows the same policy the resolver used.
+        effective_max_gpus=_effective_search_ceiling(configured_max_gpus, window_min_gpus),
     )
 
 
@@ -1895,7 +1916,6 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
     max_trials, parallelism, candidate_timeout = _recommendation_trial_budget(
         req.objective,
         windows[0][1],
-        has_requested_max=req.max_candidate_gpus is not None,
     )
     deadline = time.monotonic() + _demand_search_budget_seconds()
     target_rps = float(req.target_request_rate or 0.0)
@@ -1920,13 +1940,11 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
             1,
             min(max_trials, max(1, int(remaining // window_timeout)) * parallelism),
         )
-        window_req = req.model_copy(
-            update={"min_candidate_gpus": lower, "max_candidate_gpus": upper}
-        )
         offered_trials += window_trials
         try:
             result = _run_aisimulate_recommendation(
-                window_req,
+                req,
+                window=(lower, upper),
                 max_trials_override=window_trials,
                 candidate_timeout_override=window_timeout,
             )
@@ -1968,6 +1986,154 @@ def _run_demand_windows(req: RecommendRequest) -> tuple[list[Any], SweepMeta]:
         strict_sla=False,
         window_min_gpus=last[0],
         window_max_gpus=last[1],
+        configured_max_gpus=_max_candidate_gpus(),
+        effective_max_gpus=windows[-1][1],
+    )
+
+
+def _run_min_gpus_windows(
+    req: RecommendRequest,
+) -> tuple[Any | None, SweepMeta]:
+    """Run the min-GPU search over a service-resolved window ladder.
+
+    The ladder starts at the model's single-sequence fit floor, the smallest
+    worker shape that holds one full-context sequence. A window that cannot
+    hold the model, or in which no candidate clears the SLA, expands
+    geometrically. A candidate above the window floor narrows the range so the
+    search converges on the smallest feasible shape instead of an arbitrary
+    sample.
+
+    Both the fit floor and the ceiling are resolved here, so the caller sends
+    workload intent only. The configured candidate ceiling is a soft budget:
+    it rises to twice the fit floor when a very large model needs the headroom.
+    """
+    configured = _max_candidate_gpus()
+    deadline = time.monotonic() + _min_gpus_search_budget_seconds()
+    floor = _discover_fit_floor(
+        req,
+        configured=configured,
+        deadline=min(deadline, time.monotonic() + _fit_discovery_budget_seconds()),
+    )
+    ceiling = _effective_search_ceiling(configured, floor)
+    max_trials, parallelism, candidate_timeout = _recommendation_trial_budget(
+        req.objective,
+        ceiling,
+    )
+
+    lower = upper = floor
+    refining = False
+    attempted: list[tuple[int, int]] = []
+    offered_trials = 0
+    evaluated = 0
+    feasible = 0
+    timed_out = 0
+    searched = False
+    budget_exhausted = False
+    run_id: str | None = None
+    result: Any | None = None
+
+    while lower <= ceiling:
+        if attempted:
+            remaining = deadline - time.monotonic()
+            if remaining < _MIN_GPUS_MIN_WINDOW_S:
+                budget_exhausted = True
+                break
+        remaining = max(1.0, deadline - time.monotonic())
+        attempted.append((lower, upper))
+        window_timeout = max(1, min(candidate_timeout, int(remaining)))
+        window_trials = max(
+            1,
+            min(max_trials, max(1, int(remaining // window_timeout)) * parallelism),
+        )
+        offered_trials += window_trials
+        try:
+            window_result = _run_aisimulate_recommendation(
+                req,
+                window=(lower, upper),
+                max_trials_override=window_trials,
+                candidate_timeout_override=window_timeout,
+            )
+        except Exception as exc:
+            # A window below the model's fit is the point of the ladder; any
+            # other error (perf-data gap included) must reach the caller so
+            # version fallback can retry it.
+            if not _is_no_viable_config(exc):
+                raise
+            window_result = None
+
+        if window_result is not None:
+            searched = True
+            counts = getattr(window_result, "counts", None)
+            window_evaluated = getattr(counts, "evaluated", None)
+            if not isinstance(window_evaluated, int):
+                window_evaluated = len(getattr(window_result, "candidates", []) or [])
+            evaluated += window_evaluated
+            feasible += int(getattr(counts, "feasible", 0) or 0)
+            timed_out += int(getattr(counts, "timed_out", 0) or 0)
+            budget_exhausted = budget_exhausted or window_evaluated >= window_trials
+            run_id = getattr(getattr(window_result, "provenance", None), "run_id", None) or run_id
+
+            selected = getattr(window_result, "selected_candidates", None) or []
+            candidate_gpus = getattr(selected[0], "used_gpus", None) if selected else None
+            if candidate_gpus is not None:
+                result = window_result
+                if candidate_gpus <= lower:
+                    break
+                refinement_max = candidate_gpus - 1
+                # A candidate can only narrow the range when it lies inside it.
+                # An out-of-window shape (for example disaggregation rounding)
+                # cannot be refined further, so keep the result as observed.
+                if refinement_max < lower or refinement_max >= upper:
+                    break
+                upper = refinement_max
+                refining = True
+                continue
+
+            # The window held the model but nothing cleared the SLA. A
+            # refinement below a known-good candidate is already the minimum,
+            # so keep that result; otherwise the SLA may be reachable higher up
+            # and the ladder continues.
+            if refining:
+                break
+
+        # No qualifying configuration in this window: grow past it, bounded by
+        # the ceiling.
+        if upper >= ceiling:
+            break
+        lower = upper + 1
+        upper = min(ceiling, max(lower, upper * 2))
+
+    if result is None and not budget_exhausted:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No GPU configuration on {req.system} meets the requested workload "
+                f"between {floor} and {ceiling} GPUs."
+            ),
+        )
+    if result is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"The recommendation search exhausted its time budget after {len(attempted)} "
+                f"GPU windows (up to {attempted[-1][1]} GPUs) without a feasible configuration."
+            ),
+        )
+
+    return result, SweepMeta(
+        run_id=run_id,
+        algorithm=_sweep_algorithm(),
+        seed=_sweep_seed(),
+        max_trials=offered_trials,
+        evaluated=evaluated if searched else None,
+        feasible=feasible if searched else None,
+        timed_out=timed_out if searched else None,
+        budget_exhausted=budget_exhausted,
+        strict_sla=req.sla_mode == "enforce",
+        window_min_gpus=floor,
+        window_max_gpus=max(upper for _, upper in attempted),
+        configured_max_gpus=configured,
+        effective_max_gpus=ceiling,
     )
 
 
@@ -2076,6 +2242,7 @@ def _capacity_shapes(
     backend_version: str,
     context_tokens: int,
     gpu_budget: int,
+    target_concurrency: int | None = None,
 ) -> list[_CapacityShape]:
     """Enumerate every aggregated shape the SDK's search space allows.
 
@@ -2084,6 +2251,11 @@ def _capacity_shapes(
     KV-feasibility filter — but keeps the per-shape token capacity that
     function discards. Replica counts are added by the caller: they only
     multiply capacity, so the search does not need one entry per replica.
+
+    ``target_concurrency`` reserves KV for that many resident sequences at full
+    context. Omit it to use the workload's own bound. Callers discovering the
+    one-sequence fit floor pass ``1`` explicitly so a high-concurrency request
+    does not inflate the universal lower bound.
 
     Aggregated only: a disaggregated deployment replicates the full weights in
     each pool, so it cannot need fewer GPUs to hold weights plus KV than an
@@ -2116,7 +2288,9 @@ def _capacity_shapes(
         # resident sequences. Both are the workload's own bounds, not invented
         # defaults; they match the memory breakdown the response reports.
         max_num_tokens=context_tokens,
-        max_batch_size=int(req.target_concurrency or 1),
+        max_batch_size=int(
+            target_concurrency if target_concurrency is not None else (req.target_concurrency or 1)
+        ),
         memory_fraction=_backend_memory_fraction(req.backend, backend_version),
     )
     return [
@@ -2132,61 +2306,87 @@ def _capacity_shapes(
     ]
 
 
-def _pareto_auto_window(
+def _discover_fit_floor(
     req: RecommendRequest,
     *,
-    backend: str,
-    backend_version: str | None,
-) -> tuple[int, int]:
+    configured: int,
+    deadline: float,
+) -> int:
+    """Smallest aggregated worker shape that holds one full-context sequence.
+
+    Discovery starts at the configured candidate ceiling and doubles the
+    enumeration budget when no shape fits, so a model whose single-replica
+    footprint is above the configured value is still discovered. The loop is
+    bounded by wall-clock time, not a GPU count.
+
+    A preflight failure returns the historical start at one GPU: the fit floor
+    is a search-start hint, so an estimate bug must not block a real search.
+    """
+    budget = configured
+    context_tokens = _capacity_context_tokens(req)
+    while True:
+        try:
+            with _with_model_config(req.model_path, req.model_config_data) as model_path:
+                shapes = _capacity_shapes(
+                    req,
+                    model_path,
+                    backend=_sdk_backend_id(req.backend),
+                    backend_version=req.backend_version,
+                    context_tokens=context_tokens,
+                    gpu_budget=budget,
+                    # One sequence is the universal lower bound for any
+                    # deployment that can serve the workload.
+                    target_concurrency=1,
+                )
+        except Exception as error:  # a failed preflight must not mask the search's own error
+            logger.warning(
+                "Fit-floor discovery failed for %s on %s (%s); starting at 1 GPU: %s",
+                req.model_path,
+                req.system,
+                req.backend,
+                error,
+            )
+            return 1
+        if shapes:
+            return min(shape.gpus_per_worker for shape in shapes)
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{req.model_path} on {req.system}: no aggregated parallel "
+                    f"configuration holds a {context_tokens}-token sequence within "
+                    f"the fit-discovery budget (enumerated up to {budget} GPUs). "
+                    "The model may exceed this deployment's practical cluster size."
+                ),
+            )
+        budget *= 2
+
+
+def _pareto_auto_window(req: RecommendRequest) -> tuple[int, int]:
     """Pick a Pareto GPU window from the model's own fit floor.
 
-    An omitted Pareto window should not start at one GPU and should not reach
-    the server ceiling: both waste trials on shapes the model cannot run. This
-    reuses the aggregated KV-feasibility enumeration (`_capacity_shapes`) to
-    find the smallest shape that holds one sequence at the workload context,
-    then searches from that floor up to twice the floor, at least 16 GPUs, and
-    never past the Pareto window cap or the server ceiling.
+    A sweep should not start at one GPU and should not reach the server ceiling:
+    both waste trials on shapes the model cannot run. This reuses the
+    aggregated KV-feasibility enumeration to find the smallest shape that holds
+    one sequence at the workload context, then searches from that floor up to
+    twice the floor, at least 16 GPUs, and never past the effective search
+    ceiling.
 
     Aggregated is a valid floor for both deployment modes: a disaggregated
     deployment replicates the full weights in the prefill and decode pools, so
     it cannot need fewer GPUs than the aggregated shape.
 
-    Raises ``ValueError`` when no shape fits inside the cap, so the caller
-    returns an explicit no-result response instead of running a useless sweep.
+    Raises ``HTTPException`` when no shape fits inside the discovery budget, so
+    the caller returns an explicit no-result response instead of running a
+    useless sweep.
     """
-    server_ceiling = _max_candidate_gpus()
-    ceiling = min(server_ceiling, _pareto_max_window_gpus())
-    context_tokens = _capacity_context_tokens(req)
-    try:
-        with _with_model_config(req.model_path, req.model_config_data) as model_path:
-            shapes = _capacity_shapes(
-                req,
-                model_path,
-                backend=backend,
-                backend_version=backend_version,
-                context_tokens=context_tokens,
-                gpu_budget=ceiling,
-            )
-    except Exception as error:  # a failed preflight must not mask the sweep's own error
-        fallback_upper = min(16, ceiling)
-        logger.warning(
-            "Pareto auto-window preflight failed for %s on %s (%s); "
-            "using the bounded 1-%d window: %s",
-            req.model_path,
-            req.system,
-            req.backend,
-            fallback_upper,
-            error,
-        )
-        return 1, max(1, fallback_upper)
-    if not shapes:
-        raise ValueError(
-            f"{req.model_path} on {req.system}: no aggregated parallel configuration "
-            f"holds a {context_tokens}-token sequence within {ceiling} GPUs "
-            f"({req.backend} KV-cache estimate). Pass explicit min_candidate_gpus / "
-            "max_candidate_gpus to widen the Pareto window."
-        )
-    floor = min(shape.gpus_per_worker for shape in shapes)
+    configured = _max_candidate_gpus()
+    floor = _discover_fit_floor(
+        req,
+        configured=configured,
+        deadline=time.monotonic() + _fit_discovery_budget_seconds(),
+    )
+    ceiling = _effective_search_ceiling(configured, floor)
     upper = min(ceiling, max(16, floor * 2))
     return floor, max(floor, upper)
 
@@ -3206,6 +3406,8 @@ def _run_capacity_recommendation(
             strict_sla=False,
             window_min_gpus=lower_gpus,
             window_max_gpus=upper_gpus,
+            configured_max_gpus=_max_candidate_gpus(),
+            effective_max_gpus=upper_gpus,
         )
         return primary.config, primary.capacity, sweep, options
 
@@ -3213,6 +3415,7 @@ def _run_capacity_recommendation(
 def _run_aisimulate_recommendation(
     req: RecommendRequest,
     *,
+    window: tuple[int, int] | None = None,
     max_trials_override: int | None = None,
     candidate_timeout_override: int | None = None,
 ):
@@ -3222,6 +3425,7 @@ def _run_aisimulate_recommendation(
         return run_recommendation(
             _aisimulate_recommendation_config(
                 req,
+                window=window,
                 model_path=effective_path,
                 max_trials_override=max_trials_override,
                 candidate_timeout_override=candidate_timeout_override,
@@ -3232,22 +3436,15 @@ def _run_aisimulate_recommendation(
         )
 
 
-def _run_pareto_recommendation(req: RecommendRequest, *, auto_window: bool):
-    """Run a Pareto sweep, resolving an omitted GPU window from the model's fit.
+def _run_pareto_recommendation(req: RecommendRequest) -> tuple[Any, tuple[int, int]]:
+    """Run a Pareto sweep from the model's own fit floor.
 
-    Resolution happens inside the version-fallback closure so the preflight
+    The window is resolved inside the version-fallback closure so the preflight
     estimates KV capacity with the same backend version the sweep will use.
-    An explicit bound, on either side, keeps the caller's current semantics.
+    Resolution is service-owned: the request carries no GPU bounds.
     """
-    if auto_window:
-        lower, upper = _pareto_auto_window(
-            req,
-            backend=_sdk_backend_id(req.backend),
-            backend_version=req.backend_version,
-        )
-        req.min_candidate_gpus = lower
-        req.max_candidate_gpus = upper
-    return _run_aisimulate_recommendation(req)
+    window = _pareto_auto_window(req)
+    return _run_aisimulate_recommendation(req, window=window), window
 
 
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
@@ -3976,8 +4173,10 @@ def post_recommend(
                 evaluated=summary.get("evaluated_configurations"),
                 budget_exhausted=bool(summary.get("budget_exhausted")),
                 strict_sla=req.sla_mode == "enforce",
-                window_min_gpus=req.min_candidate_gpus or 1,
+                window_min_gpus=1,
                 window_max_gpus=summary.get("effective_max_gpus"),
+                configured_max_gpus=summary.get("configured_max_gpus"),
+                effective_max_gpus=summary.get("effective_max_gpus"),
             )
             if req.objective == "pareto":
                 candidates = [
@@ -4076,19 +4275,12 @@ def post_recommend(
     capacity: CapacityOutcome | None = None
     capacity_options: list[CapacityOption] = []
     result = None
+    window: tuple[int, int] | None = None
     capacity_result: tuple[RecommendConfig, CapacityOutcome, SweepMeta, list[CapacityOption]] | None = None
     fell_back_from: str | None = None
     demand_records: list[Any] = []
     sweep: SweepMeta | None = None
     includes = _parse_include(include)
-    # An omitted Pareto window is auto-fitted to the model. Resolve it inside
-    # the version-fallback closure (below) so the preflight and the sweep share
-    # the same backend version. Either explicit bound keeps the old semantics.
-    pareto_auto_window = (
-        req.objective == "pareto"
-        and req.min_candidate_gpus is None
-        and req.max_candidate_gpus is None
-    )
     try:
         if req.objective == "throughput_demand":
             # Demand sizing cannot rely on the SDK's smallest-first search
@@ -4106,13 +4298,14 @@ def post_recommend(
                 req, lambda: _run_capacity_recommendation(req, include=includes)
             )
         elif req.objective == "pareto":
-            result, fell_back_from = _run_with_version_fallback(
-                req,
-                lambda: _run_pareto_recommendation(req, auto_window=pareto_auto_window),
+            (result, window), fell_back_from = _run_with_version_fallback(
+                req, lambda: _run_pareto_recommendation(req)
             )
         else:
-            result, fell_back_from = _run_with_version_fallback(
-                req, lambda: _run_aisimulate_recommendation(req)
+            # The service resolves the whole min-GPU window ladder from the
+            # model's fit floor; the request carries workload intent only.
+            (result, sweep), fell_back_from = _run_with_version_fallback(
+                req, lambda: _run_min_gpus_windows(req)
             )
     except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
@@ -4161,7 +4354,9 @@ def post_recommend(
         elif not candidates:
             raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
         configs = [_aisimulate_candidate_config(candidate, req) for candidate in candidates]
-        sweep = _sweep_meta(result, req)
+        if req.objective == "pareto":
+            assert window is not None
+            sweep = _sweep_meta(result, req, window=window)
 
     if fell_back_from and req.backend_version:
         fallback_warning = (
@@ -4344,9 +4539,6 @@ def _blis_estimate(req: EstimateRequest):
 
 
 def _blis_recommend(req: RecommendRequest):
-    configured_max = _max_candidate_gpus()
-    requested_max = req.max_candidate_gpus
-    effective_max = min(requested_max, configured_max) if requested_max is not None else configured_max
     return run_blis_recommend(BlisRecommendInput(
         model_path=req.model_path,
         system=req.system,
@@ -4360,8 +4552,8 @@ def _blis_recommend(req: RecommendRequest):
         tpot=req.tpot,
         request_latency=req.request_latency,
         prefix=req.prefix,
-        min_candidate_gpus=req.min_candidate_gpus,
-        max_candidate_gpus=effective_max,
+        min_candidate_gpus=None,
+        max_candidate_gpus=_max_candidate_gpus(),
         top_n=req.top_n,
         search_budget_seconds=req.search_budget_seconds,
         demand=req.objective == "throughput_demand",

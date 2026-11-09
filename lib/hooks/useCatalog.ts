@@ -103,9 +103,10 @@ export interface SimulatorSupport {
   /** Release of the simulator itself (not the engine/backend version). */
   version: string | null
   /**
-   * How the client requests a recommendation: `windowed` streams progressive
-   * GPU windows, `single` makes one bounded search call. The simulator reports
-   * this so the client never selects a search shape by simulator ID.
+   * How the client bounds a recommendation request: `windowed` uses the
+   * service-owned GPU window, `single` also sends a bounded search budget. Both
+   * make one request. The simulator reports this so the client never selects a
+   * search shape by simulator ID.
    */
   recommendSearch: 'windowed' | 'single'
   /** Model IDs this simulator can price. */

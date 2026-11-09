@@ -47,7 +47,21 @@ paths:
         `objective` selects what is being sized:
         - `min_gpus` (default) finds the fewest GPUs that clear the latency SLA.
           Requires `sla_mode=enforce` (the default) and exactly one of
-          `target_request_rate` or `target_concurrency`.
+          `target_request_rate` or `target_concurrency`. The service owns the
+          search window: it starts at the model's fit floor, the smallest
+          aggregated worker shape that holds one full-context sequence, and
+          grows only when a window cannot hold the model or no candidate clears
+          the SLA. The window doubles
+          from the fit floor, and a feasible candidate narrows the next window
+          below that candidate so the result converges on the minimum. The
+          configured ceiling is `AISIMULATORS_MAX_CANDIDATE_GPUS` (default
+          1024); when the fit floor is at or above it, the effective ceiling
+          rises to twice the floor so a large model still has room to search.
+          The whole ladder shares a wall-clock budget
+          (`MIN_GPUS_SEARCH_BUDGET_S`, default 50 seconds). The window actually
+          searched is reported as `sweep.window_min_gpus` /
+          `sweep.window_max_gpus`, alongside `sweep.configured_max_gpus` and
+          `sweep.effective_max_gpus`.
         - `throughput_demand` finds the fewest GPUs that sustain
           `target_request_rate` with no latency target. It requires
           `sla_mode=none`, `target_request_rate`, and no `target_concurrency`;
@@ -58,8 +72,8 @@ paths:
           rate sustained over the arrival window (excluding the final response
           drain), not `completed / duration`. AISimulate grows its GPU window
           from 8 GPUs (default) until the rate is met, the ceiling is reached,
-          or the demand search budget is spent; an explicit
-          `max_candidate_gpus` pins one window.
+          or the demand search budget is spent. The request carries no GPU
+          bounds; the service owns the demand ladder too.
         - `concurrency_capacity` finds the fewest GPUs that hold
           `target_concurrency` sequences at the per-sequence context length
           (`max_seq_len`, else `isl + osl`) with no latency target. It requires
@@ -99,15 +113,18 @@ paths:
           point. `sla_mode=enforce` restricts the frontier to SLA-compliant
           candidates; `sla_mode=none` sweeps capacity without an SLA.
           `target_request_rate` and `target_concurrency` are rejected because
-          the sweep drives its own load. AISimulate samples the frontier and
-          reports model-aware window resolution when both `min_candidate_gpus`
-          and `max_candidate_gpus` are omitted: the floor is the smallest
-          aggregated shape that holds one full-context sequence, and the ceiling
-          is `clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server
-          ceiling)`. The resolved bounds are reported as
-          `sweep.window_min_gpus` / `sweep.window_max_gpus`. No shape fitting
-          inside the cap returns 422 asking for explicit bounds. Sending either
-          bound disables automatic resolution. BLIS has no native Pareto
+          the sweep drives its own load. AISimulate owns the window for a
+          Pareto sweep: the floor is the model's fit floor (the smallest
+          aggregated shape that holds one full-context sequence) and the
+          ceiling is `max(configured ceiling, floor × 2)`, with the first
+          window ending at `max(16, floor × 2)` so a sweep is not spent below
+          the model's size. The resolved bounds are reported as
+          `sweep.window_min_gpus` / `sweep.window_max_gpus`. Fit-floor discovery
+          is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15 seconds); when no
+          aggregated shape fits within that budget, the service returns an
+          explicit 422. A failed preflight estimate is logged and the search
+          starts at one GPU instead of inventing a floor. BLIS has no native
+          Pareto
           command, so the service enumerates topology and closed-loop
           concurrency combinations, runs each, and computes the non-dominated
           set itself; `sweep.algorithm="enumerate"` and
@@ -602,24 +619,6 @@ components:
             required by objective=throughput_demand and
             objective=concurrency_capacity, and optional for objective=pareto
             (an SLA-free capacity sweep).
-        min_candidate_gpus:
-          type: integer
-          nullable: true
-          description: |
-            Lower bound of the searched GPU window. For objective=pareto, when
-            both this and max_candidate_gpus are omitted the service resolves a
-            model-aware window automatically and reports it in `sweep`.
-          minimum: 1
-          default: null
-        max_candidate_gpus:
-          type: integer
-          nullable: true
-          description: |
-            Upper bound of the searched GPU window; clamped to the service
-            candidate ceiling. For objective=pareto, sending either bound
-            disables the automatic model-aware window.
-          minimum: 1
-          default: null
         kv_transfer_bandwidth_gb_per_second:
           type: number
           nullable: true
@@ -1007,8 +1006,28 @@ components:
             `evaluated` and `max_trials`. In neither case does true imply the
             search was exhaustive.
         strict_sla: { type: boolean, nullable: true }
-        window_min_gpus: { type: integer, nullable: true }
-        window_max_gpus: { type: integer, nullable: true }
+        window_min_gpus:
+          type: integer
+          nullable: true
+          description: Lowest GPU count in the window the service actually searched.
+        window_max_gpus:
+          type: integer
+          nullable: true
+          description: Highest GPU count in the window the service actually searched.
+        configured_max_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Configured candidate ceiling (`AISIMULATORS_MAX_CANDIDATE_GPUS`).
+            This is a soft budget, not a promise about the largest searchable
+            window.
+        effective_max_gpus:
+          type: integer
+          nullable: true
+          description: |
+            Ceiling the search was allowed to reach. It equals
+            `configured_max_gpus` unless the fit floor required headroom, in
+            which case it is `max(configured_max_gpus, floor × 2)`.
 
     CandidateResponse:
       type: object
@@ -1778,9 +1797,9 @@ components:
           type: string
           enum: [windowed, single]
           description: |
-            How the client should request a recommendation. `windowed` means
-            progressive GPU-window requests; `single` means one bounded search
-            call per action.
+            Shape of the service's recommendation search. `windowed` means the
+            service walks a GPU window ladder; `single` means one bounded
+            search per action. Both are one client request.
         objectives:
           type: array
           description: |

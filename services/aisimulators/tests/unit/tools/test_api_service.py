@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,22 @@ def _sdk_available() -> bool:
         return len(SupportedSystems) > 0
     except Exception:
         return False
+
+
+@pytest.fixture(autouse=True)
+def _default_fit_floor(monkeypatch):
+    """Keep API-flow tests independent of model files and KV preflight.
+
+    The service starts a min-GPU search at the model's fit floor by enumerating
+    KV-feasible shapes. Tests that exercise the request/response contract only
+    need a deterministic floor; discovery and ceiling policy have dedicated
+    tests that override this patch.
+    """
+    monkeypatch.setattr(
+        app_module,
+        "_capacity_shapes",
+        lambda *args, **kwargs: [_capacity_shape(tp=1)],
+    )
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -232,39 +249,15 @@ class TestRecommend:
 
         assert config.optimization.constraints.max_candidate_gpus == 4096
 
-    def test_requested_gpu_window_is_clamped_to_server_budget(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        body = {**VALID_RECOMMEND_BODY, "max_candidate_gpus": 64}
-        request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
-
-        assert config.optimization.constraints.max_candidate_gpus == 8
-
-    def test_rejects_window_lower_bound_above_effective_server_budget(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        body = {**VALID_RECOMMEND_BODY, "min_candidate_gpus": 9, "max_candidate_gpus": 64}
-        request = app_module.RecommendRequest.model_validate(body)
-
-        with pytest.raises(ValueError, match="effective max_candidate_gpus"):
-            app_module._aisimulate_recommendation_config(request)
-
-    def test_recommendation_window_bounds_are_forwarded(self):
-        body = {**VALID_RECOMMEND_BODY, "min_candidate_gpus": 2, "max_candidate_gpus": 4}
-        request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
-
-        assert config.optimization.constraints.min_candidate_gpus == 2
-        assert config.optimization.constraints.max_candidate_gpus == 4
-
     def test_one_gpu_window_avoids_disaggregated_trials(self):
-        body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1, "min_candidate_gpus": 1, "max_candidate_gpus": 1}
+        body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1}
         request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
+        config = app_module._aisimulate_recommendation_config(request, window=(1, 1))
 
         assert config.engine.mode.choices == ["aggregated"]
         assert config.optimizer.max_trials == 1
         assert config.optimizer.parallelism == 1
-        assert config.optimizer.candidate_timeout_seconds == 15
+        assert config.optimizer.candidate_timeout_seconds == 30
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_success(self, mock_recommend):
@@ -514,7 +507,7 @@ class TestRecommend:
         mock_recommend.return_value = MockRecommendationResult(selected_candidates=[])
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
-        assert "No configuration" in resp.json()["detail"]
+        assert "No GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_value_error_returns_422(self, mock_recommend):
@@ -541,7 +534,9 @@ class TestRecommend:
         )
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
-        assert "no deployment_mode" in resp.json()["detail"]
+        # The ladder exhausts every window and reports the range it searched,
+        # rather than the last window's internal optimizer message.
+        assert "No GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_unexpected_error_returns_500(self, mock_recommend):
@@ -653,8 +648,64 @@ VALID_PARETO_BODY = {
 }
 
 
+class TestFitFloorAndCeiling:
+    """The service owns the fit floor and the soft search ceiling."""
+
+    def test_small_floor_does_not_raise_the_configured_ceiling(self):
+        assert app_module._effective_search_ceiling(1024, 8) == 1024
+
+    def test_large_floor_raises_the_ceiling_to_twice_the_floor(self):
+        assert app_module._effective_search_ceiling(1024, 800) == 1600
+
+    def test_floor_above_the_configured_budget_is_discovered_by_doubling(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        budgets: list[int] = []
+
+        def shapes(*args, **kwargs):
+            budgets.append(kwargs["gpu_budget"])
+            return [_capacity_shape(tp=64)] if kwargs["gpu_budget"] >= 64 else []
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        floor = app_module._discover_fit_floor(
+            request,
+            configured=app_module._max_candidate_gpus(),
+            deadline=time.monotonic() + 5,
+        )
+
+        assert floor == 64
+        assert budgets == [8, 16, 32, 64]
+
+    def test_discovery_budget_exhaustion_is_an_explicit_error(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: [])
+
+        with pytest.raises(HTTPException) as raised:
+            app_module._discover_fit_floor(
+                request, configured=8, deadline=time.monotonic() - 1
+            )
+
+        assert raised.value.status_code == 422
+        assert "fit-discovery budget" in raised.value.detail
+
+    def test_failed_preflight_starts_the_search_at_one_gpu(self, monkeypatch):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+
+        def shapes(*args, **kwargs):
+            raise RuntimeError("estimator unavailable")
+
+        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
+
+        assert app_module._discover_fit_floor(
+            request, configured=8, deadline=time.monotonic() + 5
+        ) == 1
+
+
 class TestParetoAutoWindow:
-    """An omitted Pareto window starts at the model's own fit floor."""
+    """A Pareto window starts at the model's own fit floor."""
 
     @pytest.mark.parametrize(
         ("floor", "expected"),
@@ -664,12 +715,11 @@ class TestParetoAutoWindow:
             (8, (8, 16)),
             (16, (16, 32)),
             (20, (20, 40)),
-            (64, (64, 64)),
+            (64, (64, 128)),
         ],
     )
     def test_floor_and_ceiling_follow_the_minimum_fit(self, monkeypatch, floor, expected):
         monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
-        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         monkeypatch.setattr(
             app_module,
@@ -677,110 +727,46 @@ class TestParetoAutoWindow:
             lambda *args, **kwargs: [_capacity_shape(tp=floor)],
         )
 
-        assert app_module._pareto_auto_window(
-            request, backend="vllm", backend_version="0.24.0"
-        ) == expected
+        assert app_module._pareto_auto_window(request) == expected
 
-    def test_preflight_honours_the_pareto_window_cap(self, monkeypatch):
-        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
-        monkeypatch.setenv("PARETO_MAX_WINDOW_GPUS", "24")
-        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
-        budgets: list[int] = []
-
-        def shapes(*args, **kwargs):
-            budgets.append(kwargs["gpu_budget"])
-            return [_capacity_shape(tp=20)]
-
-        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
-
-        assert app_module._pareto_auto_window(
-            request, backend="vllm", backend_version="0.24.0"
-        ) == (20, 24)
-        assert budgets == [24]
-
-    def test_preflight_honours_the_server_candidate_ceiling(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
-        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
-        budgets: list[int] = []
-
-        def shapes(*args, **kwargs):
-            budgets.append(kwargs["gpu_budget"])
-            return [_capacity_shape(tp=8)]
-
-        monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
-
-        assert app_module._pareto_auto_window(
-            request, backend="vllm", backend_version="0.24.0"
-        ) == (8, 8)
-        assert budgets == [8]
-
-    def test_no_fitting_shape_is_an_explicit_error(self, monkeypatch):
-        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
-        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
-        monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: [])
-
-        with pytest.raises(ValueError, match="no aggregated parallel configuration"):
-            app_module._pareto_auto_window(
-                request, backend="vllm", backend_version="0.24.0"
-            )
-
-    def test_failed_preflight_falls_back_to_a_bounded_window(self, monkeypatch):
-        monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
-        monkeypatch.delenv("PARETO_MAX_WINDOW_GPUS", raising=False)
+    def test_a_large_floor_gets_headroom_above_the_configured_budget(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
 
         def shapes(*args, **kwargs):
-            raise RuntimeError("estimator unavailable")
+            return [_capacity_shape(tp=100)] if kwargs["gpu_budget"] >= 100 else []
 
         monkeypatch.setattr(app_module, "_capacity_shapes", shapes)
 
-        assert app_module._pareto_auto_window(
-            request, backend="vllm", backend_version="0.24.0"
-        ) == (1, 16)
+        assert app_module._pareto_auto_window(request) == (100, 200)
 
     def test_resolved_window_is_applied_and_reported(self, monkeypatch):
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
-        monkeypatch.setattr(app_module, "_pareto_auto_window", lambda *args, **kwargs: (4, 16))
-        captured: list[app_module.RecommendRequest] = []
+        monkeypatch.setattr(app_module, "_pareto_auto_window", lambda req: (4, 16))
+        captured: list[tuple[int, int] | None] = []
         monkeypatch.setattr(
             app_module,
             "_run_aisimulate_recommendation",
-            lambda req: captured.append(req) or object(),
+            lambda req, *, window=None, **kwargs: captured.append(window) or object(),
         )
 
-        app_module._run_pareto_recommendation(request, auto_window=True)
+        _, window = app_module._run_pareto_recommendation(request)
 
-        assert request.min_candidate_gpus == 4
-        assert request.max_candidate_gpus == 16
-        assert captured == [request]
+        assert window == (4, 16)
+        assert captured == [(4, 16)]
         sweep = app_module._sweep_meta(
-            types.SimpleNamespace(counts=None, provenance=None, candidates=[]), request
+            types.SimpleNamespace(counts=None, provenance=None, candidates=[]),
+            request,
+            window=window,
         )
         assert sweep.window_min_gpus == 4
         assert sweep.window_max_gpus == 16
+        assert sweep.configured_max_gpus == 1024
+        assert sweep.effective_max_gpus == 1024
 
-    def test_explicit_bounds_skip_the_preflight(self, monkeypatch):
-        body = {**VALID_PARETO_BODY, "min_candidate_gpus": 2}
-        request = app_module.RecommendRequest.model_validate(body)
-        monkeypatch.setattr(
-            app_module,
-            "_pareto_auto_window",
-            lambda *args, **kwargs: pytest.fail("preflight must not run"),
-        )
-        monkeypatch.setattr(
-            app_module, "_run_aisimulate_recommendation", lambda req: object()
-        )
-
-        app_module._run_pareto_recommendation(request, auto_window=False)
-
-        assert request.min_candidate_gpus == 2
-        assert request.max_candidate_gpus is None
-
-    def test_auto_window_searches_both_deployment_modes(self):
-        body = {**VALID_PARETO_BODY, "min_candidate_gpus": 4, "max_candidate_gpus": 16}
-        request = app_module.RecommendRequest.model_validate(body)
-        config = app_module._aisimulate_recommendation_config(request)
+    def test_window_searches_both_deployment_modes(self):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
 
         assert config.engine.mode.choices == ["aggregated", "disaggregated"]
         assert config.optimization.constraints.min_candidate_gpus == 4
@@ -806,10 +792,10 @@ class TestParetoEndpointWindow:
     @patch("tools.api_service.app._candidate_record_to_response")
     @patch("tools.api_service.app._aisimulate_candidate_config")
     @patch("tools.api_service.app._run_pareto_recommendation")
-    def test_omitted_bounds_request_an_auto_window(
+    def test_service_resolves_and_reports_the_window(
         self, mock_run, mock_config, mock_candidate
     ):
-        mock_run.return_value = MockParetoResult()
+        mock_run.return_value = (MockParetoResult(), (1, 16))
         mock_config.return_value = app_module.RecommendConfig(total_gpus_needed=4)
         mock_candidate.return_value = app_module.CandidateResponse(
             candidate_id="candidate-000001",
@@ -822,32 +808,12 @@ class TestParetoEndpointWindow:
         response = client.post("/recommend", json=VALID_PARETO_BODY)
 
         assert response.status_code == 200
-        assert mock_run.call_args.kwargs["auto_window"] is True
-
-    @pytest.mark.parametrize(
-        "bounds",
-        [{"min_candidate_gpus": 2}, {"max_candidate_gpus": 8}],
-    )
-    @patch("tools.api_service.app._candidate_record_to_response")
-    @patch("tools.api_service.app._aisimulate_candidate_config")
-    @patch("tools.api_service.app._run_pareto_recommendation")
-    def test_an_explicit_bound_disables_the_auto_window(
-        self, mock_run, mock_config, mock_candidate, bounds
-    ):
-        mock_run.return_value = MockParetoResult()
-        mock_config.return_value = app_module.RecommendConfig(total_gpus_needed=4)
-        mock_candidate.return_value = app_module.CandidateResponse(
-            candidate_id="candidate-000001",
-            status="feasible",
-            mode="agg",
-            topology={},
-            used_gpus=4,
-        )
-
-        response = client.post("/recommend", json={**VALID_PARETO_BODY, **bounds})
-
-        assert response.status_code == 200
-        assert mock_run.call_args.kwargs["auto_window"] is False
+        mock_run.assert_called_once()
+        sweep = response.json()["sweep"]
+        assert sweep["window_min_gpus"] == 1
+        assert sweep["window_max_gpus"] == 16
+        assert sweep["configured_max_gpus"] == 1024
+        assert sweep["effective_max_gpus"] == 1024
 
     def test_common_error_handler_preserves_an_explicit_status(self):
         with pytest.raises(HTTPException) as raised:
@@ -1135,24 +1101,6 @@ class TestDemandWindows:
 
         assert app_module._demand_gpu_windows(request) == [(1, 4)]
 
-    def test_explicit_max_pins_a_single_window(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "1024")
-        request = app_module.RecommendRequest.model_validate(
-            {**VALID_DEMAND_BODY, "max_candidate_gpus": 16}
-        )
-
-        assert app_module._demand_gpu_windows(request) == [(1, 16)]
-
-    def test_minimum_gpu_count_is_kept_as_the_lower_bound(self, monkeypatch):
-        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "64")
-        request = app_module.RecommendRequest.model_validate(
-            {**VALID_DEMAND_BODY, "min_candidate_gpus": 4}
-        )
-
-        windows = app_module._demand_gpu_windows(request)
-        assert windows[0] == (4, 8)
-        assert windows[1] == (4, 16)
-
 
 class TestRunDemandWindows:
     def _request(self, **overrides):
@@ -1164,8 +1112,8 @@ class TestRunDemandWindows:
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, max_trials_override=None, candidate_timeout_override=None):
-            windows.append((request.min_candidate_gpus, request.max_candidate_gpus))
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
             return MockLedgerRecommendationResult(
                 candidates=[
                     MockLedgerCandidate(
@@ -1196,8 +1144,8 @@ class TestRunDemandWindows:
 
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, max_trials_override=None, candidate_timeout_override=None):
-            windows.append((request.min_candidate_gpus, request.max_candidate_gpus))
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
             if len(windows) == 1:
                 raise NoViableParallelConfig(
                     "no deployment_mode has a viable parallel config"
@@ -1225,8 +1173,8 @@ class TestRunDemandWindows:
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, max_trials_override=None, candidate_timeout_override=None):
-            windows.append((request.min_candidate_gpus, request.max_candidate_gpus))
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
             if len(windows) == 1:
                 return MockLedgerRecommendationResult(
                     candidates=[
@@ -1266,7 +1214,7 @@ class TestRunDemandWindows:
     def test_reports_budget_exhausted_when_a_window_spends_its_trials(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "16")
 
-        def fake(request, *, max_trials_override=None, candidate_timeout_override=None):
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
             # Evaluate more trials than the window offered, so the window
             # reports that its budget was spent without meeting the target.
             return MockLedgerRecommendationResult(
@@ -1290,8 +1238,8 @@ class TestRunDemandWindows:
         monkeypatch.setattr(app_module, "_demand_search_budget_seconds", lambda: 1)
         windows: list[tuple[int, int]] = []
 
-        def fake(request, *, max_trials_override=None, candidate_timeout_override=None):
-            windows.append((request.min_candidate_gpus, request.max_candidate_gpus))
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
             return MockLedgerRecommendationResult(
                 candidates=[
                     MockLedgerCandidate(
@@ -1308,6 +1256,131 @@ class TestRunDemandWindows:
         assert windows == [(1, 8)]
         assert sweep.budget_exhausted is True
         assert sweep.window_max_gpus == 8
+
+
+class TestRunMinGpusWindows:
+    def _request(self):
+        return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+
+    def _result(self, used_gpus: int, *, evaluated: int = 2):
+        return MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(candidate_id=f"g{used_gpus}", used_gpus=used_gpus)
+            ],
+            counts=MockRecommendationCounts(
+                evaluated=evaluated, feasible=1, timed_out=0
+            ),
+            provenance=MockRecommendationProvenance(run_id="run-min"),
+        )
+
+    def test_starts_at_the_fit_floor_and_stops_at_the_minimum(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        windows: list[tuple[int, int] | None] = []
+
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(8, 8)]
+        assert sweep.window_min_gpus == 8
+        assert sweep.window_max_gpus == 8
+        assert sweep.configured_max_gpus == 32
+        assert sweep.effective_max_gpus == 32
+        assert sweep.run_id == "run-min"
+        assert sweep.evaluated == 2
+
+    def test_expands_past_an_infeasible_window_then_refines(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        windows: list[tuple[int, int] | None] = []
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (4, 4):
+                raise NoViableParallelConfig(
+                    "no deployment_mode has a viable parallel config"
+                )
+            return self._result(8 if window == (5, 8) else 5)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert windows == [(4, 4), (5, 8), (5, 7)]
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 8
+
+    def test_a_fitting_window_without_an_sla_candidate_still_grows(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        windows: list[tuple[int, int] | None] = []
+
+        empty = MockLedgerRecommendationResult(
+            candidates=[],
+            counts=MockRecommendationCounts(evaluated=1, feasible=0, timed_out=0),
+        )
+
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (5, 8):
+                return self._result(8)
+            return empty
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        # (4, 4) held the model but no SLA candidate; (5, 8) found one and a
+        # refinement below it found nothing, so 8 remains the minimum.
+        assert windows == [(4, 4), (5, 8), (5, 7)]
+        assert sweep.window_min_gpus == 4
+        assert sweep.window_max_gpus == 8
+        assert sweep.evaluated == 4  # two empty windows + two feasible-window counts
+
+    def test_a_large_floor_raises_the_reported_ceiling(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, *, window=None, **kwargs: self._result(8),
+        )
+
+        _, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.configured_max_gpus == 8
+        assert sweep.effective_max_gpus == 16
+
+    def test_no_fitting_window_is_an_explicit_error(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, candidate_timeout_override=None):
+            raise NoViableParallelConfig(
+                "no deployment_mode has a viable parallel config"
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        with pytest.raises(HTTPException) as raised:
+            app_module._run_min_gpus_windows(self._request())
+
+        assert raised.value.status_code == 422
+        assert "between 4 and 8 GPUs" in raised.value.detail
 
 
 class TestDemandConfigFromRecord:
@@ -1424,7 +1497,7 @@ class TestSweepMeta:
             provenance=MockRecommendationProvenance(run_id="run-42"),
         )
 
-        meta = app_module._sweep_meta(result, request)
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
 
         assert meta.run_id == "run-42"
         assert meta.max_trials == 4
@@ -1443,7 +1516,7 @@ class TestSweepMeta:
             counts=MockRecommendationCounts(evaluated=2, feasible=2, timed_out=0),
         )
 
-        meta = app_module._sweep_meta(result, request)
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
         assert meta.budget_exhausted is False
         assert meta.evaluated == 2
 
@@ -1454,7 +1527,7 @@ class TestSweepMeta:
             candidates=[MockLedgerCandidate(), MockLedgerCandidate(candidate_id="c2")],
         )
 
-        meta = app_module._sweep_meta(result, request)
+        meta = app_module._sweep_meta(result, request, window=(1, 1024))
         assert meta.evaluated == 2
 
 
@@ -1967,6 +2040,9 @@ class TestCapacityDisaggOutcome:
 class TestRunCapacityRecommendation:
     def _run(self, monkeypatch, shapes, *, prediction=None, reason=None, disagg=None, **overrides):
         _stub_capacity_sdk(monkeypatch)
+        max_candidate_gpus = overrides.pop("max_candidate_gpus", None)
+        if max_candidate_gpus is not None:
+            monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", str(max_candidate_gpus))
         monkeypatch.setattr(app_module, "_capacity_shapes", lambda *args, **kwargs: shapes)
         monkeypatch.setattr(
             app_module, "_capacity_disagg_candidates", lambda *args, **kwargs: disagg or []
@@ -2096,6 +2172,8 @@ class TestRunCapacityRecommendation:
         assert sweep.budget_exhausted is False
         assert sweep.strict_sla is False
         assert (sweep.window_min_gpus, sweep.window_max_gpus) == (1, 8)
+        assert sweep.configured_max_gpus == 8
+        assert sweep.effective_max_gpus == 8
 
     def test_empty_shape_space_names_the_budget(self, monkeypatch):
         with pytest.raises(HTTPException) as excinfo:
@@ -2104,18 +2182,16 @@ class TestRunCapacityRecommendation:
         assert "no aggregated parallel configuration" in excinfo.value.detail
         assert "1-8 GPUs" in excinfo.value.detail
 
-    def test_unschedulable_window_explains_the_lower_bound(self, monkeypatch):
+    def test_shape_above_the_ceiling_is_an_explicit_error(self, monkeypatch):
         with pytest.raises(HTTPException) as excinfo:
             self._run(
                 monkeypatch,
-                [_capacity_shape(tp=2, per_rank_tokens=100_000)],
-                target_concurrency=8,
-                min_candidate_gpus=3,
-                max_candidate_gpus=3,
+                [_capacity_shape(tp=8, per_rank_tokens=100_000)],
+                max_candidate_gpus=4,
             )
         assert excinfo.value.status_code == 422
         assert "holds even one" in excinfo.value.detail
-        assert "3 GPUs" in excinfo.value.detail
+        assert "1-4 GPUs" in excinfo.value.detail
 
 
 class TestCapacitySimulationBudget:
@@ -3475,7 +3551,7 @@ class TestVersionFallback:
         self._patch_versions_h200(monkeypatch)
         calls: list[str | None] = []
 
-        def fake_recommendation(req):
+        def fake_recommendation(req, **kwargs):
             calls.append(req.backend_version)
             if req.backend_version == "0.24.0":
                 raise RuntimeError(EMPIRICAL_GAP)

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { RecommendRequestSchema } from '../schemas'
-import { callPareto, callRecommend, generateRequestId, incrementalRecommend } from '../recommend'
+import { callPareto, callRecommend, generateRequestId } from '../recommend'
 import type { RecommendResult, RecommendErrorResponse } from '../recommend'
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -737,18 +737,20 @@ describe('callRecommend', () => {
     }
   })
 
-  it('does not fabricate GPU windows for a single-search simulator', async () => {
-    vi.stubGlobal('fetch', mockFetchOk(BLIS_EXTERNAL_RESPONSE))
-    const events: string[] = []
+  it('sends one request without GPU bounds for a single-search simulator', async () => {
+    const fetchMock = mockFetchOk(BLIS_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
 
-    for await (const event of incrementalRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single' })) {
-      events.push(event.type)
-    }
+    const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis', search_strategy: 'single' })
 
-    expect(events).toEqual(['completed'])
+    expect(result.status).toBe('completed')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(body).not.toHaveProperty('min_candidate_gpus')
+    expect(body).not.toHaveProperty('max_candidate_gpus')
   })
 
-  it('runs a demand request once instead of replaying shrinking GPU windows', async () => {
+  it('runs a demand request once without forwarding GPU bounds', async () => {
     const fetchMock = mockFetchOk({
       ...EXTERNAL_RESPONSE,
       demand: {
@@ -770,18 +772,15 @@ describe('callRecommend', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
-    const events = []
 
-    for await (const event of incrementalRecommend({
+    const result = await callRecommend({
       ...rest,
       objective: 'throughput_demand',
       sla_mode: 'none',
       target_request_rate: 10,
-    })) {
-      events.push(event)
-    }
+    })
 
-    expect(events.map(event => event.type)).toEqual(['completed'])
+    expect(result.status).toBe('completed')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
     expect(body.objective).toBe('throughput_demand')
@@ -790,7 +789,7 @@ describe('callRecommend', () => {
     expect(body).not.toHaveProperty('max_candidate_gpus')
   })
 
-  it('runs a capacity request once instead of replaying GPU windows', async () => {
+  it('runs a capacity request once without forwarding GPU bounds', async () => {
     const fetchMock = mockFetchOk({
       ...EXTERNAL_RESPONSE,
       capacity: CAPACITY_OUTCOME,
@@ -805,18 +804,15 @@ describe('callRecommend', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
-    const events = []
 
-    for await (const event of incrementalRecommend({
+    const result = await callRecommend({
       ...rest,
       objective: 'concurrency_capacity',
       sla_mode: 'none',
       target_concurrency: 64,
-    })) {
-      events.push(event)
-    }
+    })
 
-    expect(events.map(event => event.type)).toEqual(['completed'])
+    expect(result.status).toBe('completed')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
     expect(body.objective).toBe('concurrency_capacity')
@@ -898,17 +894,6 @@ describe('callRecommend', () => {
     expect(sentBody).not.toHaveProperty('model_config')
   })
 
-  it('sends recommendation GPU window bounds upstream', async () => {
-    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
-    vi.stubGlobal('fetch', mockFetch)
-
-    await callRecommend(VALID_REQUEST, { window: { minGpus: 2, maxGpus: 4 } })
-
-    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
-    expect(sentBody.min_candidate_gpus).toBe(2)
-    expect(sentBody.max_candidate_gpus).toBe(4)
-  })
-
   it('treats a legacy NoViableParallelConfig 500 as an empty search window', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
@@ -918,48 +903,12 @@ describe('callRecommend', () => {
       }),
     }))
 
-    const result = await callRecommend(VALID_REQUEST, { window: { minGpus: 1, maxGpus: 1 } })
+    const result = await callRecommend(VALID_REQUEST)
 
     expect(result).toMatchObject({
       status: 'failed',
       error: { code: 'AISIM_NO_CONFIGURATION' },
     })
-  })
-
-  it('refines a feasible GPU window before completing', async () => {
-    const noConfiguration = {
-      ok: false,
-      status: 422,
-      json: () => Promise.resolve({ detail: 'No configuration meets the specified requirements.' }),
-    }
-    const feasible = {
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve(EXTERNAL_RESPONSE),
-    }
-    const refineEmpty = {
-      ok: false,
-      status: 422,
-      json: () => Promise.resolve({ detail: 'No configuration meets the specified requirements.' }),
-    }
-    vi.stubGlobal('fetch', vi.fn()
-      .mockResolvedValueOnce(noConfiguration)
-      .mockResolvedValueOnce(noConfiguration)
-      .mockResolvedValueOnce(feasible)
-      .mockResolvedValueOnce(refineEmpty))
-
-    const events = []
-    for await (const event of incrementalRecommend(VALID_REQUEST)) events.push(event)
-
-    expect(events.map(event => event.type)).toEqual([
-      'search_started', 'window_started', 'window_completed',
-      'window_started', 'window_completed',
-      'window_started', 'window_completed', 'refining',
-      'window_started', 'window_completed', 'completed',
-    ])
-    expect(events[5]).toMatchObject({ type: 'window_started', window: { minGpus: 3, maxGpus: 4 } })
-    expect(events[7]).toMatchObject({ type: 'refining', window: { minGpus: 3, maxGpus: 3 }, candidateGpus: 4 })
-    expect(events.at(-1)).toMatchObject({ type: 'completed', response: { status: 'completed' } })
   })
 
   it('returns AISIM_NOT_CONFIGURED when API URL is missing', async () => {

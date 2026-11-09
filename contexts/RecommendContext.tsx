@@ -2,7 +2,6 @@
 
 import * as React from 'react';
 import {
-  type RecommendProgressEvent,
   type RecommendResult,
 } from '@/lib/api/recommend';
 import { readRecommendStream } from '@/lib/api/recommend-stream';
@@ -74,8 +73,6 @@ interface RecommendState {
   debugResponse: Record<string, unknown> | null;
   debugStatus: number | null;
   debugDuration: number | null;
-  progress: RecommendProgressEvent | null;
-  progressHistory: RecommendProgressEvent[];
   /**
    * Standalone Pareto result. A Pareto run never shares state with a sizing
    * result: starting one clears the other, so the page always shows exactly the
@@ -99,8 +96,6 @@ const RecommendContext = React.createContext<RecommendState>({
   debugResponse: null,
   debugStatus: null,
   debugDuration: null,
-  progress: null,
-  progressHistory: [],
   frontier: { status: 'idle' },
   startSizing: () => {},
   startPareto: () => {},
@@ -162,8 +157,6 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
   const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | null>(null);
   const [debugStatus, setDebugStatus] = React.useState<number | null>(null);
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null);
-  const [progress, setProgress] = React.useState<RecommendProgressEvent | null>(null);
-  const [progressHistory, setProgressHistory] = React.useState<RecommendProgressEvent[]>([]);
   const [frontier, setFrontier] = React.useState<FrontierState>({ status: 'idle' });
 
   const abortRef = React.useRef<AbortController | null>(null);
@@ -206,8 +199,6 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
-    setProgress(null);
-    setProgressHistory([]);
     setFrontier({ status: 'idle' });
 
     const t0 = performance.now();
@@ -232,10 +223,7 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           }
           return;
         }
-        const response = await readRecommendStream(res, event => {
-          setProgress(event);
-          setProgressHistory(history => [...history, event]);
-        });
+        const response = await readRecommendStream(res);
         // `reset` may have aborted the request after the stream finished
         // reading. Do not publish a result for a run the user already discarded.
         if (controller.signal.aborted) return;
@@ -278,8 +266,6 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
-    setProgress(null);
-    setProgressHistory([]);
     setFrontier({ status: 'loading' });
 
     const t0 = performance.now();
@@ -329,14 +315,12 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
-    setProgress(null);
-    setProgressHistory([]);
     setFrontier({ status: 'idle' });
   }, []);
 
   const value = React.useMemo<RecommendState>(
-    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, startPareto, reset }),
-    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, progress, progressHistory, frontier, startSizing, startPareto, reset]
+    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset }),
+    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset]
   );
 
   return (

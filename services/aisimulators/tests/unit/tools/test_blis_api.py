@@ -489,7 +489,7 @@ def test_blis_recommend_unsupported_request_does_not_fall_back():
     run_aisimulate.assert_not_called()
 
 
-def test_blis_recommend_uses_the_configured_candidate_limit():
+def test_blis_recommend_uses_the_service_candidate_ceiling():
     outcome = SimpleNamespace(configs=[], search_summary={})
     with (
         patch("tools.api_service.app._max_candidate_gpus", return_value=8),
@@ -498,11 +498,12 @@ def test_blis_recommend_uses_the_configured_candidate_limit():
         request = app_module.RecommendRequest.model_validate({
             **RECOMMEND_BODY,
             "simulator": "blis",
-            "max_candidate_gpus": 32,
         })
         app_module._blis_recommend(request)
 
-    assert run_blis.call_args.args[0].max_candidate_gpus == 8
+    sent = run_blis.call_args.args[0]
+    assert sent.max_candidate_gpus == 8
+    assert sent.min_candidate_gpus is None
 
 
 def test_blis_recommend_accepts_fabric_and_returns_chosen_pd_mode():

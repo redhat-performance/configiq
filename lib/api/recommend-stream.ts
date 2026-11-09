@@ -1,15 +1,15 @@
-import type { RecommendProgressEvent, RecommendResponse } from './recommend'
+import type { RecommendResponse } from './recommend'
 
 /**
- * Read the server-sent event response produced by the incremental
- * `/api/recommend` route and return its terminal recommendation.
+ * Read the server-sent event response produced by the `/api/recommend` route
+ * and return its terminal recommendation.
  *
- * Keeping the parser shared avoids pages quietly falling back to the much
- * slower unbounded JSON recommendation path when AISimulators is in use.
+ * The service owns the GPU search window, so the stream carries exactly one
+ * `completed` event; the parser still tolerates an already-normalized JSON
+ * response from an older ConfigIQ gateway.
  */
 export async function readRecommendStream(
   response: Response,
-  onProgress?: (event: Exclude<RecommendProgressEvent, { type: 'completed' }>) => void,
 ): Promise<RecommendResponse> {
   if (!response.ok) {
     let message = `Recommendation request failed (${response.status})`
@@ -48,9 +48,8 @@ export async function readRecommendStream(
       .find(line => line.startsWith('data:'))
     if (!dataLine) return
 
-    const event = JSON.parse(dataLine.slice(5).trimStart()) as RecommendProgressEvent
-    if (event.type === 'completed') completed = event.response
-    else onProgress?.(event)
+    const event = JSON.parse(dataLine.slice(5).trimStart()) as { type?: string; response?: RecommendResponse }
+    if (event.type === 'completed' && event.response) completed = event.response
   }
 
   while (true) {

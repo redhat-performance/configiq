@@ -120,30 +120,30 @@ restriction, not a measured infeasibility.
 
 ### Automatic GPU window
 
-The browser does not send `min_candidate_gpus` or `max_candidate_gpus`. For
-AISimulate, when both are omitted, the service resolves a model-aware window
-before sampling:
+The request has no GPU window fields; the service owns the range. For
+AISimulate, a Pareto sweep resolves a model-aware window before sampling:
 
 - **Floor** — the smallest aggregated worker shape that holds one full-context
   sequence (`min(shape.gpus_per_worker)` from the KV-feasibility enumeration).
   Aggregated is a valid floor for both modes because a disaggregated deployment
   replicates the full weights in both pools.
-- **Ceiling** — `clamp(max(16, floor × 2), floor, 64,
-  AISIMULATORS_MAX_CANDIDATE_GPUS)`. The Pareto cap is configurable with
-  `PARETO_MAX_WINDOW_GPUS` (default 64).
+- **Ceiling** — `max(AISIMULATORS_MAX_CANDIDATE_GPUS, floor × 2)`. The
+  configured value (default 1024) is a soft budget: it rises only when the fit
+  floor needs the headroom.
+- **First window end** — `min(ceiling, max(16, floor × 2))`, so a small model
+  starts at the historical 16-GPU sweep while a large one starts at its own
+  scale.
 
 The resolved window is reported as `sweep.window_min_gpus` /
-`sweep.window_max_gpus`; there is no user-facing window control. If no shape fits
-inside the cap, the response is an explicit 422 that asks the caller for wider
-bounds. If the preflight estimate itself fails, the service logs a warning and
-falls back to a bounded `1..min(16, ceiling)` window rather than failing the
-sweep.
+`sweep.window_max_gpus`, with `sweep.configured_max_gpus` and
+`sweep.effective_max_gpus` alongside it; there is no user-facing window control.
 
-API callers may still pin either bound explicitly. Sending either
-`min_candidate_gpus` or `max_candidate_gpus` disables automatic resolution and
-keeps the historical semantics; the server clamps an explicit maximum to
-`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024). BLIS uses the requested bounds
-and its hardware ceiling directly; it does not resolve a model-aware window.
+Fit-floor discovery is bounded by `FIT_DISCOVERY_BUDGET_S` (default 15
+seconds), independent of the GPU count. If no shape fits within that budget,
+the response is an explicit 422 naming the budget. If the preflight estimate
+itself fails, the service logs a warning and starts at one GPU rather than
+inventing a floor. BLIS uses the service candidate ceiling, further limited by
+its hardware maximum; it does not resolve a model-aware floor.
 
 ### Budgets and sampler
 
@@ -154,7 +154,7 @@ and its hardware ceiling directly; it does not resolve a model-aware window.
 | `PARETO_CANDIDATE_TIMEOUT_S` | 8 | Per-wave wall budget (applied per evaluation wave, not per candidate) |
 | `PARETO_MAX_CONCURRENCY` | 2 | Concurrent sweeps per worker; excess returns 429 |
 | `PARETO_ALGORITHM` | `random` | `random` or `bayesian` |
-| `PARETO_MAX_WINDOW_GPUS` | 64 | Cap for an automatically resolved window |
+| `FIT_DISCOVERY_BUDGET_S` | 15 | Wall-clock budget for fit-floor discovery |
 | `SWEEP_SEED` | 42 | Reproducible sampling and optimizer seed |
 
 `bayesian` maps to `SeededBayesianBranchSampler`, which flips `jax_enable_x64`
@@ -238,8 +238,9 @@ closed-loop sizing budget:
 Demand search walks a growing GPU window (`8, 16, 32, …` up to the effective
 ceiling) and stops at the first window that sustains the rate. A window that
 cannot hold the model is skipped; each window's trial and timeout budgets are
-reduced to the time remaining. An explicit `max_candidate_gpus` pins a single
-window. The 50-second ladder budget stays inside the 90-second gateway timeout.
+reduced to the time remaining. The request carries no GPU bounds, so the
+service owns the ladder; the 50-second ladder budget stays inside the
+90-second gateway timeout.
 
 Demand selection prefers the fewest GPUs that sustain the rate, then the highest
 sustained rate, then the lowest E2E latency. When nothing complies, the response

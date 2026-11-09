@@ -57,10 +57,10 @@ export const RecommendRequestSchema = z.object({
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
   /**
-   * Internal client hint describing how this proxy should search: `single`
-   * makes one bounded request, `windowed` searches progressively larger GPU
-   * windows. The simulator reports which shape it needs and the proxy consumes
-   * the hint; it is never forwarded upstream.
+   * Internal client hint describing how this proxy should bound the request:
+   * `single` also sends a `search_budget_seconds` for a simulator that owns one
+   * bounded search, `windowed` relies on the service's own GPU window. Both
+   * make one request; the hint is never forwarded upstream as a window.
    */
   search_strategy: z.enum(['windowed', 'single']).default('windowed'),
   /**
@@ -86,13 +86,6 @@ export const RecommendRequestSchema = z.object({
    * AISimulate's default (no modeled P/D transfer delay).
    */
   kv_transfer_bandwidth_gb_per_second: z.number().positive().nullish(),
-  /**
-   * Explicit GPU window for a companion Pareto scan. The service clamps the
-   * maximum to its own candidate ceiling, so these express intent rather than
-   * a promise about the search space.
-   */
-  min_candidate_gpus: z.number().int().min(1).nullish(),
-  max_candidate_gpus: z.number().int().min(1).nullish(),
 }).strict().superRefine((data, ctx) => {
   const hasLatency = data.request_latency != null
   const hasTokenLatency = data.ttft != null || data.tpot != null

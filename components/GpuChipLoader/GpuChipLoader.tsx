@@ -20,10 +20,9 @@ interface GpuChipLoaderProps {
   /** Upper-bound wait shown in the hint, in seconds. Pass
    * DEFAULT_GATEWAY_TIMEOUT_SECONDS from lib/api/timeout. */
   timeoutSeconds: number;
-  progressMessages?: string[];
 }
 
-export function GpuChipLoader({ elapsed, timeoutSeconds, progressMessages }: GpuChipLoaderProps) {
+export function GpuChipLoader({ elapsed, timeoutSeconds }: GpuChipLoaderProps) {
   const activeIndex = Math.min(Math.floor(elapsed / PHASE_DURATION), PHASES.length - 1);
 
   return (
@@ -31,15 +30,7 @@ export function GpuChipLoader({ elapsed, timeoutSeconds, progressMessages }: Gpu
       <div className={styles.chipAndPhases}>
         <GpuChipSvg />
         <div className={styles.phases} aria-live="polite">
-          {progressMessages?.length ? progressMessages.map((message, i) => {
-            const active = i === progressMessages.length - 1;
-            return (
-              <div key={`${message}-${i}`} className={`${styles.phase} ${active ? styles.phaseActive : styles.phaseDone}`}>
-                {active ? <span className={styles.activeDot} /> : <CheckCircleIcon className={styles.checkIcon} />}
-                {message}
-              </div>
-            );
-          }) : PHASES.map((label, i) => {
+          {PHASES.map((label, i) => {
             const done = i < activeIndex;
             const active = i === activeIndex;
             return (
