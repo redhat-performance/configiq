@@ -563,9 +563,10 @@ def _result(
     tok_s: float = 500.0,
     duration: float = 3.2,
     throughput: float | None = None,
+    kv_capacity: float | None = None,
 ) -> dict:
     """A minimal BLIS v0.15 Result document for service-level tests."""
-    return {
+    result = {
         "kind": "Result",
         "metrics": {
             "ttft_mean_ms": ttft,
@@ -582,6 +583,9 @@ def _result(
         }]}},
         "revisions": {"engine": {"upstream_version": "0.31.0"}},
     }
+    if kv_capacity is not None:
+        result["engine"] = {"cluster": {"kv_capacity_tokens_per_replica": kv_capacity}}
+    return result
 
 
 def test_recommend_candidate_ceiling_uses_configured_limit_and_hardware(monkeypatch, catalog):
@@ -888,6 +892,277 @@ def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypa
     assert result.prefill_config["tp"] == 4
     assert result.decode_config["tp"] == 2
     assert result.serving_config is None
+
+
+def test_normalize_result_maps_the_engine_kv_pool():
+    metrics = normalize_result({
+        "metrics": {},
+        "engine": {"cluster": {"kv_capacity_tokens_per_replica": 123456}},
+    })
+
+    assert metrics["kv_capacity_tokens_per_replica"] == 123456
+
+
+def _capacity_input(**overrides) -> blis_service.RecommendInput:
+    values = {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "h100_sxm",
+        "backend": "vllm",
+        "backend_version": None,
+        "isl": 2048,
+        "osl": 128,
+        "concurrency": 8,
+        "request_rate": None,
+        "ttft": None,
+        "tpot": None,
+        "request_latency": None,
+        "prefix": 0,
+        "min_candidate_gpus": 1,
+        "max_candidate_gpus": 4,
+        "top_n": 5,
+        "search_budget_seconds": 60,
+        "capacity": True,
+    }
+    values.update(overrides)
+    return blis_service.RecommendInput(**values)
+
+
+def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
+    monkeypatch, catalog
+):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    calls = []
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, run_request, *, timeout_seconds: (
+            calls.append(run_request) or _result(kv_capacity=10_000)
+        ),
+    )
+
+    result = blis_service.recommend(_capacity_input())
+
+    # Every shape is probed at concurrency 1; the pool is a shape property,
+    # not a load property.
+    assert len(calls) == 3
+    assert all(call.concurrency == 1 for call in calls)
+    capacity = result.capacity
+    assert capacity is not None
+    assert capacity.target_concurrency == 8
+    assert capacity.context_per_sequence_tokens == 2176
+    assert capacity.capacity_sequences == 9
+    assert capacity.fits is True
+    assert capacity.minimum_gpus == 1
+    assert capacity.replicas == 2
+    assert capacity.per_rank_tokens == 10_000
+    assert capacity.performance_available is False
+    assert result.configs[0]["total_gpus_needed"] == 2
+    assert result.configs[0]["replicas_needed"] == 2
+    assert result.configs[0]["mode"] == "agg"
+    assert "does not simulate the target concurrency" in " ".join(
+        result.configs[0]["warnings"]
+    )
+    assert result.search_summary["strategy"] == "aggregate_tp_capacity"
+
+
+def test_recommend_capacity_rejects_a_request_rate_before_running(monkeypatch, catalog):
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+
+    with pytest.raises(BlisUnsupportedRequest, match="does not accept target_request_rate"):
+        blis_service.recommend(_capacity_input(request_rate=10.0, concurrency=None))
+
+
+def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
+    monkeypatch, catalog
+):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 2}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, _run_request, *, timeout_seconds: _result(kv_capacity=5_000),
+    )
+
+    result = blis_service.recommend(_capacity_input(
+        max_candidate_gpus=2,
+        concurrency=16,
+    ))
+
+    capacity = result.capacity
+    assert capacity is not None
+    assert capacity.fits is False
+    assert capacity.capacity_sequences == 4
+    assert capacity.shortfall_sequences == 12
+    assert capacity.shortfall_tokens == 16 * 2176 - 10_000
+    assert result.configs[0]["total_gpus_needed"] == 2
+
+
+def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 2}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, _run_request, *, timeout_seconds: _result(kv_capacity=10_000),
+    )
+
+    # The window totals GPUs across replicas: 4 replicas of one GPU exceed the
+    # two-GPU node but still fit the requested eight-GPU window.
+    result = blis_service.recommend(_capacity_input(
+        max_candidate_gpus=8,
+        concurrency=16,
+    ))
+
+    capacity = result.capacity
+    assert capacity is not None
+    assert capacity.fits is True
+    assert capacity.replicas == 4
+    assert capacity.per_rank_tokens == 10_000
+    assert result.configs[0]["total_gpus_needed"] == 4
+    assert result.configs[0]["replicas_needed"] == 4
+    assert result.search_summary["effective_max_gpus"] == 8
+    assert result.search_summary["hardware_max_gpus"] == 2
+
+
+def test_recommend_capacity_fails_when_blis_reports_no_kv_pool(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 2}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, _run_request, *, timeout_seconds: _result(),
+    )
+
+    with pytest.raises(BlisExecutionError, match="kv_capacity_tokens_per_replica"):
+        blis_service.recommend(_capacity_input(max_candidate_gpus=2))
+
+
+def test_recommend_pareto_enumerates_topologies_and_concurrency(
+    monkeypatch, catalog
+):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 2}},
+    )
+    monkeypatch.setattr(blis_service, "_pareto_concurrency_levels", lambda: [1, 8])
+    calls = []
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        scenario_path = Path(run_request.scenario_directory) / run_request.scenario
+        documents = list(yaml.safe_load_all(scenario_path.read_text()))
+        tp = documents[1]["pools"][0]["parallel"]["tp"]
+        concurrency = run_request.concurrency
+        calls.append((tp, concurrency))
+        # One GPU wins throughput per GPU; two GPUs win throughput per user.
+        tokens_per_second = concurrency * (100 if tp == 1 else 150)
+        return _result(
+            completed=concurrency,
+            tok_s=tokens_per_second,
+            ttft=50.0,
+            itl=10.0,
+        )
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    result = blis_service.recommend(_capacity_input(
+        capacity=False,
+        concurrency=None,
+        max_candidate_gpus=2,
+        pareto=True,
+        ttft=1000.0,
+        tpot=30.0,
+        strict_sla=True,
+    ))
+
+    assert calls == [(1, 1), (2, 1), (1, 8), (2, 8)]
+    assert result.search_summary["strategy"] == "enumerated_topology_and_concurrency_grid"
+    assert result.search_summary["candidate_configurations"] == 4
+    assert result.search_summary["evaluated_configurations"] == 4
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert len(result.candidates) == 4
+    assert all(candidate["status"] == "feasible" for candidate in result.candidates)
+    assert all(candidate["simulator"] == "blis" for candidate in result.candidates)
+    # Both shapes are non-dominated at each load level.
+    assert set(result.views["pareto_front"]) == {
+        "agg-tp1-c1", "agg-tp2-c1", "agg-tp1-c8", "agg-tp2-c8",
+    }
+    assert len(result.configs) == 4
+    assert all(config["simulator"] == "blis" for config in result.configs)
+
+
+def test_recommend_pareto_marks_sla_violations_infeasible(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 2}},
+    )
+    monkeypatch.setattr(blis_service, "_pareto_concurrency_levels", lambda: [1])
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, _run_request, *, timeout_seconds: _result(ttft=500.0),
+    )
+
+    result = blis_service.recommend(_capacity_input(
+        capacity=False,
+        concurrency=None,
+        max_candidate_gpus=1,
+        pareto=True,
+        ttft=100.0,
+        tpot=30.0,
+        strict_sla=True,
+    ))
+
+    assert result.configs == []
+    assert result.views == {"pareto_front": [], "top_n": []}
+    assert all(
+        candidate["status"] == "infeasible"
+        and candidate["reason_category"] == "latency_sla"
+        for candidate in result.candidates
+    )
+
+
+def test_recommend_pareto_rejects_a_load_target(monkeypatch, catalog):
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+
+    with pytest.raises(BlisUnsupportedRequest, match="does not accept target_concurrency"):
+        blis_service.recommend(_capacity_input(
+            capacity=False,
+            concurrency=8,
+            pareto=True,
+        ))
 
 
 def test_disagg_estimate_rejects_heterogeneous_systems_before_runtime_load():

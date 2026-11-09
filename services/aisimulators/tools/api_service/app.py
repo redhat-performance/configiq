@@ -222,7 +222,7 @@ class RecommendRequest(BaseModel):
     fabric: str | None = Field(
         default=None,
         min_length=1,
-        description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. AISimulate does not consume this field.",
+        description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.",
     )
     objective: Literal["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"] = Field(
         default="min_gpus",
@@ -230,10 +230,11 @@ class RecommendRequest(BaseModel):
             "Optimization objective. 'min_gpus' sizes subject to the latency SLA. "
             "'throughput_demand' finds the fewest GPUs that sustain target_request_rate "
             "with no latency target (sla_mode must be 'none'). 'concurrency_capacity' "
-            "finds the fewest GPUs whose weights plus KV cache hold target_concurrency "
+            "finds the fewest GPUs whose KV capacity holds target_concurrency "
             "sequences at the per-sequence context length, with no latency target "
-            "(sla_mode must be 'none'; AISimulate only). 'pareto' sweeps the "
-            "throughput_per_gpu vs throughput_per_user frontier (AISimulate only)."
+            "(sla_mode must be 'none'). 'pareto' sweeps the "
+            "throughput_per_gpu vs throughput_per_user frontier. Both objectives are "
+            "available from every simulator that reports them in GET /backends."
         ),
     )
     sla_mode: Literal["enforce", "none"] = Field(
@@ -250,9 +251,10 @@ class RecommendRequest(BaseModel):
         default=None,
         gt=0,
         description=(
-            "P/D KV transfer bandwidth to model when objective='pareto'. Omit (or send null) to "
-            "apply AISimulate's default: no modeled P/D transfer delay. Omission is not a fabric "
-            "default; set this only when the topology assumption is intentional."
+            "P/D KV transfer bandwidth to model when objective='pareto' with AISimulate. "
+            "Omit (or send null) to apply AISimulate's default: no modeled P/D transfer delay. "
+            "Omission is not a fabric default; set this only when the topology assumption is "
+            "intentional. BLIS rejects this field and models transfer through the selected fabric."
         ),
     )
     model_config = {"populate_by_name": True}
@@ -265,12 +267,21 @@ class RecommendRequest(BaseModel):
         has_latency = self.request_latency is not None
         token_form = self.ttft is not None or self.tpot is not None
 
-        if self.objective == "pareto" and self.simulator == "blis":
-            raise ValueError("objective='pareto' is not supported by the BLIS simulator; use simulator='aisimulate' or objective='min_gpus'.")
-        if self.objective == "concurrency_capacity" and self.simulator == "blis":
+        # BLIS prices P/D transfer through a named fabric. Accepting an explicit
+        # bandwidth would imply a transfer model BLIS does not use.
+        if self.simulator == "blis" and self.kv_transfer_bandwidth_gb_per_second is not None:
             raise ValueError(
-                "objective='concurrency_capacity' is not supported by the BLIS simulator; "
-                "use simulator='aisimulate'."
+                "BLIS models P/D transfer through the selected fabric, not "
+                "kv_transfer_bandwidth_gb_per_second; omit that field."
+            )
+        if (
+            self.simulator == "blis"
+            and self.objective == "concurrency_capacity"
+            and "fabric" in self.model_fields_set
+            and self.fabric is not None
+        ):
+            raise ValueError(
+                "BLIS concurrency-capacity sizing is aggregate-only; omit fabric."
             )
 
         # A demand run asks whether a cluster can absorb an arrival rate. It has
@@ -496,11 +507,13 @@ class SimulatorProvenance(BaseModel):
 
 
 class CandidateResponse(BaseModel):
-    """One candidate from an aisimulate pareto sweep — a subset of the SDK CandidateRecord.
+    """One candidate from a Pareto sweep.
 
-    Every field is copied verbatim from the SDK record; nothing is synthesized.
-    `topology` carries the SDK's flat parallelism keys (deployment_mode, tp, pp,
-    prefill_tp, decode_tp, prefill_replicas, …) exactly as emitted.
+    AISimulate copies the SDK candidate record verbatim. BLIS candidates are
+    built by the service from its own measured run and use the same shape. In
+    both cases nothing is synthesized: unsupported detail stays unavailable.
+    `topology` follows the shared keys (`deployment_mode`, `tp`, `pp`,
+    `attention_dp`, `replicas`, and the prefill/decode equivalents).
     """
     candidate_id: str
     status: Literal["feasible", "infeasible", "unsupported", "timed_out", "failed", "resource_limited"]
@@ -516,7 +529,7 @@ class CandidateResponse(BaseModel):
 
 
 class CandidateViews(BaseModel):
-    """Candidate-ID lists for SDK-computed views (pareto front, top-N)."""
+    """Candidate-ID lists for simulator-computed views (pareto front, top-N)."""
     pareto_front: list[str] = Field(default_factory=list)
     top_n: list[str] = Field(default_factory=list)
 
@@ -542,11 +555,13 @@ class DemandOutcome(BaseModel):
 class CapacityOutcome(BaseModel):
     """Memory-residency outcome of a concurrency-capacity sizing run.
 
-    Capacity is decided by the KV-cache estimate for the selected deployment,
-    not by a replay. For a disaggregated option the decode pool holds the
-    resident sequences and the prefill pool only holds one transiently. The
-    performance fields on the option config are a separate informational
-    simulation at the requested concurrency; they never gate ``fits``.
+    Capacity is decided by the selected simulator's capacity answer for the
+    deployment, not by a replay: AISimulate derives it from weights plus a
+    KV-cache estimate, BLIS reads the engine's reported KV pool. For a
+    disaggregated option the decode pool holds the resident sequences and the
+    prefill pool only holds one transiently. The performance fields on the
+    option config are a separate informational simulation at the requested
+    concurrency; they never gate ``fits``.
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
@@ -3777,7 +3792,7 @@ def _blis_backends() -> dict[str, Any]:
         "recommend_search": _simulator_entry("blis")["recommend_search"],
         # The sizing goals this simulator can answer. A client gates its goal
         # selector on this list instead of on the simulator's name.
-        "objectives": ["min_gpus", "throughput_demand"],
+        "objectives": ["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"],
         "backends": [
             {
                 "id": "vllm",
@@ -3793,8 +3808,9 @@ def _blis_backends() -> dict[str, Any]:
                 # A P/D run transfers KV between pools, and BLIS prices that
                 # transfer through a named fabric, so the request must choose one.
                 "disaggregation_requires_fabric": True,
-                # BLIS cannot run the capacity objective, so it has no
-                # disaggregated capacity comparison options either.
+                # BLIS capacity sizing is aggregate-only for now: it reads the
+                # aggregate engine's KV pool and does not model a disaggregated
+                # decode-pool capacity, so no comparison options are offered.
                 "capacity_options": {"disaggregated": False},
                 "version_support": {
                     version: dict(support) for version, support in ENGINE_VERSION_SUPPORT.items()
@@ -3925,43 +3941,25 @@ def post_recommend(
     # is an explicit 422, never a silent fall-through to another simulator.
     req.simulator = _validate_simulator(req.simulator)
     if req.simulator == "blis":
-        try:
-            outcome = _blis_recommend(req)
-        except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
-            _handle_blis_error(e)
-        except Exception as e:
-            _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
-        if not outcome.configs:
-            raise HTTPException(status_code=422, detail="No configuration meets the specified requirements.")
-        # A non-demand BLIS outcome (or a test double) may not carry a demand
-        # block at all.
-        blis_demand = getattr(outcome, "demand", None)
-        demand = (
-            DemandOutcome(
-                target_rps=blis_demand.target_rps,
-                achieved_rps=blis_demand.achieved_rps,
-                met=blis_demand.met,
-                observed_concurrency=blis_demand.observed_concurrency,
-                window_seconds=blis_demand.window_seconds,
-                completed_requests=blis_demand.completed_requests,
-                evaluated_configurations=blis_demand.evaluated_configurations,
-                best_observed_rps=blis_demand.best_observed_rps,
-                simulator="blis",
+        pareto_slots = _pareto_slots() if req.objective == "pareto" else None
+        if pareto_slots is not None and not pareto_slots.acquire(blocking=False):
+            raise HTTPException(
+                status_code=429,
+                detail="A Pareto sweep is already running on this worker; retry shortly.",
+                headers={"Retry-After": "5"},
             )
-            if blis_demand is not None
-            else None
-        )
-        # BLIS enumerates its candidate grid instead of sampling it. Reporting
-        # that as a sweep keeps `sweep` present for both simulators without
-        # inventing a sampler identity.
-        summary = outcome.search_summary or {}
-        return RecommendResponse(
-            configs=[RecommendConfig.model_validate(config) for config in outcome.configs],
-            chosen_mode=str(outcome.configs[0].get("mode", "agg")),
-            simulator="blis",
-            search_summary=outcome.search_summary,
-            demand=demand,
-            sweep=SweepMeta(
+        try:
+            try:
+                outcome = _blis_recommend(req)
+            except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
+                _handle_blis_error(e)
+            except Exception as e:
+                _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
+            summary = outcome.search_summary or {}
+            # BLIS enumerates its candidate grid instead of sampling it.
+            # Reporting that as a sweep keeps `sweep` present for both
+            # simulators without inventing a sampler identity.
+            sweep = SweepMeta(
                 algorithm="enumerate",
                 max_trials=summary.get("candidate_configurations"),
                 evaluated=summary.get("evaluated_configurations"),
@@ -3969,8 +3967,89 @@ def post_recommend(
                 strict_sla=req.sla_mode == "enforce",
                 window_min_gpus=req.min_candidate_gpus or 1,
                 window_max_gpus=summary.get("effective_max_gpus"),
-            ),
-        )
+            )
+            if req.objective == "pareto":
+                candidates = [
+                    CandidateResponse.model_validate(candidate)
+                    for candidate in (getattr(outcome, "candidates", None) or [])
+                ]
+                if not candidates:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="No configuration meets the specified requirements.",
+                    )
+                configs = [
+                    RecommendConfig.model_validate(config)
+                    for config in (outcome.configs or [])
+                ]
+                views = getattr(outcome, "views", None) or {
+                    "pareto_front": [],
+                    "top_n": [],
+                }
+                return RecommendResponse(
+                    configs=configs,
+                    chosen_mode=configs[0].mode if configs else "agg",
+                    simulator="blis",
+                    search_summary=outcome.search_summary,
+                    candidates=candidates,
+                    views=CandidateViews.model_validate(views),
+                    sweep=sweep,
+                )
+            if not outcome.configs:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No configuration meets the specified requirements.",
+                )
+            if req.objective == "concurrency_capacity":
+                capacity = getattr(outcome, "capacity", None)
+                if capacity is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="BLIS did not report a capacity outcome.",
+                    )
+                return RecommendResponse(
+                    configs=[
+                        RecommendConfig.model_validate(config)
+                        for config in outcome.configs
+                    ],
+                    chosen_mode="agg",
+                    simulator="blis",
+                    search_summary=outcome.search_summary,
+                    capacity=CapacityOutcome.model_validate(vars(capacity)),
+                    sweep=sweep,
+                )
+            # A non-demand BLIS outcome (or a test double) may not carry a
+            # demand block at all.
+            blis_demand = getattr(outcome, "demand", None)
+            demand = (
+                DemandOutcome(
+                    target_rps=blis_demand.target_rps,
+                    achieved_rps=blis_demand.achieved_rps,
+                    met=blis_demand.met,
+                    observed_concurrency=blis_demand.observed_concurrency,
+                    window_seconds=blis_demand.window_seconds,
+                    completed_requests=blis_demand.completed_requests,
+                    evaluated_configurations=blis_demand.evaluated_configurations,
+                    best_observed_rps=blis_demand.best_observed_rps,
+                    simulator="blis",
+                )
+                if blis_demand is not None
+                else None
+            )
+            return RecommendResponse(
+                configs=[
+                    RecommendConfig.model_validate(config)
+                    for config in outcome.configs
+                ],
+                chosen_mode=str(outcome.configs[0].get("mode", "agg")),
+                simulator="blis",
+                search_summary=outcome.search_summary,
+                demand=demand,
+                sweep=sweep,
+            )
+        finally:
+            if pareto_slots is not None:
+                pareto_slots.release()
 
     # A client abort cannot stop a synchronous sweep, so bound how many Pareto
     # sweeps can occupy threadpool slots at once. Reject rather than queue: a
@@ -4275,6 +4354,9 @@ def _blis_recommend(req: RecommendRequest):
         top_n=req.top_n,
         search_budget_seconds=req.search_budget_seconds,
         demand=req.objective == "throughput_demand",
+        capacity=req.objective == "concurrency_capacity",
+        pareto=req.objective == "pareto",
+        strict_sla=req.sla_mode == "enforce",
         max_seq_len=req.max_seq_len,
         prefill_max_seq_len=req.prefill_max_seq_len,
         decode_max_seq_len=req.decode_max_seq_len,

@@ -21,12 +21,14 @@ Find optimal GPU configuration for a workload.
 
 `objective` selects the search: `min_gpus` (default, honors the latency SLA),
 `throughput_demand` (fewest GPUs sustaining `target_request_rate`, requires
-`sla_mode=none`), or `pareto` (AISimulate-only efficiency frontier). A demand
-result includes a measured `demand` block; an unmet target returns 200 with
-`demand.met=false` and the best observed rate. A Pareto result includes every
-sampled `candidate` and the simulator's `views.pareto_front`. BLIS requests never
-fall back to AISimulate. See the service README and OpenAPI spec for the full
-request/response contract.
+`sla_mode=none`), `concurrency_capacity` (fewest GPUs holding
+`target_concurrency` sequences, requires `sla_mode=none`), or `pareto` (the
+efficiency frontier). A demand result includes a measured `demand` block; an
+unmet target returns 200 with `demand.met=false` and the best observed rate. A
+Pareto result includes every evaluated `candidate` and the simulator's
+`views.pareto_front` (AISimulate samples it; BLIS enumerates a grid). BLIS
+requests never fall back to AISimulate. See the service README and OpenAPI spec
+for the full request/response contract.
 
 **Example:**
 ```bash

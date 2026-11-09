@@ -135,6 +135,10 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
         "completed_requests": number(requests, "completed"),
         "dropped_unservable": number(requests, "dropped_unservable") or 0,
         "vllm_estimated_duration_s": duration,
+        # The smallest instance's GPU KV pool in tokens. BLIS reports this in
+        # the engine cluster section; capacity sizing reads it instead of
+        # re-deriving KV bytes from weights and memory fractions.
+        "kv_capacity_tokens_per_replica": number(cluster, "kv_capacity_tokens_per_replica"),
     }
 
 

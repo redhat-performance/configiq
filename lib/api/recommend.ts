@@ -885,6 +885,22 @@ export async function callPareto(
     delete basePayload.tpot
     delete basePayload.request_latency
   }
+  // A single-search simulator owns one bounded sweep inside the service, so
+  // keep that sweep inside the gateway timeout. This is a capability hint, not
+  // a simulator identity check.
+  if (request.search_strategy === 'single') {
+    const searchBudgetSeconds = Math.min(60, requestTimeoutSeconds - 5)
+    if (searchBudgetSeconds < 1) {
+      return {
+        status: 'failed',
+        error: {
+          code: 'AISIM_TIMEOUT',
+          message: 'The configured gateway timeout is too short to run a bounded Pareto sweep.',
+        },
+      }
+    }
+    basePayload.search_budget_seconds = searchBudgetSeconds
+  }
   let response: Response
   try {
     response = await fetch(`${baseUrl}/recommend`, {
