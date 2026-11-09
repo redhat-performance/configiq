@@ -83,18 +83,28 @@ GPU sizing formulas or call external service URLs directly from the browser.
 2. The catalog route discovers simulators from `/simulators`, then fetches each
    simulator's `/systems`, `/models`, `/backends`, and `/networks` and folds
    identity, the default flag, description, and capabilities into one
-   `simulators` list. The response is `{ simulators, timeoutSeconds }`; clients
-   read the default simulator's entry for the systems, models, backends,
-   fabrics, and objectives a page renders. An entry whose capabilities cannot
-   be read stays listed with `available: false` rather than being dropped or
-   given empty capabilities. Only a pre-`/simulators` service returns the
-   legacy top-level `systems`, `models`, `backends`, `networks`, and
-   `objectives` fields with `simulators: []`. The network list supplies fabrics
-   for BLIS P/D predictions; AISimulate does not consume it. This same-origin
-   response shape ships with the frontend that reads it. When one ConfigIQ
-   instance uses another's `/api/catalog` as its gateway, upgrade the downstream
-   reader first: the newer route accepts an older upstream's legacy lists, but
-   an older downstream expects lists the reduced response no longer sends.
+   `simulators` list. The response is `{ simulators, timeoutSeconds }`.
+   `useCatalog` derives the page's top-level defaults (GPUs, models, specs,
+   backends, fabrics, objectives) from the default simulator's entry, and also
+   builds a per-simulator support map. Sizing pages then render the selected
+   simulator's models, systems, networks, and objectives when it has a support
+   entry, falling back to those top-level defaults only when it does not — so a
+   non-default selection does not show the default simulator's capabilities.
+   An unavailable non-default simulator stays listed with `available: false`
+   and empty capability lists, rather than being dropped; an unavailable
+   default simulator makes the route return 502, because every page that lists
+   models or systems needs that entry. The legacy top-level `systems`,
+   `models`, `backends`, `networks`, and `objectives` fields with
+   `simulators: []` are returned when no simulator descriptors are available:
+   either an older service without `/simulators`, or a current service whose
+   `/simulators` failed or returned no valid descriptors while its unscoped
+   catalogue succeeded. The response shape alone does not prove the upstream
+   predates `/simulators`. The network list supplies fabrics for BLIS P/D
+   predictions; AISimulate does not consume it. This same-origin response shape
+   ships with the frontend that reads it. When one ConfigIQ instance uses
+   another's `/api/catalog` as its gateway, upgrade the downstream reader
+   first: the newer route accepts an older upstream's legacy lists, but an
+   older downstream expects lists the reduced response no longer sends.
 3. `useCostings` calls `/api/costings/models`, `/api/costings/systems`, and
    `/api/costings/health`. Hybrid Savings is available without the Experimental
    toggle and loads prices once settings are ready. It uses the models-only
