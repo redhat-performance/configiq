@@ -521,7 +521,7 @@ export function FrontierPanel({
                 <div className={styles.loadingTitle}>Evaluating the efficiency frontier…</div>
                 <div className={styles.loadingHint}>
                   Testing a range of GPU counts across aggregated and disaggregated deployments.
-                  {elapsed > 0 && <> {elapsed}s elapsed.</>}
+                  {elapsed > 0 && <> <span className={styles.elapsed}>{elapsed}s elapsed.</span></>}
                   {timeoutSeconds != null && <> The gateway limit is {timeoutSeconds}s.</>}
                 </div>
               </div>
