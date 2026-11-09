@@ -60,47 +60,61 @@ paths:
           from 8 GPUs (default) until the rate is met, the ceiling is reached,
           or the demand search budget is spent; an explicit
           `max_candidate_gpus` pins one window.
-        - `concurrency_capacity` (AISimulate only) finds the fewest GPUs whose
-          weights plus KV cache hold `target_concurrency` sequences at the
-          per-sequence context length (`max_seq_len`, else `isl + osl`) with no
-          latency target. It requires `sla_mode=none`, a positive whole
-          `target_concurrency`, and no `target_request_rate`; any `ttft`, `tpot`,
-          or `request_latency` is rejected. Selection is a deterministic
-          enumeration of the parallel search space, not a sampled sweep.
-          `configs[0]` is the fewest-GPU recommendation; `capacity_options`
-          returns a ranked comparison set that starts with that same minimum and
-          adds same-GPU ties, larger aggregated deployments, and disaggregated
-          deployments where the backend advertises them. A disaggregated
-          deployment replicates weights in each pool, so it is only offered as a
-          larger option, never as the minimum. When `top_n` is omitted the
-          service returns up to 8 options when disaggregated candidates exist and
-          6 otherwise; an explicit `top_n` overrides that count. Each option
-          carries its own config and capacity block and can be used as the
-          primary result. Performance is simulated for a bounded set of options
-          under one shared budget; options that do not complete remain valid
-          capacity answers with `performance_available=false` and a reason.
-          When the target does not fit inside the GPU window, the response is
-          still 200 with `capacity.fits=false`, the best achievable
-          configuration, and the shortfall. A window that cannot schedule any
-          aggregated shape returns 422 naming the window. BLIS rejects
-          `objective=concurrency_capacity` with 422 and never substitutes
-          AISimulate.
-        - `pareto` (AISimulate only) sweeps the throughput-per-user vs
-          throughput-per-gpu frontier and returns every evaluated candidate in
-          `candidates` plus SDK-computed `views`. It searches both aggregated
-          and disaggregated deployments (when the window can hold more than one
+        - `concurrency_capacity` finds the fewest GPUs that hold
+          `target_concurrency` sequences at the per-sequence context length
+          (`max_seq_len`, else `isl + osl`) with no latency target. It requires
+          `sla_mode=none`, a positive whole `target_concurrency`, and no
+          `target_request_rate`; any `ttft`, `tpot`, or `request_latency` is
+          rejected. Selection is a deterministic enumeration of the parallel
+          search space, not a sampled sweep. The capacity answer comes from the
+          selected simulator: AISimulate derives weights plus KV cache, while
+          BLIS reads the KV pool the engine reports
+          (`engine.cluster.kv_capacity_tokens_per_replica`) and multiplies it by
+          the replicas needed. BLIS capacity is aggregate-only, so it returns no
+          `capacity_options` and rejects an explicit non-null `fabric`.
+          `configs[0]` is the fewest-GPU recommendation. For AISimulate,
+          `capacity_options` returns a ranked comparison set that starts with
+          that same minimum and adds same-GPU ties, larger aggregated
+          deployments, and disaggregated deployments where the backend
+          advertises them. A disaggregated deployment replicates weights in each
+          pool, so it is only offered as a larger option, never as the minimum.
+          When `top_n` is omitted the service returns up to 8 options when
+          disaggregated candidates exist and 6 otherwise; an explicit `top_n`
+          overrides that count. Each option carries its own config and capacity
+          block and can be used as the primary result. Performance is simulated
+          for a bounded set of AISimulate options under one shared budget;
+          options that do not complete remain valid capacity answers with
+          `performance_available=false` and a reason. BLIS does not simulate the
+          target concurrency during capacity sizing, so its capacity result also
+          reports `performance_available=false`. When the target does not fit
+          inside the GPU window, the response is still 200 with
+          `capacity.fits=false`, the best achievable configuration, and the
+          shortfall. A window that cannot schedule any aggregated shape returns
+          422 naming the window.
+        - `pareto` sweeps the throughput-per-user vs throughput-per-gpu
+          frontier and returns every evaluated candidate in `candidates` plus
+          simulator-computed `views`. It searches both aggregated and
+          disaggregated deployments (when the window can hold more than one
           GPU); a workload may legitimately have no feasible disaggregated
           point. `sla_mode=enforce` restricts the frontier to SLA-compliant
-          candidates; `sla_mode=none` sweeps capacity without an SLA. When both
-          `min_candidate_gpus` and `max_candidate_gpus` are omitted, the service
-          resolves a model-aware window: the floor is the smallest aggregated
-          shape that holds one full-context sequence, and the ceiling is
-          `clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server
+          candidates; `sla_mode=none` sweeps capacity without an SLA.
+          `target_request_rate` and `target_concurrency` are rejected because
+          the sweep drives its own load. AISimulate samples the frontier and
+          reports model-aware window resolution when both `min_candidate_gpus`
+          and `max_candidate_gpus` are omitted: the floor is the smallest
+          aggregated shape that holds one full-context sequence, and the ceiling
+          is `clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server
           ceiling)`. The resolved bounds are reported as
           `sweep.window_min_gpus` / `sweep.window_max_gpus`. No shape fitting
           inside the cap returns 422 asking for explicit bounds. Sending either
-          bound disables automatic resolution. BLIS rejects `objective=pareto`
-          with 422 and never substitutes AISimulate.
+          bound disables automatic resolution. BLIS has no native Pareto
+          command, so the service enumerates topology and closed-loop
+          concurrency combinations, runs each, and computes the non-dominated
+          set itself; `sweep.algorithm="enumerate"` and
+          `sweep.budget_exhausted` report whether the whole grid ran. BLIS
+          includes P/D topologies only when the request names a supported
+          `fabric`, and a workload may still have no feasible disaggregated
+          point.
 
         With `sla_mode=enforce`, provide either `request_latency` (end-to-end ms)
         or both `ttft` and `tpot`; sending an end-to-end bound together with
@@ -610,10 +624,12 @@ components:
           type: number
           nullable: true
           description: |
-            P/D KV transfer bandwidth to model with objective=pareto. Omit to
-            apply AISimulate's default of no modeled transfer delay; omission is
-            not a fabric default. A non-null value for any other objective is
-            rejected with 422 rather than silently ignored.
+            P/D KV transfer bandwidth to model with objective=pareto under
+            AISimulate. Omit to apply AISimulate's default of no modeled
+            transfer delay; omission is not a fabric default. BLIS models P/D
+            transfer through the selected `fabric` and rejects this field with
+            422. A non-null value for any other objective is rejected with 422
+            rather than silently ignored.
           default: null
         isl:
           type: integer
@@ -679,7 +695,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. AISimulate does not consume this field.
+          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.
 
     RecommendResponse:
       type: object
@@ -729,8 +745,10 @@ components:
           description: |
             KV-residency outcome. Present only with
             objective=concurrency_capacity, including when the target could not
-            fit (200 with fits=false). The fit is decided by the KV-cache
-            estimate, not by the informational performance simulation.
+            fit (200 with fits=false). The fit comes from the selected
+            simulator's capacity answer (AISimulate's KV estimate or BLIS's
+            reported engine KV pool), not from the informational performance
+            simulation.
         capacity_options:
           type: array
           description: |
@@ -841,11 +859,16 @@ components:
         capacity_tokens:
           type: integer
           description: |
-            KV-cache tokens the selected deployment holds:
-            `per_rank_tokens × attention_dp × replicas`.
+            Aggregate KV-cache tokens the selected deployment holds:
+            `per_rank_tokens × attention_dp × replicas`. Unused tokens in one
+            replica cannot serve a sequence on another.
         capacity_sequences:
           type: integer
-          description: Whole sequences of context_per_sequence_tokens the deployment holds.
+          description: |
+            Whole sequences of context_per_sequence_tokens the deployment
+            holds. Sequences cannot span replicas, so this is whole sequences
+            per replica multiplied by the replica count, not the pooled token
+            total divided by the context length.
         fits:
           type: boolean
           description: True when capacity_sequences >= target_concurrency.
@@ -856,7 +879,10 @@ components:
         shortfall_tokens:
           type: integer
           nullable: true
-          description: Missing KV tokens when fits=false; null when the target fits.
+          description: |
+            KV tokens for the sequences that do not fit when fits=false
+            (`shortfall_sequences × context_per_sequence_tokens`); null when
+            the target fits.
         minimum_gpus:
           type: integer
           nullable: true
@@ -865,7 +891,9 @@ components:
           type: integer
           description: |
             KV-cache tokens held by one attention rank of the capacity-bearing
-            pool. For a disaggregated option this is the decode pool.
+            pool. For a disaggregated option this is the decode pool. BLIS
+            capacity is aggregate-only; with attention DP 1 the reported
+            per-replica pool is also the per-rank figure.
         replicas:
           type: integer
           description: |
@@ -902,25 +930,30 @@ components:
             Null for agg.
         evaluated_shapes:
           type: integer
-          description: Aggregated shapes the KV estimate evaluated.
+          description: Aggregated shapes the capacity search evaluated.
         feasible_shapes:
           type: integer
           description: Aggregated shapes that held at least one sequence.
         exhaustive:
           type: boolean
-          description: True because capacity enumerates the shape space instead of sampling it.
+          description: |
+            True when capacity enumerated the shape space instead of sampling
+            it. BLIS reports false when its search time budget stopped the
+            enumeration or a run failed, so the minimum is not confirmed.
         performance_available:
           type: boolean
           description: |
             True when the informational simulation at the requested concurrency
-            produced timing data. It never affects `fits`.
+            produced timing data. It never affects `fits`. Always false for BLIS
+            capacity sizing, which reads the KV pool without simulating the
+            target concurrency.
         performance_unavailable_reason:
           type: string
           nullable: true
           description: Why the informational simulation was unavailable, when it was.
         simulator:
           type: string
-          description: Simulator that produced the KV estimate.
+          description: Simulator that produced this capacity result.
 
     CapacityOption:
       type: object
@@ -966,7 +999,13 @@ components:
         timed_out: { type: integer, nullable: true }
         budget_exhausted:
           type: boolean
-          description: True when the trial budget was spent. Never implies the search was exhaustive.
+          description: |
+            Whether the search stopped at its budget. AISimulate reports true
+            when its trial budget was spent (`evaluated >= max_trials`). BLIS
+            reports true when its wall-clock search time budget stopped the
+            enumeration before every grid point ran, independently of
+            `evaluated` and `max_trials`. In neither case does true imply the
+            search was exhaustive.
         strict_sla: { type: boolean, nullable: true }
         window_min_gpus: { type: integer, nullable: true }
         window_max_gpus: { type: integer, nullable: true }
@@ -974,7 +1013,10 @@ components:
     CandidateResponse:
       type: object
       required: [candidate_id, status, mode, topology, simulator]
-      description: One evaluated candidate from an AISimulate pareto sweep, copied verbatim from the SDK record.
+      description: |
+        One evaluated candidate from a pareto sweep. AISimulate candidates are
+        copied verbatim from the SDK record; BLIS candidates are constructed by
+        the service from its own measured runs.
       properties:
         candidate_id: { type: string }
         status:
@@ -1743,8 +1785,8 @@ components:
           type: array
           description: |
             Sizing goals this simulator implements. Clients gate a goal selector
-            on this list instead of on the simulator name. BLIS currently
-            excludes `pareto` and `concurrency_capacity`.
+            on this list instead of on the simulator name. A goal absent from
+            this list is not answered by a different simulator.
           items:
             type: string
             enum: [min_gpus, throughput_demand, pareto, concurrency_capacity]
@@ -1818,8 +1860,8 @@ components:
               type: boolean
               description: |
                 Whether capacity runs can include disaggregated alternatives.
-                AISimulate reports true; BLIS reports false because it does not
-                implement the capacity objective.
+                AISimulate reports true; BLIS reports false because its
+                concurrency-capacity sizing is aggregate-only.
         version_support:
           type: object
           description: Per-version capabilities. Present when simulator=blis.

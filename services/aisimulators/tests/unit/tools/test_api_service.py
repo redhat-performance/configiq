@@ -1593,11 +1593,13 @@ class TestCapacityRequestValidation:
         assert request.target_concurrency == 32
         assert request.sla_mode == "none"
 
-    def test_capacity_rejects_blis(self):
-        with pytest.raises(ValueError, match="not supported by the BLIS simulator"):
-            app_module.RecommendRequest.model_validate(
-                {**VALID_CAPACITY_BODY, "simulator": "blis"}
-            )
+    def test_capacity_accepts_blis(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "simulator": "blis"}
+        )
+        assert request.simulator == "blis"
+        assert request.objective == "concurrency_capacity"
+        assert request.target_concurrency == 32
 
     def test_capacity_rejects_an_enforced_sla(self):
         with pytest.raises(ValueError, match="sla_mode='none'"):
@@ -1708,6 +1710,31 @@ class TestSelectCapacity:
         assert winner.replicas == 8
         assert winner.total_gpus == 8
         assert minimum == 8
+
+    def test_sequences_cannot_span_replicas(self):
+        fitting, _best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=10_000)],
+            target=9,
+            context=2176,
+            upper=4,
+        )
+        winner = min(fitting, key=app_module._capacity_order)
+        # Each replica holds 4 whole sequences, so 9 need 3 replicas (12).
+        # Pooled-token math would pick 2 replicas and claim 9 fit.
+        assert winner.replicas == 3
+        assert winner.capacity_sequences == 12
+        assert minimum == 1
+
+    def test_shape_that_cannot_hold_one_sequence_is_not_a_candidate(self):
+        fitting, best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=2_000)],
+            target=1,
+            context=2176,
+            upper=4,
+        )
+        assert fitting == []
+        assert best_effort == []
+        assert minimum is None
 
     def test_target_miss_reports_the_largest_deployment_inside_the_window(self):
         _fitting, best_effort, minimum = self._aggregate(
@@ -1999,11 +2026,12 @@ class TestRunCapacityRecommendation:
             target_concurrency=100,
             max_candidate_gpus=4,
         )
-        # 4 replicas × 25_000 tokens hold 45 of the 100 requested sequences.
+        # 4 replicas × 25_000 tokens hold 11 whole sequences each, so 44 of
+        # the 100 requested sequences — not the 45 the pooled tokens suggest.
         assert capacity.fits is False
-        assert capacity.capacity_sequences == 45
-        assert capacity.shortfall_sequences == 55
-        assert capacity.shortfall_tokens == 217_600 - 100_000
+        assert capacity.capacity_sequences == 44
+        assert capacity.shortfall_sequences == 56
+        assert capacity.shortfall_tokens == 56 * 2176
         assert capacity.minimum_gpus == 1
         assert config.total_gpus_needed == 4
         assert config.replicas_needed == 4
@@ -2243,12 +2271,17 @@ class TestRecommendCapacityEndpoint:
         assert data["configs"][0]["tpot"] == pytest.approx(20.0)
         assert data["capacity_options"][0]["config"]["tpot"] == pytest.approx(20.0)
 
-    def test_capacity_rejects_blis_before_running(self):
+    def test_capacity_rejects_an_explicit_fabric_for_blis(self):
         response = client.post(
-            "/recommend", json={**VALID_CAPACITY_BODY, "simulator": "blis"}
+            "/recommend",
+            json={
+                **VALID_CAPACITY_BODY,
+                "simulator": "blis",
+                "fabric": "ib-400g",
+            },
         )
         assert response.status_code == 422
-        assert "BLIS" in response.text
+        assert "aggregate-only" in response.text
 
 
 class TestBackendObjectives:
@@ -2272,10 +2305,14 @@ class TestBackendObjectives:
         ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": True}
 
-    def test_blis_does_not_advertise_capacity(self):
+    def test_blis_advertises_the_goals_it_implements(self):
         data = client.get("/backends?simulator=blis").json()
-        assert "concurrency_capacity" not in data["objectives"]
-        assert "throughput_demand" in data["objectives"]
+        assert data["objectives"] == [
+            "min_gpus",
+            "throughput_demand",
+            "pareto",
+            "concurrency_capacity",
+        ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
 
 

@@ -23,6 +23,7 @@ import {
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
+import { describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
 
@@ -457,7 +458,7 @@ export function FrontierPanel({
   // direction differs.
   const frontierIds = React.useMemo(() => {
     if (axisMode === 'ttft') return computeTtftFrontier(feasible);
-    // An empty server frontier is still the server's answer: no sampled
+    // An empty server frontier is still the server's answer: no evaluated
     // candidate was non-dominated. Only a missing view falls back locally.
     if (views) return new Set(views.pareto_front);
     return new Set(computeFrontier(feasible).map(candidate => candidate.candidate_id));
@@ -474,15 +475,10 @@ export function FrontierPanel({
 
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
-  const statusSummary = React.useMemo(() => {
-    const sampled = sweep?.evaluated ?? candidates.length;
-    const parts = [`${sampled} sampled`, `${feasible.length} feasible`];
-    for (const status of ['timed_out', 'infeasible', 'failed', 'unsupported', 'resource_limited'] as const) {
-      const count = candidates.filter(candidate => candidate.status === status).length;
-      if (count > 0) parts.push(`${count} ${status.replace('_', ' ')}`);
-    }
-    return `${parts.join(' · ')} — not exhaustive.`;
-  }, [candidates, feasible.length, sweep?.evaluated]);
+  const statusSummary = React.useMemo(
+    () => describeSweepCoverage(sweep, candidates),
+    [candidates, sweep],
+  );
 
   if (state.status === 'idle') return null;
 
@@ -522,7 +518,7 @@ export function FrontierPanel({
             <div className={styles.loading}>
               <Spinner size="md" aria-label="Running Pareto sweep" />
               <div>
-                <div className={styles.loadingTitle}>Sampling the efficiency frontier…</div>
+                <div className={styles.loadingTitle}>Evaluating the efficiency frontier…</div>
                 <div className={styles.loadingHint}>
                   Testing a range of GPU counts across aggregated and disaggregated deployments.
                   {elapsed > 0 && <> {elapsed}s elapsed.</>}
@@ -558,7 +554,7 @@ export function FrontierPanel({
           {state.status === 'ready' && candidates.length === 0 && (
             <EmptyState>
               <EmptyStateBody>
-                No candidate configurations were sampled for this workload and GPU window.
+                No candidate configurations were evaluated for this workload and GPU window.
               </EmptyStateBody>
             </EmptyState>
           )}
@@ -602,7 +598,6 @@ export function FrontierPanel({
                   {sweep?.windowMinGpus != null && sweep?.windowMaxGpus != null && (
                     <> Window: {sweep.windowMinGpus}–{sweep.windowMaxGpus} GPUs.</>
                   )}
-                  {sweep?.budgetExhausted && <> Trial budget reached.</>}
                   {sweep?.strictSla === false && (
                     <> No latency SLO was enforced, so candidates may exceed a target you would otherwise set.</>
                   )}

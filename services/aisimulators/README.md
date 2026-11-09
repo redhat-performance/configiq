@@ -160,7 +160,8 @@ Each backend entry reports `disaggregation_requires_fabric`, so a client knows
 whether a P/D topology needs a fabric selection without matching on the
 simulator ID. Each entry also reports `capacity_options.disaggregated`, which
 tells a client whether a concurrency-capacity run can return disaggregated
-alternatives. `/backends` also returns the simulator's `objectives` list, and
+alternatives; BLIS reports false because its capacity sizing is aggregate-only.
+`/backends` also returns the simulator's `objectives` list, and
 clients gate a sizing-goal selector on that list rather than on the simulator ID.
 
 Simulator provenance includes the requested and resolved model, hardware,
@@ -173,11 +174,13 @@ BLIS `/predict` supports both colocated and prefill/decode-disaggregated vLLM
 scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
-disaggregates every request. BLIS `/recommend` always searches aggregate TP
-candidates. It defaults to `roce-200g` when the `fabric` field is omitted and
-also searches bounded P/D TP and worker-count combinations, with one node per
-pool and DP=PP=1. Send `fabric: null` to request aggregate-only candidates; the
-response then warns that P/D candidates were not searched.
+disaggregates every request. BLIS `/recommend` searches aggregate TP candidates
+for `min_gpus` and `throughput_demand`. It defaults to `roce-200g` when the
+`fabric` field is omitted and also searches bounded P/D TP and worker-count
+combinations, with one node per pool and DP=PP=1. Send `fabric: null` to request
+aggregate-only candidates; the response then warns that P/D candidates were not
+searched. `concurrency_capacity` is aggregate-only, and `pareto` enumerates both
+topology modes when a fabric is selected.
 
 BLIS recommendation sizes closed-loop concurrency by default. With
 `objective=throughput_demand` `sla_mode=none` it instead replays open-loop
@@ -216,8 +219,8 @@ search.
 |---|---|---|---|
 | `min_gpus` (default) | `enforce` | exactly one of `target_request_rate` / `target_concurrency` | fewest GPUs that clears the latency SLA |
 | `throughput_demand` | `none` | `target_request_rate` only | fewest GPUs among evaluated candidates that sustains the offered rate; no latency target |
-| `concurrency_capacity` | `none` | `target_concurrency` only | fewest GPUs whose weights plus KV cache hold N sequences at the per-sequence context length; no latency target |
-| `pareto` | `enforce` or `none` | none; the sweep drives load itself | every sampled candidate plus a frontier view |
+| `concurrency_capacity` | `none` | `target_concurrency` only | fewest GPUs whose simulator capacity answer holds N sequences at the per-sequence context length; no latency target |
+| `pareto` | `enforce` or `none` | none; the sweep drives load itself | every evaluated candidate plus a frontier view |
 
 With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
 `tpot`. A demand request (`throughput_demand`) rejects `ttft`, `tpot`, and
@@ -267,9 +270,9 @@ so the ladder stays inside the gateway timeout.
 ### Concurrency-capacity sizing
 
 `objective=concurrency_capacity` answers a residency question: how few GPUs
-hold weights plus KV cache for `target_concurrency` sequences with no latency
-target. `target_concurrency` is a design input, not a derived demand; it must
-be a positive whole number. `sla_mode` must be `none`, and `target_request_rate`,
+hold `target_concurrency` sequences at the per-sequence context length with no
+latency target. `target_concurrency` is a design input, not a derived demand; it
+must be a positive whole number. `sla_mode` must be `none`, and `target_request_rate`,
 `ttft`, `tpot`, and `request_latency` are rejected rather than reinterpreted.
 
 The per-sequence context is the peak a resident sequence can occupy:
@@ -277,55 +280,94 @@ The per-sequence context is the peak a resident sequence can occupy:
 credited, because a shorter average prompt does not bound how large a resident
 sequence can grow.
 
-Selection enumerates the SDK's parallel search space (the same backend filters,
-wideEP heuristic, and KV-feasibility rule as `min_gpus`) and reads each shape's
-KV token capacity. For aggregated shapes the service adds the fewest replicas
-that reach `target_concurrency × context_tokens`. The fewest total GPUs is the
-minimum. Disaggregated pairs come from the SDK's P/D enumeration; the decode
-pool must hold the resident sequences, while the prefill pool only needs to hold
-one sequence transiently. Because each pool replicates the full weights, a P/D
-deployment is only offered as a larger comparison option, never as the minimum.
-This is deterministic and exhaustive, not a sampled sweep: `sweep.algorithm` is
-`enumerate`, `budget_exhausted` is false, and every enumerated shape counts as
-evaluated and feasible.
+For **AISimulate**, selection enumerates the parallel search space (the same
+backend filters, wideEP heuristic, and KV-feasibility rule as `min_gpus`) and
+reads each shape's KV token capacity. A sequence cannot span replicas, so for
+aggregated shapes the service counts whole per-replica sequences and adds the
+fewest replicas that reach `target_concurrency`
+(`ceil(target_concurrency / per_replica_sequences)`). The fewest total GPUs is
+the minimum. Disaggregated pairs come from the SDK's P/D enumeration; the
+decode pool must hold the resident sequences, while the prefill pool only needs
+to hold one sequence transiently. Because each pool replicates the full
+weights, a P/D deployment is only offered as a larger comparison option, never
+as the minimum. This is deterministic and exhaustive, not a sampled sweep:
+`sweep.algorithm` is `enumerate`, `budget_exhausted` is false, and every
+enumerated shape counts as evaluated and feasible.
 
-`configs[0]` remains the single primary recommendation. `capacity_options` is a
-ranked comparison set: rank 1 is the same minimum, followed by up to three
-same-GPU ties, up to two larger aggregated deployments, and up to two
-disaggregated representatives. When `top_n` is omitted the service returns up to
-8 options when disaggregated candidates exist and 6 otherwise; an explicit
-`top_n` overrides the count. Each option carries `option_id`, `rank`, `role`
-(`minimum`, `same_gpus`, `larger`, `disaggregated`, or `shortfall`),
-`gpus_over_minimum`, a complete `config`, and its own `capacity` block, so a
-client can promote any option without re-running the search.
+For **BLIS**, selection searches power-of-two tensor-parallel aggregate shapes
+with data and pipeline parallelism fixed at 1, runs each once at concurrency 1,
+and reads the engine's reported KV pool. It applies the same whole-sequence
+per-replica rule described above. BLIS capacity also reports
+`algorithm="enumerate"`, but its wall-clock search budget can stop the
+enumeration: then `budget_exhausted=true` and `exhaustive=false`, and the
+reported minimum is not confirmed. A shape run can also fail while budget
+remains, which likewise reports `exhaustive=false`; clients must check
+`capacity.exhaustive`, not only `budget_exhausted`, before treating the minimum
+as confirmed.
+
+The capacity evidence is always the selected simulator's own answer:
+
+- **AISimulate** derives weights plus KV cache for each enumerated shape, then
+  applies the replica math above. It also enumerates disaggregated pairs and
+  returns `capacity_options`.
+- **BLIS** runs each aggregate shape at concurrency 1 and reads the engine's
+  reported KV pool
+  (`engine.cluster.kv_capacity_tokens_per_replica`), then adds replicas of whole
+  per-replica sequences until the target is held. It never re-derives KV bytes
+  from weights.
+  BLIS capacity is aggregate-only: it returns the primary `configs[0]` and
+  `capacity`, but no `capacity_options`, and it rejects an explicit non-null
+  `fabric`. It does not simulate the target concurrency, so its capacity result
+  reports `performance_available=false` with a reason. BLIS also rejects
+  `kv_transfer_bandwidth_gb_per_second`, because it models P/D transfer through
+  the selected fabric rather than an explicit bandwidth.
+
+`configs[0]` remains the single primary recommendation. For AISimulate,
+`capacity_options` is a ranked comparison set: rank 1 is the same minimum, and
+the initial selection adds up to three same-GPU ties, up to two larger
+aggregated deployments, and up to two disaggregated representatives. Those are
+selection quotas, not response caps: if slots remain, the service fills them
+with further aggregate or disaggregated candidates ranked by the same order.
+When `top_n` is omitted the service returns up to 8 options when disaggregated
+candidates exist and 6 otherwise; an explicit `top_n` overrides the count. Each option carries
+`option_id`, `rank`, `role` (`minimum`, `same_gpus`, `larger`, `disaggregated`,
+or `shortfall`), `gpus_over_minimum`, a complete `config`, and its own
+`capacity` block, so a client can promote any option without re-running the
+search.
 
 A capacity result carries a `capacity` block:
 
 - `target_concurrency` — sequences requested.
 - `context_per_sequence_tokens` — `max_seq_len` or `isl + osl`.
-- `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`.
-- `capacity_sequences` — whole sequences that fit.
+- `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`; the
+  aggregate pool. Unused tokens in one replica cannot serve another.
+- `capacity_sequences` — whole sequences per replica multiplied by replicas.
+  Sequences cannot span replica engines, so this is not the pooled token total
+  divided by the context length.
 - `fits` — `capacity_sequences >= target_concurrency`.
-- `shortfall_sequences` / `shortfall_tokens` — missing capacity when `fits` is
-  false.
+- `shortfall_sequences` / `shortfall_tokens` — missing sequences and the KV
+  tokens for those sequences when `fits` is false.
 - `minimum_gpus` — fewest GPUs in the requested window that hold one sequence.
 - `per_rank_tokens`, `replicas`, `attention_dp` — resolved capacity inputs. For
   a disaggregated option these describe the decode pool, which holds resident
-  sequences.
+  sequences. BLIS is aggregate-only, and with attention DP 1 its per-replica
+  pool is also the per-rank figure.
 - `mode` — `agg` or `disagg`.
 - `prefill_replicas`, `decode_replicas`, `prefill_gpus`, `decode_gpus` —
   per-pool detail for a disaggregated option; null for agg.
 - `evaluated_shapes`, `feasible_shapes`, `exhaustive`.
-- `performance_available`, `performance_unavailable_reason` — whether the
+- `performance_available`, `performance_unavailable_reason` — whether an
   informational simulation produced timing data.
+- `simulator` — the simulator that produced this capacity result.
 
-Each option is simulated at the requested concurrency. Simulations share one
-wall-clock budget and run at most two at a time, with the primary simulated
-first, then disaggregated representatives, then the remaining alternatives.
-That simulation never gates `fits`: when timing data cannot cover an option, the
-option stays in the comparison set with `performance_available` false,
-`performance_unavailable_reason` explaining why, and a warning on its config. No
-performance value is invented.
+For AISimulate, each option is simulated at the requested concurrency.
+Simulations share one wall-clock budget and run at most two at a time, with the
+primary simulated first, then disaggregated representatives, then the remaining
+alternatives. That simulation never gates `fits`: when timing data cannot cover
+an option, the option stays in the comparison set with `performance_available`
+false, `performance_unavailable_reason` explaining why, and a warning on its
+config. No performance value is invented. BLIS capacity sizing does not run the
+target concurrency at all, so it always reports `performance_available=false`.
 
 When the target does not fit inside the GPU window, the response is still 200:
 the service reports the best achievable deployment inside the window plus the
@@ -334,22 +376,29 @@ the request. When no aggregated shape can be scheduled in the window at all
 (for example, an explicit `min_candidate_gpus` that no worker shape plus
 replicas can reach), the service returns 422 naming the window. It never claims
 that one GPU is always feasible and never silently substitutes another
-simulator; BLIS rejects this objective with 422.
+simulator.
 
 ### Pareto frontier provenance and availability
 
-`objective=pareto` is AISimulate-only. BLIS returns 422 and the service never
-falls back to AISimulate, because a frontier computed by another simulator would
+Both simulators report `objective=pareto` in `/backends`. AISimulate samples the
+frontier; BLIS has no native Pareto command, so the service enumerates topology
+and closed-loop concurrency combinations, runs each through BLIS, and computes
+the non-dominated set over throughput per user and throughput per GPU itself.
+The frontier is still BLIS's own measured output, and the response records
+`simulator="blis"` and `sweep.algorithm="enumerate"`. Neither simulator ever
+falls back to the other, because a frontier computed by another simulator would
 be misattributed.
 
 A sweep searches both aggregated and disaggregated deployments whenever the GPU
 window can hold more than one GPU. Both modes contribute candidates and frontier
 points when they are feasible; a workload may have no feasible disaggregated
-point, and that absence is reported rather than filled in.
+point, and that absence is reported rather than filled in. BLIS includes P/D
+topologies only when the request names a supported `fabric`; the web client
+sends the simulator's announced default fabric.
 
-When the caller omits both `min_candidate_gpus` and `max_candidate_gpus`, the
-service resolves a model-aware window before sampling. The floor is the smallest
-aggregated worker shape that holds one full-context sequence (from the
+When the caller omits both `min_candidate_gpus` and `max_candidate_gpus`,
+AISimulate resolves a model-aware window before sampling. The floor is the
+smallest aggregated worker shape that holds one full-context sequence (from the
 KV-feasibility enumeration), and the ceiling is
 `clamp(max(16, floor × 2), floor, PARETO_MAX_WINDOW_GPUS, server ceiling)`.
 Aggregated is a valid floor for both modes because a disaggregated deployment
@@ -359,29 +408,39 @@ window that was actually searched. If no shape fits inside the cap, the response
 is an explicit 422 asking for wider bounds; if the preflight estimate itself
 fails, the service logs a warning and falls back to a bounded
 `1..min(16, ceiling)` window. Sending either bound explicitly disables automatic
-resolution and preserves the historical search semantics.
+resolution and preserves the historical search semantics. BLIS uses the
+requested bounds (and its hardware ceiling) directly; it does not resolve a
+model-aware window.
 
 For a Pareto result:
 
 - `candidates` contains every evaluated candidate, including infeasible,
-  unsupported, timed-out, failed, and resource-limited records. SDK-provided raw
+  unsupported, timed-out, failed, and resource-limited records. AISimulate's raw
   fields such as `topology`, `metrics`, and `objectives` are copied verbatim;
   the service does not synthesize topology, transfer, or performance values.
-  Service-derived fields are added alongside them: `mode`, `provenance_sources`,
-  and `transfer_delay_modeled` are computed (or combined from request and
-  candidate data) by the service, not passed through from the SDK.
-- `views.pareto_front` and `views.top_n` are SDK-computed candidate-ID lists.
+  BLIS candidates carry the service-built topology and the metrics BLIS
+  measured. Service-derived fields are added alongside them: `mode`,
+  `provenance_sources`, and `transfer_delay_modeled` are computed (or combined
+  from request and candidate data) by the service, not passed through from the
+  simulator.
+- `views.pareto_front` and `views.top_n` are simulator-computed candidate-ID
+  lists; BLIS's are computed by the service from its measured runs.
   `pareto_front` is authoritative for the simulator's own objectives
   (throughput per user vs throughput per GPU). Clients may recompute dominance
   only for a different axis or orientation, and must say so in the UI.
 - `transfer_delay_modeled` is true only when a P/D transfer delay was actually
-  modeled for that candidate. Omitting `kv_transfer_bandwidth_gb_per_second`
-  means no modeled transfer delay; it does not imply a fabric default.
+  modeled for that candidate. Under AISimulate, omitting
+  `kv_transfer_bandwidth_gb_per_second` means no modeled transfer delay; it does
+  not imply a fabric default. BLIS models transfer through the named `fabric`
+  and rejects an explicit bandwidth.
 - `sweep` reports the algorithm, seed, trial budget, evaluated/feasible/timed-out
-  counts, and the GPU window. `sweep.budget_exhausted=true` means the trial
-  budget was spent; it never means the search was exhaustive. BLIS enumerates
-  its candidate grid rather than sampling it, so its `sweep.algorithm` is
-  `enumerate`.
+  counts, and the GPU window. For AISimulate, `sweep.budget_exhausted=true`
+  means the trial budget was spent. BLIS enumerates its candidate grid rather
+  than sampling it, so its `sweep.algorithm` is `enumerate`, and
+  `budget_exhausted=true` means its wall-clock search time budget stopped the
+  enumeration before every grid point ran. In neither case does exhaustion mean
+  the search was exhaustive. `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the
+  closed-loop load grid.
 
 Pareto sweeps use `PARETO_MAX_TRIALS` (default 20), `PARETO_PARALLELISM`
 (default 8), `PARETO_CANDIDATE_TIMEOUT_S` (default 8), and

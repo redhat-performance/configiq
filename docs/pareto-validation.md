@@ -1,9 +1,10 @@
-# Pareto frontier — AISimulate validation
+# Pareto frontier — AISimulate and BLIS validation
 
 Validation of the `objective=pareto` topology-design feature against the real
 aisimulate SDK (v0.13.0 wheel). The goal was not "does it run" but "are the
 numbers physically correct" — every output was checked against a known physical
-expectation.
+expectation. BLIS is validated on its own measured runs and reports
+`sweep.algorithm="enumerate"`; see [BLIS sweeps](#blis-sweeps) below.
 
 **How it was run:** the aisimulators service was run locally in an x86 container
 with the pinned aisimulate wheel; requests went through `POST /recommend` with
@@ -97,22 +98,31 @@ is what the UI and service rely on.
 
 ### Availability
 
-`objective=pareto` is AISimulate-only. A BLIS request returns 422 at the API
-boundary and the UI keeps the request simulator-neutral, surfacing that explicit
-rejection rather than substituting AISimulate. There is no cross-simulator
-frontier.
+Both simulators advertise `pareto` in `GET /backends`. AISimulate samples the
+frontier with the SDK. BLIS has no native Pareto command, so the service
+enumerates topology and closed-loop concurrency combinations, runs each through
+BLIS, and computes the non-dominated set itself. Each result reports the
+simulator that produced it; the UI surfaces an explicit unsupported/error
+response rather than substituting the other simulator. There is no
+cross-simulator frontier.
 
 ### Deployment modes
 
-Every sweep searches both aggregated and disaggregated deployments (when the
-window can hold more than one GPU). A workload may legitimately have no feasible
-disaggregated point; that absence is reported, not hidden. Both modes contribute
-candidates and frontier points when they are feasible.
+An AISimulate sweep searches both aggregated and disaggregated deployments (when
+the window can hold more than one GPU). A workload may legitimately have no
+feasible disaggregated point; that absence is reported, not hidden. Both modes
+contribute candidates and frontier points when they are feasible.
+
+A BLIS sweep searches disaggregated topologies only when the request names a
+supported `fabric`; without one it is aggregate-only, even when the window holds
+multiple GPUs. Absence of P/D points in that case is a deployment-mode
+restriction, not a measured infeasibility.
 
 ### Automatic GPU window
 
-The browser does not send `min_candidate_gpus` or `max_candidate_gpus`. When
-both are omitted, the service resolves a model-aware window before sampling:
+The browser does not send `min_candidate_gpus` or `max_candidate_gpus`. For
+AISimulate, when both are omitted, the service resolves a model-aware window
+before sampling:
 
 - **Floor** — the smallest aggregated worker shape that holds one full-context
   sequence (`min(shape.gpus_per_worker)` from the KV-feasibility enumeration).
@@ -132,7 +142,8 @@ sweep.
 API callers may still pin either bound explicitly. Sending either
 `min_candidate_gpus` or `max_candidate_gpus` disables automatic resolution and
 keeps the historical semantics; the server clamps an explicit maximum to
-`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024).
+`AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024). BLIS uses the requested bounds
+and its hardware ceiling directly; it does not resolve a model-aware window.
 
 ### Budgets and sampler
 
@@ -152,9 +163,37 @@ optimization rounds, so it is not the default. The trial budget is split across
 aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
 a per-mode count.
 
-`sweep.budget_exhausted` is true when `evaluated >= max_trials`. It means the
-trial budget was spent, never that the search enumerated every configuration.
-The UI caption is always "sampled — not exhaustive".
+For AISimulate's sampled sweep, `sweep.budget_exhausted` is true when
+`evaluated >= max_trials`: the trial budget was spent, never that the search
+enumerated every configuration. For BLIS's enumerated sweep, it reports whether
+the wall-clock search time budget stopped enumeration before every grid point
+ran, independently of `evaluated` and `max_trials`. The UI caption reads
+"sampled — not exhaustive" for a sampled sweep and "evaluated — exhaustive over
+the enumerated grid" for an enumerated sweep (BLIS), downgraded to the matching
+budget-exhaustion warning when the search stopped early.
+
+### BLIS sweeps
+
+BLIS drives closed-loop concurrency, so the service enumerates a load grid
+(`BLIS_PARETO_CONCURRENCY_LEVELS`, default `1,2,4,8,16,32,64`) for every
+topology shape that fits the GPU window. It runs each combination through BLIS
+and computes `views.pareto_front` over throughput per user and throughput per
+GPU. The response reports `sweep.algorithm="enumerate"`,
+`candidate_configurations`, and `evaluated_configurations`. The enumeration
+shares one wall-clock search budget: `sweep.budget_exhausted=true` means the
+budget stopped it early, so the reported minimum may not be the grid minimum.
+
+- BLIS includes P/D topologies only when the request names a supported `fabric`.
+  The web client sends the simulator's announced default fabric. Without one,
+  the sweep is aggregate-only.
+- `target_request_rate` and `target_concurrency` are rejected: the sweep owns
+  its load. `kv_transfer_bandwidth_gb_per_second` is also rejected, because BLIS
+  models transfer through the fabric.
+- Each candidate records `simulator="blis"` and its measured metrics. Failed and
+  timed-out runs stay in the ledger with an explicit status; no values are
+  synthesized.
+- The service is the only Pareto implementation for BLIS; the browser never
+  recomputes `views.pareto_front` for the served objective pair.
 
 ### Candidate presentation
 

@@ -67,11 +67,11 @@ export const RecommendRequestSchema = z.object({
    * Optimization objective. `pareto` returns a candidate ledger and the
    * simulator-computed frontier views; `throughput_demand` finds the fewest
    * GPUs that sustain `target_request_rate` with no latency target;
-   * `concurrency_capacity` finds the fewest GPUs whose weights plus KV cache
-   * hold `target_concurrency` sequences at the per-sequence context length;
-   * the normal `min_gpus` path sizes subject to the latency SLA. Pareto, demand
-   * and capacity are AISimulate-only; the service rejects them for BLIS rather
-   * than substituting a simulator.
+   * `concurrency_capacity` finds the fewest GPUs that hold
+   * `target_concurrency` sequences at the per-sequence context length; the
+   * normal `min_gpus` path sizes subject to the latency SLA. The selected
+   * simulator advertises which objectives it supports; an unsupported request
+   * is rejected by the service rather than answered by another simulator.
    */
   objective: z.enum(['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity']).default('min_gpus'),
   /**

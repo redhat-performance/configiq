@@ -1357,7 +1357,38 @@ describe('callPareto', () => {
     expect(result.sweep).toMatchObject({ evaluated: 1, windowMaxGpus: 32, strictSla: true })
   })
 
-  it('surfaces the API rejection for a simulator without a frontier', async () => {
+  it('keeps a single-search sweep inside the gateway timeout', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'blis', search_strategy: 'single' },
+      { timeoutSeconds: 45 },
+    )
+    const single = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(single.search_budget_seconds).toBe(40)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'aisimulate', search_strategy: 'windowed' },
+      { timeoutSeconds: 45 },
+    )
+    const windowed = JSON.parse(fetchMock.mock.calls[1][1]?.body as string)
+    expect(windowed).not.toHaveProperty('search_budget_seconds')
+  })
+
+  it('floors a fractional gateway timeout to a whole-second search budget', async () => {
+    const fetchMock = mockFetchOk(PARETO_EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await callPareto(
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'blis', search_strategy: 'single' },
+      { timeoutSeconds: 45.5 },
+    )
+    const single = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
+    expect(single.search_budget_seconds).toBe(40)
+  })
+
+  it('surfaces the API rejection without substituting a simulator', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: false,
       status: 422,

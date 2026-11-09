@@ -301,6 +301,194 @@ def test_blis_recommend_dispatches_to_blis_only():
     run_aisimulate.assert_not_called()
 
 
+def test_blis_recommend_pareto_returns_candidates_views_and_enumerated_sweep():
+    candidate = {
+        "candidate_id": "agg-tp1-c1",
+        "status": "feasible",
+        "mode": "agg",
+        "topology": {"deployment_mode": "agg", "tp": 1, "pp": 1, "dp": 1},
+        "used_gpus": 1,
+        "metrics": {
+            "ttft_ms": 50.0,
+            "tpot_ms": 10.0,
+            "request_latency_ms": 500.0,
+            "tokens_per_second": 100.0,
+            "concurrency": 1.0,
+        },
+        "objectives": {"throughput_per_user": 100.0, "throughput_per_gpu": 100.0},
+        "transfer_delay_modeled": False,
+        "provenance_sources": ["blis"],
+        "simulator": "blis",
+    }
+    outcome = SimpleNamespace(
+        configs=[{
+            "total_gpus_needed": 1,
+            "replicas_needed": 1,
+            "num_total_gpus": 1,
+            "tp": 1,
+            "pp": 1,
+            "dp": 1,
+            "ttft": 50.0,
+            "tpot": 10.0,
+            "request_latency": 500.0,
+            "tokens_per_second": 100.0,
+            "concurrency": 1,
+            "mode": "agg",
+            "simulator": "blis",
+        }],
+        search_summary={
+            "strategy": "enumerated_topology_and_concurrency_grid",
+            "candidate_configurations": 1,
+            "evaluated_configurations": 1,
+            "effective_max_gpus": 1,
+            "budget_exhausted": False,
+        },
+        candidates=[candidate],
+        views={"pareto_front": ["agg-tp1-c1"], "top_n": ["agg-tp1-c1"]},
+    )
+    body = {
+        "model_path": RECOMMEND_BODY["model_path"],
+        "system": RECOMMEND_BODY["system"],
+        "isl": RECOMMEND_BODY["isl"],
+        "osl": RECOMMEND_BODY["osl"],
+        "ttft": 1000,
+        "tpot": 30,
+        "objective": "pareto",
+        "simulator": "blis",
+    }
+    with (
+        patch("tools.api_service.app._blis_recommend", return_value=outcome) as run_blis,
+        patch("tools.api_service.app._run_aisimulate_recommendation") as run_aisimulate,
+    ):
+        response = client.post("/recommend", json=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["simulator"] == "blis"
+    assert payload["candidates"][0]["simulator"] == "blis"
+    assert payload["views"]["pareto_front"] == ["agg-tp1-c1"]
+    assert payload["sweep"]["algorithm"] == "enumerate"
+    assert payload["sweep"]["strict_sla"] is True
+    assert payload["capacity"] is None
+    run_blis.assert_called_once()
+    run_aisimulate.assert_not_called()
+
+
+def test_blis_recommend_capacity_returns_the_capacity_block():
+    outcome = SimpleNamespace(
+        configs=[{
+            "total_gpus_needed": 2,
+            "replicas_needed": 2,
+            "num_total_gpus": 1,
+            "tp": 1,
+            "pp": 1,
+            "dp": 1,
+            "concurrency": 8,
+            "mode": "agg",
+            "simulator": "blis",
+        }],
+        search_summary={"strategy": "aggregate_tp_capacity"},
+        capacity=SimpleNamespace(
+            target_concurrency=8,
+            context_per_sequence_tokens=2176,
+            capacity_tokens=20_000,
+            capacity_sequences=8,
+            fits=True,
+            shortfall_sequences=None,
+            shortfall_tokens=None,
+            minimum_gpus=1,
+            per_rank_tokens=10_000,
+            replicas=2,
+            attention_dp=1,
+            evaluated_shapes=2,
+            feasible_shapes=2,
+            exhaustive=True,
+            performance_available=False,
+            performance_unavailable_reason="BLIS capacity sizing reads the engine's KV pool.",
+            mode="agg",
+            simulator="blis",
+        ),
+    )
+    body = {
+        "model_path": RECOMMEND_BODY["model_path"],
+        "system": RECOMMEND_BODY["system"],
+        "isl": RECOMMEND_BODY["isl"],
+        "osl": RECOMMEND_BODY["osl"],
+        "target_concurrency": 8,
+        "objective": "concurrency_capacity",
+        "sla_mode": "none",
+        "simulator": "blis",
+    }
+    with (
+        patch("tools.api_service.app._blis_recommend", return_value=outcome) as run_blis,
+        patch("tools.api_service.app._run_aisimulate_recommendation") as run_aisimulate,
+    ):
+        response = client.post("/recommend", json=body)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["simulator"] == "blis"
+    assert payload["capacity"]["simulator"] == "blis"
+    assert payload["capacity"]["fits"] is True
+    assert payload["capacity"]["performance_available"] is False
+    assert payload["capacity_options"] == []
+    run_blis.assert_called_once()
+    run_aisimulate.assert_not_called()
+
+
+def test_blis_capacity_rejects_an_explicit_fabric():
+    body = {
+        "model_path": RECOMMEND_BODY["model_path"],
+        "system": RECOMMEND_BODY["system"],
+        "isl": RECOMMEND_BODY["isl"],
+        "osl": RECOMMEND_BODY["osl"],
+        "target_concurrency": 8,
+        "objective": "concurrency_capacity",
+        "sla_mode": "none",
+        "simulator": "blis",
+        "fabric": "ib-400g",
+    }
+
+    response = client.post("/recommend", json=body)
+
+    assert response.status_code == 422
+    assert "aggregate-only" in response.json()["detail"][0]["msg"]
+
+
+def test_blis_rejects_an_explicit_kv_transfer_bandwidth():
+    body = {
+        "model_path": RECOMMEND_BODY["model_path"],
+        "system": RECOMMEND_BODY["system"],
+        "isl": RECOMMEND_BODY["isl"],
+        "osl": RECOMMEND_BODY["osl"],
+        "ttft": 1000,
+        "tpot": 30,
+        "objective": "pareto",
+        "simulator": "blis",
+        "kv_transfer_bandwidth_gb_per_second": 400,
+    }
+
+    response = client.post("/recommend", json=body)
+
+    assert response.status_code == 422
+    assert "kv_transfer_bandwidth_gb_per_second" in response.json()["detail"][0]["msg"]
+
+
+def test_blis_recommend_unsupported_request_does_not_fall_back():
+    with (
+        patch(
+            "tools.api_service.app._blis_recommend",
+            side_effect=app_module.BlisUnsupportedRequest("BLIS cannot sweep this workload"),
+        ),
+        patch("tools.api_service.app._run_aisimulate_recommendation") as run_aisimulate,
+    ):
+        response = client.post("/recommend", json={**RECOMMEND_BODY, "simulator": "blis"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "BLIS cannot sweep this workload"
+    run_aisimulate.assert_not_called()
+
+
 def test_blis_recommend_uses_the_configured_candidate_limit():
     outcome = SimpleNamespace(configs=[], search_summary={})
     with (
@@ -379,6 +567,9 @@ def test_backends_endpoint_reports_simulator_version_and_search_shape():
     assert body["simulator"] == "blis"
     assert body["simulator_version"] == "0.15.0"
     assert body["recommend_search"] == "single"
+    assert set(body["objectives"]) == {
+        "min_gpus", "throughput_demand", "pareto", "concurrency_capacity",
+    }
     backend = body["backends"][0]
     assert backend["id"] == "vllm"
     assert backend["versions"] == ["0.29.0", "0.31.0", "0.32.0"]

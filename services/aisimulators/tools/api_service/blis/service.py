@@ -7,7 +7,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -18,7 +18,13 @@ from .manifest import (
     ModelResolution,
     load_catalog,
 )
-from .runner import BlisExecutionError, RunRequest, normalize_result, run_blis
+from .runner import (
+    BlisExecutionError,
+    BlisTimeoutError,
+    RunRequest,
+    normalize_result,
+    run_blis,
+)
 from .runtime import BlisRuntime, blis_release, resolve_runtime
 from .scenario import (
     ScenarioPoolRequest,
@@ -125,6 +131,12 @@ class RecommendInput:
     search_budget_seconds: int
     # Open-loop demand sizing: replay `request_rate`, ignore latency targets.
     demand: bool = False
+    # Memory-residency sizing: hold `concurrency` full-context sequences.
+    capacity: bool = False
+    # Enumerate topology/load combinations and return the efficiency frontier.
+    pareto: bool = False
+    # Whether latency bounds gate feasibility (pareto only).
+    strict_sla: bool = False
     max_seq_len: int | None = None
     prefill_max_seq_len: int | None = None
     decode_max_seq_len: int | None = None
@@ -158,11 +170,48 @@ class BlisDemandOutcome:
 
 
 @dataclass(frozen=True)
+class BlisCapacityOutcome:
+    """Memory-residency outcome reported by the BLIS capacity search.
+
+    Capacity is read from the KV pool BLIS reports for the run
+    (``engine.cluster.kv_capacity_tokens_per_replica``). Because sequences
+    cannot span replicas, the search counts whole sequences per replica and
+    adds replicas until the target is held. No KV bytes are re-derived from
+    weights or a memory fraction, and no performance value is invented: the
+    search does not simulate the target concurrency.
+    """
+
+    target_concurrency: int
+    context_per_sequence_tokens: int
+    capacity_tokens: int
+    capacity_sequences: int
+    fits: bool
+    shortfall_sequences: int | None
+    shortfall_tokens: int | None
+    minimum_gpus: int | None
+    per_rank_tokens: int
+    replicas: int
+    attention_dp: int
+    evaluated_shapes: int
+    feasible_shapes: int
+    exhaustive: bool = True
+    performance_available: bool = False
+    performance_unavailable_reason: str | None = None
+    mode: str = "agg"
+    simulator: str = "blis"
+
+
+@dataclass(frozen=True)
 class BlisRecommendation:
     configs: list[dict[str, Any]]
     search_summary: dict[str, Any]
     provenance: dict[str, str | None]
     demand: BlisDemandOutcome | None = None
+    capacity: BlisCapacityOutcome | None = None
+    #: Pareto ledger entries shaped like the API's CandidateResponse.
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    #: Candidate-ID lists for the simulator-computed Pareto views.
+    views: dict[str, list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -714,7 +763,790 @@ def _search_summary(
     }
 
 
+def _run_timeout_seconds() -> float:
+    return float(os.environ.get("BLIS_RUN_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS))
+
+
+def _recommend_candidates(
+    resolved: _ResolvedRequest,
+    *,
+    include_disagg: bool,
+    lower: int,
+    upper: int,
+) -> list[_RecommendCandidate]:
+    """The bounded aggregate-TP and (optionally) P/D search grid."""
+    candidates = [
+        _RecommendCandidate(mode="agg", total_gpus=tp, tp=tp)
+        for tp in _power_of_two_values(min(resolved.gpus_per_node, upper))
+        if lower <= tp <= upper
+    ]
+    if include_disagg:
+        pool_shapes = _pd_pool_shapes(resolved.gpus_per_node)
+        candidates.extend(
+            _RecommendCandidate(
+                mode="disagg",
+                total_gpus=prefill_tp * prefill_workers + decode_tp * decode_workers,
+                prefill_tp=prefill_tp,
+                prefill_workers=prefill_workers,
+                decode_tp=decode_tp,
+                decode_workers=decode_workers,
+            )
+            for prefill_tp, prefill_workers in pool_shapes
+            for decode_tp, decode_workers in pool_shapes
+            if lower <= prefill_tp * prefill_workers + decode_tp * decode_workers <= upper
+        )
+    candidates.sort(key=lambda item: (
+        item.total_gpus,
+        0 if item.mode == "agg" else 1,
+        abs(
+            (item.prefill_tp or 0) * item.prefill_workers
+            - (item.decode_tp or 0) * item.decode_workers
+        ),
+        item.prefill_tp or item.tp or 0,
+        item.decode_tp or 0,
+    ))
+    return candidates
+
+
+def _candidate_scenario(
+    resolved: _ResolvedRequest,
+    request: RecommendInput,
+    candidate: _RecommendCandidate,
+    *,
+    concurrency: int,
+    fabric: str | None,
+) -> tuple[ScenarioRequest, int, int]:
+    """Build one candidate's scenario and its per-pool instance counts."""
+    if candidate.mode == "agg":
+        scenario = _scenario_request(
+            resolved,
+            system=request.system,
+            isl=request.isl,
+            osl=request.osl,
+            concurrency=concurrency,
+            tp=candidate.tp or 1,
+            pp=1,
+            dp=1,
+            moe_tp_size=None,
+            moe_ep_size=None,
+            max_seq_len=request.max_seq_len,
+            max_num_seqs=concurrency,
+            gpu_memory_utilization=None,
+            prefix_caching=True if request.prefix > 0 else None,
+        )
+        return scenario, 0, 0
+    assert fabric is not None
+    scenario = _recommend_disagg_scenario(
+        resolved,
+        request,
+        concurrency=concurrency,
+        prefill_tp=candidate.prefill_tp or 1,
+        prefill_workers=candidate.prefill_workers,
+        decode_tp=candidate.decode_tp or 1,
+        decode_workers=candidate.decode_workers,
+        fabric=fabric,
+    )
+    return scenario, candidate.prefill_workers, candidate.decode_workers
+
+
+def _window_bounds(
+    request: RecommendInput,
+    resolved: _ResolvedRequest,
+    *,
+    include_disagg: bool,
+    capacity: bool = False,
+) -> tuple[int, int, int]:
+    """Resolve the ``(lower, upper, hardware_max)`` GPU window."""
+    hardware_max = resolved.gpus_per_node * (2 if include_disagg else 1)
+    if capacity:
+        # Capacity answers in replicas, so its window totals GPUs across
+        # replicas instead of being capped at one node. Only one BLIS run per
+        # shape is needed: that run reports the per-replica KV pool, and the
+        # replica count is computed. The configured ceiling bounds the answer.
+        upper = request.max_candidate_gpus or hardware_max
+    else:
+        upper = min(request.max_candidate_gpus or hardware_max, hardware_max)
+    lower = request.min_candidate_gpus or 1
+    if lower > upper:
+        topology_limit = (
+            "capacity replicas may span multiple nodes"
+            if capacity
+            else f"one node per pool ({resolved.gpus_per_node} GPUs each)"
+            if include_disagg
+            else f"single-node hardware limit {resolved.gpus_per_node} GPUs"
+        )
+        raise BlisUnsupportedRequest(
+            f"Requested minimum GPU count {lower} exceeds the effective BLIS search ceiling {upper} "
+            f"(configured limit {request.max_candidate_gpus}, {topology_limit})"
+        )
+    return lower, upper, hardware_max
+
+
+def _capacity_config(
+    request: RecommendInput,
+    resolved: _ResolvedRequest,
+    *,
+    tp: int,
+    replicas: int,
+    target_concurrency: int,
+) -> dict[str, Any]:
+    total_gpus = tp * replicas
+    return {
+        "total_gpus_needed": total_gpus,
+        "replicas_needed": replicas,
+        # One replica's GPUs is the scalable unit; total_gpus_needed is the
+        # cluster total, so consumers never multiply the deployment twice.
+        "num_total_gpus": tp,
+        "tp": tp,
+        "pp": 1,
+        "dp": 1,
+        "bs": target_concurrency,
+        "concurrency": target_concurrency,
+        "model": request.model_path,
+        "system": request.system,
+        "backend": request.backend,
+        "backend_version": resolved.engine_version,
+        "mode": "agg",
+        "simulator": "blis",
+        "provenance": _provenance(resolved, request.model_path, request.system),
+        "warnings": _model_warnings(
+            resolved, model_config_provided=request.model_config_provided
+        ) + [
+            "BLIS capacity sizing reads the engine's KV pool and does not simulate the target concurrency."
+        ],
+    }
+
+
+def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
+    """Size the fewest aggregate GPUs whose BLIS KV pool holds the target.
+
+    BLIS reports the engine's KV pool in tokens. Capacity is that pool times
+    the replicas needed for the requested sequences, never a KV byte estimate
+    reconstructed from weights. The search is aggregate-only: a disaggregated
+    pool holds resident sequences on its decode side, which BLIS does not
+    expose as a capacity input, so the service refuses rather than inventing
+    one.
+    """
+    if request.request_rate is not None:
+        raise BlisUnsupportedRequest(
+            "BLIS concurrency-capacity sizing does not accept target_request_rate"
+        )
+    if request.concurrency is None or request.concurrency < 1:
+        raise BlisUnsupportedRequest(
+            "BLIS concurrency-capacity sizing requires a positive target_concurrency"
+        )
+    if request.request_latency is not None or request.ttft is not None or request.tpot is not None:
+        raise BlisUnsupportedRequest(
+            "BLIS concurrency-capacity sizing does not apply latency targets; "
+            "omit ttft, tpot, and request_latency"
+        )
+    if request.database_mode != "HYBRID":
+        raise BlisUnsupportedRequest("BLIS does not accept the AISimulate database_mode option")
+    resolved = _resolve_request(
+        request.model_path, request.system, request.backend, request.backend_version
+    )
+    context_tokens = int(request.max_seq_len or (request.isl + request.osl))
+    if context_tokens < 1:
+        raise BlisUnsupportedRequest(
+            "BLIS concurrency-capacity sizing requires a positive per-sequence context length"
+        )
+    target = int(request.concurrency)
+    lower, upper, hardware_max = _window_bounds(
+        request, resolved, include_disagg=False, capacity=True
+    )
+    # A shape narrower than the window floor can still reach it with replicas,
+    # so enumerate every aggregate shape and resolve replicas per shape. The
+    # floor is applied by the replica math below, not by dropping the shape.
+    candidates = _recommend_candidates(
+        resolved, include_disagg=False, lower=1, upper=upper
+    )
+    if not candidates:
+        raise BlisUnsupportedRequest(
+            f"No aggregate BLIS shape fits the requested {lower}-{upper} GPU window"
+        )
+
+    total_budget_seconds = min(max(request.search_budget_seconds, 1), int(_MAX_RECOMMEND_BUDGET_SECONDS))
+    started = time.monotonic()
+    evaluated: list[_RecommendCandidate] = []
+    measured: list[tuple[_RecommendCandidate, int]] = []
+    execution_failures: list[BlisExecutionError] = []
+    timed_out = False
+
+    for candidate in candidates:
+        remaining = total_budget_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            timed_out = True
+            break
+        scenario, prefill_instances, decode_instances = _candidate_scenario(
+            resolved,
+            request,
+            candidate,
+            # The KV pool is a property of the deployment shape, not of the
+            # offered load. One request is enough to have BLIS construct and
+            # report the engine's pool.
+            concurrency=1,
+            fabric=None,
+        )
+        try:
+            metrics = normalize_result(_run_scenario(
+                resolved,
+                scenario,
+                prefix=request.prefix,
+                timeout_seconds=min(_run_timeout_seconds(), remaining),
+                prefill_instances=prefill_instances,
+                decode_instances=decode_instances,
+            ))
+        except BlisExecutionError as exc:
+            evaluated.append(candidate)
+            execution_failures.append(exc)
+            continue
+        evaluated.append(candidate)
+        capacity_tokens = metrics.get("kv_capacity_tokens_per_replica")
+        if not isinstance(capacity_tokens, (int, float)) or capacity_tokens <= 0:
+            execution_failures.append(BlisExecutionError(
+                "BLIS did not report engine.cluster.kv_capacity_tokens_per_replica"
+            ))
+            continue
+        measured.append((candidate, int(capacity_tokens)))
+
+    if not measured:
+        if execution_failures and len(execution_failures) >= len(evaluated):
+            raise execution_failures[-1]
+        raise BlisUnsupportedRequest(
+            "BLIS reported no KV pool within the capacity search budget"
+            if timed_out
+            else "BLIS did not report a KV pool for any aggregate shape in the requested window"
+        )
+
+    # Resolve each shape's replicas inside the GPU window exactly like the
+    # AISimulate capacity search: the smallest deployment that holds the target,
+    # and the largest deployment of each shape as the best-effort fallback.
+    fitting: list[dict[str, Any]] = []
+    best_effort: list[dict[str, Any]] = []
+    minimum_gpus: int | None = None
+    feasible_shapes = 0
+    for candidate, capacity_tokens in measured:
+        tp = candidate.total_gpus
+        if tp <= 0 or tp > upper:
+            continue
+        min_replicas = max(1, math.ceil(lower / tp))
+        if tp * min_replicas > upper:
+            continue
+        max_replicas = upper // tp
+        # A replica is a separate engine: a sequence cannot use KV space from
+        # another replica. Count whole sequences per replica, then scale by the
+        # replicas the target needs. A shape that cannot hold one sequence (or
+        # whose smallest window deployment cannot) is not a capacity candidate.
+        per_replica_sequences = capacity_tokens // context_tokens
+        if per_replica_sequences < 1:
+            continue
+        feasible_shapes += 1
+        single_gpus = tp * min_replicas
+        if minimum_gpus is None or single_gpus < minimum_gpus:
+            minimum_gpus = single_gpus
+        needed_replicas = max(1, math.ceil(target / per_replica_sequences))
+        first_fitting = max(min_replicas, needed_replicas)
+        row = {
+            "tp": tp,
+            "replicas": 0,
+            "capacity_tokens": 0,
+            "capacity_sequences": 0,
+        }
+        if first_fitting <= max_replicas:
+            fitting.append({
+                **row,
+                "replicas": first_fitting,
+                "capacity_tokens": capacity_tokens * first_fitting,
+                "capacity_sequences": per_replica_sequences * first_fitting,
+            })
+        if max_replicas >= min_replicas:
+            best_effort.append({
+                **row,
+                "replicas": max_replicas,
+                "capacity_tokens": capacity_tokens * max_replicas,
+                "capacity_sequences": per_replica_sequences * max_replicas,
+            })
+
+    if minimum_gpus is None:
+        raise BlisUnsupportedRequest(
+            f"BLIS found no aggregate configuration that holds one {context_tokens}-token "
+            f"sequence within {lower}-{upper} GPUs"
+        )
+
+    if fitting:
+        winner = min(
+            fitting,
+            key=lambda row: (
+                row["tp"] * row["replicas"],
+                -row["capacity_sequences"],
+                row["tp"],
+                row["replicas"],
+            ),
+        )
+    else:
+        winner = max(
+            best_effort,
+            key=lambda row: (
+                row["capacity_sequences"],
+                -row["tp"] * row["replicas"],
+                row["tp"],
+            ),
+        )
+
+    fits = winner["capacity_sequences"] >= target
+    capacity = BlisCapacityOutcome(
+        target_concurrency=target,
+        context_per_sequence_tokens=context_tokens,
+        capacity_tokens=winner["capacity_tokens"],
+        capacity_sequences=winner["capacity_sequences"],
+        fits=fits,
+        shortfall_sequences=None if fits else max(0, target - winner["capacity_sequences"]),
+        # Tokens belonging to the sequences that do not fit. The aggregate pool
+        # can be larger than `target * context_tokens` while still not holding
+        # whole sequences, because unused KV in one replica cannot serve a
+        # sequence on another.
+        shortfall_tokens=None if fits else max(0, target - winner["capacity_sequences"]) * context_tokens,
+        minimum_gpus=minimum_gpus,
+        # With attention DP=1 the aggregate pool BLIS reports is the replica's
+        # whole KV capacity, so the per-rank figure equals the per-replica one.
+        per_rank_tokens=winner["capacity_tokens"] // winner["replicas"],
+        replicas=winner["replicas"],
+        attention_dp=1,
+        evaluated_shapes=len(evaluated),
+        feasible_shapes=feasible_shapes,
+        # The enumeration only counts as exhaustive when every shape ran and
+        # reported a pool; a timeout or failed run leaves the minimum unknown.
+        exhaustive=not timed_out and not execution_failures,
+        performance_available=False,
+        performance_unavailable_reason=(
+            "BLIS capacity sizing reads the engine's KV pool; it does not simulate "
+            "the target concurrency."
+        ),
+        mode="agg",
+        simulator="blis",
+    )
+    summary = _search_summary(
+        request,
+        candidates,
+        evaluated,
+        False,
+        hardware_max,
+        upper,
+        total_budget_seconds,
+        timed_out,
+    )
+    summary["strategy"] = "aggregate_tp_capacity"
+    # Capacity bounds total GPUs across replicas; `hardware_max_gpus` is the
+    # node width one replica can use.
+    return BlisRecommendation(
+        configs=[_capacity_config(
+            request,
+            resolved,
+            tp=winner["tp"],
+            replicas=winner["replicas"],
+            target_concurrency=target,
+        )],
+        search_summary=summary,
+        provenance=_provenance(resolved, request.model_path, request.system),
+        capacity=capacity,
+    )
+
+
+#: Load levels a BLIS Pareto sweep evaluates for every topology. BLIS drives
+#: closed-loop concurrency, so these are the sweep's load points; the service
+#: enumerates the grid rather than sampling it.
+_PARETO_CONCURRENCY_LEVELS = (1, 2, 4, 8, 16, 32, 64)
+
+
+def _pareto_concurrency_levels() -> list[int]:
+    raw = os.environ.get("BLIS_PARETO_CONCURRENCY_LEVELS")
+    if raw:
+        values = sorted({
+            int(part)
+            for part in raw.split(",")
+            if part.strip().isdigit() and int(part) > 0
+        })
+        if values:
+            return values[:12]
+    return list(_PARETO_CONCURRENCY_LEVELS)
+
+
+def _pareto_candidate_id(candidate: _RecommendCandidate, concurrency: int) -> str:
+    if candidate.mode == "agg":
+        return f"agg-tp{candidate.tp or 1}-c{concurrency}"
+    return (
+        f"pd-p{candidate.prefill_tp or 1}x{candidate.prefill_workers}"
+        f"-d{candidate.decode_tp or 1}x{candidate.decode_workers}-c{concurrency}"
+    )
+
+
+def _pareto_topology(candidate: _RecommendCandidate, fabric: str | None) -> dict[str, Any]:
+    if candidate.mode == "agg":
+        return {
+            "deployment_mode": "agg",
+            "tp": candidate.tp or 1,
+            "pp": 1,
+            "attention_dp": 1,
+            "replicas": 1,
+        }
+    return {
+        "deployment_mode": "disagg",
+        "prefill_tp": candidate.prefill_tp or 1,
+        "prefill_pp": 1,
+        "prefill_attention_dp": 1,
+        "prefill_replicas": candidate.prefill_workers,
+        "decode_tp": candidate.decode_tp or 1,
+        "decode_pp": 1,
+        "decode_attention_dp": 1,
+        "decode_replicas": candidate.decode_workers,
+        "fabric": fabric,
+    }
+
+
+def _pareto_metrics(metrics: dict[str, Any], concurrency: int) -> dict[str, float | None]:
+    def number(name: str) -> float | None:
+        value = metrics.get(name)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    return {
+        "ttft_ms": number("ttft_mean_ms"),
+        "tpot_ms": number("itl_mean_ms"),
+        "request_latency_ms": number("e2e_mean_ms"),
+        "tokens_per_second": number("tokens_per_sec"),
+        "concurrency": float(concurrency),
+    }
+
+
+def _pareto_config(
+    request: RecommendInput,
+    resolved: _ResolvedRequest,
+    candidate: _RecommendCandidate,
+    *,
+    concurrency: int,
+    metrics: dict[str, float | None],
+) -> dict[str, Any]:
+    ttft = metrics.get("ttft_ms")
+    tpot = metrics.get("tpot_ms")
+    e2e = metrics.get("request_latency_ms")
+    tokens_per_second = metrics.get("tokens_per_second")
+    total_gpus = candidate.total_gpus
+    config: dict[str, Any] = {
+        "total_gpus_needed": total_gpus,
+        "replicas_needed": 1,
+        "num_total_gpus": total_gpus,
+        "bs": concurrency,
+        "ttft": ttft,
+        "tpot": tpot,
+        "request_latency": e2e,
+        "tokens_per_second": tokens_per_second,
+        "tokens_per_second_per_gpu": (
+            tokens_per_second / total_gpus
+            if isinstance(tokens_per_second, (int, float)) and total_gpus > 0
+            else None
+        ),
+        "tokens_per_second_per_user": (
+            tokens_per_second / concurrency
+            if isinstance(tokens_per_second, (int, float)) and concurrency > 0
+            else None
+        ),
+        "concurrency": concurrency,
+        "model": request.model_path,
+        "system": request.system,
+        "backend": request.backend,
+        "backend_version": resolved.engine_version,
+        "mode": candidate.mode,
+        "simulator": "blis",
+        "provenance": _provenance(resolved, request.model_path, request.system),
+        "warnings": _model_warnings(
+            resolved, model_config_provided=request.model_config_provided
+        ),
+    }
+    if candidate.mode == "agg":
+        config.update({"tp": candidate.tp, "pp": 1, "dp": 1})
+    else:
+        config.update({
+            "prefill_config": {
+                "tp": candidate.prefill_tp,
+                "pp": 1,
+                "dp": 1,
+                "num_workers": candidate.prefill_workers,
+                "batch_size": concurrency,
+                "backend_version": resolved.engine_version,
+            },
+            "decode_config": {
+                "tp": candidate.decode_tp,
+                "pp": 1,
+                "dp": 1,
+                "num_workers": candidate.decode_workers,
+                "batch_size": concurrency,
+                "backend_version": resolved.engine_version,
+            },
+        })
+    return config
+
+
+def _pareto_frontier(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Non-dominated rows for (throughput per user, throughput per GPU)."""
+    frontier: list[dict[str, Any]] = []
+    for row in rows:
+        objectives = row["candidate"].get("objectives") or {}
+        user = objectives.get("throughput_per_user")
+        gpu = objectives.get("throughput_per_gpu")
+        if not isinstance(user, (int, float)) or not isinstance(gpu, (int, float)):
+            continue
+        dominated = False
+        for other in rows:
+            if other is row:
+                continue
+            other_objectives = other["candidate"].get("objectives") or {}
+            other_user = other_objectives.get("throughput_per_user")
+            other_gpu = other_objectives.get("throughput_per_gpu")
+            if not isinstance(other_user, (int, float)) or not isinstance(other_gpu, (int, float)):
+                continue
+            if (
+                other_user >= user
+                and other_gpu >= gpu
+                and (other_user > user or other_gpu > gpu)
+            ):
+                dominated = True
+                break
+        if not dominated:
+            frontier.append(row)
+    return frontier
+
+
+def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
+    """Enumerate topology/load candidates and return BLIS's efficiency frontier.
+
+    BLIS has no Pareto command, so the service runs the bounded candidate grid
+    itself and computes the non-dominated set over throughput per user and
+    throughput per GPU. The frontier is therefore the simulator's own measured
+    output, not a client-side re-derivation.
+    """
+    if request.request_rate is not None:
+        raise BlisUnsupportedRequest(
+            "BLIS Pareto sweeps drive their own closed-loop load; "
+            "target_request_rate is not accepted"
+        )
+    if request.concurrency is not None:
+        raise BlisUnsupportedRequest(
+            "BLIS Pareto sweeps drive their own load; target_concurrency is not accepted"
+        )
+    if request.database_mode != "HYBRID":
+        raise BlisUnsupportedRequest("BLIS does not accept the AISimulate database_mode option")
+    resolved = _resolve_request(
+        request.model_path, request.system, request.backend, request.backend_version
+    )
+    include_disagg = bool(request.fabric)
+    if include_disagg:
+        _require_disaggregation(resolved)
+    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
+    lower, upper, hardware_max = _window_bounds(
+        request, resolved, include_disagg=include_disagg and fabric is not None
+    )
+    candidates = _recommend_candidates(
+        resolved,
+        include_disagg=include_disagg and fabric is not None,
+        lower=lower,
+        upper=upper,
+    )
+    levels = _pareto_concurrency_levels()
+    if not candidates:
+        raise BlisUnsupportedRequest(
+            f"No BLIS topology fits the requested {lower}-{upper} GPU window"
+        )
+
+    total_budget_seconds = min(max(request.search_budget_seconds, 1), int(_MAX_RECOMMEND_BUDGET_SECONDS))
+    started = time.monotonic()
+    ledger: list[dict[str, Any]] = []
+    evaluated: list[_RecommendCandidate] = []
+    timed_out = False
+    stop = False
+
+    for concurrency in levels:
+        for candidate in candidates:
+            remaining = total_budget_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                timed_out = True
+                stop = True
+                break
+            scenario, prefill_instances, decode_instances = _candidate_scenario(
+                resolved,
+                request,
+                candidate,
+                concurrency=concurrency,
+                fabric=fabric,
+            )
+            evaluated.append(candidate)
+            candidate_id = _pareto_candidate_id(candidate, concurrency)
+            topology = _pareto_topology(candidate, fabric)
+            try:
+                raw = normalize_result(_run_scenario(
+                    resolved,
+                    scenario,
+                    prefix=request.prefix,
+                    timeout_seconds=min(_run_timeout_seconds(), remaining),
+                    prefill_instances=prefill_instances,
+                    decode_instances=decode_instances,
+                    num_requests=concurrency,
+                ))
+            except BlisTimeoutError:
+                ledger.append({
+                    "candidate": {
+                        "candidate_id": candidate_id,
+                        "status": "timed_out",
+                        "reason_category": "timeout",
+                        "mode": candidate.mode,
+                        "topology": topology,
+                        "used_gpus": candidate.total_gpus,
+                        "metrics": {},
+                        "objectives": None,
+                        "transfer_delay_modeled": candidate.mode == "disagg",
+                        "provenance_sources": ["blis"],
+                        "simulator": "blis",
+                    },
+                    "config": None,
+                })
+                continue
+            except BlisExecutionError:
+                ledger.append({
+                    "candidate": {
+                        "candidate_id": candidate_id,
+                        "status": "failed",
+                        "reason_category": "execution_error",
+                        "mode": candidate.mode,
+                        "topology": topology,
+                        "used_gpus": candidate.total_gpus,
+                        "metrics": {},
+                        "objectives": None,
+                        "transfer_delay_modeled": candidate.mode == "disagg",
+                        "provenance_sources": ["blis"],
+                        "simulator": "blis",
+                    },
+                    "config": None,
+                })
+                continue
+
+            metrics = _pareto_metrics(raw, concurrency)
+            ttft = metrics["ttft_ms"]
+            tpot = metrics["tpot_ms"]
+            e2e = metrics["request_latency_ms"]
+            tokens_per_second = metrics["tokens_per_second"]
+            completed = raw.get("completed_requests")
+            dropped = raw.get("dropped_unservable", 0)
+            dropped = dropped if isinstance(dropped, (int, float)) else 0
+            status = "feasible"
+            reason: str | None = None
+            if not isinstance(completed, (int, float)) or completed <= 0:
+                status, reason = "infeasible", "no_completed_requests"
+            elif dropped > 0:
+                status, reason = "infeasible", "dropped_unservable"
+            elif not isinstance(tokens_per_second, (int, float)) or tokens_per_second <= 0:
+                status, reason = "infeasible", "no_throughput"
+            elif request.strict_sla:
+                if request.request_latency is not None:
+                    if not isinstance(e2e, (int, float)) or e2e > request.request_latency:
+                        status, reason = "infeasible", "latency_sla"
+                elif (
+                    request.ttft is None
+                    or request.tpot is None
+                    or not isinstance(ttft, (int, float))
+                    or not isinstance(tpot, (int, float))
+                    or ttft > request.ttft
+                    or tpot > request.tpot
+                ):
+                    status, reason = "infeasible", "latency_sla"
+
+            objectives: dict[str, float] | None = None
+            if status == "feasible" and isinstance(tokens_per_second, (int, float)):
+                objectives = {
+                    "throughput_per_user": tokens_per_second / concurrency,
+                    "throughput_per_gpu": tokens_per_second / candidate.total_gpus,
+                }
+            ledger.append({
+                "candidate": {
+                    "candidate_id": candidate_id,
+                    "status": status,
+                    "reason_category": reason,
+                    "mode": candidate.mode,
+                    "topology": topology,
+                    "used_gpus": candidate.total_gpus,
+                    "metrics": metrics,
+                    "objectives": objectives,
+                    "transfer_delay_modeled": candidate.mode == "disagg",
+                    "provenance_sources": ["blis"],
+                    "simulator": "blis",
+                },
+                "config": (
+                    _pareto_config(
+                        request,
+                        resolved,
+                        candidate,
+                        concurrency=concurrency,
+                        metrics=metrics,
+                    )
+                    if objectives is not None
+                    else None
+                ),
+            })
+        if stop:
+            break
+
+    if not ledger:
+        raise BlisUnsupportedRequest(
+            "BLIS did not evaluate any Pareto candidate within the search budget"
+        )
+
+    feasible_rows = [
+        row
+        for row in ledger
+        if row["candidate"]["status"] == "feasible" and row["candidate"]["objectives"] is not None
+    ]
+    frontier_rows = _pareto_frontier(feasible_rows)
+    frontier_rows.sort(key=lambda row: (
+        -(row["candidate"]["objectives"] or {}).get("throughput_per_user", 0.0),
+        -(row["candidate"]["objectives"] or {}).get("throughput_per_gpu", 0.0),
+    ))
+    top_rows = sorted(
+        feasible_rows,
+        key=lambda row: (
+            -(row["candidate"]["objectives"] or {}).get("throughput_per_gpu", 0.0),
+            -(row["candidate"]["objectives"] or {}).get("throughput_per_user", 0.0),
+        ),
+    )[:request.top_n]
+    summary = _search_summary(
+        request,
+        candidates,
+        evaluated,
+        include_disagg and fabric is not None,
+        hardware_max,
+        upper,
+        total_budget_seconds,
+        timed_out,
+    )
+    summary["strategy"] = "enumerated_topology_and_concurrency_grid"
+    summary["candidate_configurations"] = len(candidates) * len(levels)
+    summary["max_candidates"] = summary["candidate_configurations"]
+    summary["evaluated_configurations"] = len(ledger)
+    return BlisRecommendation(
+        configs=[row["config"] for row in top_rows if row["config"] is not None],
+        search_summary=summary,
+        provenance=_provenance(resolved, request.model_path, request.system),
+        candidates=[row["candidate"] for row in ledger],
+        views={
+            "pareto_front": [
+                row["candidate"]["candidate_id"] for row in frontier_rows
+            ],
+            "top_n": [row["candidate"]["candidate_id"] for row in top_rows],
+        },
+    )
+
+
 def recommend(request: RecommendInput) -> BlisRecommendation:
+    if request.capacity:
+        return _recommend_capacity(request)
+    if request.pareto:
+        return _recommend_pareto(request)
     demand = request.demand
     if request.request_rate is not None and not demand:
         raise BlisUnsupportedRequest(
@@ -743,19 +1575,9 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     if include_disagg:
         _require_disaggregation(resolved)
     fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
-    hardware_max = resolved.gpus_per_node * (2 if include_disagg else 1)
-    upper = min(request.max_candidate_gpus or hardware_max, hardware_max)
-    lower = request.min_candidate_gpus or 1
-    if lower > upper:
-        topology_limit = (
-            f"one node per pool ({resolved.gpus_per_node} GPUs each)"
-            if include_disagg
-            else f"single-node hardware limit {resolved.gpus_per_node} GPUs"
-        )
-        raise BlisUnsupportedRequest(
-            f"Requested minimum GPU count {lower} exceeds the effective BLIS search ceiling {upper} "
-            f"(configured limit {request.max_candidate_gpus}, {topology_limit})"
-        )
+    lower, upper, hardware_max = _window_bounds(
+        request, resolved, include_disagg=include_disagg
+    )
 
     demand_requests = 0
     concurrency: int | None = None
@@ -769,36 +1591,12 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         concurrency = request.concurrency or 1
     assert concurrency is not None
 
-    candidates = [
-        _RecommendCandidate(mode="agg", total_gpus=tp, tp=tp)
-        for tp in _power_of_two_values(min(resolved.gpus_per_node, upper))
-        if lower <= tp <= upper
-    ]
-    if include_disagg and fabric is not None:
-        pool_shapes = _pd_pool_shapes(resolved.gpus_per_node)
-        candidates.extend(
-            _RecommendCandidate(
-                mode="disagg",
-                total_gpus=prefill_tp * prefill_workers + decode_tp * decode_workers,
-                prefill_tp=prefill_tp,
-                prefill_workers=prefill_workers,
-                decode_tp=decode_tp,
-                decode_workers=decode_workers,
-            )
-            for prefill_tp, prefill_workers in pool_shapes
-            for decode_tp, decode_workers in pool_shapes
-            if lower <= prefill_tp * prefill_workers + decode_tp * decode_workers <= upper
-        )
-    candidates.sort(key=lambda item: (
-        item.total_gpus,
-        0 if item.mode == "agg" else 1,
-        abs(
-            (item.prefill_tp or 0) * item.prefill_workers
-            - (item.decode_tp or 0) * item.decode_workers
-        ),
-        item.prefill_tp or item.tp or 0,
-        item.decode_tp or 0,
-    ))
+    candidates = _recommend_candidates(
+        resolved,
+        include_disagg=include_disagg and fabric is not None,
+        lower=lower,
+        upper=upper,
+    )
 
     total_budget_seconds = min(max(request.search_budget_seconds, 1), int(_MAX_RECOMMEND_BUDGET_SECONDS))
     started = time.monotonic()
@@ -813,42 +1611,14 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         if remaining <= 0:
             timed_out = True
             break
-        timeout = min(
-            float(os.environ.get("BLIS_RUN_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS)),
-            remaining,
+        timeout = min(_run_timeout_seconds(), remaining)
+        scenario, prefill_instances, decode_instances = _candidate_scenario(
+            resolved,
+            request,
+            candidate,
+            concurrency=concurrency,
+            fabric=fabric,
         )
-        if candidate.mode == "agg":
-            scenario = _scenario_request(
-                resolved,
-                system=request.system,
-                isl=request.isl,
-                osl=request.osl,
-                concurrency=concurrency,
-                tp=candidate.tp or 1,
-                pp=1,
-                dp=1,
-                moe_tp_size=None,
-                moe_ep_size=None,
-                max_seq_len=request.max_seq_len,
-                max_num_seqs=concurrency,
-                gpu_memory_utilization=None,
-                prefix_caching=True if request.prefix > 0 else None,
-            )
-            prefill_instances = decode_instances = 0
-        else:
-            assert fabric is not None
-            scenario = _recommend_disagg_scenario(
-                resolved,
-                request,
-                concurrency=concurrency,
-                prefill_tp=candidate.prefill_tp or 1,
-                prefill_workers=candidate.prefill_workers,
-                decode_tp=candidate.decode_tp or 1,
-                decode_workers=candidate.decode_workers,
-                fabric=fabric,
-            )
-            prefill_instances = candidate.prefill_workers
-            decode_instances = candidate.decode_workers
         try:
             metrics = normalize_result(_run_scenario(
                 resolved,
