@@ -727,14 +727,21 @@ components:
             strategy: { type: string, example: tensor_parallel_only }
             candidate_gpus: { type: array, items: { type: integer } }
             evaluated_gpus: { type: array, items: { type: integer } }
-            configured_max_gpus: { type: integer }
+            configured_max_gpus:
+              type: integer
+              description: |
+                Configured candidate ceiling for this search. AISimulate
+                responses leave `search_summary` null; read
+                `sweep.configured_max_gpus` and `sweep.effective_max_gpus`
+                there for fit-floor adjustments.
             hardware_max_gpus: { type: integer }
             effective_max_gpus:
               type: integer
               description: |
                 Ceiling the selected search actually used. A simulator hardware
                 limit can make it lower than `configured_max_gpus`; an
-                AISimulate fit floor can make it higher.
+                AISimulate fit floor can make it higher. AISimulate reports
+                this in `sweep.effective_max_gpus`, not here.
             time_budget_seconds: { type: number }
             budget_exhausted: { type: boolean }
             modes_searched: { type: array, items: { type: string, enum: [agg, disagg] } }
