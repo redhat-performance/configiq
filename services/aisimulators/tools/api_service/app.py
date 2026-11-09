@@ -612,9 +612,10 @@ class SweepMeta(BaseModel):
     #: fit floor. Clients must render this rather than derive a window.
     window_min_gpus: int | None = None
     window_max_gpus: int | None = None
-    #: The configured candidate ceiling and the ceiling the search actually
-    #: used. They differ when a large fit floor required more headroom than
-    #: `AISIMULATORS_MAX_CANDIDATE_GPUS` allowed.
+    #: The configured candidate ceiling and the ceiling the selected search
+    #: actually used. A simulator hardware limit can make the effective value
+    #: lower than the configured one; an AISimulate fit floor that needs
+    #: headroom can make it higher.
     configured_max_gpus: int | None = None
     effective_max_gpus: int | None = None
 
@@ -2112,6 +2113,7 @@ def _run_min_gpus_windows(
     budget_exhausted = False
     run_id: str | None = None
     result: Any | None = None
+    best_gpus: int | None = None
 
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
@@ -2151,6 +2153,11 @@ def _run_min_gpus_windows(
             if not _is_no_viable_config(exc):
                 raise
             window_result = None
+            if refining:
+                # No shape fits below the known-good candidate, so that
+                # candidate is the minimum. Growing past it could replace it
+                # with a larger shape.
+                break
 
         if window_result is not None:
             searched = True
@@ -2166,7 +2173,12 @@ def _run_min_gpus_windows(
             selected = getattr(window_result, "selected_candidates", None) or []
             candidate_gpus = getattr(selected[0], "used_gpus", None) if selected else None
             if candidate_gpus is not None:
-                result = window_result
+                # Keep the smallest candidate: a later window can return an
+                # out-of-window shape (for example disaggregation rounding)
+                # that is larger than the minimum already found.
+                if best_gpus is None or candidate_gpus < best_gpus:
+                    result = window_result
+                    best_gpus = candidate_gpus
                 if candidate_gpus <= lower:
                     break
                 refinement_max = candidate_gpus - 1

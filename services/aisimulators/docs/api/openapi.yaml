@@ -729,7 +729,12 @@ components:
             evaluated_gpus: { type: array, items: { type: integer } }
             configured_max_gpus: { type: integer }
             hardware_max_gpus: { type: integer }
-            effective_max_gpus: { type: integer }
+            effective_max_gpus:
+              type: integer
+              description: |
+                Ceiling the selected search actually used. A simulator hardware
+                limit can make it lower than `configured_max_gpus`; an
+                AISimulate fit floor can make it higher.
             time_budget_seconds: { type: number }
             budget_exhausted: { type: boolean }
             modes_searched: { type: array, items: { type: string, enum: [agg, disagg] } }
@@ -1034,9 +1039,10 @@ components:
           type: integer
           nullable: true
           description: |
-            Ceiling the search was allowed to reach. It equals
-            `configured_max_gpus` unless the fit floor required headroom, in
-            which case it is `max(configured_max_gpus, floor × 2)`.
+            Ceiling the selected search actually used. It can be lower than
+            `configured_max_gpus` when the simulator applies a hardware limit
+            (for example a single BLIS node), and higher when an AISimulate fit
+            floor needs headroom (`max(configured_max_gpus, floor × 2)`).
 
     CandidateResponse:
       type: object

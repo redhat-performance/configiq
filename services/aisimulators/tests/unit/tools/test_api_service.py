@@ -1412,6 +1412,36 @@ class TestRunMinGpusWindows:
         assert sweep.window_min_gpus == 4
         assert sweep.window_max_gpus == 32
 
+    def test_an_infeasible_refinement_keeps_the_known_good_candidate(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        windows: list[tuple[int, int] | None] = []
+
+        class NoViableParallelConfig(Exception):
+            pass
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            windows.append(window)
+            if window == (8, 15):
+                # TP8 × 2 = 16, so no shape fits below the 16-GPU candidate.
+                raise NoViableParallelConfig(
+                    "no deployment_mode has a viable parallel config"
+                )
+            return self._result(16)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert result is not None
+        assert result.selected_candidates[0].used_gpus == 16
+        # The refinement failed, so the known-good 16-GPU result stands and
+        # the ladder must not grow past it.
+        assert windows == [(8, 16), (8, 15)]
+        assert sweep.window_max_gpus == 16
+
     def test_a_fitting_window_without_an_sla_candidate_still_grows(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
