@@ -54,9 +54,10 @@ FROM python:3.12-slim
 # BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
 ARG BLIS_VERSION=0.15.0
 # The upstream commit the BLIS release tag was built from, reported alongside
-# BLIS_VERSION. The release binary embeds no revision; keep this in step with
-# BLIS_IMAGE and BLIS_VERSION.
-ARG BLIS_COMMIT=762f1605ff27cd825d6b2cb2d9e991cd4b864c91
+# BLIS_VERSION. The release binary embeds no revision. Leave this empty for the
+# default BLIS_VERSION: runtime.py resolves the default release's commit. When
+# bumping to another release, pass its commit or the API reports no revision.
+ARG BLIS_COMMIT=""
 
 # BLIS_IMAGE is declared before the first FROM so it can choose the release
 # stage. Redeclare it here to compare that image's tag with the reported

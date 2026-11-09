@@ -517,7 +517,9 @@ To move to a new BLIS release, bump `BLIS_IMAGE` (tag and index digest),
 `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG_COMMIT`, and
 `BLIS_REGISTRY_COMMIT` together; update `MODELED_ENGINE_VERSIONS` in
 `tools/api_service/blis/scenario.py` if that release changes which vLLM
-versions it models. See
+versions it models. `BLIS_COMMIT` may be omitted only for the default release,
+whose commit the service resolves; another release without it reports no
+revision. See
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-blis).
 
 

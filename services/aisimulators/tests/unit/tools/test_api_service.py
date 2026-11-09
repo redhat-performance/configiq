@@ -4177,5 +4177,13 @@ class TestSimulatorRevision:
         monkeypatch.setenv("BLIS_VERSION", "0.16.0")
         assert app_module.blis_commit() is None
 
+        # The default release resolves its commit even when the build sets only
+        # BLIS_VERSION, as the Containerfile does.
+        monkeypatch.setenv("BLIS_VERSION", "0.15.0")
+        assert (
+            app_module.blis_commit()
+            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+        )
+
         monkeypatch.setenv("BLIS_COMMIT", "abc1234")
         assert app_module.blis_commit() == "abc1234"

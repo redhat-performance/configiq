@@ -35,14 +35,15 @@ def blis_release() -> str:
 def blis_commit() -> str | None:
     """Return the BLIS git commit this image was built from, if known.
 
-    The binary embeds no revision. The Containerfile sets both BLIS_VERSION and
-    BLIS_COMMIT, so an overridden release without its commit must report no
-    revision rather than the default release's commit.
+    The binary embeds no revision. A build that overrides BLIS_VERSION without
+    passing the matching BLIS_COMMIT must report no revision rather than the
+    default release's commit.
     """
     commit = os.environ.get("BLIS_COMMIT", "").strip()
     if commit:
         return commit
-    if os.environ.get("BLIS_VERSION", "").strip():
+    release = os.environ.get("BLIS_VERSION", "").strip()
+    if release and release != DEFAULT_BLIS_RELEASE:
         return None
     return DEFAULT_BLIS_COMMIT
 

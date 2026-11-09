@@ -136,7 +136,9 @@ To move to a new BLIS release:
    disagree, so the reported version cannot drift from the binary. Set
    `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
    vX.Y.Z`): the release binary embeds no revision, so this is the only source
-   for the git commit the footer shows.
+   for the git commit the footer shows. The default `BLIS_VERSION` may omit it,
+   because the service resolves the default release's commit; any other release
+   without a commit reports no revision.
 2. Bump the catalog and registry commits to the releases that BLIS tag is tested
    against (its `README.md` names them).
 3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and
