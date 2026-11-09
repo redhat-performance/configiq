@@ -4,9 +4,10 @@ Playwright covers the browser-to-AISimulators gap in [issue #186](https://github
 
 ## Coverage
 
-- The weekly and manual suite runs against `https://configiq.xyz` and AISimulators API. Predict performance, KV cache, and Recommend sizing each run a complete live matrix of 10 tested models × 6 workloads (Default plus five presets) × 10 GPU systems: 600 cases per page. Each case starts in a new browser context, selects its GPU, and checks the outgoing request and whether the rendered result or error reflects the current API response. The tests do not judge whether the API's sizing values are correct.
-- KV cache has no workload preset buttons. For its six workload scenarios, the tests enter `max_num_tokens = isl + osl` and `max_batch_size = concurrency` in Advanced settings. These are test inputs for memory estimation, not a claim that the KV page implements the same workload semantics as Predict or Recommend.
-- Recommend sizing runs all 600 live combinations and compares displayed GPU count, peak memory, TTFT, and throughput with the streamed response. Each case verifies that the deployed UI still lists the tested model and preset.
+- The weekly and manual full suite runs against `https://configiq.xyz` and AISimulators API. Predict performance, KV cache, and Recommend sizing each run a live matrix of 10 approved models × 9 workloads (Default plus eight presets) × 10 GPU systems: 900 cases per page, 2,700 total. Each case starts in a new browser context, selects its GPU, and checks the outgoing request and whether the rendered result or error reflects the current API response. The tests do not judge whether the API's sizing values are correct.
+- The nightly dev suite uses the same comparisons against `https://configiq.dev`, with one selected GPU per model and all nine workloads on all three pages: 270 cases total. Nine model/GPU selections had completed responses in an earlier live report. Nemotron Ultra on `gb200` is a candidate that still needs a successful response confirmed; an API error can pass when the UI displays it correctly.
+- The workload presets now set ISL and OSL. The tests also select the Small (10) concurrency preset on each page, making concurrency explicit without multiplying the matrix by every concurrency choice. KV cache sends `max_num_tokens = isl + osl` and `max_batch_size = 10` for each workload scenario. These are test inputs for memory estimation, not a claim that the KV page implements the same workload semantics as Predict or Recommend.
+- Recommend sizing runs all 900 live combinations and compares displayed GPU count, peak memory, TTFT, and throughput with the streamed response. Each case verifies that the deployed UI still lists the approved model and preset.
 - When browser settings explicitly contain a backend version, the tests check that the UI sends that version. Otherwise, they check that the request omits `backend_version` so the API can resolve its default. The live tests do not pin a version such as `0.27.1`.
 - The larger tested models use fixed TP and EP test inputs entered through the parallelism controls. Some model/GPU combinations may be unsupported or need different topology settings; the tests check that the UI displays the API's error state for these cases. The test inputs are not sizing formulas or recommendations.
 
@@ -25,11 +26,19 @@ npm ci
 npx playwright install chromium
 ```
 
-Run the full 1,800-case live UI suite against `configiq.xyz`:
+Run the full 2,700-case live UI suite against `configiq.xyz`:
 
 ```bash
 npm run test:e2e:live
 ```
+
+Run the 270-case nightly sample locally against the deployed dev UI and the API it calls:
+
+```bash
+PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:nightly
+```
+
+For a smaller manual check, add `-- --grep 'RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic / Default / h100_sxm / live'` to that command. This selects one case on each of the three pages.
 
 To split a manual run across machines, run one shard number per machine:
 
@@ -37,8 +46,10 @@ To split a manual run across machines, run one shard number per machine:
 npm run test:e2e:live -- --shard=1/10
 ```
 
-The weekly workflow runs at 12:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.xyz` and splits the suite into 10 Playwright shards, with at most three shard jobs at a time; each job runs two browser workers. Each shard has a six-hour timeout and CI retries. A full local command runs all 1,800 cases without sharding.
+The weekly workflow runs at 12:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.xyz` and splits the suite into 10 Playwright shards, with at most three shard jobs at a time; each job runs two browser workers. Each shard has a six-hour timeout and CI retries. A full local command runs all 2,700 cases without sharding.
+
+The nightly workflow runs at 2:00 a.m. every day in `America/New_York` and can also be started manually. It targets `https://configiq.dev` and splits the 270 cases into three shards. A local `test:e2e:nightly` run uses the same selection without sharding. The local Playwright process drives the deployed dev UI; it does not start a local ConfigIQ server or API.
 
 ## When a case fails
 
-Open the `tested-model-ui-<run ID>-<shard>` artifacts on the GitHub Actions run page. Each contains `test-results/` (failure screenshots, traces on retry, and request/response JSON) and `playwright-report/` (the HTML report). Local runs write these folders at the repository root; they are ignored by Git. The failed test name identifies the model, workload, and GPU system. Compare the request JSON with the selected UI values and the response JSON with the visible result or error; the trace shows browser interaction and network calls.
+Open the `tested-model-ui-<run ID>-<shard>` weekly artifacts or `tested-model-ui-dev-<run ID>-<shard>` nightly artifacts on the GitHub Actions run page. Each contains `test-results/` (failure screenshots, traces on retry, and request/response JSON) and `playwright-report/` (the HTML report). Local runs write these folders at the repository root; they are ignored by Git. The failed test name identifies the model, workload, and GPU system. Compare the request JSON with the selected UI values and the response JSON with the visible result or error; the trace shows browser interaction and network calls.

@@ -2,7 +2,8 @@ import { writeFile } from 'node:fs/promises'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import appConfig from '../public/config.json'
 import type { WorkloadPreset } from '../lib/workload-presets'
-import { coveredSystems, workloads } from './test-matrix'
+import { readAisimulateCatalog } from './live-catalog'
+import { matrixConcurrencyPreset, systemsForModel, workloads } from './test-matrix'
 
 test.describe.configure({ mode: 'parallel' })
 
@@ -10,6 +11,7 @@ interface CompletedRecommendation {
   status: 'completed'
   error?: never
   recommendation: { gpusNeeded: number; gpusPerReplica: number }
+  memoryAvailable?: boolean
   memory: { value: number }
   performance: { ttftLatencyMs: number }
   throughput: { tokensPerSecond: number }
@@ -84,7 +86,7 @@ async function capturedRecommendation(page: Page): Promise<Recommendation> {
 
 async function selectModel(page: Page, inputId: string, model: string) {
   const input = page.locator(`#${inputId}`)
-  await expect(input).not.toHaveValue('')
+  await expect(input).toBeVisible()
   await input.fill(model)
   await input.press('Enter')
   await expect(input).toHaveValue(model)
@@ -100,25 +102,16 @@ async function selectSystem(page: Page, inputId: string, name: string) {
   await expect(field.getByRole('button')).toContainText(name)
 }
 
-async function realCatalog(page: Page) {
-  const response = await page.request.get('/api/catalog')
-  expect(response.ok()).toBeTruthy()
-  const catalog = await response.json() as {
-    systems: Array<{ id: string; name: string }>
-    models: unknown[]
-    backends: Array<{ id: string; default_version: string | null }>
-  }
-  return catalog
-}
-
 async function verifyDeployedPreset(page: Page, model: string, workload: WorkloadPreset) {
   const response = await page.request.get('/config.json')
   expect(response.ok(), 'The deployed UI configuration must be available').toBeTruthy()
   const config = await response.json() as {
-    testedModels?: string[]
+    approvedModels?: string[]
     workloadPresets?: Array<{ key: string }>
+    concurrencyPresets?: Array<{ key: string }>
   }
-  expect(config.testedModels, 'The deployed UI must list this tested model').toContain(model)
+  expect(config.approvedModels, 'The deployed UI must list this approved model').toContain(model)
+  expect(config.concurrencyPresets?.map(preset => preset.key)).toContain(matrixConcurrencyPreset.key)
   if (workload.key !== 'default') {
     expect(config.workloadPresets?.map(preset => preset.key), 'The deployed UI must list this workload preset').toContain(workload.key)
   }
@@ -127,15 +120,38 @@ async function verifyDeployedPreset(page: Page, model: string, workload: Workloa
 async function checkRecommend(page: Page, testInfo: TestInfo, model: string, workload: WorkloadPreset, systemId: string) {
   test.setTimeout(300_000)
   await verifyDeployedPreset(page, model, workload)
-  const catalog = await realCatalog(page)
-  const system = catalog.systems.find(item => item.id === systemId)
+  const systems = await readAisimulateCatalog(page)
+  const system = systems.find(item => item.id === systemId)
   expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
+  const pageLoadErrors: string[] = []
+  page.on('pageerror', error => pageLoadErrors.push(`JavaScript: ${error.message}`))
+  page.on('console', message => {
+    if (message.type() === 'error') pageLoadErrors.push(`Console: ${message.text()}`)
+  })
+  page.on('requestfailed', request => {
+    pageLoadErrors.push(`Request: ${request.method()} ${request.url()} — ${request.failure()?.errorText ?? 'unknown error'}`)
+  })
+  page.on('response', response => {
+    if (response.status() >= 400) pageLoadErrors.push(`HTTP ${response.status()}: ${response.url()}`)
+  })
   await captureBrowserRecommendation(page)
   await page.goto('/recommend')
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2'))
+  try {
+    await expect(page.getByRole('button', { name: 'Default', exact: true })).toBeVisible()
+  } catch (error) {
+    await saveJson(testInfo, 'page-load-diagnostics.json', {
+      url: page.url(),
+      errors: pageLoadErrors,
+      state: await page.evaluate(() => ({ readyState: document.readyState, stylesheets: document.styleSheets.length, scripts: document.scripts.length })),
+    })
+    throw error
+  }
+  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
   await selectModel(page, 'adv-model', model)
   await selectSystem(page, 'adv-gpu', system!.name)
+  await page.getByRole('button', { name: 'Latency SLO', exact: true }).click()
   await page.getByRole('button', { name: workload.label, exact: true }).click()
+  await page.getByRole('button', { name: matrixConcurrencyPreset.label, exact: true }).click()
   const calculate = page.getByRole('button', { name: 'Calculate', exact: true })
   await expect(calculate).toBeEnabled()
   const responsePromise = page.waitForResponse(
@@ -151,26 +167,32 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   expect(request).toMatchObject({
     model_path: model, system: systemId,
     backend: appConfig.defaultBackend,
+    simulator: 'aisimulate',
     isl: workload.isl, osl: workload.osl,
-    ttft: workload.ttft, tpot: workload.tpot, target_concurrency: workload.concurrency,
+    ttft: 1000, tpot: 30, target_concurrency: matrixConcurrencyPreset.concurrency,
   })
   if (savedVersion) expect(request.backend_version).toBe(savedVersion)
   else expect(request).not.toHaveProperty('backend_version')
-  if (workload.prefix > 0) expect(request.prefix).toBe(workload.prefix)
-  else expect(request).not.toHaveProperty('prefix')
+  expect(request).not.toHaveProperty('prefix')
   if (!response.ok() || result.status !== 'completed') {
     await expect(page.getByText(recommendErrorTitle(result.error?.code), { exact: true })).toBeVisible()
     return
   }
-  await expect(page.getByTestId('recommend-gpus')).toContainText(`${result.recommendation.gpusNeeded}×`)
-  await expect(page.getByTestId('recommend-peak-memory')).toContainText(`${Math.round(result.memory.value * 10) / 10}GB`)
-  await expect(page.getByTestId('recommend-ttft')).toContainText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
-  await expect(page.getByTestId('recommend-throughput')).toContainText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
+  await expect(page.getByRole('button', { name: /^GPUs required / })).toContainText(`${result.recommendation.gpusNeeded}×`)
+  const memoryTile = page.getByRole('button', { name: /^Peak mem \/ GPU / })
+  if (result.memoryAvailable === false) {
+    await expect(memoryTile).toHaveCount(0)
+    await expect(page.getByText('This simulator does not provide memory estimates; the memory tile is hidden.')).toBeVisible()
+  } else {
+    await expect(memoryTile).toContainText(`${Math.round(result.memory.value * 10) / 10}GB`)
+  }
+  await expect(page.getByRole('button', { name: /^TTFT / })).toContainText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
+  await expect(page.getByRole('button', { name: /^Throughput [\d,]/ })).toContainText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
 }
 
-for (const model of appConfig.testedModels) {
+for (const model of appConfig.approvedModels) {
   for (const workload of workloads) {
-    for (const systemId of coveredSystems) {
+    for (const systemId of systemsForModel(model)) {
       test(`Recommend sizing / ${model} / ${workload.label} / ${systemId} / live`, async ({ page }, testInfo) => {
         await checkRecommend(page, testInfo, model, workload, systemId)
       })
