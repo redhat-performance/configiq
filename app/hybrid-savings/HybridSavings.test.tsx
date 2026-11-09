@@ -895,7 +895,7 @@ describe('Hybrid page composition', () => {
     await select('hybrid-billing-mode', 'active-window')
     const toggle = host.querySelector<HTMLButtonElement>('#hybrid-workload-toggle')!
     await act(async () => toggle.click())
-    expect(toggle.textContent).toContain('2.5s TTFT · 45 ms TPOT · 1 concurrent · 0 prefix tokens · 200 hours/month · 2× peak · Active window')
+    expect(toggle.textContent).toContain('2.5s TTFT · 45 ms TPOT · 1 concurrent user · 0 prefix tokens · 200 hours/month · 2× peak · Active window')
     await click('Adjust')
     expect(host.querySelector<HTMLInputElement>('#hybrid-average-input')!.value).toBe('3000')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('active-window')
@@ -960,6 +960,31 @@ describe('Hybrid page composition', () => {
       expect(host.querySelector<HTMLDivElement>('#hybrid-advanced-workload')!.hidden).toBe(true)
     }
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('offers the shared concurrency presets and applies the chosen value', async () => {
+    await render()
+    const group = host.querySelector<HTMLElement>('[aria-label="Concurrency"]')!
+    const buttons = [...group.querySelectorAll<HTMLButtonElement>('button')]
+    expect(buttons.map(button => button.textContent)).toEqual(appConfig.concurrencyPresets.map(preset => preset.label))
+    expect(buttons.every(button => button.classList.contains('pf-m-tertiary'))).toBe(true)
+    expect(buttons.every(button => button.getAttribute('aria-pressed') === 'false')).toBe(true)
+
+    await click('X-Small (2)')
+    expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('2')
+
+    await click('Adjust')
+    await editNumber('hybrid-concurrency', '5')
+    expect(group.querySelector('button[aria-pressed="true"]')).toBeNull()
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('5')
+
+    await click('X-Small (2)')
+    expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('2')
+
+    await click('Calculate')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ target_concurrency: 2 })
   })
 
   it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies token lengths for $label without changing the other workload settings', async preset => {

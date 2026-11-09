@@ -42,8 +42,10 @@
 .page :global(.pf-v6-c-form-control > select) { min-width: 0; text-overflow: ellipsis; }
 .inputCard, .disclosureCard { margin-bottom: 16px; }
 .inputGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; max-width: 960px; }
-.inputActions { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; margin-top: 20px; }
+.inputActions { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 20px; }
 .workloadPresets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.concurrencyPresets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.calculateAction { display: flex; justify-content: flex-end; align-self: stretch; }
 .workloadLabel { font: 600 12px var(--gc-font-mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); white-space: nowrap; }
 .modelField { min-width: 0; grid-column: 1 / -1; }
 .workloadSummary { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
@@ -200,7 +202,7 @@
   .inputGrid, .workloadGrid, .chartMilestones { grid-template-columns: minmax(0, 1fr); }
   .workloadBilling { grid-column: auto; }
   .header { flex-wrap: wrap; }
-  .inputActions > button { width: 100%; }
+  .calculateAction > button { width: 100%; }
   .chartViewSwitch { width: 100%; }
   .fixedPathChoice { margin-inline-start: 0; }
   .calculationList > div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
