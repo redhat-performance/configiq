@@ -90,7 +90,11 @@ GPU sizing formulas or call external service URLs directly from the browser.
    given empty capabilities. Only a pre-`/simulators` service returns the
    legacy top-level `systems`, `models`, `backends`, `networks`, and
    `objectives` fields with `simulators: []`. The network list supplies fabrics
-   for BLIS P/D predictions; AISimulate does not consume it.
+   for BLIS P/D predictions; AISimulate does not consume it. This same-origin
+   response shape ships with the frontend that reads it. When one ConfigIQ
+   instance uses another's `/api/catalog` as its gateway, upgrade the downstream
+   reader first: the newer route accepts an older upstream's legacy lists, but
+   an older downstream expects lists the reduced response no longer sends.
 3. `useCostings` calls `/api/costings/models`, `/api/costings/systems`, and
    `/api/costings/health`. Hybrid Savings is available without the Experimental
    toggle and loads prices once settings are ready. It uses the models-only

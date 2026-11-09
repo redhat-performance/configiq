@@ -367,6 +367,12 @@ export async function GET(request: Request) {
     // A shared ConfigIQ deployment can expose the same AISimulators service
     // through its combined same-origin /api/catalog proxy. That response is
     // already normalized, so pass it through instead of re-parsing it.
+    //
+    // The reduced { simulators, timeoutSeconds } shape is this deployment's
+    // same-origin contract, shipped with its own frontend. When ConfigIQ
+    // instances are chained, upgrade the downstream reader before the upstream
+    // it reads: this route still accepts an older upstream's legacy top-level
+    // lists, but an older downstream expects lists this route no longer sends.
     const combinedCatalogUrl = /\/api\/?$/.test(baseUrl)
       ? `${baseUrl.replace(/\/$/, '')}/catalog`
       : null
