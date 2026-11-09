@@ -5039,6 +5039,7 @@ def get_simulators():
                 "description": entry["description"],
                 "default": entry["default"],
                 "version": entry["version"],
+                "revision": entry["revision"],
             }
             for entry in _SIMULATORS
         ],
