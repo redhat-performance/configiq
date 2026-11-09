@@ -65,6 +65,7 @@ import { DEFAULT_HYBRID_WORKLOAD, analyzeRequestMix, matchRequestShapePreset, pr
 import { captureFixedDeployment, fixedDeploymentSamples, type FixedDeploymentCapture } from '@/lib/hybrid-savings/fixed-deployment'
 import { formatCostPerMillionOutputTokens } from '@/lib/hybrid-savings/token-economics'
 import { normalizeModelId } from '@/lib/model-metadata'
+import { formatLatencyBound } from '@/lib/utils/format'
 import styles from './hybrid-savings.module.css'
 
 const CostComparisonChart = dynamic(() => import('./CostComparisonChart'), {
@@ -663,7 +664,7 @@ export default function HybridSavings() {
               <span>Advanced workload</span>
               {!workloadAdvancedOpen && (
                 <span className={styles.advancedSummary}>
-                  {formatter.format(targetTtftMs)} ms TTFT · {formatter.format(targetTpotMs)} ms TPOT · {formatter.format(targetConcurrency)} concurrent · {formatter.format(prefixTokens)} prefix tokens · {formatter.format(activeHoursPerMonth)} hours/month · {formatter.format(peakToAverage)}× peak · {billingModeLabel(assumptions.cloudBillingMode)}
+                  {formatLatencyBound(targetTtftMs)}s TTFT · {formatter.format(targetTpotMs)} ms TPOT · {formatter.format(targetConcurrency)} concurrent · {formatter.format(prefixTokens)} prefix tokens · {formatter.format(activeHoursPerMonth)} hours/month · {formatter.format(peakToAverage)}× peak · {billingModeLabel(assumptions.cloudBillingMode)}
                 </span>
               )}
             </button>
@@ -873,7 +874,7 @@ export default function HybridSavings() {
                   <div><dt>Backend</dt><dd>{inferenceBackend}{backendVersion ? ` · ${backendVersion} requested` : ''}</dd></div>
                   <div><dt>Simulator</dt><dd>{resultSimulator && !isStale ? <SimulatorBadge simulator={resultSimulator} /> : 'Not yet calculated for current settings'}</dd></div>
                   <div><dt>Capacity reference</dt><dd>{formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'request' : 'requests'}</dd></div>
-                  <div><dt>Response targets</dt><dd>{formatter.format(targetTtftMs)} ms TTFT · {formatter.format(targetTpotMs)} ms TPOT</dd></div>
+                  <div><dt>Response targets</dt><dd>{formatLatencyBound(targetTtftMs)}s TTFT · {formatter.format(targetTpotMs)} ms TPOT</dd></div>
                   <div><dt>Peak demand</dt><dd>{preciseRate(facts.peakRequestsPerSecond)} requests/s · {formatter.format(peakToAverage)}× average</dd></div>
                   <div><dt>Failover reserve</dt><dd>None</dd></div>
                 </dl>

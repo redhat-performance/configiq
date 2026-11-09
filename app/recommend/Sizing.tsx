@@ -42,17 +42,10 @@ import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
-import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
+import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/utils/format';
 
 /** Offered rate a demand run starts from; the UI labels it as the default. */
 const DEFAULT_DEMAND_RATE = 10;
-
-/** Render a millisecond latency bound in seconds, dropping a trailing `.000`. */
-function formatLatencyBound(ms: number): string {
-  const sec = (ms / 1000).toFixed(3);
-  return sec.endsWith('000') ? (ms / 1000).toFixed(0) : parseFloat(sec).toString();
-}
-
 
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
 

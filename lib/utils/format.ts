@@ -13,6 +13,12 @@ export function formatMemory(gb: number): string {
   return `${formatNumber(gb, 1)} GB`;
 }
 
+/** Render a millisecond latency bound in seconds, dropping a trailing `.000`. */
+export function formatLatencyBound(ms: number): string {
+  const sec = (ms / 1000).toFixed(3)
+  return sec.endsWith('000') ? (ms / 1000).toFixed(0) : parseFloat(sec).toString()
+}
+
 /** Format a USD cost */
 export function formatCost(usd: number): string {
   if (usd < 0.01) return `$${usd.toFixed(4)}`;
