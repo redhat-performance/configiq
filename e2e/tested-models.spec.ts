@@ -13,6 +13,7 @@ interface PredictResponse {
   memory?: number
   ttft?: number
   tpot?: number
+  request_latency?: number
   tokens_per_second?: number
   memory_breakdown?: { weights_bytes?: number; kv_cache_bytes?: number } | null
   memory_unavailable_reason?: string | null
@@ -143,8 +144,15 @@ for (const model of appConfig.approvedModels) {
         }
         await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TTFT\b/ }).locator(':scope > div').nth(1)).toHaveText(`${ttft.toFixed(1)} ms`)
         await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TPOT\b/ }).locator(':scope > div').nth(1)).toHaveText(`${tpot.toFixed(1)} ms`)
-        const latency = ttft + tpot * workload.osl
-        const throughput = result.tokens_per_second ?? (latency > 0 ? workload.osl * 1000 / latency : 0)
+        const hasTiming = Number.isFinite(ttft) && Number.isFinite(tpot)
+        const requestLatency = hasTiming
+          ? typeof result.request_latency === 'number'
+            ? result.request_latency
+            : ttft + tpot * workload.osl
+          : 0
+        const throughput = typeof result.tokens_per_second === 'number'
+          ? result.tokens_per_second
+          : hasTiming && workload.osl > 0 && requestLatency > 0 ? workload.osl * 1000 / requestLatency : 0
         await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^Throughput\b/ }).locator(':scope > div').nth(1)).toHaveText(`${throughput.toFixed(1)} tok/s`)
       })
     }

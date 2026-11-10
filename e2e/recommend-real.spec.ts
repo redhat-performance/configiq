@@ -31,6 +31,7 @@ function recommendErrorTitle(code?: string): string {
     case 'AISIM_UNAVAILABLE': return 'Sizing service unavailable'
     case 'AISIM_NOT_CONFIGURED': return 'Service not configured'
     case 'AISIM_INVALID_RESPONSE': return 'Unexpected response'
+    case 'SIMULATOR_MISMATCH': return 'Simulator mismatch'
     case 'INVALID_REQUEST': return 'Invalid input'
     case 'NETWORK_ERROR': return 'Connection error'
     default: return 'Something went wrong'
