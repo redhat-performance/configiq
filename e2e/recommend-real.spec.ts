@@ -102,6 +102,10 @@ async function selectSystem(page: Page, inputId: string, name: string) {
   await expect(field.getByRole('button')).toContainText(name)
 }
 
+function displayedTileValue(page: Page, name: RegExp) {
+  return page.getByRole('button', { name }).locator('[class*="tileValue"]')
+}
+
 async function verifyDeployedPreset(page: Page, model: string, workload: WorkloadPreset) {
   const response = await page.request.get('/config.json')
   expect(response.ok(), 'The deployed UI configuration must be available').toBeTruthy()
@@ -135,6 +139,7 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
     if (response.status() >= 400) pageLoadErrors.push(`HTTP ${response.status()}: ${response.url()}`)
   })
   await captureBrowserRecommendation(page)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/recommend')
   try {
     await expect(page.getByRole('button', { name: 'Default', exact: true })).toBeVisible()
@@ -178,16 +183,16 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
     await expect(page.getByText(recommendErrorTitle(result.error?.code), { exact: true })).toBeVisible()
     return
   }
-  await expect(page.getByRole('button', { name: /^GPUs required / })).toContainText(`${result.recommendation.gpusNeeded}×`)
+  await expect(displayedTileValue(page, /^GPUs required /)).toHaveText(`${result.recommendation.gpusNeeded}× ${system!.name}`)
   const memoryTile = page.getByRole('button', { name: /^Peak mem \/ GPU / })
   if (result.memoryAvailable === false) {
     await expect(memoryTile).toHaveCount(0)
     await expect(page.getByText('This simulator does not provide memory estimates; the memory tile is hidden.')).toBeVisible()
   } else {
-    await expect(memoryTile).toContainText(`${Math.round(result.memory.value * 10) / 10}GB`)
+    await expect(displayedTileValue(page, /^Peak mem \/ GPU /)).toHaveText(`${Math.round(result.memory.value * 10) / 10}GB`)
   }
-  await expect(page.getByRole('button', { name: /^TTFT / })).toContainText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
-  await expect(page.getByRole('button', { name: /^Throughput [\d,]/ })).toContainText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
+  await expect(displayedTileValue(page, /^TTFT /)).toHaveText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
+  await expect(displayedTileValue(page, /^Throughput [\d,]/)).toHaveText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
 }
 
 for (const model of appConfig.approvedModels) {
