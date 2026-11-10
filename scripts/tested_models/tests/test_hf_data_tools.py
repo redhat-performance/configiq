@@ -195,7 +195,10 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path) -> None:
     datasets = tmp_path / "datasets"
     output = tmp_path / "output"
     datasets.mkdir()
-    frame = pd.DataFrame([{"model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200"}])
+    frame = pd.DataFrame([{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
+    }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
     manifest.write_text(json.dumps({
         "schema_version": 1,
@@ -214,6 +217,36 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path) -> None:
     assert result["pairs"][0]["file_sha256"] == file_sha256(output / "pairs/model__h200/ground_truth.parquet")
     assert (output / "README.md").is_file()
     assert (output / "schema.json").is_file()
+
+
+@pytest.mark.parametrize(("version", "backend", "backend_version", "message"), [
+    ("RHAIIS-3.5", "rhaiis", "RHAIIS-3.5", "non-upstream vLLM version"),
+    ("vLLM-0.24.0", "rhaiis", "vLLM-0.24.0", "non-vLLM backend"),
+    ("vLLM-0.24.0", "vllm", "vLLM-0.23.0", "backend version that differs"),
+])
+def test_publish_rejects_non_upstream_pair_before_replacing_output(
+    tmp_path, version: str, backend: str, backend_version: str, message: str,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    datasets = tmp_path / "datasets"
+    output = tmp_path / "output"
+    datasets.mkdir()
+    output.mkdir()
+    marker = output / "must-survive"
+    marker.write_text("keep")
+    frame = pd.DataFrame([{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": version, "backend": backend, "backend_version": backend_version,
+    }])
+    frame.to_parquet(datasets / "model__h200.parquet", index=False)
+    manifest.write_text(json.dumps({
+        "schema_version": 1,
+        "pairs": [{"id": "model__h200", "model_id": "org/model", "accelerator": "H200"}],
+    }))
+
+    with pytest.raises(ValueError, match=message):
+        publish_ground_truth.prepare(manifest, datasets, output)
+    assert marker.read_text() == "keep"
 
 
 def test_download_verifies_checksum_and_replaces_stale_datasets(tmp_path, monkeypatch) -> None:
@@ -281,7 +314,10 @@ def test_publish_validates_all_pairs_before_replacing_output(tmp_path) -> None:
     output.mkdir()
     marker = output / "must-survive"
     marker.write_text("keep")
-    frame = pd.DataFrame([{"model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200"}])
+    frame = pd.DataFrame([{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
+    }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
     manifest.write_text(json.dumps({
         "schema_version": 1,
