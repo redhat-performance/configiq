@@ -17,6 +17,7 @@ interface PredictResponse {
   memory_breakdown?: { weights_bytes?: number; kv_cache_bytes?: number } | null
   memory_unavailable_reason?: string | null
   error?: { code?: string; message?: string }
+  detail?: string
 }
 
 function predictErrorTitle(code?: string): string {
@@ -24,6 +25,8 @@ function predictErrorTitle(code?: string): string {
     case 'OOM': return 'Not enough GPU memory'
     case 'AUTH_REQUIRED': return 'Authentication required'
     case 'MODEL_NOT_FOUND': return 'Model not found'
+    case 'SIMULATOR_MISMATCH': return 'Simulator mismatch'
+    case 'AISIM_NO_CONFIGURATION': return 'No valid configuration found'
     case 'AISIM_TIMEOUT': return 'Request timed out'
     case 'AISIM_UNAVAILABLE': return 'Sizing service unavailable'
     default: return 'Estimate failed'
@@ -110,7 +113,12 @@ for (const model of appConfig.approvedModels) {
         expect(body).not.toHaveProperty('prefix')
 
         if (!response.ok() || result.status === 'failed') {
-          await expect(page.getByText(predictErrorTitle(result.error?.code), { exact: true })).toBeVisible()
+          const errorCode = result.error?.code ?? 'AISIM_NO_CONFIGURATION'
+          await expect(page.getByText(predictErrorTitle(errorCode), { exact: true })).toBeVisible()
+          if (!['OOM', 'AUTH_REQUIRED', 'MODEL_NOT_FOUND', 'AISIM_TIMEOUT'].includes(errorCode)) {
+            const errorMessage = result.error?.message ?? result.detail ?? 'AISimulators prediction failed'
+            await expect(page.getByText(errorMessage, { exact: true })).toBeVisible()
+          }
           return
         }
 
@@ -133,11 +141,11 @@ for (const model of appConfig.approvedModels) {
           await expect(weightTile).toContainText(`${weightGb}GB`)
           await expect(kvTile).toContainText(`${kvMbPerRequest}MB`)
         }
-        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TTFT\b/ })).toContainText(`${ttft.toFixed(1)} ms`)
-        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TPOT\b/ })).toContainText(`${tpot.toFixed(1)} ms`)
+        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TTFT\b/ }).locator(':scope > div').nth(1)).toHaveText(`${ttft.toFixed(1)} ms`)
+        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^TPOT\b/ }).locator(':scope > div').nth(1)).toHaveText(`${tpot.toFixed(1)} ms`)
         const latency = ttft + tpot * workload.osl
         const throughput = result.tokens_per_second ?? (latency > 0 ? workload.osl * 1000 / latency : 0)
-        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^Throughput\b/ })).toContainText(`${throughput.toFixed(1)} tok/s`)
+        await expect(page.locator('[class*="paramGrid"] > div').filter({ hasText: /^Throughput\b/ }).locator(':scope > div').nth(1)).toHaveText(`${throughput.toFixed(1)} tok/s`)
       })
     }
   }
@@ -192,10 +200,10 @@ for (const model of appConfig.approvedModels) {
           return
         }
         if (typeof result.kvCache?.totalBytes === 'number') {
-          await expect(page.getByRole('button', { name: /^Available for KV cache \/ GPU / })).toContainText(formatBytes(result.kvCache.totalBytes))
+          await expect(page.getByRole('button', { name: /^Available for KV cache \/ GPU / }).locator('[class*="tileValue"]')).toHaveText(formatBytes(result.kvCache.totalBytes))
         }
         if (typeof result.kvCache?.perTokenBytes === 'number') {
-          await expect(page.getByRole('button', { name: /^Per token / })).toContainText(formatBytes(result.kvCache.perTokenBytes))
+          await expect(page.getByRole('button', { name: /^Per token / }).locator('[class*="tileValue"]')).toHaveText(formatBytes(result.kvCache.perTokenBytes))
         }
       })
     }
