@@ -80,7 +80,8 @@ for (const model of appConfig.approvedModels) {
         if (parallelism > 1) {
           await page.getByText('Want to change assumptions?', { exact: true }).click()
           await page.getByRole('spinbutton', { name: 'Tensor parallel size (TP)' }).fill(String(parallelism))
-          await page.getByRole('spinbutton', { name: 'MoE expert parallel (EP)' }).fill(String(parallelism))
+          const expertParallel = page.getByRole('spinbutton', { name: 'MoE expert parallel (EP)' })
+          if (await expertParallel.isVisible()) await expertParallel.fill(String(parallelism))
         }
         const calculate = page.getByRole('button', { name: 'Calculate', exact: true })
         await expect(calculate).toBeEnabled()
@@ -119,7 +120,7 @@ for (const model of appConfig.approvedModels) {
         if (typeof result.memory !== 'number' && !result.memory_breakdown) {
           await expect(weightTile).toHaveCount(0)
           await expect(kvTile).toHaveCount(0)
-          await expect(page.getByText('Memory estimates are unavailable for this result; memory tiles are hidden.')).toBeVisible()
+          await expect(page.getByText('The selected simulator did not return a memory breakdown.')).toBeVisible()
         } else {
           const weightGb = Math.round(result.memory_breakdown
             ? (result.memory_breakdown.weights_bytes ?? 0) / 1024 ** 3
