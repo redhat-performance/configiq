@@ -190,14 +190,15 @@ def test_publish_rejects_empty_manifest_before_cleanup(tmp_path) -> None:
     assert marker.read_text() == "keep"
 
 
-def test_publish_copies_each_source_pair_into_output_manifest(tmp_path) -> None:
+@pytest.mark.parametrize("version", ["vLLM-0.24.0", "vllm-0.6.2"])
+def test_publish_copies_each_source_pair_into_output_manifest(tmp_path, version: str) -> None:
     manifest = tmp_path / "manifest.json"
     datasets = tmp_path / "datasets"
     output = tmp_path / "output"
     datasets.mkdir()
     frame = pd.DataFrame([{
         "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
-        "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
+        "version": version, "backend": "vllm", "backend_version": version,
     }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
     manifest.write_text(json.dumps({

@@ -15,7 +15,7 @@ from quantization import canonical_quantization
 
 DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
-UPSTREAM_VLLM_VERSION_PATTERN = re.compile(r"vLLM-\d+\.\d+\.\d+")
+UPSTREAM_VLLM_VERSION_PATTERN = re.compile(r"vLLM-\d+\.\d+\.\d+", re.IGNORECASE)
 
 
 def is_upstream_vllm_version(value: Any) -> bool:
