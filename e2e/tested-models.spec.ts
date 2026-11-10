@@ -15,6 +15,7 @@ interface PredictResponse {
   tpot?: number
   tokens_per_second?: number
   memory_breakdown?: { weights_bytes?: number; kv_cache_bytes?: number } | null
+  memory_unavailable_reason?: string | null
   error?: { code?: string; message?: string }
 }
 
@@ -120,7 +121,10 @@ for (const model of appConfig.approvedModels) {
         if (typeof result.memory !== 'number' && !result.memory_breakdown) {
           await expect(weightTile).toHaveCount(0)
           await expect(kvTile).toHaveCount(0)
-          await expect(page.getByText('The selected simulator did not return a memory breakdown.')).toBeVisible()
+          const memoryWarning = typeof result.memory_unavailable_reason === 'string'
+            ? result.memory_unavailable_reason
+            : 'The selected simulator did not return a memory breakdown.'
+          await expect(page.getByText(memoryWarning)).toBeVisible()
         } else {
           const weightGb = Math.round(result.memory_breakdown
             ? (result.memory_breakdown.weights_bytes ?? 0) / 1024 ** 3
