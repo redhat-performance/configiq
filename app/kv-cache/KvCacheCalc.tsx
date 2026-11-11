@@ -74,6 +74,9 @@ export default function KvCacheCalc() {
   const MODEL_OPTIONS = catalogModels
 
   const [model, setModel] = React.useState('')
+  // Persist the model only after a pick in this tool. Filter-driven and
+  // fallback replacements must not overwrite the cross-tool default.
+  const modelTouched = React.useRef(false)
   const [system, setSystem] = React.useState('')
   const [gpuReady, setGpuReady] = React.useState(false)
   const [backend, setBackend] = React.useState(() => getAppConfig().defaultBackend)
@@ -281,7 +284,11 @@ export default function KvCacheCalc() {
     : catalogLoading ? 'fetching'
     : model ? 'idle' : 'idle'
 
-  useRememberDefaultModel(model, validatedModelIds.includes(model) || catalogMatch || hfConfigModel === model)
+  useRememberDefaultModel(
+    model,
+    modelTouched.current &&
+      (validatedModelIds.includes(model) || catalogMatch || hfConfigModel === model),
+  )
 
   function buildRequestBody(par: PhaseParallel): Record<string, unknown> {
     const body: Record<string, unknown> = {
@@ -387,7 +394,7 @@ export default function KvCacheCalc() {
             <ComboBox
               id="kv-model"
               value={model}
-              onChange={(value) => { setModel(value); markInputsDirty(); }}
+              onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom

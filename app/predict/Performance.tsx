@@ -206,12 +206,19 @@ export default function Performance() {
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const modelWasPrefilled = React.useRef(false);
   const gpuWasPrefilled = React.useRef(false);
+  // Persist the model only after an explicit pick (or a handoff). Filter-driven
+  // replacements must not overwrite the cross-tool default.
+  const modelTouched = React.useRef(false);
 
   React.useEffect(() => {
     const prefill = parsePerformancePrefill(globalThis.location?.search || '');
     modelWasPrefilled.current = Boolean(prefill.model);
     gpuWasPrefilled.current = Boolean(prefill.system);
-    if (prefill.model) setModel(prefill.model);
+    if (prefill.model) {
+      // A handoff from another tool is an explicit choice; keep remembering it.
+      modelTouched.current = true;
+      setModel(prefill.model);
+    }
     if (prefill.system) setGpu(prefill.system);
     setPrefillChecked(true);
   }, []);
@@ -291,7 +298,8 @@ export default function Performance() {
 
   useRememberDefaultModel(
     model,
-    !modelUnsupported && (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+    modelTouched.current && !modelUnsupported &&
+      (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
   );
 
   // Collapsible state for "Why this GPU count?" card
@@ -1478,7 +1486,7 @@ export default function Performance() {
             <ComboBox
               id="predict-performance-model"
               value={model}
-              onChange={(value) => { setModel(value); markInputsDirty(); }}
+              onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom

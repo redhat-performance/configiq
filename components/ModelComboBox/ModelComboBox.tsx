@@ -37,9 +37,12 @@ function isModelItem(item: ComboBoxItem): item is ComboBoxOption & ModelFacets {
   return 'types' in item
 }
 
+/** Distinguishes a user pick from a change made by the control itself. */
+export type ComboBoxChangeSource = 'user' | 'auto'
+
 interface ComboBoxProps {
   value: string
-  onChange: (value: string) => void
+  onChange: (value: string, source: ComboBoxChangeSource) => void
   items: ComboBoxItem[]
   placeholder?: string
   id?: string
@@ -137,7 +140,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     if (checked) {
       prevModel.current = value
       if (!validatedItems.some(i => i.value === value) && validatedItems.length > 0) {
-        onChange(validatedItems[0].value)
+        onChange(validatedItems[0].value, 'auto')
         wasAutoReplacedRef.current = true
       } else {
         wasAutoReplacedRef.current = false
@@ -145,7 +148,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     } else {
       // Only restore prevModel if enabling the filter caused an auto-replacement
       if (wasAutoReplacedRef.current) {
-        onChange(prevModel.current)
+        onChange(prevModel.current, 'auto')
       }
       wasAutoReplacedRef.current = false
     }
@@ -193,7 +196,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     if (supportedOnly) {
       prevModel.current = val
     }
-    onChange(val)
+    onChange(val, 'user')
     setOpen(false)
     setEditing(false)
     setFilter('')
@@ -201,14 +204,24 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
   }
 
   function handleInputChange(_event: React.FormEvent<HTMLInputElement>, val: string) {
+    // The field shows the selected label until editing begins. A keystroke at
+    // the end of that text arrives already appended, so keep only the typed
+    // part instead of searching for the label plus the new text.
+    const displayed = selectedItem?.label ?? value
+    const nextValue = !editing && displayed && val.startsWith(displayed)
+      ? val.slice(displayed.length)
+      : val
     setEditing(true)
-    setFilter(val)
+    setFilter(nextValue)
     setFocusIndex(-1)
     if (!open) setOpen(true)
   }
 
   function handleInputFocus() {
     setOpen(true)
+    // Keep the selection visible, but let a keystroke replace it rather than
+    // appending to it.
+    if (!editing) textInputRef.current?.select()
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent) {
@@ -256,7 +269,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
   }
 
   function handleClear() {
-    onChange('')
+    onChange('', 'user')
     setEditing(false)
     setFilter('')
     setFocusIndex(-1)
@@ -278,7 +291,16 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
       ref={tRef as React.RefObject<HTMLButtonElement>}
       variant="typeahead"
       aria-label={label}
-      onClick={() => { if (!open) { setOpen(true); setEditing(false); setFilter('') } }}
+      onClick={() => {
+        if (open) {
+          setOpen(false)
+          setEditing(false)
+          setFilter('')
+          setFocusIndex(-1)
+        } else {
+          setOpen(true)
+        }
+      }}
       isExpanded={open}
       isFullWidth
       className={styles.menuToggle}

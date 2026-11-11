@@ -46,6 +46,17 @@
   margin-bottom: 14px;
 }
 
+/* Collapsible sections render sectionHead as a keyboard-operable button. */
+.sectionToggle {
+  cursor: pointer;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+}
+
 .sectionTitle {
   font-family: var(--sans);
   font-size: 15px;

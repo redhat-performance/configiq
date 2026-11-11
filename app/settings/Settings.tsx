@@ -93,10 +93,12 @@ export function Settings() {
       <div className={styles.sections}>
         {/* ── Tested models ── */}
         <div className={styles.section}>
-          <div
-            className={styles.sectionHead}
-            style={{ cursor: 'pointer' }}
+          <button
+            type="button"
+            className={`${styles.sectionHead} ${styles.sectionToggle}`}
             onClick={() => setValidatedOpen(o => !o)}
+            aria-expanded={validatedOpen}
+            aria-controls="validated-models-panel"
           >
             <div>
               <div className={styles.sectionTitle}>
@@ -112,9 +114,9 @@ export function Settings() {
             {modelSaved
               ? <Label color="green" icon={<CheckCircleIcon />}>Saved as default</Label>
               : <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>}
-          </div>
+          </button>
           {validatedOpen && (
-            <div className={styles.fieldWrap}>
+            <div className={styles.fieldWrap} id="validated-models-panel">
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 8px' }}>
                  {validatedModelIds.map(m => (
                   <Label
@@ -288,8 +290,7 @@ export function Settings() {
         <div className={styles.section}>
           <button
             type="button"
-            className={styles.sectionHead}
-            style={{ cursor: 'pointer', width: '100%', background: 'none', border: 'none', font: 'inherit', textAlign: 'left' }}
+            className={`${styles.sectionHead} ${styles.sectionToggle}`}
             onClick={() => setCostingsOpen(o => !o)}
             aria-expanded={costingsOpen}
             aria-controls="costings-settings-panel"

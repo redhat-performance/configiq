@@ -272,6 +272,9 @@ export default function Sizing() {
 
   // Input state
   const [model, setModel] = React.useState('');
+  // Persist the model only after a pick in this tool. Filter-driven
+  // replacements must not overwrite the cross-tool default.
+  const modelTouched = React.useRef(false);
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
   // A simulator that models a catalog also says which models it cannot price.
   // The default model may be one of them; surface that instead of replacing it.
@@ -354,7 +357,8 @@ export default function Sizing() {
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
   useRememberDefaultModel(
     model,
-    !modelUnsupported && (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+    modelTouched.current && !modelUnsupported &&
+      (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
   );
 
   // Capacity runs return ranked alternatives. The result panel shows whichever
@@ -771,7 +775,7 @@ export default function Sizing() {
             <ComboBox
               id="adv-model"
               value={model}
-              onChange={(value) => { setModel(value); markInputsDirty(); }}
+              onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom

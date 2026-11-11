@@ -643,7 +643,7 @@ export default function HybridSavings() {
             <h2>Model and workload</h2>
             <div className={styles.inputGrid}>
               <div className={styles.modelField}>
-                <ComboBox id="hybrid-model" value={model} onChange={value => { modelTouched.current = true; setModel(value) }} items={modelItems}
+                <ComboBox id="hybrid-model" value={model} onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value) }} items={modelItems}
                   allowCustom supportedModels={testedModelsAvailable ? validatedModelIds : undefined} hfToken={hfToken}
                   helperText="Choose a model checkpoint to compare." />
               </div>
