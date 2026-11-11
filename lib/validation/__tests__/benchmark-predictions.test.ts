@@ -103,8 +103,9 @@ describe('comparisonRequestsPerLoadUnit', () => {
     expect(Math.round(2048 * comparisonRequestsPerLoadUnit(2048))).toBe(4096)
   })
 
-  it('keeps very large or unknown concurrency within the same budget', () => {
-    expect(comparisonRequestsPerLoadUnit(1_000_000) * 1_000_000).toBe(4096)
+  it('never asks for fewer requests than the labeled concurrency slots', () => {
+    expect(comparisonRequestsPerLoadUnit(8192)).toBe(1)
+    expect(comparisonRequestsPerLoadUnit(1_000_000)).toBe(1)
     expect(comparisonRequestsPerLoadUnit(0)).toBe(10)
     expect(comparisonRequestsPerLoadUnit(Number.NaN)).toBe(10)
   })

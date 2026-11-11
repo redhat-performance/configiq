@@ -77,11 +77,13 @@ const MAX_COMPARISON_REQUESTS_PER_POINT = 4096
 /**
  * Requests-per-load-unit to send for one measured concurrency level.
  *
- * Scales the multiplier down as concurrency rises so the total request count
- * stays within `MAX_COMPARISON_REQUESTS_PER_POINT`. This bounds the workload the
- * page asks for; it does not relax any simulator's own request limit.
+ * Scales the multiplier down as concurrency rises, but never below one request
+ * per labeled concurrency slot. Above `MAX_COMPARISON_REQUESTS_PER_POINT` the
+ * request count therefore equals concurrency; if that exceeds a simulator's own
+ * limit, its explicit rejection is reported instead of plotting metrics for a
+ * smaller run against the higher concurrency label.
  */
 export function comparisonRequestsPerLoadUnit(concurrency: number): number {
   const level = Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 1
-  return Math.min(COMPARISON_REQUESTS_PER_LOAD_UNIT, MAX_COMPARISON_REQUESTS_PER_POINT / level)
+  return Math.max(1, Math.min(COMPARISON_REQUESTS_PER_LOAD_UNIT, MAX_COMPARISON_REQUESTS_PER_POINT / level))
 }

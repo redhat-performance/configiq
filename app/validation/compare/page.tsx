@@ -838,11 +838,20 @@ export default function BenchmarkComparisonPage() {
           }
         })
 
+        const failures = [...new Set(attempts.flatMap(attempt => attempt.error ? [attempt.error] : []))]
         const points = attempts.flatMap(attempt => attempt.point ? [attempt.point] : [])
         if (points.length === 0) {
-          const reason = attempts.find(attempt => attempt.error)?.error ?? 'No prediction points were returned.'
+          const reason = failures[0] ?? 'No prediction points were returned.'
           skipped.push(`${plan.label}: ${reason}`)
           continue
+        }
+        if (failures.length > 0) {
+          // A level the simulator refuses (for example because its concurrency
+          // exceeds a request limit) must be visible, not silently dropped from
+          // an otherwise plotted series.
+          skipped.push(
+            `${plan.label}: ${levels.length - points.length} of ${levels.length} concurrency levels skipped. ${failures[0]}`,
+          )
         }
         const reportedVersion = attempts.find(attempt => attempt.version)?.version ?? null
         const versionComparable = backendVersionsComparable(resolvedFilters.backendVersion, reportedVersion)
