@@ -40,6 +40,7 @@ import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeed
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
+import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
@@ -354,7 +355,11 @@ export default function Sizing() {
       : null;
 
   // Model status + HF config
-  const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
+  const [modelCheck, setModelCheck] = React.useState<ModelStatusCheck>({ model: '', status: 'idle' });
+  // A status applies only to the model it was computed for. Until the current
+  // model is checked, treat it as idle so a stale status cannot authorize
+  // saving an unvalidated model as the default.
+  const modelStatus = statusForModel(modelCheck, model);
   useRememberDefaultModel(
     model,
     modelTouched.current && !modelUnsupported &&
@@ -511,17 +516,18 @@ export default function Sizing() {
   // everything else (incl. tested models outside the catalog) needs its HF
   // config.json fetched and stored so it can be sent to AISimulators on calculate.
   React.useEffect(() => {
-    if (catalogLoading) { setModelStatus('idle'); return; }
+    const reportStatus = (status: ModelCheckStatus) => setModelCheck({ model, status });
+    if (catalogLoading) { reportStatus('idle'); return; }
     setHfConfig(null);
     let cancelled = false;
     const timer = setTimeout(() => {
-      if (!model.includes('/')) { setModelStatus('idle'); return; }
+      if (!model.includes('/')) { reportStatus('idle'); return; }
       const isTested = validatedModelIds.includes(model);
       if (!needsHfConfig(model, MODEL_OPTIONS)) {
-        setModelStatus(isTested ? 'supported' : 'catalog');
+        reportStatus(isTested ? 'supported' : 'catalog');
         return;
       }
-      setModelStatus('fetching');
+      reportStatus('fetching');
       fetchModelConfig(model, hfToken).then(r => {
         // Ignore a response for a model the user has since moved away from.
         if (cancelled) return;
@@ -529,11 +535,11 @@ export default function Sizing() {
           setHfConfig(r.config as Record<string, unknown>);
           // Tested models keep their blue "supported" status even though we
           // fetched the config from HF; others show the neutral "fetched".
-          setModelStatus(isTested ? 'supported' : 'fetched');
+          reportStatus(isTested ? 'supported' : 'fetched');
         } else {
           // Tested models stay blue — AISimulators can still resolve them from HF
           // server-side when we send no model_config.
-          setModelStatus(isTested ? 'supported' : 'error');
+          reportStatus(isTested ? 'supported' : 'error');
         }
       });
     }, 500);

@@ -7,7 +7,7 @@ import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 
 // Deliberately not a SemVer release: the UI renders whatever version the
 // catalog reports, and a plausible pin here would look like a real one.
-const BLIS_FIXTURE_VERSION = 'test-blis-version';
+const BLIS_FIXTURE_VERSION = vi.hoisted(() => 'test-blis-version');
 
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
@@ -30,10 +30,10 @@ vi.mock('@/lib/app-config', async (importOriginal) => {
   };
 });
 
-vi.mock('@/lib/hooks/useCatalog', () => ({
-  systemMemoryFraction: () => null,
-  engineVersionSupport: () => null,
-  useCatalog: () => ({
+vi.mock('@/lib/hooks/useCatalog', () => {
+  // One stable object per module: a fresh array on every render would retrigger
+  // effects that depend on the catalog's identity.
+  const catalog = {
     gpuOptions: [
       { systemId: 'h200_sxm', displayName: 'NVIDIA H200', vramGb: 141 },
       { systemId: 'h100_sxm', displayName: 'NVIDIA H100', vramGb: 80 },
@@ -76,8 +76,13 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
       },
     },
     isLoading: false,
-  }),
-}));
+  };
+  return {
+    systemMemoryFraction: () => null,
+    engineVersionSupport: () => null,
+    useCatalog: () => catalog,
+  };
+});
 
 vi.mock('@/lib/hooks/useCostings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/hooks/useCostings')>();
@@ -122,6 +127,10 @@ vi.mock('@/lib/api/estimate-adapter', () => ({
   EstimateError: class EstimateError extends Error {},
 }));
 
+vi.mock('@/lib/huggingface/fetch-config', () => ({
+  fetchModelConfig: vi.fn(),
+}));
+
 vi.mock('@/components/ui/ModelInput', () => ({
   ModelInput: ({ id, model, onChange }: { id: string; model: string; onChange: (value: string) => void }) => (
     <label>Model<input id={id} aria-label="Model" value={model} onChange={(event) => onChange(event.target.value)} /></label>
@@ -129,8 +138,8 @@ vi.mock('@/components/ui/ModelInput', () => ({
 }));
 
 vi.mock('@/components/ModelComboBox/ModelComboBox', () => ({
-  ComboBox: ({ id, value, onChange }: { id: string; value: string; onChange: (value: string) => void }) => (
-    <label>Model<input id={id} aria-label="Model" value={value} onChange={(event) => onChange(event.target.value)} /></label>
+  ComboBox: ({ id, value, onChange }: { id: string; value: string; onChange: (value: string, source: 'user' | 'auto') => void }) => (
+    <label>Model<input id={id} aria-label="Model" value={value} onChange={(event) => onChange(event.target.value, 'user')} /></label>
   ),
 }));
 
@@ -163,6 +172,7 @@ vi.mock('@/components/ui/InfoStrip', () => ({
 
 import Performance from './Performance';
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter';
+import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { useSettings } from '@/contexts/SettingsContext';
 
 let container: HTMLDivElement;
@@ -262,6 +272,12 @@ beforeEach(() => {
   })));
   vi.mocked(fetchEstimateAsInferenceResult).mockClear();
   vi.mocked(fetchEstimateAsInferenceResult).mockResolvedValue(estimateResult);
+  vi.mocked(fetchModelConfig).mockReset();
+  vi.mocked(fetchModelConfig).mockResolvedValue({
+    success: true,
+    config: { hidden_size: 4096 },
+    source: 'huggingface',
+  });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -376,6 +392,54 @@ describe('performance page widget handoff', () => {
 
     expect(container.querySelector('[data-testid="cloud-cost-tile"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="self-hosted-cost-tile"]')).not.toBeNull();
+  });
+});
+
+describe('performance page remembered model', () => {
+  it('waits for the new model config before replacing the saved default', async () => {
+    let resolveSecond:
+      | ((result: Awaited<ReturnType<typeof fetchModelConfig>>) => void)
+      | undefined;
+    vi.mocked(fetchModelConfig).mockImplementation((candidate: string) => {
+      if (candidate === 'org/model-b') {
+        return new Promise(resolve => { resolveSecond = resolve; });
+      }
+      return Promise.resolve({
+        success: true,
+        config: { hidden_size: 4096 },
+        source: 'huggingface',
+      });
+    });
+
+    const setDefaultModel = vi.mocked(useSettings)().setDefaultModel;
+
+    await mountAt('?model=org%2Fmodel-a&system=h100_sxm');
+    // The config lookup is debounced, so let it run before checking.
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 550));
+    });
+    expect(setDefaultModel).toHaveBeenCalledWith('org/model-a');
+
+    const input = container.querySelector<HTMLInputElement>('#predict-performance-model')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(input, 'org/model-b');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+    // The previous model's config must not validate the new one while its own
+    // fetch is still pending.
+    expect(setDefaultModel).not.toHaveBeenCalledWith('org/model-b');
+
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 550));
+    });
+    expect(resolveSecond).toBeDefined();
+    await act(async () => {
+      resolveSecond?.({ success: true, config: { hidden_size: 8192 }, source: 'huggingface' });
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(setDefaultModel).toHaveBeenCalledWith('org/model-b');
   });
 });
 

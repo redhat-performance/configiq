@@ -208,7 +208,11 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     // the end of that text arrives already appended, so keep only the typed
     // part instead of searching for the label plus the new text.
     const displayed = selectedItem?.label ?? value
-    const nextValue = !editing && displayed && val.startsWith(displayed)
+    // Only strip a single appended keystroke. A pasted ID may legitimately
+    // start with the current label and must keep its full text.
+    const nextValue = !editing && displayed &&
+      val.length === displayed.length + 1 &&
+      val.startsWith(displayed)
       ? val.slice(displayed.length)
       : val
     setEditing(true)

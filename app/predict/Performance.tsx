@@ -275,6 +275,9 @@ export default function Performance() {
 
   // HuggingFace config fetching
   const [hfConfig, setHfConfig] = React.useState<HFModelConfig | null>(null);
+  // The model the config was fetched for; prevents a previous model's config
+  // from validating a new one while its own fetch is still pending.
+  const [hfConfigModel, setHfConfigModel] = React.useState('');
   const [isFetchingConfig, setIsFetchingConfig] = React.useState(false);
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
@@ -299,7 +302,8 @@ export default function Performance() {
   useRememberDefaultModel(
     model,
     modelTouched.current && !modelUnsupported &&
-      (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+      (modelStatus === 'supported' || modelStatus === 'catalog' ||
+        (modelStatus === 'fetched' && hfConfigModel === model)),
   );
 
   // Collapsible state for "Why this GPU count?" card
@@ -519,6 +523,7 @@ export default function Performance() {
     setFallbackReason('');
     // Clear any prior model's config so it can't leak into the next estimate.
     setHfConfig(null);
+    setHfConfigModel('');
 
     // Fetch HF config for models not in the catalog, so we can send it to the backend
     // instead of having the backend try to fetch it from HuggingFace.
@@ -541,12 +546,14 @@ export default function Performance() {
 
       if (result.success && result.config) {
         setHfConfig(result.config);
+        setHfConfigModel(model);
         setTestError(null);
         setIsUsingFallback(false);
         console.log('✅ Fetched HF config:', result.config);
       } else {
         // Fetch failed - will use fallback estimation
         setHfConfig(null);
+        setHfConfigModel('');
         setIsUsingFallback(true);
         setFallbackReason(result.error || 'Unknown error');
         console.warn('⚠️ Failed to fetch HF config, will use estimation:', result.error);

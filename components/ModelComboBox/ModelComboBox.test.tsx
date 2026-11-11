@@ -156,6 +156,13 @@ describe('browsing', () => {
     expect(optionLabels()).toContain('nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8');
   });
 
+  it('keeps a pasted id that starts with the selected model', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await type('Qwen/Qwen3-8B-Instruct');
+    expect(input().value).toBe('Qwen/Qwen3-8B-Instruct');
+  });
+
   it('closes an open menu when the caret is clicked', async () => {
     await mount({ value: 'Qwen/Qwen3-8B' });
     await open();
