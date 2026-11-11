@@ -14,6 +14,7 @@ from dataset_common import (
     DATASET_REPO_ENV,
     DEFAULT_DATASET_REPO,
     file_sha256,
+    is_upstream_vllm_version,
     resolve_dataset_repo_id,
     validate_public_frame,
 )
@@ -39,6 +40,7 @@ pretty_name: ConfigIQ tested-model performance data
 
 Sanitized aggregate GuideLLM measurements used to train and assess ConfigIQ's
 model/hardware performance-envelope classifiers.
+Only rows labeled with plain upstream vLLM release versions are included.
 
 - Model/hardware pairs: {pair_count}
 - Aggregate benchmark rows: {row_count}
@@ -144,6 +146,12 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
             raise FileNotFoundError(source_path)
         frame = pd.read_parquet(source_path)
         validate_public_frame(frame)
+        if "version" not in frame or not frame["version"].map(is_upstream_vllm_version).all():
+            raise ValueError(f"pair {pair_id} contains a non-upstream vLLM version")
+        if "backend" not in frame or not frame["backend"].eq("vllm").fillna(False).all():
+            raise ValueError(f"pair {pair_id} contains a non-vLLM backend")
+        if "backend_version" not in frame or not frame["backend_version"].eq(frame["version"]).fillna(False).all():
+            raise ValueError(f"pair {pair_id} has a backend version that differs from its version")
         expected_records = pair.get("records")
         if expected_records is not None and expected_records != len(frame):
             raise ValueError(f"pair {pair_id} row count does not match its manifest")

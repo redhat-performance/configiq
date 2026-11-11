@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: false
+      publish_inferencex:
+        description: Refresh the private InferenceX dataset (main only)
+        required: true
+        type: boolean
+        default: false
   schedule:
     - cron: '0 0 * * 1'
       timezone: America/New_York
@@ -18,7 +23,9 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.repository == 'redhat-performance/configiq'
+    if: >-
+      github.repository == 'redhat-performance/configiq' &&
+      (github.event_name != 'workflow_dispatch' || !inputs.publish_inferencex || inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -123,3 +130,44 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+
+  refresh-inferencex:
+    if: >-
+      github.repository == 'redhat-performance/configiq' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.publish_inferencex) ||
+       (github.event_name == 'schedule' && vars.INFERENCEX_PUBLISH_ENABLED == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.18'
+          enable-cache: true
+
+      - name: Install dataset dependencies
+        run: uv sync --locked --group tested-models
+
+      - name: Refresh private InferenceX snapshot
+        env:
+          HF_OIDC_RESOURCE: datasets/redhat-performance/configiq-inferencex-comparison
+        run: |
+          HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
+          echo "::add-mask::${HF_TOKEN}"
+          export HF_TOKEN
+          uv run --locked --group tested-models python scripts/publish-inferencex-snapshot.py

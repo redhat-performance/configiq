@@ -18,7 +18,7 @@ def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 def _write_config(path: Path, models: list[str]) -> None:
-    path.write_text(json.dumps({"testedModels": models}))
+    path.write_text(json.dumps({"approvedModels": models}))
 
 
 def test_import_keeps_only_plain_upstream_vllm_versions(tmp_path, capsys) -> None:
@@ -29,6 +29,7 @@ def test_import_keeps_only_plain_upstream_vllm_versions(tmp_path, capsys) -> Non
     _write_config(config_path, ["org/model"])
     _write_csv(csv_path, [
         {"model": "org/model", "accelerator": "H200", "version": "vLLM-0.10.2"},
+        {"model": "org/model", "accelerator": "H200", "version": "vllm-0.6.2"},
         {"model": "org/model", "accelerator": "H200", "version": "vLLM-0.10.2-rc1"},
         {"model": "org/model", "accelerator": "H200", "version": "RHAIIS-3.2-vLLM-0.9.0"},
         {"model": "org/model", "accelerator": "B200", "version": ""},
@@ -39,8 +40,8 @@ def test_import_keeps_only_plain_upstream_vllm_versions(tmp_path, capsys) -> Non
     manifest = import_s3_ground_truth.import_csv(csv_path, config_path, output_dir, manifest_path)
 
     assert sorted(pair["id"] for pair in manifest["pairs"]) == ["org_model__b200", "org_model__h200"]
-    assert manifest["approved_rows"] == 5
-    assert manifest["upstream_rows"] == 2
+    assert manifest["approved_rows"] == 6
+    assert manifest["upstream_rows"] == 3
     assert manifest["dropped_version_rows"] == 3
     assert manifest["dropped_versions"] == {
         "<blank>": 1,
@@ -48,7 +49,7 @@ def test_import_keeps_only_plain_upstream_vllm_versions(tmp_path, capsys) -> Non
         "vLLM-0.10.2-rc1": 1,
     }
     output = capsys.readouterr().out
-    assert "Prepared 2 upstream rows" in output
+    assert "Prepared 3 upstream rows" in output
     assert "Dropped 3 approved rows" in output
 
 
@@ -64,6 +65,23 @@ def test_import_fails_when_the_filter_removes_every_row(tmp_path) -> None:
         import_s3_ground_truth.import_csv(
             csv_path, config_path, tmp_path / "datasets", tmp_path / "dataset-manifest.json"
         )
+
+
+def test_import_rejects_colliding_pair_ids_before_writing(tmp_path) -> None:
+    csv_path = tmp_path / "aggregate.csv"
+    config_path = tmp_path / "config.json"
+    output_dir = tmp_path / "datasets"
+    manifest_path = tmp_path / "dataset-manifest.json"
+    _write_config(config_path, ["org/model"])
+    _write_csv(csv_path, [
+        {"model": "org/model", "accelerator": "H200 SXM", "version": "vLLM-0.24.0"},
+        {"model": "org/model", "accelerator": "H200-SXM", "version": "vLLM-0.24.0"},
+    ])
+
+    with pytest.raises(ValueError, match="same ID"):
+        import_s3_ground_truth.import_csv(csv_path, config_path, output_dir, manifest_path)
+    assert not output_dir.exists()
+    assert not manifest_path.exists()
 
 
 def test_backend_name_prefers_productized_stack_labels() -> None:

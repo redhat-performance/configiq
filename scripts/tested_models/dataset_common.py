@@ -15,6 +15,12 @@ from quantization import canonical_quantization
 
 DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
+UPSTREAM_VLLM_VERSION_PATTERN = re.compile(r"vLLM-\d+\.\d+\.\d+", re.IGNORECASE)
+
+
+def is_upstream_vllm_version(value: Any) -> bool:
+    """Accept only a plain upstream vLLM release label."""
+    return isinstance(value, str) and bool(UPSTREAM_VLLM_VERSION_PATTERN.fullmatch(value.strip()))
 
 SENSITIVE_COLUMN_PATTERN = re.compile(
     r"(?:email|e-mail|auth[_ -]?token|access[_ -]?token|secret|password|authorization|cookie|ip[_ -]?address|user[_ -]?id|hostname|host[_ -]?name)",
