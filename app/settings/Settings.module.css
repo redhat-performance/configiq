@@ -196,16 +196,6 @@
 /* ── Helper text & link ── */
 .helperText { font-size: 13px; color: var(--gc-text-3); line-height: 1.4; }
 
-.capabilityList {
-  margin: 10px 0 0;
-  padding-left: 18px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--gc-text-2);
-}
-.capabilityList li { margin-bottom: 4px; }
-.capabilityList li:last-child { margin-bottom: 0; }
-
 .link {
   color: var(--gc-link);
   text-decoration: none;

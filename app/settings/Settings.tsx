@@ -15,18 +15,6 @@ const BACKEND_LABELS: Record<string, string> = {
   sglang: 'SGLang',
 };
 
-/** Plain-language names for the sizing goals a simulator can advertise. */
-const GOAL_LABELS: Record<string, string> = {
-  min_gpus: 'latency-SLO sizing',
-  throughput_demand: 'throughput-demand sizing',
-  pareto: 'Pareto frontier scans',
-  concurrency_capacity: 'concurrency-capacity sizing',
-};
-
-function goalLabel(goal: string): string {
-  return GOAL_LABELS[goal] ?? goal.replaceAll('_', ' ');
-}
-
 export function Settings() {
   const {
     setDefaultModel, hfToken, setHfToken,
@@ -199,11 +187,11 @@ export function Settings() {
           </div>
         </div>
 
-        {/* ── Simulator ── */}
+        {/* ── Simulator backend ── */}
         <div className={styles.section}>
           <div className={styles.sectionHead}>
             <div>
-              <div className={styles.sectionTitle}>Simulator</div>
+              <div className={styles.sectionTitle}>Simulator backend</div>
               <div className={styles.sectionDesc}>
                 Simulator used by Predict performance, Recommend sizing and Hybrid savings.
               </div>
@@ -229,34 +217,6 @@ export function Settings() {
                   </option>
                 ))}
               </select>
-              <div className={styles.helperText}>
-                Predict, Recommend and Hybrid savings use the selected simulator. Each tool appears only
-                when that simulator reports the capability it needs, such as a memory breakdown for KV
-                cache or a Pareto sweep and capacity sizing for Recommend.
-              </div>
-              <ul className={styles.capabilityList}>
-                {simulators.map(entry => {
-                  const entrySupport = simulatorSupport[entry.id];
-                  const backends = entry.id === simulator && support
-                    ? support.backends
-                    : entrySupport?.backends ?? [];
-                  const goals = entrySupport?.objectives ?? [];
-                  return (
-                    <li key={entry.id}>
-                      <strong>{entry.label}</strong>
-                      {entry.description ? `: ${entry.description}` : ''}
-                      {entrySupport?.available
-                        ? ` · goals: ${goals.length > 0 ? goals.map(goalLabel).join(', ') : 'none reported'}`
-                        : ' · capabilities unavailable'}
-                      {backends.length > 0 ? ` · backends: ${backends.map(b => BACKEND_LABELS[b.id] ?? b.id).join(', ')}` : ''}
-                    </li>
-                  );
-                })}
-                <li>
-                  A simulator never silently substitutes for another. A goal or topology the selected
-                  simulator does not report is offered as unavailable rather than answered by a different simulator.
-                </li>
-              </ul>
             </div>
           </div>
         </div>
