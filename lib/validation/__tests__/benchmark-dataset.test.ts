@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { aggregateGroundTruthRows, getFilterOptions } from '../ground-truth-dataset'
-import type { DatasetRow, GroundTruthFilters } from '../ground-truth-types'
+import { aggregateBenchmarkRows, getFilterOptions } from '../benchmark-dataset'
+import type { DatasetRow, BenchmarkFilters } from '../benchmark-types'
 
 vi.mock('hyparquet', () => ({
   parquetReadObjects: vi.fn(async () => [
@@ -22,7 +22,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-const EMPTY_FILTERS: GroundTruthFilters = {
+const EMPTY_FILTERS: BenchmarkFilters = {
   accelerator: '', model: '', backend: '', backendVersion: '', isl: '', osl: '', tp: '',
 }
 
@@ -35,7 +35,7 @@ function row(values: DatasetRow): DatasetRow {
   }
 }
 
-describe('ground-truth dataset integer columns', () => {
+describe('benchmark dataset integer columns', () => {
   it('exposes INT64 values returned as bigint in filter options', () => {
     const options = getFilterOptions(
       [row({ isl: 2048n, osl: 128n, tp: 4n })],
@@ -48,7 +48,7 @@ describe('ground-truth dataset integer columns', () => {
   })
 
   it('groups rows whose concurrency is a bigint', () => {
-    const points = aggregateGroundTruthRows([
+    const points = aggregateBenchmarkRows([
       row({ concurrency: 1n, 'output_tok/sec': 100, ttft_median: 1000, tpot_median: 100, request_latency_median: 2 }),
       row({ concurrency: 2n, 'output_tok/sec': 200, ttft_median: 2000, tpot_median: 200, request_latency_median: 3 }),
     ])
@@ -77,7 +77,7 @@ describe('ground-truth dataset integer columns', () => {
 
   it('skips a bigint outside the safe integer range instead of losing precision', () => {
     const unsafe = BigInt(Number.MAX_SAFE_INTEGER) + 2n
-    expect(aggregateGroundTruthRows([
+    expect(aggregateBenchmarkRows([
       row({ concurrency: unsafe, 'output_tok/sec': 100 }),
     ])).toEqual([])
   })
@@ -109,29 +109,29 @@ function failedFetch() {
   return vi.fn(async () => ({ ok: false, status: 404, headers: new Headers() }))
 }
 
-describe('ground-truth dataset cache', () => {
+describe('benchmark dataset cache', () => {
   it('serves the cached dataset to every concurrent caller when a reload fails', async () => {
     vi.resetModules()
     const now = Date.now()
     vi.spyOn(Date, 'now').mockReturnValue(now)
     vi.stubGlobal('fetch', datasetFetch())
-    const mod = await import('../ground-truth-dataset')
+    const mod = await import('../benchmark-dataset')
 
-    const first = await mod.getGroundTruthDataset()
+    const first = await mod.getBenchmarkDataset()
     expect(first.rows).toHaveLength(1)
 
     vi.mocked(Date.now).mockReturnValue(now + 31_000)
     vi.stubGlobal('fetch', failedFetch())
 
-    const results = await Promise.all([mod.getGroundTruthDataset(true), mod.getGroundTruthDataset(true)])
+    const results = await Promise.all([mod.getBenchmarkDataset(true), mod.getBenchmarkDataset(true)])
     expect(results).toEqual([first, first])
   })
 
   it('propagates a reload failure when no cached dataset exists', async () => {
     vi.resetModules()
     vi.stubGlobal('fetch', failedFetch())
-    const mod = await import('../ground-truth-dataset')
+    const mod = await import('../benchmark-dataset')
 
-    await expect(mod.getGroundTruthDataset()).rejects.toThrow('Hugging Face')
+    await expect(mod.getBenchmarkDataset()).rejects.toThrow('Hugging Face')
   })
 })

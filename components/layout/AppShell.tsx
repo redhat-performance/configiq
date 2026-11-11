@@ -220,7 +220,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
             <NavItemWithIcon
               icon={ChartLineIcon}
-              label="Ground truth comparison"
+              label="Benchmark comparison"
               href="/validation/compare"
               isActive={pathname === "/validation/compare"}
             />

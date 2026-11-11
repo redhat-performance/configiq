@@ -31,6 +31,8 @@ export interface EstimateAdapterInput {
   requests_per_load_unit?: number
   tp_size: number
   pp_size?: number
+  /** Attention data-parallel width; omitted means the service default. */
+  attention_dp_size?: number
   gpu_memory_utilization?: number
   max_num_seqs?: number
   enable_chunked_prefill?: boolean
@@ -138,6 +140,7 @@ export function buildPredictRequestBody(input: EstimateAdapterInput): Record<str
 
   if (input.simulator) body.simulator = input.simulator
   if (input.pp_size != null && input.pp_size > 1) body.pp_size = input.pp_size
+  if (input.attention_dp_size != null && input.attention_dp_size > 1) body.attention_dp_size = input.attention_dp_size
   if (input.gpu_memory_utilization != null) body.gpu_memory_utilization = input.gpu_memory_utilization
   if (input.max_num_seqs != null) body.max_num_seqs = input.max_num_seqs
   if (input.enable_chunked_prefill != null) body.enable_chunked_prefill = input.enable_chunked_prefill
@@ -242,6 +245,17 @@ export async function fetchEstimateAsInferenceResult(
   const sc = data.serving_config
   const mb = data.memory_breakdown
   const simulator: string = actualSimulator
+  // The response names the engine release it actually used. AISimulate reports
+  // `backend_version`; BLIS reports it under provenance. Null means the
+  // response did not say, and callers must not infer one.
+  const provenance = data?.provenance && typeof data.provenance === 'object'
+    ? data.provenance as Record<string, unknown>
+    : null
+  const reportedEngineVersion = typeof data?.backend_version === 'string' && data.backend_version.trim()
+    ? data.backend_version.trim()
+    : typeof provenance?.engine_version === 'string' && provenance.engine_version.trim()
+      ? provenance.engine_version.trim()
+      : null
   const memoryAvailable = !!mb || typeof data.memory === 'number'
   const totalVramGb = input.vram_gb ?? null
   const gmu = sc?.gpu_memory_utilization ?? input.gpu_memory_utilization ?? 0.9
@@ -323,6 +337,7 @@ export async function fetchEstimateAsInferenceResult(
 
   const result: InferenceConfigResult = {
     simulator,
+    engine_version: reportedEngineVersion,
     memory_available: memoryAvailable,
     mode: isDisagg ? 'disagg' : 'agg',
     disagg,

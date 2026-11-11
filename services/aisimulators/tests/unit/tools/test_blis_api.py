@@ -240,18 +240,23 @@ def test_blis_rejects_non_vllm_backend_at_the_api_boundary():
     assert "currently model vLLM" in response.json()["detail"]
 
 
-def test_blis_rejects_aisimulate_only_estimate_options():
-    response = client.post(
-        "/predict",
-        json={
-            **ESTIMATE_BODY,
-            "simulator": "blis",
-            "requests_per_load_unit": 50,
-        },
-    )
+def test_blis_accepts_requests_per_load_unit():
+    with patch(
+        "tools.api_service.app._blis_estimate",
+        return_value=_prediction(),
+    ) as blis_estimate, patch("tools.api_service.app._run_aisimulate_prediction") as run_aisimulate:
+        response = client.post(
+            "/predict",
+            json={
+                **ESTIMATE_BODY,
+                "simulator": "blis",
+                "requests_per_load_unit": 50,
+            },
+        )
 
-    assert response.status_code == 422
-    assert "requests_per_load_unit" in response.json()["detail"]
+    assert response.status_code == 200
+    assert blis_estimate.call_args.args[0].requests_per_load_unit == 50
+    run_aisimulate.assert_not_called()
 
 
 def test_unknown_simulator_is_an_explicit_error_not_a_substitution():

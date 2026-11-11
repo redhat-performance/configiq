@@ -174,7 +174,13 @@ BLIS `/predict` supports both colocated and prefill/decode-disaggregated vLLM
 scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
-disaggregates every request. BLIS `/recommend` searches aggregate TP candidates
+disaggregates every request. Both modes accept `requests_per_load_unit` and
+simulate `max(1, round(batch_size x requests_per_load_unit))` total requests, the
+same rule AISimulate uses; omitting it keeps a one-request-per-slot smoke run.
+The run also pins the prompt and output token distributions to the requested
+ISL/OSL (`min = max = requested`, stdev 0), so a prompt longer than BLIS's
+default 7000-token ceiling is simulated instead of rejected.
+BLIS `/recommend` searches aggregate TP candidates
 for `min_gpus` and `throughput_demand`. It defaults to `roce-200g` when the
 `fabric` field is omitted and also searches bounded P/D TP and worker-count
 combinations, with one node per pool and DP=PP=1. Send `fabric: null` to request

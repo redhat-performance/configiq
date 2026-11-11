@@ -4,10 +4,10 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   normalizeBackendVersion,
-} from '../ground-truth-dataset'
-import type { DatasetRow, GroundTruthFilters } from '../ground-truth-types'
+} from '../benchmark-dataset'
+import type { DatasetRow, BenchmarkFilters } from '../benchmark-types'
 
-const filters: GroundTruthFilters = {
+const filters: BenchmarkFilters = {
   accelerator: 'H200',
   model: 'example/model',
   backend: 'vllm',

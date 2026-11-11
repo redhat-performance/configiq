@@ -54,8 +54,23 @@ def build_run_command(runtime: BlisRuntime, request: RunRequest) -> list[str]:
         request.scenario,
         "--prompt-tokens",
         str(request.isl),
+        # Pin the token distribution to the requested length. BLIS otherwise
+        # draws from a 0–7000 window, which rejects prompts longer than 7000 and
+        # adds variance the benchmark comparison does not model.
+        "--prompt-tokens-min",
+        str(request.isl),
+        "--prompt-tokens-max",
+        str(request.isl),
+        "--prompt-tokens-stdev",
+        "0",
         "--output-tokens",
         str(request.osl),
+        "--output-tokens-min",
+        str(request.osl),
+        "--output-tokens-max",
+        str(request.osl),
+        "--output-tokens-stdev",
+        "0",
         "--num-requests",
         str(request.num_requests),
     ]

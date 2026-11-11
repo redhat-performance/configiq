@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  aggregateGroundTruthRows,
+  aggregateBenchmarkRows,
   filterRows,
   getConfigurationOptions,
   getFilterOptions,
-  getGroundTruthDataset,
+  getBenchmarkDataset,
   getInferenceXDataset,
-  parseGroundTruthFilters,
+  parseBenchmarkFilters,
   parseConfiguration,
   rowMatchesConfiguration,
-} from '@/lib/validation/ground-truth-dataset'
+} from '@/lib/validation/benchmark-dataset'
+import { benchmarkOptions, resolveBenchmarkFilters } from '@/lib/validation/benchmark-resolve'
 
 export const dynamic = 'force-dynamic'
+
+type Mode = 'resolve' | 'filters' | 'data'
 
 function failure(message: string, status: number) {
   return NextResponse.json(
@@ -22,16 +25,18 @@ function failure(message: string, status: number) {
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
-  const mode = searchParams.get('mode') ?? 'filters'
-  if (mode !== 'filters' && mode !== 'data') return failure('Unknown ground truth request mode', 400)
+  const mode = (searchParams.get('mode') ?? 'filters') as Mode
+  if (mode !== 'resolve' && mode !== 'filters' && mode !== 'data') {
+    return failure('Unknown benchmark request mode', 400)
+  }
 
   try {
-    let groundTruth: Awaited<ReturnType<typeof getGroundTruthDataset>> | null = null
-    let groundTruthError: string | null = null
+    let benchmark: Awaited<ReturnType<typeof getBenchmarkDataset>> | null = null
+    let benchmarkError: string | null = null
     try {
-      groundTruth = await getGroundTruthDataset(searchParams.get('refresh') === 'true')
+      benchmark = await getBenchmarkDataset(searchParams.get('refresh') === 'true')
     } catch (error) {
-      groundTruthError = error instanceof Error ? error.message : 'Hugging Face ground truth is unavailable'
+      benchmarkError = error instanceof Error ? error.message : 'Hugging Face benchmark data is unavailable'
     }
     let inferencex: Awaited<ReturnType<typeof getInferenceXDataset>> | null = null
     let inferencexError: string | null = null
@@ -41,33 +46,46 @@ export async function GET(request: NextRequest) {
       inferencexError = error instanceof Error ? error.message : 'Private InferenceX dataset is unavailable'
     }
     const inferencexRows = inferencex?.rows ?? []
-    if (!groundTruth && !inferencex) return failure(groundTruthError ?? inferencexError ?? 'No measured data is available', 502)
-    const combinedRows = [...(groundTruth?.rows ?? []), ...inferencexRows]
-    const filters = parseGroundTruthFilters(searchParams)
+    if (!benchmark && !inferencex) return failure(benchmarkError ?? inferencexError ?? 'No measured data is available', 502)
+    const combinedRows = [...(benchmark?.rows ?? []), ...inferencexRows]
+    const requestedFilters = parseBenchmarkFilters(searchParams)
 
-    if (mode === 'filters') {
-      const matchingRows = filterRows(combinedRows, filters)
+    if (mode === 'resolve' || mode === 'filters') {
+      const resolution = resolveBenchmarkFilters(combinedRows, requestedFilters)
+      const options = benchmarkOptions(
+        combinedRows,
+        resolution.filters,
+        getFilterOptions(combinedRows, resolution.filters),
+      )
+      const configurations = resolution.unavailable
+        ? []
+        : getConfigurationOptions(filterRows(combinedRows, resolution.filters))
       return NextResponse.json(
         {
           status: 'ok',
-          source: groundTruth?.source ?? null,
+          source: benchmark?.source ?? null,
           inferencexSource: inferencex?.source ?? null,
-          groundTruthError,
+          benchmarkError,
           inferencexError,
-          options: getFilterOptions(combinedRows, filters),
-          configurations: Object.values(filters).every(Boolean) ? getConfigurationOptions(matchingRows) : [],
+          filters: resolution.filters,
+          adjustments: resolution.adjustments,
+          unavailable: resolution.unavailable,
+          versionFallback: resolution.versionFallback,
+          options,
+          configurations,
         },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
 
+    const filters = requestedFilters
     if (Object.values(filters).some(value => !value)) {
       return failure('Choose an accelerator, model, serving backend and version, input and output length, and tensor parallel size.', 400)
     }
     const configuration = parseConfiguration(searchParams.get('configuration') ?? '')
     if (!configuration) return failure('Choose a benchmark runtime configuration before comparing.', 400)
 
-    const internalRows = filterRows(groundTruth?.rows ?? [], filters)
+    const internalRows = filterRows(benchmark?.rows ?? [], filters)
       .filter(row => rowMatchesConfiguration(row, configuration))
     const selectedInferenceXRows = configuration.measurement_source === 'InferenceX'
       ? filterRows(inferencexRows, filters).filter(row => rowMatchesConfiguration(row, configuration))
@@ -84,8 +102,8 @@ export async function GET(request: NextRequest) {
     }
     if (internalRows.length === 0 && selectedInferenceXRows.length === 0) {
       return NextResponse.json(
-        { status: 'ok', source: groundTruth?.source ?? null, inferencexSource: inferencex?.source ?? null,
-          matchedRows: 0, groundTruthPoints: [], inferencexPoints: [], inferencexRunUrl: null, inferencexRuns: [] },
+        { status: 'ok', source: benchmark?.source ?? null, inferencexSource: inferencex?.source ?? null,
+          matchedRows: 0, benchmarkPoints: [], inferencexPoints: [], inferencexRunUrl: null, inferencexRuns: [] },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
@@ -93,13 +111,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(
       {
         status: 'ok',
-        source: groundTruth?.source ?? null,
+        source: benchmark?.source ?? null,
         inferencexSource: inferencex?.source ?? null,
-        groundTruthError,
+        benchmarkError,
         inferencexError,
         matchedRows: internalRows.length + selectedInferenceXRows.length,
-        groundTruthPoints: aggregateGroundTruthRows(internalRows),
-        inferencexPoints: aggregateGroundTruthRows(selectedInferenceXRows),
+        benchmarkPoints: aggregateBenchmarkRows(internalRows),
+        inferencexPoints: aggregateBenchmarkRows(selectedInferenceXRows),
         inferencexRunUrl: inferencexRuns[0]?.url ?? null,
         inferencexDate: inferencexRuns[0]?.date ?? null,
         inferencexRuns,
@@ -107,7 +125,7 @@ export async function GET(request: NextRequest) {
       { headers: { 'Cache-Control': 'no-store' } },
     )
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Could not load the Hugging Face ground truth dataset'
+    const message = error instanceof Error ? error.message : 'Could not load the Hugging Face benchmark dataset'
     return failure(message, 502)
   }
 }

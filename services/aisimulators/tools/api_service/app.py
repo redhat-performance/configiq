@@ -4651,7 +4651,6 @@ def _handle_blis_error(error: Exception) -> None:
 def _blis_estimate(req: EstimateRequest):
     unsupported_values: dict[str, Any] = {
         "database_mode": req.database_mode if req.database_mode != "HYBRID" else None,
-        "requests_per_load_unit": req.requests_per_load_unit,
     }
     if req.mode != "disagg":
         unsupported_values.update({
@@ -4687,6 +4686,7 @@ def _blis_estimate(req: EstimateRequest):
         isl=req.isl,
         osl=req.osl,
         concurrency=req.batch_size,
+        requests_per_load_unit=req.requests_per_load_unit,
         tp=req.tp_size,
         pp=req.pp_size,
         dp=req.attention_dp_size,

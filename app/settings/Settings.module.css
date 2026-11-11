@@ -182,7 +182,16 @@
 .backendRow  { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
 .backendField { display: flex; flex-direction: column; gap: 6px; }
 .versionField { display: flex; flex-direction: column; gap: 6px; }
-.versionField .textInput { width: 120px; }
+.versionToggle {
+  min-width: 160px;
+  height: 42px;
+  font: 400 14px var(--sans);
+  text-align: left;
+}
+.versionList {
+  max-height: 280px;
+  overflow-y: auto;
+}
 
 /* ── Backend select ── */
 .selectInput {

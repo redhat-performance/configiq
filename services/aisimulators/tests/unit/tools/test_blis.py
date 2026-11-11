@@ -471,7 +471,13 @@ def test_run_command_passes_catalog_registry_and_scenario_directory():
         "--scenarios", "/tmp/scenarios",
         "--scenario", "generated.yaml",
         "--prompt-tokens", "2048",
+        "--prompt-tokens-min", "2048",
+        "--prompt-tokens-max", "2048",
+        "--prompt-tokens-stdev", "0",
         "--output-tokens", "128",
+        "--output-tokens-min", "128",
+        "--output-tokens-max", "128",
+        "--output-tokens-stdev", "0",
         "--num-requests", "8",
         "--concurrency", "8",
         "--prefix-tokens", "16",
@@ -892,6 +898,46 @@ def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypa
     assert result.prefill_config["tp"] == 4
     assert result.decode_config["tp"] == 2
     assert result.serving_config is None
+
+
+def test_predict_maps_requests_per_load_unit_to_the_simulation_slice(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    calls = []
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        calls.append(run_request)
+        return _result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    def predict(**overrides):
+        return blis_service.estimate(blis_service.EstimateInput(
+            model_path="Qwen/Qwen3-32B",
+            system="h100_sxm",
+            backend="vllm",
+            backend_version=None,
+            isl=8192,
+            osl=1024,
+            concurrency=8,
+            tp=1,
+            pp=1,
+            dp=1,
+            **overrides,
+        ))
+
+    predict(requests_per_load_unit=10)
+    predict()
+
+    assert calls[0].num_requests == 80
+    # Omitting the field keeps the previous one-request-per-slot smoke run.
+    assert calls[1].num_requests == 8
 
 
 def test_normalize_result_maps_the_engine_kv_pool():

@@ -1,15 +1,15 @@
 import { parquetReadObjects } from 'hyparquet'
 import appConfig from '../../public/config.json'
 import {
-  GROUND_TRUTH_FILTER_KEYS,
+  BENCHMARK_FILTER_KEYS,
   type ConfigurationOption,
   type DatasetConfiguration,
   type DatasetRow,
   type DatasetSource,
-  type GroundTruthFilterKey,
-  type GroundTruthFilters,
-  type GroundTruthPoint,
-} from './ground-truth-types'
+  type BenchmarkFilterKey,
+  type BenchmarkFilters,
+  type BenchmarkPoint,
+} from './benchmark-types'
 
 const DATASET_ID = 'redhat-performance/configiq-performance-upstream-data'
 const DATASET_URL = `https://huggingface.co/datasets/${DATASET_ID}`
@@ -127,6 +127,8 @@ const CONFIGURATION_FIELDS = [
   'spec_decoding',
   'request_type',
   'turns',
+  'tp_prefill',
+  'tp_decode',
   'inferencex_topology',
   'inferencex_curve',
   'inferencex_offload',
@@ -165,7 +167,7 @@ function normalizeValue(value: unknown): string | null {
   return null
 }
 
-const UNREPORTED_VERSION = 'Version not reported'
+export const UNREPORTED_VERSION = 'Version not reported'
 
 function normalizeBackend(value: unknown): string | null {
   return normalizeValue(value)?.toLowerCase() ?? null
@@ -181,10 +183,24 @@ export function normalizeBackendVersion(backend: unknown, value: unknown): strin
   return version
 }
 
-function filterValue(row: DatasetRow, key: GroundTruthFilterKey): string | null {
+export function benchmarkFilterValue(row: DatasetRow, key: BenchmarkFilterKey): string | null {
   if (key === 'backend') return normalizeBackend(row.backend)
   if (key === 'backendVersion') return normalizeBackendVersion(row.backend, row.backend_version)
   return normalizeValue(row[key])
+}
+
+/** Sorted, de-duplicated values a filter key takes across `rows`. */
+export function benchmarkFilterValues(rows: DatasetRow[], key: BenchmarkFilterKey): string[] {
+  const values = [...new Set(rows
+    .map(row => benchmarkFilterValue(row, key))
+    .filter((value): value is string => value !== null))]
+  values.sort((left, right) => {
+    const leftNumber = Number(left)
+    const rightNumber = Number(right)
+    if (left !== '' && right !== '' && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber
+    return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' })
+  })
+  return values
 }
 
 function configurationForRow(row: DatasetRow): DatasetConfiguration {
@@ -320,7 +336,7 @@ async function loadDataset(refresh: boolean): Promise<DatasetCache> {
   return { rows, source, expiresAt: Date.now() + CACHE_TTL_MS }
 }
 
-export async function getGroundTruthDataset(refresh = false): Promise<DatasetCache> {
+export async function getBenchmarkDataset(refresh = false): Promise<DatasetCache> {
   const cacheAgeMs = cachedDataset ? Date.now() - (cachedDataset.expiresAt - CACHE_TTL_MS) : Infinity
   const forceRefresh = refresh && cacheAgeMs > MIN_REFRESH_INTERVAL_MS
   if (!forceRefresh && cachedDataset && cachedDataset.expiresAt > Date.now()) return cachedDataset
@@ -347,31 +363,24 @@ export async function getGroundTruthDataset(refresh = false): Promise<DatasetCac
   }
 }
 
-export function parseGroundTruthFilters(searchParams: URLSearchParams): GroundTruthFilters {
+export function parseBenchmarkFilters(searchParams: URLSearchParams): BenchmarkFilters {
   return Object.fromEntries(
-    GROUND_TRUTH_FILTER_KEYS.map(key => [key, searchParams.get(key) ?? '']),
-  ) as GroundTruthFilters
+    BENCHMARK_FILTER_KEYS.map(key => [key, searchParams.get(key) ?? '']),
+  ) as BenchmarkFilters
 }
 
-export function filterRows(rows: DatasetRow[], filters: Partial<GroundTruthFilters>): DatasetRow[] {
-  return rows.filter(row => GROUND_TRUTH_FILTER_KEYS.every(key => {
+export function filterRows(rows: DatasetRow[], filters: Partial<BenchmarkFilters>): DatasetRow[] {
+  return rows.filter(row => BENCHMARK_FILTER_KEYS.every(key => {
     const selected = filters[key]
-    return !selected || filterValue(row, key) === selected
+    return !selected || benchmarkFilterValue(row, key) === selected
   }))
 }
 
-export function getFilterOptions(rows: DatasetRow[], filters: GroundTruthFilters): Record<GroundTruthFilterKey, string[]> {
-  return Object.fromEntries(GROUND_TRUTH_FILTER_KEYS.map(key => {
+export function getFilterOptions(rows: DatasetRow[], filters: BenchmarkFilters): Record<BenchmarkFilterKey, string[]> {
+  return Object.fromEntries(BENCHMARK_FILTER_KEYS.map(key => {
     const matchingRows = filterRows(rows, { ...filters, [key]: '' })
-    const values = [...new Set(matchingRows.map(row => filterValue(row, key)).filter((value): value is string => value !== null))]
-    values.sort((left, right) => {
-      const leftNumber = Number(left)
-      const rightNumber = Number(right)
-      if (left !== '' && right !== '' && Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber
-      return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' })
-    })
-    return [key, values]
-  })) as Record<GroundTruthFilterKey, string[]>
+    return [key, benchmarkFilterValues(matchingRows, key)]
+  })) as Record<BenchmarkFilterKey, string[]>
 }
 
 export function getConfigurationOptions(rows: DatasetRow[]): ConfigurationOption[] {
@@ -418,7 +427,7 @@ function numericField(row: DatasetRow, key: string): number | null {
   return null
 }
 
-export function aggregateGroundTruthRows(rows: DatasetRow[]): GroundTruthPoint[] {
+export function aggregateBenchmarkRows(rows: DatasetRow[]): BenchmarkPoint[] {
   const groups = new Map<number, DatasetRow[]>()
   for (const row of rows) {
     const concurrency = numericField(row, 'concurrency')

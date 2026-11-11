@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { Button, Label, Switch } from '@patternfly/react-core';
+import { Button, Label, MenuToggle, Select, SelectList, SelectOption, Switch } from '@patternfly/react-core';
 import { EyeIcon, EyeSlashIcon, CheckCircleIcon } from '@patternfly/react-icons';
 import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
@@ -38,6 +38,15 @@ export function Settings() {
   const selectedBackend = support
     ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
     : backendChoices.find(b => b.id === inferenceBackend);
+  // Some simulators scope releases per system rather than reporting one shared
+  // list. Offer the union so an explicit pin is still possible.
+  const selectedVersions = React.useMemo(() => {
+    const versions = new Set(selectedBackend?.versions ?? []);
+    for (const scoped of Object.values(selectedBackend?.systems ?? {})) {
+      for (const version of scoped) versions.add(version);
+    }
+    return [...versions];
+  }, [selectedBackend]);
   const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [hfReveal, setHfReveal] = React.useState(false);
@@ -45,6 +54,7 @@ export function Settings() {
   const [tokenSaved, setTokenSaved] = React.useState(false);
   const [backendSaved, setBackendSaved] = React.useState(false);
   const [simulatorSaved, setSimulatorSaved] = React.useState(false);
+  const [versionOpen, setVersionOpen] = React.useState(false);
   const [costingsSaved, setCostingsSaved] = React.useState(false);
   const [costingsOpen, setCostingsOpen] = React.useState(false);
   const [validatedOpen, setValidatedOpen] = React.useState(false);
@@ -258,25 +268,53 @@ export function Settings() {
                 </select>
               </div>
               <div className={styles.versionField}>
-                <label className={styles.fieldLabel} htmlFor="settings-backend-version">Version</label>
-                <input
+                <label className={styles.fieldLabel} htmlFor="settings-backend-version-toggle">Version</label>
+                <Select
                   id="settings-backend-version"
-                  type="text"
-                  value={backendVersion}
-                  onChange={e => handleVersionChange(e.target.value)}
-                  className={styles.textInput}
-                  placeholder={selectedBackend?.defaultVersion ?? ''}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
+                  isOpen={versionOpen}
+                  selected={backendVersion || ''}
+                  onSelect={(_event, value) => {
+                    if (value == null) return;
+                    handleVersionChange(String(value));
+                    setVersionOpen(false);
+                  }}
+                  onOpenChange={setVersionOpen}
+                  toggle={toggleRef => (
+                    <MenuToggle
+                      ref={toggleRef}
+                      id="settings-backend-version-toggle"
+                      aria-label="Backend version"
+                      onClick={() => setVersionOpen(open => !open)}
+                      isExpanded={versionOpen}
+                      isFullWidth
+                      className={styles.versionToggle}
+                    >
+                      {backendVersion || 'Simulator default'}
+                    </MenuToggle>
+                  )}
+                  popperProps={{ width: 'trigger', maxWidth: 'trigger' }}
+                >
+                  <SelectList className={styles.versionList}>
+                    <SelectOption value="" isSelected={!backendVersion}>
+                      {selectedBackend?.defaultVersion
+                        ? `Simulator default (${selectedBackend.defaultVersion})`
+                        : 'Simulator default'}
+                    </SelectOption>
+                    {selectedVersions.map(version => (
+                      <SelectOption key={version} value={version} isSelected={version === backendVersion}>
+                        {version}
+                      </SelectOption>
+                    ))}
+                  </SelectList>
+                </Select>
               </div>
             </div>
             {selectedBackend ? (
               <div className={styles.helperText}>
-                {selectedBackend.versions.length > 0
+                {selectedVersions.length > 0
                   ? support
-                    ? `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use the simulator's default (${selectedBackend.defaultVersion ?? 'its own default'}).`
-                    : `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use each system's default.`
+                    ? `Supported versions: ${selectedVersions.join(', ')}. Leave blank to use the simulator's default (${selectedBackend.defaultVersion ?? 'its own default'}); Benchmark comparison then uses the newest release measured for the selected backend and GPU.`
+                    : `Supported versions: ${selectedVersions.join(', ')}. Leave blank to use each system's default; Benchmark comparison then uses the newest measured release.`
                   : 'No versions reported by the server'}
               </div>
             ) : support && !catalogLoading ? (

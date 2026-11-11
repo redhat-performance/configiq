@@ -64,6 +64,18 @@ def _demand_slice(rate: float) -> tuple[float, int]:
     return window, min(max(4, round(rate * window)), cap)
 
 
+def _prediction_requests(concurrency: int, requests_per_load_unit: float | None) -> int:
+    """Total requests to simulate for one prediction load point.
+
+    Mirrors AISimulate's contract: `requests_per_load_unit × concurrency`,
+    rounded to at least one request. Omitting the field keeps the previous
+    one-request-per-concurrency-slot smoke run.
+    """
+    if requests_per_load_unit is None:
+        return concurrency
+    return max(1, round(concurrency * requests_per_load_unit))
+
+
 @dataclass(frozen=True)
 class EstimateInput:
     model_path: str
@@ -76,6 +88,7 @@ class EstimateInput:
     tp: int
     pp: int
     dp: int
+    requests_per_load_unit: float | None = None
     moe_tp_size: int | None = None
     moe_ep_size: int | None = None
     max_seq_len: int | None = None
@@ -574,6 +587,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         timeout_seconds=float(os.environ.get("BLIS_RUN_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS)),
         prefill_instances=request.prefill_num_workers or 1,
         decode_instances=request.decode_num_workers or 1,
+        num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
     total_gpus = (
@@ -650,6 +664,7 @@ def estimate(request: EstimateInput) -> BlisPrediction:
         scenario,
         prefix=request.prefix,
         timeout_seconds=float(os.environ.get("BLIS_RUN_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS)),
+        num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
     total_gpus = request.tp * request.pp * request.dp
