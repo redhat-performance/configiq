@@ -1,5 +1,6 @@
 import { parquetReadObjects } from 'hyparquet'
 import appConfig from '../../public/config.json'
+import { backendVersionsMatch, normalizeBackendVersion } from './benchmark-versions'
 import {
   BENCHMARK_FILTER_KEYS,
   type ConfigurationOption,
@@ -10,6 +11,13 @@ import {
   type BenchmarkFilters,
   type BenchmarkPoint,
 } from './benchmark-types'
+
+export {
+  backendVersionIdentity,
+  backendVersionsMatch,
+  normalizeBackendVersion,
+  UNREPORTED_VERSION,
+} from './benchmark-versions'
 
 const DATASET_ID = 'redhat-performance/configiq-performance-upstream-data'
 const DATASET_URL = `https://huggingface.co/datasets/${DATASET_ID}`
@@ -167,28 +175,8 @@ function normalizeValue(value: unknown): string | null {
   return null
 }
 
-export const UNREPORTED_VERSION = 'Version not reported'
-
 function normalizeBackend(value: unknown): string | null {
   return normalizeValue(value)?.toLowerCase() ?? null
-}
-
-/**
- * Canonical release label for a backend version.
- *
- * Settings offers catalog literals (`0.31.0`, `0.5.21`), while measured rows
- * keep the release label as reported (`v0.31.0`, `v1.3.0rc29`). Canonicalizing
- * every backend, not just vLLM, keeps an explicit non-vLLM pin from being
- * reported as missing. Suffixes are preserved so distinct builds and releases
- * stay distinct, and labels without a release number (nightly tags) pass
- * through unchanged.
- */
-export function normalizeBackendVersion(_backend: unknown, value: unknown): string {
-  const version = normalizeValue(value)
-  if (!version) return UNREPORTED_VERSION
-  const release = /^(?:(?:vllm|sglang|tensorrt-llm|trtllm|trt)[-\s])?v?(\d+\.\d+\.\d+(?:[-+]?[a-z][\w.-]*)?)$/i.exec(version)
-  if (release) return `v${release[1]}`
-  return version
 }
 
 export function benchmarkFilterValue(row: DatasetRow, key: BenchmarkFilterKey): string | null {
@@ -380,7 +368,13 @@ export function parseBenchmarkFilters(searchParams: URLSearchParams): BenchmarkF
 export function filterRows(rows: DatasetRow[], filters: Partial<BenchmarkFilters>): DatasetRow[] {
   return rows.filter(row => BENCHMARK_FILTER_KEYS.every(key => {
     const selected = filters[key]
-    return !selected || benchmarkFilterValue(row, key) === selected
+    if (!selected) return true
+    const value = benchmarkFilterValue(row, key)
+    // A catalog release pin can satisfy a measured vendor build of the same
+    // release, while two specific builds remain distinct.
+    return key === 'backendVersion'
+      ? backendVersionsMatch(selected, value)
+      : value === selected
   }))
 }
 

@@ -220,6 +220,57 @@ describe('GET /api/validation/benchmark', () => {
     expect(body.configurations.length).toBeGreaterThan(0)
   })
 
+  it('offers a measured vendor build for a bare catalog release pin', async () => {
+    const vendor: DatasetRow = {
+      ...inferencex,
+      backend: 'sglang',
+      backend_version: 'v0.5.14-rocm720-mi35x-20260706',
+    }
+    vi.mocked(dataset.getInferenceXDataset).mockResolvedValueOnce({
+      rows: [vendor],
+      source: { url: 'https://inferencex.semianalysis.com/api', retrievedAt: '2026-10-20', rowCount: 1 },
+      expiresAt: Infinity,
+    })
+
+    const response = await GET(resolveRequest({ backend: 'sglang', backendVersion: '0.5.14' }))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.unavailable).toBeNull()
+    expect(body.filters.backendVersion).toBe('v0.5.14')
+    expect(body.configurations).toHaveLength(1)
+    expect(body.configurations[0].values.backend_version).toBe('v0.5.14-rocm720-mi35x-20260706')
+  })
+
+  it('returns vendor-tagged rows for a bare catalog release pin', async () => {
+    const vendor: DatasetRow = {
+      ...inferencex,
+      backend: 'sglang',
+      backend_version: 'v0.5.14-rocm720-mi35x-20260706',
+    }
+    vi.mocked(dataset.getInferenceXDataset).mockResolvedValueOnce({
+      rows: [vendor],
+      source: { url: 'https://inferencex.semianalysis.com/api', retrievedAt: '2026-10-20', rowCount: 1 },
+      expiresAt: Infinity,
+    })
+    const configuration = dataset.getConfigurationOptions([vendor])[0]
+    const params = new URLSearchParams({
+      mode: 'data',
+      configuration: configuration.key,
+      ...filters,
+      backend: 'sglang',
+      backendVersion: 'v0.5.14',
+    })
+
+    const response = await GET(new NextRequest(`https://configiq.dev/api/validation/benchmark?${params}`))
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body.matchedRows).toBe(1)
+    expect(body.benchmarkPoints).toEqual([])
+    expect(body.inferencexPoints).toHaveLength(1)
+  })
+
   it('repairs several invalid workload dimensions against each other instead of giving up', async () => {
     vi.mocked(dataset.getBenchmarkDataset).mockResolvedValueOnce({
       rows: [

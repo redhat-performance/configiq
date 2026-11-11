@@ -70,6 +70,23 @@ describe('resolveBenchmarkFilters', () => {
     expect(resolution.unavailable?.field).toBe('backendVersion')
   })
 
+  it('matches a bare catalog pin to a measured vendor build', () => {
+    const resolution = resolveBenchmarkFilters([
+      row({ backend: 'sglang', backend_version: 'v0.5.14-rocm720-mi35x-20260706' }),
+    ], { ...filters, backend: 'sglang', backendVersion: '0.5.14' })
+
+    expect(resolution.unavailable).toBeNull()
+    expect(resolution.filters.backendVersion).toBe('v0.5.14')
+  })
+
+  it('still reports a vendor build of a different release as unavailable', () => {
+    const resolution = resolveBenchmarkFilters([
+      row({ backend: 'sglang', backend_version: 'v0.5.21-rocm720-mi35x' }),
+    ], { ...filters, backend: 'sglang', backendVersion: '0.5.14' })
+
+    expect(resolution.unavailable?.field).toBe('backendVersion')
+  })
+
   it('repairs the accelerator to a GPU that supports the pinned release', () => {
     const resolution = resolveBenchmarkFilters([
       row(),

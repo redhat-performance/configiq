@@ -1,5 +1,6 @@
 import {
   UNREPORTED_VERSION,
+  backendVersionsMatch,
   benchmarkFilterValue,
   benchmarkFilterValues,
   filterRows,
@@ -194,7 +195,8 @@ export function resolveBenchmarkFilters(rows: DatasetRow[], requested: Benchmark
   // produce an unavailable state even though another GPU measures it.
   const rowsForPin = rowsForModel.filter(row => {
     if (filters.backend && benchmarkFilterValue(row, 'backend') !== filters.backend) return false
-    if (filters.backendVersion && benchmarkFilterValue(row, 'backendVersion') !== filters.backendVersion) return false
+    if (filters.backendVersion
+      && !backendVersionsMatch(filters.backendVersion, benchmarkFilterValue(row, 'backendVersion'))) return false
     return true
   })
   const repairPool = rowsForPin.length > 0 ? rowsForPin : rowsForModel
@@ -261,7 +263,9 @@ export function resolveBenchmarkFilters(rows: DatasetRow[], requested: Benchmark
 
   if (filters.backendVersion) {
     const versionValues = benchmarkFilterValues(rowsForBackend, 'backendVersion')
-    if (versionValues.length > 0 && !versionValues.includes(filters.backendVersion)) {
+    const requestedVersion = filters.backendVersion
+    if (versionValues.length > 0
+      && !versionValues.some(value => backendVersionsMatch(requestedVersion, value))) {
       return {
         filters,
         adjustments,

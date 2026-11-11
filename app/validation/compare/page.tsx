@@ -35,6 +35,7 @@ import {
   type BenchmarkAdjustment,
   type BenchmarkUnavailable,
 } from '@/lib/validation/benchmark-resolve'
+import { backendVersionIdentity, backendVersionsComparable, backendVersionsMatch } from '@/lib/validation/benchmark-versions'
 import {
   BENCHMARK_FILTER_KEYS,
   type BenchmarkFilterKey,
@@ -167,22 +168,6 @@ function matchAccelerator(options: string[], requested: string): string {
     ?? options.find(option => acceleratorNamesMatch(option, requested))
     ?? options[0]
     ?? ''
-}
-
-/**
- * Reduce a release label to its version core so catalog literals such as
- * `0.24.0`, dataset labels such as `v0.24.0`, and engine-prefixed labels such
- * as `vllm-0.24.0` compare alike.
- */
-function versionToken(value: string | null | undefined): string {
-  const trimmed = (value ?? '').trim().toLocaleLowerCase()
-  const core = /\d+\.\d+(?:\.\d+)?(?:[-+][\w.-]+)?/.exec(trimmed)
-  return core ? core[0] : trimmed
-}
-
-function sameVersion(left: string | null | undefined, right: string | null | undefined): boolean {
-  const leftToken = versionToken(left)
-  return leftToken !== '' && leftToken === versionToken(right)
 }
 
 function backendVersionsFor(backend: BackendOption, systemId: string | null): string[] {
@@ -363,7 +348,7 @@ function simulatorPlans({
 
     const listedVersions = backendVersionsFor(backend, selectedSystem.systemId)
     const matchedVersion = measuredVersion
-      ? listedVersions.find(version => sameVersion(version, measuredVersion)) ?? null
+      ? listedVersions.find(version => backendVersionsMatch(version, measuredVersion)) ?? null
       : null
     const effectiveVersion = matchedVersion ?? backend.defaultVersion
     const versionSupport = engineVersionSupport(backend, effectiveVersion)
@@ -860,7 +845,7 @@ export default function BenchmarkComparisonPage() {
           continue
         }
         const reportedVersion = attempts.find(attempt => attempt.version)?.version ?? null
-        const versionComparable = sameVersion(reportedVersion, resolvedFilters.backendVersion)
+        const versionComparable = backendVersionsComparable(resolvedFilters.backendVersion, reportedVersion)
         series.push({
           simulator: plan.simulator,
           label: plan.label,
@@ -901,6 +886,10 @@ export default function BenchmarkComparisonPage() {
   const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
   const selectedVersionLabel = backendVersion || 'Simulator default'
   const measuredVersionLabel = resolvedFilters?.backendVersion ?? null
+  // Core-equivalent labels are comparable, but a measured vendor image build is
+  // still worth showing when it is more specific than the Settings pin.
+  const measuredVersionDiffers = Boolean(measuredVersionLabel)
+    && backendVersionIdentity(measuredVersionLabel).label !== backendVersionIdentity(backendVersion).label
   const canCompare = Boolean(
     resolvedFilters
     && SELECTION_KEYS.every(key => resolvedFilters[key])
@@ -1044,7 +1033,7 @@ export default function BenchmarkComparisonPage() {
               {BACKEND_LABELS[inferenceBackend] ?? inferenceBackend}
               {' · '}
               {selectedVersionLabel}
-              {measuredVersionLabel && !sameVersion(measuredVersionLabel, backendVersion)
+              {measuredVersionDiffers
                 ? ` · benchmark ${measuredVersionLabel}`
                 : ''}
             </span>
