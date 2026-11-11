@@ -45,7 +45,7 @@ import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
@@ -429,7 +429,6 @@ export default function Performance() {
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestConcurrentUsers(n);
-    setActiveConcurrencyPreset('');
     markInputsDirty();
   };
 
@@ -497,15 +496,12 @@ export default function Performance() {
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  // Selection follows the actual value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrentUsersInput);
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === p.key) {
-      setActiveConcurrencyPreset('');
-      return;
-    }
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
-    setActiveConcurrencyPreset(p.key);
     markInputsDirty();
   };
 
@@ -1528,9 +1524,9 @@ export default function Performance() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -1542,7 +1538,7 @@ export default function Performance() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
-            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -2371,15 +2367,19 @@ export default function Performance() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
                           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
                           <Button
+                            className="gc-preset-button"
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
+                            aria-pressed={servingMode === 'agg'}
                             onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                           >
                             Aggregated
                           </Button>
                           <Button
+                            className="gc-preset-button"
                             variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
                             size="sm"
+                            aria-pressed={servingMode === 'disagg'}
                             isDisabled={!disaggSupported}
                             onClick={() => {
                               if (!disaggSupported) return;

@@ -404,6 +404,28 @@ describe('performance page parameter defaults', () => {
     expect(users?.value).toBe('100');
   });
 
+  it('selects a preset when the typed concurrency matches and clears it otherwise', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const typeUsers = async (value: string) => {
+      await act(async () => {
+        const users = container.querySelector<HTMLInputElement>('input[aria-label="Concurrent users"]')!;
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        setter?.call(users, value);
+        users.dispatchEvent(new Event('input', { bubbles: true }));
+        await Promise.resolve();
+      });
+    };
+    const pressed = () => Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]'))
+      .map((button) => button.textContent);
+
+    await typeUsers('100');
+    expect(pressed()).toContain('Small (100)');
+
+    await typeUsers('5');
+    expect(pressed()).not.toContain('Small (100)');
+  });
+
   it('keeps current values visible on collapsed assumption rows', async () => {
     await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
 

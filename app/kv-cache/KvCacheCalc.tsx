@@ -11,7 +11,7 @@ import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -159,15 +159,12 @@ export default function KvCacheCalc() {
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD)
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('')
+  // Selection follows the actual value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, maxBatchSizeInput)
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === p.key) {
-      setActiveConcurrencyPreset('')
-      return
-    }
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
-    setActiveConcurrencyPreset(p.key)
     markInputsDirty()
   }
 
@@ -222,7 +219,6 @@ export default function KvCacheCalc() {
     setMaxBatchSizeInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxBatchSize(n);
-    setActiveConcurrencyPreset('');
     markInputsDirty();
   };
 
@@ -424,9 +420,9 @@ export default function KvCacheCalc() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -438,7 +434,7 @@ export default function KvCacheCalc() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
-            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -521,8 +517,8 @@ export default function KvCacheCalc() {
             {/* Serving mode (agg / disagg) */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
               <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-              <Button variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
-              <Button variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
+              <Button className="gc-preset-button" variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
+              <Button className="gc-preset-button" variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
               {servingMode === 'disagg' && (
                 <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
               )}

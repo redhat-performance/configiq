@@ -36,7 +36,7 @@ import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets'
 import {
   useCostings,
   type FrontierModel,
@@ -293,7 +293,9 @@ export default function HybridSavings() {
   const [targetTtftMs, setTargetTtftMs] = React.useState(1000)
   const [targetTpotMs, setTargetTpotMs] = React.useState(30)
   const [targetConcurrency, setTargetConcurrency] = React.useState(1)
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState('')
+  // Selection follows the committed value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, targetConcurrency)
   const [prefixTokens, setPrefixTokens] = React.useState(0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
@@ -581,12 +583,7 @@ export default function HybridSavings() {
   }
 
   const applyConcurrencyPreset = (preset: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === preset.key) {
-      setActiveConcurrencyPreset('')
-      return
-    }
     setTargetConcurrency(preset.concurrency)
-    setActiveConcurrencyPreset(preset.key)
   }
 
   const runSizing = () => {
@@ -657,7 +654,7 @@ export default function HybridSavings() {
               <div className={styles.workloadPresets} role="group" aria-label="Workload type" id="hybrid-profile">
                 <span className={styles.workloadLabel}>Workload:</span>
                 {workloadPresets.map(profile => (
-                  <Button key={profile.key} type="button" variant={activePreset?.key === profile.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset?.key === profile.key} onClick={() => applyProfile(profile)}>
+                  <Button key={profile.key} type="button" className="gc-preset-button" variant={activePreset?.key === profile.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset?.key === profile.key} onClick={() => applyProfile(profile)}>
                     {profile.label}
                   </Button>
                 ))}
@@ -666,7 +663,7 @@ export default function HybridSavings() {
                 <div className={styles.concurrencyPresets} role="group" aria-label="Concurrency">
                   <span className={styles.workloadLabel}>Concurrency:</span>
                   {getAppConfig().concurrencyPresets.map(preset => (
-                    <Button key={preset.key} type="button" variant={activeConcurrencyPreset === preset.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === preset.key} onClick={() => applyConcurrencyPreset(preset)}>
+                    <Button key={preset.key} type="button" className="gc-preset-button" variant={activeConcurrencyPreset === preset.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === preset.key} onClick={() => applyConcurrencyPreset(preset)}>
                       {preset.label}
                     </Button>
                   ))}
@@ -709,7 +706,7 @@ export default function HybridSavings() {
                 <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={setAverageOutputTokens} />
                 <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} onChange={setTargetTtftMs} />
                 <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} onChange={setTargetTpotMs} />
-                <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={value => { setTargetConcurrency(value); setActiveConcurrencyPreset('') }} />
+                <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={setTargetConcurrency} />
                 <NumberField id="hybrid-prefix" label="Cached prefix tokens per request" value={prefixTokens} min={0} max={averageInputTokens} step={1} onChange={setPrefixTokens} />
               </div>
               {requestMix.twoSided && !requestMix.aligned && (

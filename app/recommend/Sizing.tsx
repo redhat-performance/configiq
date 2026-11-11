@@ -30,7 +30,7 @@ import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -476,7 +476,6 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
-    setActiveConcurrencyPreset('');
     markInputsDirty();
   };
 
@@ -608,7 +607,9 @@ export default function Sizing() {
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  // Selection follows the actual value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     reset();
@@ -628,12 +629,7 @@ export default function Sizing() {
   };
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === p.key) {
-      setActiveConcurrencyPreset('');
-      return;
-    }
     setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setActiveConcurrencyPreset(p.key);
     markInputsDirty();
   };
 
@@ -885,9 +881,9 @@ export default function Sizing() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -899,7 +895,7 @@ export default function Sizing() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
-            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}

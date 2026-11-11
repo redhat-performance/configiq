@@ -969,6 +969,7 @@ describe('Hybrid page composition', () => {
     expect(buttons.map(button => button.textContent)).toEqual(appConfig.concurrencyPresets.map(preset => preset.label))
     expect(buttons.every(button => button.classList.contains('pf-m-tertiary'))).toBe(true)
     expect(buttons.every(button => button.getAttribute('aria-pressed') === 'false')).toBe(true)
+    expect(buttons.every(button => button.classList.contains('gc-preset-button'))).toBe(true)
 
     await click('X-Small (2)')
     expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
@@ -978,6 +979,9 @@ describe('Hybrid page composition', () => {
     await editNumber('hybrid-concurrency', '5')
     expect(group.querySelector('button[aria-pressed="true"]')).toBeNull()
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('5')
+
+    await editNumber('hybrid-concurrency', '2')
+    expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
 
     await click('X-Small (2)')
     expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
