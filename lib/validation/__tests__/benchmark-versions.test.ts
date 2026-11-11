@@ -21,6 +21,14 @@ describe('backendVersionsMatch', () => {
     expect(backendVersionsMatch('1.3.0rc29', 'v1.3.0rc29-vendor')).toBe(true)
     expect(backendVersionsMatch('1.3.0rc20', 'v1.3.0rc29')).toBe(false)
   })
+
+  it('canonicalizes numeric-first build suffixes', () => {
+    expect(normalizeBackendVersion('tensorrt-llm', '1.3.0+123')).toBe('v1.3.0+123')
+    expect(normalizeBackendVersion('tensorrt-llm', 'v1.3.0+123')).toBe('v1.3.0+123')
+    expect(backendVersionsMatch('1.3.0+123', 'v1.3.0+123')).toBe(true)
+    expect(backendVersionsMatch('v1.3.0+123', 'v1.3.0+124')).toBe(false)
+    expect(backendVersionsMatch('1.3.0', 'v1.3.0+123')).toBe(true)
+  })
 })
 
 describe('backendVersionsComparable', () => {

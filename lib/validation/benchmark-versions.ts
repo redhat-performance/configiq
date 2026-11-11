@@ -22,7 +22,7 @@ function normalizeVersionValue(value: unknown): string {
 export function normalizeBackendVersion(_backend: unknown, value: unknown): string {
   const version = normalizeVersionValue(value)
   if (!version) return UNREPORTED_VERSION
-  const release = /^(?:(?:vllm|sglang|tensorrt-llm|trtllm|trt)[-\s])?v?(\d+\.\d+\.\d+(?:[-+]?[a-z][\w.-]*)?)$/i.exec(version)
+  const release = /^(?:(?:vllm|sglang|tensorrt-llm|trtllm|trt)[-\s])?v?(\d+\.\d+\.\d+(?:[a-z]+\d*)?(?:[-+][\w.-]+)?)$/i.exec(version)
   if (release) return `v${release[1]}`
   return version
 }

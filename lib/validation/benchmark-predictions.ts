@@ -60,3 +60,28 @@ export function predictionFabric(
 export function perPoolBatch(concurrency: number, workers: number): number {
   return Math.max(1, Math.ceil(concurrency / Math.max(1, workers)))
 }
+
+/** Load multiplier the comparison page applies at ordinary concurrency. */
+const COMPARISON_REQUESTS_PER_LOAD_UNIT = 10
+
+/**
+ * Ceiling on the simulated requests one comparison point may ask for.
+ *
+ * A fixed multiplier makes a high-concurrency level request thousands of
+ * simulated requests at once, which risks a simulator's request cap dropping
+ * the point. Bounding the product keeps every measured level plottable and
+ * gives each point a comparable run size.
+ */
+const MAX_COMPARISON_REQUESTS_PER_POINT = 4096
+
+/**
+ * Requests-per-load-unit to send for one measured concurrency level.
+ *
+ * Scales the multiplier down as concurrency rises so the total request count
+ * stays within `MAX_COMPARISON_REQUESTS_PER_POINT`. This bounds the workload the
+ * page asks for; it does not relax any simulator's own request limit.
+ */
+export function comparisonRequestsPerLoadUnit(concurrency: number): number {
+  const level = Number.isFinite(concurrency) && concurrency > 0 ? concurrency : 1
+  return Math.min(COMPARISON_REQUESTS_PER_LOAD_UNIT, MAX_COMPARISON_REQUESTS_PER_POINT / level)
+}

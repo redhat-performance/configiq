@@ -25,6 +25,7 @@ import {
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
 import {
+  comparisonRequestsPerLoadUnit,
   measuredPoolTopology,
   perPoolBatch,
   predictionFabric,
@@ -65,7 +66,6 @@ const EMPTY_SELECTION: Selection = { accelerator: '', model: '', isl: '', osl: '
 const EMPTY_OPTIONS: Record<BenchmarkFilterKey, string[]> = {
   accelerator: [], model: [], backend: [], backendVersion: [], isl: [], osl: [], tp: [],
 }
-const PREDICTION_REQUESTS_PER_LOAD_UNIT = 10
 const MAX_PREDICTION_LEVELS = 24
 
 const BACKEND_LABELS: Record<string, string> = {
@@ -780,7 +780,7 @@ export default function BenchmarkComparisonPage() {
               isl: Number(resolvedFilters.isl),
               osl: Number(resolvedFilters.osl),
               batch_size: measured.concurrency,
-              requests_per_load_unit: PREDICTION_REQUESTS_PER_LOAD_UNIT,
+              requests_per_load_unit: comparisonRequestsPerLoadUnit(measured.concurrency),
               tp_size: tpSize,
               pp_size: ppSize,
               attention_dp_size: dpSize,

@@ -175,8 +175,9 @@ scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
 disaggregates every request. Both modes accept `requests_per_load_unit` and
-simulate `max(1, round(batch_size x requests_per_load_unit))` total requests, the
-same rule AISimulate uses; omitting it keeps a one-request-per-slot smoke run.
+simulate `max(1, round(batch_size x requests_per_load_unit))` total requests
+when it is specified, the same rule AISimulate uses. When omitted, both modes
+simulate one total request.
 The run also pins the prompt and output token distributions to the requested
 ISL/OSL (`min = max = requested`, stdev 0), so a prompt longer than BLIS's
 default 7000-token ceiling is simulated instead of rejected.

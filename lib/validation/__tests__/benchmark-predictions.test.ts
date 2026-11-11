@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  comparisonRequestsPerLoadUnit,
   measuredPoolTopology,
   perPoolBatch,
   predictionFabric,
@@ -86,5 +87,25 @@ describe('perPoolBatch', () => {
   it('divides measured concurrency across pool workers', () => {
     expect(perPoolBatch(25, 2)).toBe(13)
     expect(perPoolBatch(1, 4)).toBe(1)
+  })
+})
+
+describe('comparisonRequestsPerLoadUnit', () => {
+  it('keeps the full multiplier at ordinary concurrency', () => {
+    expect(comparisonRequestsPerLoadUnit(8)).toBe(10)
+    expect(comparisonRequestsPerLoadUnit(128)).toBe(10)
+  })
+
+  it('bounds simulated requests for a high-concurrency level', () => {
+    expect(comparisonRequestsPerLoadUnit(512)).toBe(8)
+    expect(comparisonRequestsPerLoadUnit(2048)).toBe(2)
+    expect(Math.round(512 * comparisonRequestsPerLoadUnit(512))).toBe(4096)
+    expect(Math.round(2048 * comparisonRequestsPerLoadUnit(2048))).toBe(4096)
+  })
+
+  it('keeps very large or unknown concurrency within the same budget', () => {
+    expect(comparisonRequestsPerLoadUnit(1_000_000) * 1_000_000).toBe(4096)
+    expect(comparisonRequestsPerLoadUnit(0)).toBe(10)
+    expect(comparisonRequestsPerLoadUnit(Number.NaN)).toBe(10)
   })
 })
