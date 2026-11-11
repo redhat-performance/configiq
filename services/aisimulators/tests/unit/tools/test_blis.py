@@ -936,8 +936,13 @@ def test_predict_maps_requests_per_load_unit_to_the_simulation_slice(monkeypatch
     predict()
 
     assert calls[0].num_requests == 80
-    # Omitting the field keeps the previous one-request-per-slot smoke run.
-    assert calls[1].num_requests == 8
+    # Omitting the field stops after one total request, matching /predict.
+    assert calls[1].num_requests == 1
+
+
+def test_prediction_requests_rejects_an_oversized_slice():
+    with pytest.raises(BlisUnsupportedRequest, match="supported limit"):
+        blis_service._prediction_requests(8, 1e308)
 
 
 def test_normalize_result_maps_the_engine_kv_pool():

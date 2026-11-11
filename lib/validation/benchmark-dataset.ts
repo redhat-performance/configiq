@@ -173,13 +173,21 @@ function normalizeBackend(value: unknown): string | null {
   return normalizeValue(value)?.toLowerCase() ?? null
 }
 
-export function normalizeBackendVersion(backend: unknown, value: unknown): string {
+/**
+ * Canonical release label for a backend version.
+ *
+ * Settings offers catalog literals (`0.31.0`, `0.5.21`), while measured rows
+ * keep the release label as reported (`v0.31.0`, `v1.3.0rc29`). Canonicalizing
+ * every backend, not just vLLM, keeps an explicit non-vLLM pin from being
+ * reported as missing. Suffixes are preserved so distinct builds and releases
+ * stay distinct, and labels without a release number (nightly tags) pass
+ * through unchanged.
+ */
+export function normalizeBackendVersion(_backend: unknown, value: unknown): string {
   const version = normalizeValue(value)
   if (!version) return UNREPORTED_VERSION
-  if (normalizeBackend(backend) === 'vllm') {
-    const release = /^(?:vllm[-\s]?)?v?(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)$/i.exec(version)
-    if (release) return `v${release[1]}`
-  }
+  const release = /^(?:(?:vllm|sglang|tensorrt-llm|trtllm|trt)[-\s])?v?(\d+\.\d+\.\d+(?:[-+]?[a-z][\w.-]*)?)$/i.exec(version)
+  if (release) return `v${release[1]}`
   return version
 }
 

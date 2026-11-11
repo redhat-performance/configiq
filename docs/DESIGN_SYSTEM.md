@@ -516,7 +516,7 @@ return (
 
 ### Keyboard Navigation
 - All interactive elements must be keyboard accessible
-- Flip tiles: respond to Enter and Space keys
+- Flip tiles: flip on click and through their keyboard-operable chart/table button
 - Tour: closes on Esc key
 - Proper `tabIndex` on custom interactive elements
 
@@ -660,7 +660,7 @@ Before shipping a new page/component:
 - [ ] All animations have reduced-motion fallbacks
 - [ ] Colors meet contrast requirements (WCAG AA minimum)
 - [ ] Layout is responsive (test 1920px, 1280px, 768px)
-- [ ] Flip tiles flip correctly on click and Enter/Space
+- [ ] Flip tiles flip correctly on click and through their chart/table button
 - [ ] Search (if present) dims non-matching sections
 - [ ] Form inputs are 42px tall and styled consistently
 - [ ] Numbers use tabular-nums

@@ -46,6 +46,30 @@ describe('resolveBenchmarkFilters', () => {
     expect(resolution.filters.backendVersion).toBe('v0.24.0')
   })
 
+  it('canonicalizes non-vLLM release pins to the measured label', () => {
+    const sglang = resolveBenchmarkFilters([
+      row({ backend: 'sglang', backend_version: 'v0.5.0' }),
+    ], { ...filters, backend: 'sglang', backendVersion: '0.5.0' })
+
+    expect(sglang.unavailable).toBeNull()
+    expect(sglang.filters.backendVersion).toBe('v0.5.0')
+
+    const tensorrt = resolveBenchmarkFilters([
+      row({ backend: 'tensorrt-llm', backend_version: 'v1.3.0rc29' }),
+    ], { ...filters, backend: 'tensorrt-llm', backendVersion: '1.3.0rc29' })
+
+    expect(tensorrt.unavailable).toBeNull()
+    expect(tensorrt.filters.backendVersion).toBe('v1.3.0rc29')
+  })
+
+  it('still reports a different non-vLLM release as unavailable', () => {
+    const resolution = resolveBenchmarkFilters([
+      row({ backend: 'sglang', backend_version: 'v0.5.1' }),
+    ], { ...filters, backend: 'sglang', backendVersion: '0.5.0' })
+
+    expect(resolution.unavailable?.field).toBe('backendVersion')
+  })
+
   it('repairs the accelerator to a GPU that supports the pinned release', () => {
     const resolution = resolveBenchmarkFilters([
       row(),

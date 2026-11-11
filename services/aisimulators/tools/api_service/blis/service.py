@@ -44,6 +44,10 @@ _DEMAND_WINDOW_SECONDS = 5.0
 #: Safety bound on the generated slice. A very high target still measures over
 #: the actual run window; this only keeps one candidate from ballooning.
 _DEFAULT_DEMAND_MAX_REQUESTS = 5000
+#: Safety bound on one prediction's simulated traffic. `requests_per_load_unit`
+#: is any finite positive float, so an extreme value can overflow the product
+#: with concurrency; rejecting it is clearer than an `OverflowError`.
+_DEFAULT_PREDICTION_MAX_REQUESTS = 5000
 
 
 def _positive_float_env(name: str, default: float) -> float:
@@ -68,12 +72,22 @@ def _prediction_requests(concurrency: int, requests_per_load_unit: float | None)
     """Total requests to simulate for one prediction load point.
 
     Mirrors AISimulate's contract: `requests_per_load_unit × concurrency`,
-    rounded to at least one request. Omitting the field keeps the previous
-    one-request-per-concurrency-slot smoke run.
+    rounded to at least one request. Omitting the field stops after one total
+    request, matching `/predict`'s documented default.
     """
     if requests_per_load_unit is None:
-        return concurrency
-    return max(1, round(concurrency * requests_per_load_unit))
+        return 1
+    requested = concurrency * requests_per_load_unit
+    cap = int(_positive_float_env(
+        "BLIS_PREDICTION_MAX_REQUESTS", _DEFAULT_PREDICTION_MAX_REQUESTS
+    ))
+    if not math.isfinite(requested) or requested > cap:
+        raise BlisUnsupportedRequest(
+            "requests_per_load_unit × concurrency exceeds the supported limit of "
+            f"{cap} simulated requests (concurrency={concurrency}, "
+            f"requests_per_load_unit={requests_per_load_unit})."
+        )
+    return max(1, round(requested))
 
 
 @dataclass(frozen=True)

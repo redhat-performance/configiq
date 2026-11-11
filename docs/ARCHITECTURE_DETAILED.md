@@ -176,12 +176,12 @@ GPU sizing formulas or call external service URLs directly from the browser.
    Percentage differences are hidden when a prediction's resolved version,
    serving mode, or assumptions differ from the measurement.
 7. PatternFly flip tiles show source-labeled measured and predicted values for
-   TTFT, TPOT, throughput, throughput per user, and request latency. Clicking,
-   pressing Enter, or pressing Space flips a tile to a table of that metric with
-   the benchmark value, each simulator's value, and the difference. Each
-   predicted series is labeled with the simulator and version that actually
-   produced the results. An unavailable dataset is shown separately from a
-   configuration that simply matches no rows.
+   TTFT, TPOT, throughput, throughput per user, and request latency. Clicking a
+   tile, or activating its table button from the keyboard, flips it to a table
+   of that metric with the benchmark value, each simulator's value, and the
+   difference. Each predicted series is labeled with the simulator and version
+   that actually produced the results. An unavailable dataset is shown
+   separately from a configuration that simply matches no rows.
 
 ### Tested-model envelopes
 
