@@ -36,6 +36,7 @@ export const DEFAULT_PRICING_SOURCE = 'merged';
 
 const STORAGE_KEYS = {
   defaultModel: 'settings_default_model',
+  defaultSystem: 'settings_default_system',
   hfToken: 'hf_token',
   inferenceBackend: 'settings_inference_backend',
   simulator: 'settings_simulator',
@@ -60,6 +61,7 @@ function versionStorageKey(simulator: Simulator): string {
 interface SettingsState {
   hydrated: boolean;
   defaultModel: string;
+  defaultSystem: string;
   hfToken: string;
   inferenceBackend: InferenceBackend;
   simulator: Simulator;
@@ -68,6 +70,7 @@ interface SettingsState {
   preferredCloudProvider: string | null;
   pricingSource: PricingSource;
   setDefaultModel: (v: string) => void;
+  setDefaultSystem: (v: string) => void;
   setHfToken: (v: string) => void;
   setInferenceBackend: (v: InferenceBackend) => void;
   setSimulator: (v: Simulator) => void;
@@ -80,6 +83,7 @@ interface SettingsState {
 const SettingsContext = React.createContext<SettingsState>({
   hydrated: false,
   defaultModel: '',
+  defaultSystem: '',
   hfToken: '',
   inferenceBackend: 'vllm',
   simulator: NO_SIMULATOR,
@@ -88,6 +92,7 @@ const SettingsContext = React.createContext<SettingsState>({
   preferredCloudProvider: null,
   pricingSource: 'merged',
   setDefaultModel: () => {},
+  setDefaultSystem: () => {},
   setHfToken: () => {},
   setInferenceBackend: () => {},
   setSimulator: () => {},
@@ -104,6 +109,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const defaultSimulator = simulators.find(entry => entry.default)?.id ?? simulators[0]?.id ?? '';
   const [hydrated, setHydrated] = React.useState(false);
   const [defaultModel, setDefaultModelState] = React.useState('');
+  const [defaultSystem, setDefaultSystemState] = React.useState('');
   const [hfToken, setHfTokenState] = React.useState('');
   const [inferenceBackend, setInferenceBackendState] = React.useState<InferenceBackend>('vllm');
   // An explicit choice; empty means the catalog's default simulator applies.
@@ -128,6 +134,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // localStorage overrides config; null means "never saved by user" so use config default
       const savedModel = localStorage.getItem(STORAGE_KEYS.defaultModel);
       setDefaultModelState(savedModel !== null ? savedModel : config.defaultModel);
+
+      const savedSystem = localStorage.getItem(STORAGE_KEYS.defaultSystem);
+      setDefaultSystemState(savedSystem !== null ? savedSystem : config.defaultSystem);
 
       setHfTokenState(localStorage.getItem(STORAGE_KEYS.hfToken) ?? '');
 
@@ -174,6 +183,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const setDefaultModel = React.useCallback((v: string) => {
     setDefaultModelState(v);
     localStorage.setItem(STORAGE_KEYS.defaultModel, v);
+  }, []);
+
+  const setDefaultSystem = React.useCallback((v: string) => {
+    setDefaultSystemState(v);
+    localStorage.setItem(STORAGE_KEYS.defaultSystem, v);
   }, []);
 
   const setHfToken = React.useCallback((v: string) => {
@@ -227,14 +241,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
   const value = React.useMemo<SettingsState>(
     () => ({
-      hydrated, defaultModel, hfToken, inferenceBackend, simulator, backendVersion,
+      hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
       costingsEnabled, preferredCloudProvider, pricingSource,
-      setDefaultModel, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
+      setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
       setCostingsEnabled, setPreferredCloudProvider, setPricingSource,
     }),
-    [hydrated, defaultModel, hfToken, inferenceBackend, simulator, backendVersion,
+    [hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
      costingsEnabled, preferredCloudProvider, pricingSource,
-     setDefaultModel, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
+     setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
      setCostingsEnabled, setPreferredCloudProvider, setPricingSource],
   );
 

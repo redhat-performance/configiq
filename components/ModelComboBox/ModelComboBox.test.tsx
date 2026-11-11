@@ -119,6 +119,30 @@ describe('browsing', () => {
     expect(optionLabels()).toHaveLength(IDS.length);
   });
 
+  it('keeps the selected model id visible while focused and open', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+    await open();
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+  });
+
+  it('does not clear the selected model when the open field is clicked', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await act(async () => {
+      input().click();
+      await Promise.resolve();
+    });
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+  });
+
+  it('shows typed text instead of the selection once editing begins', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await type('nemotron');
+    expect(input().value).toBe('nemotron');
+  });
+
   it('groups rows by vendor, ordered case-insensitively', async () => {
     await mount();
     await open();

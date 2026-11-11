@@ -174,6 +174,7 @@ const makeSettings = (
 ): ReturnType<typeof useSettings> => ({
   hydrated: true,
   defaultModel: 'settings/default-model',
+  defaultSystem: 'h200_sxm',
   hfToken: '',
   inferenceBackend: 'vllm',
   simulator,
@@ -182,6 +183,7 @@ const makeSettings = (
   preferredCloudProvider: 'aws.us-east-1',
   pricingSource: 'aicostings',
   setDefaultModel: vi.fn(),
+  setDefaultSystem: vi.fn(),
   setHfToken: vi.fn(),
   setInferenceBackend: vi.fn(),
   setSimulator: vi.fn(),

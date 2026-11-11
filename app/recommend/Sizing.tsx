@@ -26,6 +26,7 @@ import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
@@ -234,7 +235,7 @@ function friendlyErrorHint(code: string | null): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Sizing() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
@@ -287,7 +288,8 @@ export default function Sizing() {
     setModel(settingsDefaultModel);
     setModelFromSettingsApplied(true);
   }, [hydrated, settingsDefaultModel]);
-  const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
+  const [gpuSystem, setGpuSystem] = React.useState('');
+  const [gpuReady, setGpuReady] = React.useState(false);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -296,6 +298,18 @@ export default function Sizing() {
     () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
     [catalogGpus, testedSystemsForModel],
   );
+
+  // Start from the system remembered across tools. A saved system the current
+  // simulator cannot offer falls back to the first selectable one without
+  // replacing the stored preference.
+  React.useEffect(() => {
+    if (!hydrated || catalogLoading || gpuReady) return;
+    const preferred = settingsDefaultSystem && selectableGpus.some(gpu => gpu.systemId === settingsDefaultSystem)
+      ? settingsDefaultSystem
+      : selectableGpus[0]?.systemId ?? '';
+    setGpuSystem(preferred);
+    setGpuReady(true);
+  }, [hydrated, catalogLoading, gpuReady, settingsDefaultSystem, selectableGpus]);
   const [isl, setIsl] = React.useState(2048);
   const [osl, setOsl] = React.useState(128);
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
@@ -338,6 +352,10 @@ export default function Sizing() {
 
   // Model status + HF config
   const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
+  useRememberDefaultModel(
+    model,
+    !modelUnsupported && (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+  );
 
   // Capacity runs return ranked alternatives. The result panel shows whichever
   // option is promoted; every other view keeps the primary recommendation so
@@ -524,10 +542,11 @@ export default function Sizing() {
   const currentGpuOption = selectableGpus.find(g => g.systemId === gpuSystem) ?? selectableGpus[0] ?? null;
 
   React.useEffect(() => {
-    if (!catalogLoading && selectableGpus.length > 0 && !selectableGpus.some(gpu => gpu.systemId === gpuSystem)) {
+    if (!gpuReady || selectableGpus.length === 0) return;
+    if (!selectableGpus.some(gpu => gpu.systemId === gpuSystem)) {
       setGpuSystem(selectableGpus[0].systemId);
     }
-  }, [catalogLoading, gpuSystem, selectableGpus]);
+  }, [gpuReady, gpuSystem, selectableGpus]);
 
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
     if (!result || !params) return null;
@@ -765,7 +784,7 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
         {simulatorUnavailable && (

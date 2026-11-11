@@ -2,16 +2,12 @@
 
 import * as React from 'react';
 import { Button, Label, Switch } from '@patternfly/react-core';
-import { EyeIcon, EyeSlashIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
+import { EyeIcon, EyeSlashIcon, CheckCircleIcon } from '@patternfly/react-icons';
 import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
-import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
-import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import styles from './Settings.module.css';
-
-type ModelStatus = 'idle' | 'supported' | 'measured' | 'approved' | 'catalog' | 'unsupported' | 'fetching' | 'fetched' | 'error';
 
 const BACKEND_LABELS: Record<string, string> = {
   vllm: 'vLLM',
@@ -33,12 +29,12 @@ function goalLabel(goal: string): string {
 
 export function Settings() {
   const {
-    hydrated, defaultModel, setDefaultModel, hfToken, setHfToken,
+    setDefaultModel, hfToken, setHfToken,
     inferenceBackend, setInferenceBackend, backendVersion, setBackendVersion,
     simulator, setSimulator,
     costingsEnabled, setCostingsEnabled,
   } = useSettings();
-  const { modelOptions, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
+  const { backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
   const support = simulatorSupport[simulator];
   // The selectable backends are the union the service reports, so a simulator
   // that supports a backend the default one does not can still be used.
@@ -54,11 +50,8 @@ export function Settings() {
   const selectedBackend = support
     ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
     : backendChoices.find(b => b.id === inferenceBackend);
-  const modelChoices = support?.models ?? modelOptions;
-  const { validatedModelIds, modelStatus: registryModelStatus, isAvailable: testedModelsAvailable } = useTestedModels();
+  const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
-  const [localModel, setLocalModel] = React.useState('');
-  const [modelStatus, setModelStatus] = React.useState<ModelStatus>('idle');
   const [hfReveal, setHfReveal] = React.useState(false);
   const [modelSaved, setModelSaved] = React.useState(false);
   const [tokenSaved, setTokenSaved] = React.useState(false);
@@ -68,52 +61,11 @@ export function Settings() {
   const [costingsOpen, setCostingsOpen] = React.useState(false);
   const [validatedOpen, setValidatedOpen] = React.useState(false);
 
-  // Sync local model input once context has loaded from localStorage
-  const modelSynced = React.useRef(false);
-  React.useEffect(() => {
-    if (!hydrated || modelSynced.current) return;
-    modelSynced.current = true;
-    setLocalModel(defaultModel);
-  }, [hydrated, defaultModel]);
-
-  // Debounced auto-save for model (1500ms — gives the user time to finish typing)
-  React.useEffect(() => {
-    if (!modelSynced.current || localModel === defaultModel) return;
-    const timer = setTimeout(() => {
-      setDefaultModel(localModel);
-      setModelSaved(true);
-      const clear = setTimeout(() => setModelSaved(false), 3000);
-      return () => clearTimeout(clear);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [localModel, defaultModel, setDefaultModel]);
-
-  // Model catalog + HF status check (same debounced pattern as other pages)
-  React.useEffect(() => {
-    if (catalogLoading) { setModelStatus('idle'); return; }
-    if (!localModel || !localModel.includes('/')) { setModelStatus('idle'); return; }
-    const timer = setTimeout(() => {
-      // The registry is authoritative for tested status. An unavailable
-      // registry leaves the status unknown instead of falling back to the
-      // approved-for-measurement list.
-      const status = registryModelStatus(localModel);
-      if (status === 'validated') { setModelStatus('supported'); return; }
-      if (status === 'measured_no_envelope') { setModelStatus('measured'); return; }
-      if (status === 'approved_no_data') { setModelStatus('approved'); return; }
-      const inCatalog = modelChoices.includes(localModel);
-      if (inCatalog) { setModelStatus('catalog'); return; }
-      // Only call a model unsupported when the simulator says its list is the
-      // complete set it can price. A simulator that also resolves models on
-      // demand gets the benefit of the doubt and is checked against HF below;
-      // the API remains the authority and never silently substitutes.
-      if (support?.modelsExhaustive) { setModelStatus('unsupported'); return; }
-      setModelStatus('fetching');
-      fetchModelConfig(localModel, hfToken).then(r => {
-        setModelStatus(r.success && r.config ? 'fetched' : 'error');
-      });
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelChoices, support, catalogLoading, hydrated, registryModelStatus, testedModelsAvailable]);
+  const saveModelAsDefault = (modelId: string) => {
+    setDefaultModel(modelId);
+    setModelSaved(true);
+    setTimeout(() => setModelSaved(false), 2000);
+  };
 
   const handleTokenChange = (v: string) => {
     setHfToken(v);
@@ -146,38 +98,11 @@ export function Settings() {
       <div className={styles.header}>
         <h1 className={styles.pageTitle}>Settings</h1>
         <p className={styles.subtitle}>
-          Configure once — defaults apply across all tools automatically.
+          Configure once — defaults apply across all tools automatically. Your model and GPU choices follow you between tools.
         </p>
       </div>
 
       <div className={styles.sections}>
-        {/* ── Default model ── */}
-        <div className={styles.section}>
-          <div className={styles.sectionHead}>
-            <div>
-              <div className={styles.sectionTitle}>Default model</div>
-              <div className={styles.sectionDesc}>
-                Pre-filled in Predict performance, KV cache calculator, and Recommend sizing. Use any Hugging Face model ID.
-              </div>
-            </div>
-            {modelSaved && (
-              <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>
-            )}
-          </div>
-          <div className={styles.fieldWrap}>
-            <ModelInput
-              id="settings-model"
-              model={localModel}
-              onChange={setLocalModel}
-              modelOptions={modelChoices}
-              isLoading={catalogLoading}
-              status={modelStatus}
-              placeholder={catalogLoading ? 'Loading catalog…' : 'e.g. Qwen/Qwen3-32B'}
-              helperText="All tools use this model by default. Type to autocomplete from the catalog."
-            />
-          </div>
-        </div>
-
         {/* ── Tested models ── */}
         <div className={styles.section}>
           <div
@@ -193,10 +118,12 @@ export function Settings() {
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Models with a validated performance envelope in the tested-model registry.
+                Models with a validated performance envelope in the tested-model registry. Select one to use it as your default model.
               </div>
             </div>
-            <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>
+            {modelSaved
+              ? <Label color="green" icon={<CheckCircleIcon />}>Saved as default</Label>
+              : <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>}
           </div>
           {validatedOpen && (
             <div className={styles.fieldWrap}>
@@ -207,12 +134,7 @@ export function Settings() {
                     color="blue"
                     isCompact
                     style={{ cursor: 'pointer' }}
-                    onClick={() => {
-                      setLocalModel(m);
-                      setDefaultModel(m);
-                      setModelSaved(true);
-                      setTimeout(() => setModelSaved(false), 2000);
-                    }}
+                    onClick={() => saveModelAsDefault(m)}
                   >
                     {m.split('/').pop()}
                   </Label>

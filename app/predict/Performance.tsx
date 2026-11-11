@@ -41,6 +41,7 @@ import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
@@ -163,7 +164,7 @@ const QUICK_ESTIMATE_TOUR: TourStep[] = [
 
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
@@ -192,7 +193,8 @@ export default function Performance() {
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [model, setModel] = React.useState('');
-  const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
+  const [gpu, setGpu] = React.useState('');
+  const [gpuReady, setGpuReady] = React.useState(false);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -203,10 +205,12 @@ export default function Performance() {
   );
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const modelWasPrefilled = React.useRef(false);
+  const gpuWasPrefilled = React.useRef(false);
 
   React.useEffect(() => {
     const prefill = parsePerformancePrefill(globalThis.location?.search || '');
     modelWasPrefilled.current = Boolean(prefill.model);
+    gpuWasPrefilled.current = Boolean(prefill.system);
     if (prefill.model) setModel(prefill.model);
     if (prefill.system) setGpu(prefill.system);
     setPrefillChecked(true);
@@ -223,19 +227,26 @@ export default function Performance() {
     if (!modelWasPrefilled.current) setModel(settingsDefaultModel);
   }, [hydrated, prefillChecked, settingsDefaultModel]);
 
-  // If defaultSystem not in catalog, fall back to first available
-  // but only if it's the initial default, not a prefilled value
-  const gpuWasPrefilled = React.useRef(false);
+  // Start from the system remembered across tools once the handoff URL and
+  // saved settings have both settled. A saved system the current simulator
+  // cannot offer falls back to the first selectable one without replacing the
+  // stored preference.
   React.useEffect(() => {
-    const prefill = parsePerformancePrefill(globalThis.location?.search || '');
-    gpuWasPrefilled.current = Boolean(prefill.system);
-  }, []);
+    if (!hydrated || !prefillChecked || catalogLoading || gpuReady) return;
+    const preferred = gpuWasPrefilled.current ? gpu : settingsDefaultSystem;
+    const next = selectableGpus.some(option => option.systemId === preferred)
+      ? preferred
+      : selectableGpus[0]?.systemId ?? '';
+    setGpu(next);
+    setGpuReady(true);
+  }, [hydrated, prefillChecked, catalogLoading, gpuReady, gpu, settingsDefaultSystem, selectableGpus]);
 
   React.useEffect(() => {
-    if (prefillChecked && selectableGpus.length > 0 && !selectableGpus.find(g => g.systemId === gpu)) {
+    if (!gpuReady || selectableGpus.length === 0) return;
+    if (!selectableGpus.some(option => option.systemId === gpu)) {
       setGpu(selectableGpus[0].systemId);
     }
-  }, [gpu, prefillChecked, selectableGpus]);
+  }, [gpuReady, gpu, selectableGpus]);
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -277,6 +288,11 @@ export default function Performance() {
     : testError
     ? 'error'
     : 'idle';
+
+  useRememberDefaultModel(
+    model,
+    !modelUnsupported && (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+  );
 
   // Collapsible state for "Why this GPU count?" card
   const [whyGpuExpanded, setWhyGpuExpanded] = React.useState(false);
@@ -1476,7 +1492,7 @@ export default function Performance() {
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
 

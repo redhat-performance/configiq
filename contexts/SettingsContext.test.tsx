@@ -48,6 +48,20 @@ function Consumer() {
 
 const state = () => JSON.parse(host.querySelector('output')!.textContent!)
 
+const SYSTEM_KEY = 'settings_default_system'
+
+function SystemConsumer() {
+  const { defaultSystem, setDefaultSystem } = useSettings()
+  return <>
+    <output>{defaultSystem}</output>
+    <button onClick={() => setDefaultSystem('a100_sxm')}>Set system</button>
+  </>
+}
+
+async function renderSystem() {
+  await act(async () => root.render(<SettingsProvider><SystemConsumer /></SettingsProvider>))
+}
+
 async function render() {
   await act(async () => root.render(<SettingsProvider><Consumer /></SettingsProvider>))
 }
@@ -137,6 +151,29 @@ describe('Backend version persistence', () => {
     await act(async () => (host.querySelectorAll('button')[2] as HTMLButtonElement).click())
     expect(state().simulator).toBe('blis')
     expect(localStorage.getItem(SIMULATOR_KEY)).toBe('blis')
+  })
+})
+
+describe('Default system persistence', () => {
+  it('uses the configured default when nothing is stored', async () => {
+    await renderSystem()
+    expect(host.querySelector('output')!.textContent).toBe('h200_sxm')
+  })
+
+  it('restores a saved system', async () => {
+    localStorage.setItem(SYSTEM_KEY, 'a100_sxm')
+    await renderSystem()
+    expect(host.querySelector('output')!.textContent).toBe('a100_sxm')
+  })
+
+  it('persists only an explicit system choice', async () => {
+    await renderSystem()
+    expect(localStorage.getItem(SYSTEM_KEY)).toBeNull()
+
+    await act(async () => (host.querySelector('button') as HTMLButtonElement).click())
+
+    expect(host.querySelector('output')!.textContent).toBe('a100_sxm')
+    expect(localStorage.getItem(SYSTEM_KEY)).toBe('a100_sxm')
   })
 })
 

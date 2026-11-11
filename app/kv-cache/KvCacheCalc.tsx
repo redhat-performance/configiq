@@ -8,6 +8,7 @@ import { useCountUp } from '@/app/predict/performanceHelpers'
 import { hasDefaultMemoryFractionForVersion, systemMemoryFraction, useCatalog } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
 import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
@@ -67,13 +68,14 @@ function invalidPhaseParallel(p: PhaseParallelInput): boolean {
 }
 
 export default function KvCacheCalc() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion: settingsBackendVersion } = useSettings()
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion: settingsBackendVersion, setDefaultSystem } = useSettings()
   const { modelOptions: catalogModels, gpuOptions: catalogGpus, modelSpecs, backendOptions, isLoading: catalogLoading } = useCatalog()
   const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
   const MODEL_OPTIONS = catalogModels
 
   const [model, setModel] = React.useState('')
-  const [system, setSystem] = React.useState(() => getAppConfig().defaultSystem)
+  const [system, setSystem] = React.useState('')
+  const [gpuReady, setGpuReady] = React.useState(false)
   const [backend, setBackend] = React.useState(() => getAppConfig().defaultBackend)
   const [backendVersion, setBackendVersion] = React.useState('')
 
@@ -86,6 +88,25 @@ export default function KvCacheCalc() {
     setBackend(inferenceBackend)
     setBackendVersion(settingsBackendVersion)
   }, [hydrated, settingsDefaultModel, inferenceBackend, settingsBackendVersion])
+
+  // Start from the system remembered across tools. A saved system the current
+  // catalog cannot offer falls back to the first available one without
+  // replacing the stored preference.
+  React.useEffect(() => {
+    if (!hydrated || catalogLoading || gpuReady) return
+    const preferred = settingsDefaultSystem && catalogGpus.some(gpu => gpu.systemId === settingsDefaultSystem)
+      ? settingsDefaultSystem
+      : catalogGpus[0]?.systemId ?? ''
+    setSystem(preferred)
+    setGpuReady(true)
+  }, [hydrated, catalogLoading, gpuReady, settingsDefaultSystem, catalogGpus])
+
+  React.useEffect(() => {
+    if (!gpuReady || catalogGpus.length === 0) return
+    if (!catalogGpus.some(gpu => gpu.systemId === system)) {
+      setSystem(catalogGpus[0].systemId)
+    }
+  }, [gpuReady, system, catalogGpus])
 
   const defaultMaxNumTokens = DEFAULT_WORKLOAD.isl + DEFAULT_WORKLOAD.osl
   const [maxNumTokens, setMaxNumTokens] = React.useState(defaultMaxNumTokens)
@@ -211,15 +232,22 @@ export default function KvCacheCalc() {
   // HF config for models AISimulators can't resolve from its catalog (incl. tested models
   // outside the catalog). Fetched on model change, sent to /api/memory on calc.
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
+  // Track which model the config belongs to so a stale fetch cannot validate a
+  // newer, still-typing model ID.
+  const [hfConfigModel, setHfConfigModel] = React.useState('');
 
   React.useEffect(() => {
     setHfConfig(null);
+    setHfConfigModel('');
     if (catalogLoading || !needsHfConfig(model, catalogModels) || !model.includes('/')) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       fetchModelConfig(model, hfToken).then(r => {
         // Ignore a response for a model the user has since moved away from.
-        if (!cancelled && r.success && r.config) setHfConfig(r.config as Record<string, unknown>);
+        if (!cancelled && r.success && r.config) {
+          setHfConfig(r.config as Record<string, unknown>);
+          setHfConfigModel(model);
+        }
       });
     }, 500);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -256,6 +284,8 @@ export default function KvCacheCalc() {
     : catalogMatch ? 'catalog'
     : catalogLoading ? 'fetching'
     : model ? 'idle' : 'idle'
+
+  useRememberDefaultModel(model, validatedModelIds.includes(model) || catalogMatch || hfConfigModel === model)
 
   function buildRequestBody(par: PhaseParallel): Record<string, unknown> {
     const body: Record<string, unknown> = {
@@ -369,7 +399,7 @@ export default function KvCacheCalc() {
             />
           </div>
 
-          <GpuSystemInput id="kv-gpu" value={system} onChange={(value) => { setSystem(value); markInputsDirty(); }} gpuOptions={catalogGpus} />
+          <GpuSystemInput id="kv-gpu" value={system} onChange={(value) => { setSystem(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={catalogGpus} />
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>

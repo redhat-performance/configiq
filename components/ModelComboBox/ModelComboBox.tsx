@@ -117,6 +117,9 @@ function RowMeta({ item }: { item: ComboBoxItem }) {
 export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel }: ComboBoxProps) {
   const [open, setOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
+  // Show the field's text only once the user starts typing. Until then the
+  // current selection stays visible (and copyable) instead of the placeholder.
+  const [editing, setEditing] = React.useState(false)
   const [supportedOnly, setSupportedOnly] = React.useState(false)
   const prevModel = React.useRef(value)
   const [focusIndex, setFocusIndex] = React.useState(-1)
@@ -192,11 +195,13 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     }
     onChange(val)
     setOpen(false)
+    setEditing(false)
     setFilter('')
     setFocusIndex(-1)
   }
 
   function handleInputChange(_event: React.FormEvent<HTMLInputElement>, val: string) {
+    setEditing(true)
     setFilter(val)
     setFocusIndex(-1)
     if (!open) setOpen(true)
@@ -204,7 +209,6 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
 
   function handleInputFocus() {
     setOpen(true)
-    setFilter('')
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent) {
@@ -237,12 +241,14 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         break
       case 'Escape':
         setOpen(false)
+        setEditing(false)
         setFilter('')
         setFocusIndex(-1)
         textInputRef.current?.blur()
         break
       case 'Tab':
         setOpen(false)
+        setEditing(false)
         setFilter('')
         setFocusIndex(-1)
         break
@@ -251,6 +257,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
 
   function handleClear() {
     onChange('')
+    setEditing(false)
     setFilter('')
     setFocusIndex(-1)
     textInputRef.current?.focus()
@@ -264,14 +271,14 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     }
   }
 
-  const displayValue = open ? filter : (selectedItem?.label ?? value)
+  const displayValue = editing ? filter : (selectedItem?.label ?? value)
 
   const toggle = (tRef: React.RefObject<HTMLDivElement | HTMLButtonElement>) => (
     <MenuToggle
       ref={tRef as React.RefObject<HTMLButtonElement>}
       variant="typeahead"
       aria-label={label}
-      onClick={() => { setOpen(prev => !prev); if (!open) setFilter('') }}
+      onClick={() => { if (!open) { setOpen(true); setEditing(false); setFilter('') } }}
       isExpanded={open}
       isFullWidth
       className={styles.menuToggle}
@@ -280,7 +287,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         <TextInputGroupMain
           value={displayValue}
           title={selectedItem?.label}
-          onClick={() => { if (!open) { setOpen(true); setFilter('') } }}
+          onClick={() => setOpen(true)}
           onChange={handleInputChange}
           onFocus={handleInputFocus}
           onKeyDown={handleInputKeyDown}
@@ -330,7 +337,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         isOpen={open}
         selected={value}
         onSelect={handleSelect}
-        onOpenChange={isOpen => { setOpen(isOpen); if (!isOpen) { setFilter(''); setFocusIndex(-1) } }}
+        onOpenChange={isOpen => { setOpen(isOpen); if (!isOpen) { setEditing(false); setFilter(''); setFocusIndex(-1) } }}
         toggle={toggle}
         shouldFocusFirstItemOnOpen={false}
         popperProps={{ width: 'trigger', maxWidth: 'trigger', ...(portalMenu ? { appendTo: () => document.body } : {}) }}

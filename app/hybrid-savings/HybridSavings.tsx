@@ -30,6 +30,7 @@ import { HybridCostCard } from './HybridCostCard'
 import { AppliedCostAssumptions } from './AppliedCostAssumptions'
 import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
@@ -279,6 +280,9 @@ export default function HybridSavings() {
         : infrastructureStates.length === 0 ? 'Infrastructure source status unavailable' : 'No stale feed reported'
 
   const [model, setModel] = React.useState('')
+  // Only an explicit model pick should replace the saved default; the automatic
+  // starting point must never overwrite it.
+  const modelTouched = React.useRef(false)
   // A simulator that reports a complete model catalog cannot price a model
   // outside it. Show that explicitly rather than replacing the selection.
   const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !modelOptions.includes(model)
@@ -346,6 +350,12 @@ export default function HybridSavings() {
     }, 500)
     return () => { clearTimeout(timer); cancelled = true }
   }, [model, modelOptions, catalogLoading, hfToken])
+
+  useRememberDefaultModel(
+    model,
+    modelTouched.current && !modelUnsupported &&
+      (modelOptions.includes(model) || modelConfig?.model === model),
+  )
 
   const apiModelItems = React.useMemo(() => buildApiModelItems(costings.models, model), [costings.models, model])
   const standardHostedOffers = React.useMemo(() => costings.models.filter(isStandardTokenOffer), [costings.models])
@@ -636,7 +646,7 @@ export default function HybridSavings() {
             <h2>Model and workload</h2>
             <div className={styles.inputGrid}>
               <div className={styles.modelField}>
-                <ComboBox id="hybrid-model" value={model} onChange={setModel} items={modelItems}
+                <ComboBox id="hybrid-model" value={model} onChange={value => { modelTouched.current = true; setModel(value) }} items={modelItems}
                   allowCustom supportedModels={testedModelsAvailable ? validatedModelIds : undefined} hfToken={hfToken}
                   helperText="Choose a model checkpoint to compare." />
               </div>
