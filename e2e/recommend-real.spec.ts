@@ -2,8 +2,11 @@ import { writeFile } from 'node:fs/promises'
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import appConfig from '../public/config.json'
 import type { WorkloadPreset } from '../lib/workload-presets'
-import { readAisimulateCatalog } from './live-catalog'
-import { matrixConcurrencyPreset, systemsForModel, workloads } from './test-matrix'
+import type { ConcurrencyPreset } from '../lib/concurrency-presets'
+import { formatCandidateId } from '../lib/pareto/format'
+import { formatApiError, parseFrontierBody } from '../lib/pareto/parse'
+import { readAisimulateCatalogDetails } from './live-catalog'
+import { baselineConcurrencyPreset, matrixConcurrencyPresets, matrixDemandRate, scheduledCoordinates, scheduledMatrix, systemsForModel, workloads } from './test-matrix'
 
 test.describe.configure({ mode: 'parallel' })
 
@@ -15,6 +18,8 @@ interface CompletedRecommendation {
   memory: { value: number }
   performance: { ttftLatencyMs: number }
   throughput: { tokensPerSecond: number }
+  demand?: { achievedRps?: number | null }
+  capacity?: { capacitySequences?: number | null; performanceAvailable?: boolean }
 }
 
 interface FailedRecommendation {
@@ -23,6 +28,37 @@ interface FailedRecommendation {
 }
 
 type Recommendation = CompletedRecommendation | FailedRecommendation
+
+type RecommendScenario =
+  | { action: 'sizing'; goal: 'latency' | 'capacity'; concurrency: ConcurrencyPreset }
+  | { action: 'sizing'; goal: 'demand'; concurrency?: never }
+  | { action: 'pareto'; goal: 'latency' | 'demand'; concurrency?: never }
+
+const goalLabels = { latency: 'Latency SLO', demand: 'Throughput demand', capacity: 'Concurrency capacity' } as const
+
+const recommendScenarios: RecommendScenario[] = [
+  ...matrixConcurrencyPresets.map(concurrency => ({ action: 'sizing', goal: 'latency', concurrency } as const)),
+  ...matrixConcurrencyPresets.map(concurrency => ({ action: 'sizing', goal: 'capacity', concurrency } as const)),
+  { action: 'sizing', goal: 'demand' },
+  { action: 'pareto', goal: 'latency' },
+  { action: 'pareto', goal: 'demand' },
+]
+
+function recommendCasesForModel(model: string): Array<{ workload: WorkloadPreset; systemId: string; scenario: RecommendScenario }> {
+  const systems = systemsForModel(model)
+  if (!scheduledMatrix) {
+    return workloads.flatMap(workload => systems.flatMap(systemId => recommendScenarios.map(scenario => ({ workload, systemId, scenario }))))
+  }
+  const baselineScenario = recommendScenarios.find(scenario =>
+    scenario.action === 'sizing' && scenario.goal === 'latency' && scenario.concurrency.key === baselineConcurrencyPreset.key,
+  )
+  if (!baselineScenario) throw new Error('The baseline Recommend sizing scenario is missing')
+  const baseline = workloads.flatMap(workload => systems.map(systemId => ({ workload, systemId, scenario: baselineScenario })))
+  const extras = recommendScenarios
+    .filter(scenario => scenario !== baselineScenario)
+    .map((scenario, index) => ({ ...scheduledCoordinates(model, 8 + index), scenario }))
+  return [...baseline, ...extras]
+}
 
 function recommendErrorTitle(code?: string): string {
   switch (code) {
@@ -107,7 +143,7 @@ function displayedTileValue(page: Page, name: RegExp) {
   return page.getByRole('button', { name }).locator('[class*="tileValue"]')
 }
 
-async function verifyDeployedPreset(page: Page, model: string, workload: WorkloadPreset) {
+async function verifyDeployedPreset(page: Page, model: string, workload: WorkloadPreset, concurrency?: ConcurrencyPreset) {
   const response = await page.request.get('/config.json')
   expect(response.ok(), 'The deployed UI configuration must be available').toBeTruthy()
   const config = await response.json() as {
@@ -116,16 +152,16 @@ async function verifyDeployedPreset(page: Page, model: string, workload: Workloa
     concurrencyPresets?: Array<{ key: string }>
   }
   expect(config.approvedModels, 'The deployed UI must list this approved model').toContain(model)
-  expect(config.concurrencyPresets?.map(preset => preset.key)).toContain(matrixConcurrencyPreset.key)
+  if (concurrency) expect(config.concurrencyPresets?.map(preset => preset.key)).toContain(concurrency.key)
   if (workload.key !== 'default') {
     expect(config.workloadPresets?.map(preset => preset.key), 'The deployed UI must list this workload preset').toContain(workload.key)
   }
 }
 
-async function checkRecommend(page: Page, testInfo: TestInfo, model: string, workload: WorkloadPreset, systemId: string) {
+async function checkRecommend(page: Page, testInfo: TestInfo, model: string, workload: WorkloadPreset, systemId: string, scenario: RecommendScenario) {
   test.setTimeout(300_000)
-  await verifyDeployedPreset(page, model, workload)
-  const systems = await readAisimulateCatalog(page)
+  await verifyDeployedPreset(page, model, workload, scenario.concurrency)
+  const { systems, objectives } = await readAisimulateCatalogDetails(page)
   const system = systems.find(item => item.id === systemId)
   expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
   const pageLoadErrors: string[] = []
@@ -139,11 +175,11 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   page.on('response', response => {
     if (response.status() >= 400) pageLoadErrors.push(`HTTP ${response.status()}: ${response.url()}`)
   })
-  await captureBrowserRecommendation(page)
+  if (scenario.action === 'sizing') await captureBrowserRecommendation(page)
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.goto('/recommend')
   try {
-    await expect(page.getByRole('button', { name: 'Default', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Default', exact: true })).toBeVisible({ timeout: 45_000 })
   } catch (error) {
     await saveJson(testInfo, 'page-load-diagnostics.json', {
       url: page.url(),
@@ -155,33 +191,100 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
   await selectModel(page, 'adv-model', model)
   await selectSystem(page, 'adv-gpu', system!.name)
-  await page.getByRole('button', { name: 'Latency SLO', exact: true }).click()
+  const goalButton = page.getByRole('button', { name: goalLabels[scenario.goal], exact: true })
+  if (scenario.goal === 'capacity' && !objectives.includes('concurrency_capacity')) {
+    await expect(goalButton).toHaveCount(0)
+    test.skip(true, 'AISimulators catalog does not offer concurrency-capacity sizing')
+  }
+  await goalButton.click()
   await page.getByRole('button', { name: workload.label, exact: true }).click()
-  await page.getByRole('button', { name: matrixConcurrencyPreset.label, exact: true }).click()
-  const calculate = page.getByRole('button', { name: 'Calculate', exact: true })
-  await expect(calculate).toBeEnabled()
+  if (scenario.concurrency) await page.getByRole('button', { name: scenario.concurrency.label, exact: true }).click()
+  const action = page.getByRole('button', { name: scenario.action === 'pareto' ? 'Pareto frontier' : 'Calculate', exact: true })
+  if (scenario.action === 'pareto' && !objectives.includes('pareto')) {
+    await expect(action).toBeDisabled()
+    test.skip(true, 'AISimulators catalog does not offer Pareto sweeps')
+  }
+  await expect(action).toBeEnabled()
   const responsePromise = page.waitForResponse(
     response => new URL(response.url()).pathname === '/api/recommend',
     { timeout: 240_000 },
   )
-  await calculate.click()
+  await action.click()
   const response = await responsePromise
   const request = response.request().postDataJSON() as Record<string, unknown>
-  const result = await capturedRecommendation(page)
   await saveJson(testInfo, 'recommend-live-request.json', request)
-  await saveJson(testInfo, 'recommend-live-response.json', result)
   expect(request).toMatchObject({
     model_path: model, system: systemId,
     backend: appConfig.defaultBackend,
     simulator: 'aisimulate',
     isl: workload.isl, osl: workload.osl,
-    ttft: 1000, tpot: 30, target_concurrency: matrixConcurrencyPreset.concurrency,
+    objective: scenario.action === 'pareto' ? 'pareto' : scenario.goal === 'latency' ? 'min_gpus' : scenario.goal === 'capacity' ? 'concurrency_capacity' : 'throughput_demand',
+    sla_mode: scenario.goal === 'latency' ? 'enforce' : 'none',
   })
+  if (scenario.action === 'pareto') {
+    expect(request).not.toHaveProperty('target_concurrency')
+    expect(request).not.toHaveProperty('target_request_rate')
+    if (scenario.goal === 'demand') {
+      expect(request).not.toHaveProperty('ttft')
+      expect(request).not.toHaveProperty('tpot')
+    } else expect(request).toMatchObject({ ttft: 1000, tpot: 30 })
+  } else if (scenario.goal === 'demand') {
+    expect(request).toMatchObject({ target_request_rate: matrixDemandRate })
+    expect(request).not.toHaveProperty('target_concurrency')
+    expect(request).not.toHaveProperty('ttft')
+    expect(request).not.toHaveProperty('tpot')
+  } else {
+    expect(request).toMatchObject({ target_concurrency: scenario.concurrency.concurrency })
+    expect(request).not.toHaveProperty('target_request_rate')
+    if (scenario.goal === 'latency') expect(request).toMatchObject({ ttft: 1000, tpot: 30 })
+    else {
+      expect(request).not.toHaveProperty('ttft')
+      expect(request).not.toHaveProperty('tpot')
+    }
+  }
   if (savedVersion) expect(request.backend_version).toBe(savedVersion)
   else expect(request).not.toHaveProperty('backend_version')
   expect(request).not.toHaveProperty('prefix')
+  if (scenario.action === 'pareto') {
+    const result = await response.json() as unknown
+    await saveJson(testInfo, 'recommend-live-response.json', result)
+    const frontier = page.getByRole('region', { name: 'Pareto frontier' })
+    await expect(frontier).toBeVisible()
+    if (!response.ok()) {
+      await expect(frontier.getByText(formatApiError(result, `Pareto sweep failed (${response.status()})`), { exact: true })).toBeVisible()
+      return
+    }
+    const parsed = parseFrontierBody(result)
+    expect(parsed, 'The current API must return a parseable Pareto response').not.toBeNull()
+    expect(parsed!.simulator).toBe('aisimulate')
+    const feasible = parsed!.candidates.filter(candidate => candidate.status === 'feasible')
+    const failed = parsed!.candidates.filter(candidate => candidate.status !== 'feasible')
+    if (parsed!.candidates.length === 0) {
+      await expect(frontier.getByText('No candidate configurations were evaluated for this workload and GPU window.')).toBeVisible()
+    } else if (feasible.length === 0) {
+      await expect(frontier.getByText('No candidate configuration met the workload constraints.', { exact: false })).toBeVisible()
+    } else {
+      const table = frontier.getByRole('table', { name: /Feasible candidates/ })
+      await expect(table.locator('tbody tr')).toHaveCount(feasible.length)
+      const first = feasible[0]
+      const row = table.locator('tbody tr').filter({ has: page.getByRole('button', { name: formatCandidateId(first.candidate_id) }) })
+      await expect(row).toBeVisible()
+      await expect(row.locator('td').nth(2)).toHaveText(first.used_gpus == null ? '—' : String(first.used_gpus))
+    }
+    if (failed.length > 0) {
+      await frontier.getByRole('button', { name: `Show failed attempts (${failed.length})` }).click()
+      const table = frontier.getByRole('table', { name: /Failed attempts/ })
+      await expect(table.locator('tbody tr')).toHaveCount(failed.length)
+    }
+    return
+  }
+  const result = await capturedRecommendation(page)
+  await saveJson(testInfo, 'recommend-live-response.json', result)
   if (!response.ok() || result.status !== 'completed') {
     await expect(page.getByText(recommendErrorTitle(result.error?.code), { exact: true })).toBeVisible()
+    if (result.error?.message && ['AISIM_NO_CONFIGURATION', 'SIMULATOR_MISMATCH'].includes(result.error.code ?? '')) {
+      await expect(page.locator('[class*="errorMsg"]')).toHaveText(result.error.message)
+    }
     return
   }
   await expect(displayedTileValue(page, /^GPUs required /)).toHaveText(`${result.recommendation.gpusNeeded}× ${system!.name}`)
@@ -192,16 +295,25 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   } else {
     await expect(displayedTileValue(page, /^Peak mem \/ GPU /)).toHaveText(`${Math.round(result.memory.value * 10) / 10}GB`)
   }
-  await expect(displayedTileValue(page, /^TTFT /)).toHaveText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
-  await expect(displayedTileValue(page, /^Throughput [\d,]/)).toHaveText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
+  if (scenario.goal === 'latency') {
+    await expect(displayedTileValue(page, /^TTFT /)).toHaveText(`${Math.round(result.performance.ttftLatencyMs)}ms`)
+  } else if (scenario.goal === 'demand') {
+    await expect(displayedTileValue(page, /^Demand /)).toHaveText(`${result.demand?.achievedRps?.toFixed(1) ?? '—'}req/s`)
+  } else {
+    await expect(displayedTileValue(page, /^Capacity /)).toHaveText(`${result.capacity?.capacitySequences ?? '—'}seq`)
+  }
+  if (scenario.goal !== 'capacity' || result.capacity?.performanceAvailable) {
+    await expect(displayedTileValue(page, /^Throughput [\d,]/)).toHaveText(`${Math.round(result.throughput.tokensPerSecond)}tok/s`)
+  } else {
+    await expect(page.getByRole('button', { name: /^Throughput [\d,]/ })).toHaveCount(0)
+  }
 }
 
 for (const model of appConfig.approvedModels) {
-  for (const workload of workloads) {
-    for (const systemId of systemsForModel(model)) {
-      test(`Recommend sizing / ${model} / ${workload.label} / ${systemId} / live`, async ({ page }, testInfo) => {
-        await checkRecommend(page, testInfo, model, workload, systemId)
-      })
-    }
+  for (const { workload, systemId, scenario } of recommendCasesForModel(model)) {
+    const scenarioLabel = `${goalLabels[scenario.goal]}${scenario.action === 'pareto' ? ' Pareto' : ''}${scenario.concurrency ? ` / ${scenario.concurrency.label}` : ''}`
+    test(`Recommend sizing / ${model} / ${workload.label} / ${systemId} / ${scenarioLabel} / live`, async ({ page }, testInfo) => {
+      await checkRecommend(page, testInfo, model, workload, systemId, scenario)
+    })
   }
 }
