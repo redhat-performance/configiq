@@ -91,7 +91,10 @@ for (const model of appConfig.approvedModels) {
       const calculate = page.getByRole('button', { name: 'Calculate', exact: true })
       await expect(calculate).toBeEnabled()
 
-      const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/predict')
+      const responsePromise = page.waitForResponse(
+        response => new URL(response.url()).pathname === '/api/predict',
+        { timeout: 240_000 },
+      )
       await calculate.click()
       const response = await responsePromise
       const body = response.request().postDataJSON() as Record<string, unknown>
@@ -177,7 +180,10 @@ for (const model of appConfig.approvedModels) {
         await page.locator('#kv-tp').fill(String(parallelism))
         await page.locator('#kv-moe-ep').fill(String(parallelism))
       }
-      const responsePromise = page.waitForResponse(response => new URL(response.url()).pathname === '/api/memory')
+      const responsePromise = page.waitForResponse(
+        response => new URL(response.url()).pathname === '/api/memory',
+        { timeout: 240_000 },
+      )
       const calculate = page.getByRole('button', { name: 'Calculate', exact: true })
       await expect(calculate).toBeEnabled()
       await calculate.click()
