@@ -4,10 +4,11 @@ Playwright covers the browser-to-AISimulators gap in [issue #186](https://github
 
 ## Coverage
 
-- The weekly and manual full suite runs against `https://configiq.xyz` and AISimulators API. Predict performance, KV cache, and Recommend sizing each run a live matrix of 10 approved models × 9 workloads (Default plus eight presets) × 10 GPU systems: 900 cases per page, 2,700 total. Each case starts in a new browser context, selects its GPU, and checks the outgoing request and whether the rendered result or error reflects the current API response. The tests do not judge whether the API's sizing values are correct.
-- The nightly dev suite uses the same comparisons against `https://configiq.dev`, with one selected GPU per model and all nine workloads on all three pages: 270 cases total. Nine model/GPU selections had completed responses in an earlier live report. Nemotron Ultra on `gb200` is a candidate that still needs a successful response confirmed; an API error can pass when the UI displays it correctly.
-- The workload presets now set ISL and OSL. The tests also select the Small (10) concurrency preset on each page, making concurrency explicit without multiplying the matrix by every concurrency choice. KV cache sends `max_num_tokens = isl + osl` and `max_batch_size = 10` for each workload scenario. These are test inputs for memory estimation, not a claim that the KV page implements the same workload semantics as Predict or Recommend.
-- Recommend sizing runs all 900 live combinations and compares displayed GPU count, peak memory, TTFT, and throughput with the streamed response. Each case verifies that the deployed UI still lists the approved model and preset.
+- The scheduled weekly suite against `https://configiq.xyz` has 2,900 cases. Each of the 10 approved models runs on all nine workloads and all 10 GPU systems in Predict, KV cache, and Recommend latency sizing at Small (10) concurrency (2,700 baseline cases). Each model also runs the other four concurrency choices on those three paths, all five capacity choices, throughput demand, and both Pareto modes on one rotated workload/GPU pairing per control (200 extra cases).
+- The scheduled nightly dev suite has 470 cases. It checks the same 270 baseline cases and 200 extra control cases, using one selected GPU per model. The workflow run number rotates the extra cases through workloads and, on XYZ, GPU systems; all shards in a run use the same rotation. The baseline still covers every tested model and workload each run. Some model/GPU combinations may return API errors, which pass only when the UI displays the corresponding error.
+- The full matrices remain available for manual runs: 20,700 XYZ cases and 2,070 dev cases. They cross each tested model, workload, and selected GPU with all five concurrency presets where applicable, plus the capacity, demand, and Pareto paths. Each case starts in a new browser context and compares its outgoing request and rendered result or error with the current API response. The tests do not judge the API's sizing accuracy.
+- Workload presets set ISL and OSL. Predict and KV cache send each concurrency preset as `batch_size` and `max_batch_size` respectively; KV cache sends `max_num_tokens = isl + osl`. These are test inputs for memory estimation, not a claim that the KV page implements the same workload semantics as Predict or Recommend.
+- Recommend compares GPU count, memory, and the goal-specific result tile with the current API response. Throughput-demand requests carry an arrival rate instead of concurrency; capacity requests have no latency target. Pareto sweeps carry neither an arrival rate nor concurrency, and the tests compare the rendered candidate table or error with the response. Capacity and Pareto cases check that the control is unavailable and skip the API comparison when the selected simulator does not advertise that capability.
 - When browser settings explicitly contain a backend version, the tests check that the UI sends that version. Otherwise, they check that the request omits `backend_version` so the API can resolve its default. The live tests do not pin a version such as `0.27.1`.
 - The larger tested models use fixed TP and EP test inputs entered through the parallelism controls. Some model/GPU combinations may be unsupported or need different topology settings; the tests check that the UI displays the API's error state for these cases. The test inputs are not sizing formulas or recommendations.
 
@@ -26,29 +27,37 @@ npm ci
 npx playwright install chromium
 ```
 
-Run the full 2,700-case live UI suite against `configiq.xyz`:
+Run the scheduled-size suites locally:
 
 ```bash
-npm run test:e2e:live
-```
-
-Run the 270-case nightly sample locally against the deployed dev UI and the API it calls:
-
-```bash
+PLAYWRIGHT_BASE_URL=https://configiq.xyz npm run test:e2e:weekly
 PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:nightly
 ```
 
-For a smaller manual check, add `-- --grep 'RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic / Default / h100_sxm / live'` to that command. This selects one case on each of the three pages.
+Run the full 20,700-case XYZ or 2,070-case dev matrix manually:
+
+```bash
+PLAYWRIGHT_BASE_URL=https://configiq.xyz npm run test:e2e:live
+PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:dev-full
+```
+
+For a smaller manual check, add a `--grep` filter to either scheduled command:
+
+```bash
+PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:nightly -- --grep 'RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic'
+```
+
+Local scheduled runs use rotation zero by default. Set `PLAYWRIGHT_MATRIX_ROTATION` to a non-negative integer to rotate the extra pairings; the GitHub workflows set it to their run number.
 
 To split a manual run across machines, run one shard number per machine:
 
 ```bash
-npm run test:e2e:live -- --shard=1/10
+npm run test:e2e:weekly -- --shard=1/12
 ```
 
-The weekly workflow runs at 12:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.xyz` and splits the suite into 10 Playwright shards, with at most three shard jobs at a time; each job runs two browser workers. Each shard has a six-hour timeout and CI retries. A full local command runs all 2,700 cases without sharding.
+The weekly workflow runs at 12:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.xyz` and splits the 2,900 cases into 12 Playwright shards, with at most three shard jobs at a time; each job runs two browser workers. Each shard has a six-hour timeout and CI retries.
 
-The nightly workflow runs at 2:00 a.m. every day in `America/New_York` and can also be started manually. It targets `https://configiq.dev` and splits the 270 cases into three shards. A local `test:e2e:nightly` run uses the same selection without sharding. The local Playwright process drives the deployed dev UI; it does not start a local ConfigIQ server or API.
+The nightly workflow runs at 2:00 a.m. every day in `America/New_York` and can also be started manually. It targets `https://configiq.dev` and splits the 470 cases into six shards. A local `test:e2e:nightly` run uses the same selection without sharding. The local Playwright process drives the deployed dev UI; it does not start a local ConfigIQ server or API.
 
 ## When a case fails
 
