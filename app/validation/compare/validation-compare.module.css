@@ -36,7 +36,6 @@
 .intro,
 .cardHead p,
 .resultsHead p,
-.filterFooter p,
 .assumptionsHead p,
 .methodNote,
 .helperText,
@@ -95,13 +94,31 @@
   border-radius: 8px;
   padding: 22px 24px;
   margin-bottom: 20px;
+  /* The card owns the padding and the only border, so the accordion toggle and
+     content sit flush. */
+  --pf-v6-c-accordion__toggle--PaddingInlineStart: 0;
+  --pf-v6-c-accordion__toggle--PaddingInlineEnd: 0;
+  --pf-v6-c-accordion__toggle--PaddingBlockStart: 2px;
+  --pf-v6-c-accordion__toggle--PaddingBlockEnd: 2px;
+  --pf-v6-c-accordion__expandable-content-body--PaddingInlineStart: 0;
+  --pf-v6-c-accordion__expandable-content-body--PaddingInlineEnd: 0;
+  --pf-v6-c-accordion__expandable-content-body--PaddingBlockStart: 14px;
+  --pf-v6-c-accordion__expandable-content-body--PaddingBlockEnd: 0;
+}
+
+/* PatternFly draws a rounded panel behind an expanded item and another around
+   its content. The card already supplies that frame, so keep only one border. */
+.assumptionsCard :global(.pf-v6-c-accordion__item::before),
+.assumptionsCard :global(.pf-v6-c-accordion__expandable-content) {
+  background-color: transparent;
+  border: 0;
+  border-radius: 0;
 }
 
 .cardHead { margin-bottom: 18px; }
 
 .cardHead h2,
-.resultsHead h2,
-.assumptionsHead h3 {
+.resultsHead h2 {
   color: var(--gc-text);
   font: 600 16px var(--gc-font-display);
   margin: 0 0 6px;
@@ -200,6 +217,39 @@
 
 .assumptionsHead > div { max-width: 760px; }
 
+/* Accordion summary shown while the assumptions panel is collapsed. */
+.accordionToggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 16px;
+  width: 100%;
+  text-align: left;
+}
+
+.accordionTitle {
+  color: var(--gc-text);
+  font: 600 16px var(--gc-font-display);
+}
+
+.accordionSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  color: var(--gc-text-2);
+  font: 400 13px var(--gc-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.accordionSummary > span { white-space: nowrap; }
+
+.accordionKey {
+  color: var(--gc-text-2);
+  font: 500 11.5px var(--gc-font-mono);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
 .assumptionGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(170px, 1fr));
@@ -227,7 +277,7 @@
 
 .assumptionNote { margin-top: 2px; }
 
-.assumptionsCard > .assumptionNote {
+.assumptionsFootnote {
   border-top: 1px solid #e0e0e0;
   margin-top: 18px;
   padding-top: 12px;
@@ -235,12 +285,9 @@
 
 .filterFooter {
   align-items: center;
-  border-top: 1px solid #e0e0e0;
+  justify-content: flex-end;
   margin-top: 18px;
-  padding-top: 16px;
 }
-
-.filterFooter p { max-width: 760px; }
 
 .buttonSpinner { margin-right: 8px; }
 
@@ -278,7 +325,7 @@
   flex: none;
 }
 
-.benchmarkSwatch { background: #0066cc; }
+.benchmarkSwatch { background: #c9190b; }
 .inferencexSwatch { background: #ec7a08; }
 
 .chartGrid {

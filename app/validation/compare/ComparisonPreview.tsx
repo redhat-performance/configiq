@@ -45,23 +45,32 @@ interface MetricDefinition {
 }
 
 const metrics: MetricDefinition[] = [
-  { key: 'ttftSeconds', title: 'Time to first token', unit: 's', description: 'Measured median vs. predicted mean TTFT', digits: 3 },
-  { key: 'tpotSeconds', title: 'Time per output token', unit: 's', description: 'Measured median vs. predicted mean TPOT', digits: 4 },
+  { key: 'ttftSeconds', title: 'Time to first token', unit: 'seconds', description: 'Measured median vs. predicted mean TTFT', digits: 3 },
+  { key: 'tpotSeconds', title: 'Time per output token', unit: 'seconds', description: 'Measured median vs. predicted mean TPOT', digits: 4 },
   { key: 'outputTokensPerSecond', title: 'Output throughput', unit: 'tokens/s', description: 'Measured aggregate vs. predicted aggregate throughput', digits: 1 },
   { key: 'outputTokensPerSecondPerUser', title: 'Throughput per user', unit: 'tokens/s/user', description: 'Measured vs. predicted throughput per user', digits: 1 },
-  { key: 'requestLatencySeconds', title: 'Request latency', unit: 's', description: 'Measured median vs. predicted request latency', digits: 2 },
+  { key: 'requestLatencySeconds', title: 'Request latency', unit: 'seconds', description: 'Measured median vs. predicted request latency', digits: 2 },
 ]
 
 export const BENCHMARK_COLORS = {
-  redHat: '#0066cc',
+  redHat: '#c9190b',
   inferencex: '#ec7a08',
 } as const
 
-/** Stable line colours, one per simulator, in catalog order. */
+/** Brand colors for the simulators the catalog can return. */
+export const SIMULATOR_COLORS: Record<string, string> = {
+  // NVIDIA green
+  aisimulate: '#76b900',
+  // IBM blue
+  blis: '#0f62fe',
+}
+
+/** Stable line colors, used for simulators without a brand color. */
 export const PREDICTION_COLORS = ['#009596', '#5752d1', '#3e8635', '#a18f00'] as const
 
-export function predictionColor(index: number): string {
-  return PREDICTION_COLORS[index % PREDICTION_COLORS.length]
+/** A simulator's brand color, falling back to the shared palette by position. */
+export function predictionColor(simulator: string, index: number): string {
+  return SIMULATOR_COLORS[simulator] ?? PREDICTION_COLORS[index % PREDICTION_COLORS.length]
 }
 
 function formatValue(value: number | null, digits: number): string {
@@ -113,6 +122,48 @@ function toData(points: Array<{ concurrency: number } & Partial<Record<MetricKey
   })
 }
 
+/** Horizontal space Victory reserves around the x scale (left 76, right 20). */
+const CHART_HORIZONTAL_PADDING = 96
+/** Approximate width of one 11.5px Red Hat Text digit, in pixels. */
+const TICK_CHAR_WIDTH = 6.6
+/** Space to leave between adjacent tick labels, in pixels. */
+const TICK_LABEL_PADDING = 10
+/** Keep the first label clear of the y-axis, in pixels. */
+const CONCURRENCY_EDGE_GAP = 6
+
+/**
+ * Choose concurrency ticks that leave room for their labels.
+ *
+ * Concurrency is a linear axis, so low measured levels (1, 5, 10, ...) sit a
+ * fraction of a pixel apart while high levels are far apart. A fixed tick count
+ * cannot prevent their labels colliding, so measure the plot and drop a tick
+ * only when its label would touch the previous one. The maximum level is always
+ * labelled.
+ */
+export function selectConcurrencyTicks(values: number[], chartWidth: number): number[] {
+  if (values.length <= 2) return values
+  const domainMax = Math.max(...values) * 1.04
+  const plotWidth = Math.max(80, chartWidth - CHART_HORIZONTAL_PADDING)
+  const scale = plotWidth / domainMax
+  const labelWidth = (value: number) => value.toLocaleString('en-US').length * TICK_CHAR_WIDTH
+  const fitsAfter = (previous: number, value: number) =>
+    (value - previous) * scale >= (labelWidth(previous) + labelWidth(value)) / 2 + TICK_LABEL_PADDING
+  const ticks: number[] = []
+  for (const value of values) {
+    if (ticks.length === 0) {
+      if (value * scale >= CONCURRENCY_EDGE_GAP) ticks.push(value)
+    } else if (fitsAfter(ticks[ticks.length - 1], value)) {
+      ticks.push(value)
+    }
+  }
+  const last = values[values.length - 1]
+  if (ticks[ticks.length - 1] !== last) {
+    if (ticks.length > 0 && !fitsAfter(ticks[ticks.length - 1], last)) ticks.pop()
+    ticks.push(last)
+  }
+  return ticks
+}
+
 function MetricTable({
   metric,
   benchmark,
@@ -132,6 +183,7 @@ function MetricTable({
   const benchmarkBy = new Map(benchmark.map(point => [point.concurrency, point]))
   const inferencexBy = new Map(inferencex.map(point => [point.concurrency, point]))
   const seriesBy = series.map(entry => ({ entry, points: new Map(entry.points.map(point => [point.concurrency, point])) }))
+  const hasInferencex = inferencex.some(point => point[metric.key] !== null)
 
   if (concurrencyValues.length === 0) {
     return <p className={styles.tableEmpty}>No measured concurrency levels for this metric.</p>
@@ -147,7 +199,7 @@ function MetricTable({
           <tr>
             <th scope="col">Concurrency</th>
             <th scope="col">Red Hat</th>
-            <th scope="col">InferenceX</th>
+            {hasInferencex && <th scope="col">InferenceX</th>}
             {seriesBy.map(({ entry }) => (
               <th scope="col" key={entry.simulator}>{entry.label}</th>
             ))}
@@ -167,7 +219,7 @@ function MetricTable({
               <tr key={concurrency}>
                 <th scope="row">{concurrency.toLocaleString('en-US')}</th>
                 <td>{formatValue(redHatValue, metric.digits)}</td>
-                <td>{formatValue(inferencexValue, metric.digits)}</td>
+                {hasInferencex && <td>{formatValue(inferencexValue, metric.digits)}</td>}
                 {seriesBy.map(({ entry, points }) => (
                   <td key={entry.simulator}>{formatValue(points.get(concurrency)?.[metric.key] ?? null, metric.digits)}</td>
                 ))}
@@ -222,11 +274,9 @@ function ChartCard({
     ...inferencex.map(point => point.concurrency),
     ...series.flatMap(entry => entry.points.map(point => point.concurrency)),
   ])].sort((left, right) => left - right)
-  const tickValues = concurrencyValues.length > 10
-    ? concurrencyValues.filter((_, index) => index === 0 || index === concurrencyValues.length - 1 || index % Math.ceil(concurrencyValues.length / 8) === 0)
-    : concurrencyValues
-  const benchmarkData = toData(benchmark, metric.key, 'Red Hat')
-  const inferencexData = toData(inferencex, metric.key, 'InferenceX')
+  const tickValues = selectConcurrencyTicks(concurrencyValues, Math.max(240, chartWidth))
+  const benchmarkData = toData(benchmark, metric.key, 'Red Hat benchmark')
+  const inferencexData = toData(inferencex, metric.key, 'InferenceX benchmark')
   const predictionData = series.map(entry => ({ entry, data: toData(entry.points, metric.key, entry.label) }))
   const seriesNames = [
     ...(benchmarkData.length > 0 ? ['red-hat-line'] : []),
@@ -257,7 +307,7 @@ function ChartCard({
           {mounted && concurrencyValues.length > 0 ? (
             <Chart
               ariaTitle={`${metric.title} by concurrency`}
-              ariaDesc={`${['Red Hat', inferencexData.length > 0 ? 'InferenceX' : null, ...series.map(entry => entry.label)].filter(Boolean).join(', ')} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
+              ariaDesc={`${['Red Hat benchmark', inferencexData.length > 0 ? 'InferenceX benchmark' : null, ...series.map(entry => entry.label)].filter(Boolean).join(', ')} ${metric.title.toLowerCase()} compared at measured concurrency levels`}
               domain={{ x: [0, Math.max(...concurrencyValues) * 1.04], y: [0, max * 1.14] }}
               height={278}
               width={Math.max(240, chartWidth)}
@@ -312,7 +362,7 @@ function ChartCard({
                     key={entry.entry.simulator}
                     data={entry.data}
                     name={`${entry.entry.simulator}-line`}
-                    style={{ data: { stroke: predictionColor(index), strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' } }}
+                    style={{ data: { stroke: predictionColor(entry.entry.simulator, index), strokeWidth: 3, strokeLinecap: 'round', strokeLinejoin: 'round' } }}
                   />
                 ))}
               </ChartGroup>
@@ -335,7 +385,7 @@ function ChartCard({
                     data={entry.data}
                     name={`${entry.entry.simulator}-points`}
                     size={({ active }) => active ? 6 : 4}
-                    style={{ data: { fill: '#ffffff', stroke: predictionColor(index), strokeWidth: 2 } }}
+                    style={{ data: { fill: '#ffffff', stroke: predictionColor(entry.entry.simulator, index), strokeWidth: 2 } }}
                   />
                 ))}
               </ChartGroup>
