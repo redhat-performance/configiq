@@ -20,11 +20,12 @@ from .runtime import blis_release
 #: letting BLIS's fatal error surface as a 502.
 MODELED_ENGINE_VERSIONS = ("0.29.0", "0.31.0", "0.32.0")
 #: The release a request gets when it names none. 0.31.0 is the newest release that
-#: models prefill/decode disaggregation *and* accepts max_model_len: auto.
+#: models prefill/decode disaggregation.
 DEFAULT_ENGINE_VERSION = "0.31.0"
 #: What each modeled release can express. 0.32.0 runs blis-vllm's translated vLLM
-#: engine, which models colocated and prefill/decode serving but requires
-#: max_model_len stated.
+#: engine, which models colocated and prefill/decode serving. The adapter states a
+#: concrete `max_model_len` for every release, so `max_model_len_auto` is reported
+#: as catalog capability only, not used to build a scenario.
 ENGINE_VERSION_SUPPORT: dict[str, dict[str, bool]] = {
     "0.29.0": {"disaggregated": True, "max_model_len_auto": True},
     "0.31.0": {"disaggregated": True, "max_model_len_auto": True},
@@ -309,16 +310,14 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
     moe_quant = _optional_quantization(request.moe_quantization, _WEIGHT_QUANTIZATION, "MoE quantization")
 
     name = _scenario_name(request)
-    # 0.32.0 refuses an `auto` context window; state the same limit the response
-    # reports as applied instead.
-    max_model_len: int | str = (
+    # BLIS resolves `max_model_len: auto` from the model graph, but some catalog
+    # graphs (for example gpt-oss-120b) omit the context window. State the window
+    # the run serves instead: the requested limit, the catalog model's native
+    # context, or the workload's maximum sequence.
+    max_model_len = (
         request.max_model_len
         if request.max_model_len is not None
-        else (
-            "auto"
-            if engine_version_support(request.engine_version)["max_model_len_auto"]
-            else request.isl + request.osl
-        )
+        else request.model.context_length or request.isl + request.osl
     )
     engine: dict[str, Any] = {
         "block_size": 16,

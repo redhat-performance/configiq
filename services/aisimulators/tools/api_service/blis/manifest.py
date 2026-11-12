@@ -32,6 +32,7 @@ class ModelResolution:
 
     catalog_name: str
     hf_repo: str | None
+    context_length: int | None = None
     origin: str = "blis-catalog"
 
 
@@ -141,6 +142,9 @@ class BlisCatalog:
         return ModelResolution(
             catalog_name=model.slug,
             hf_repo=model.hf_repo,
+            context_length=_positive_int(
+                _config_value(model.config, "max_position_embeddings", "context")
+            ),
             origin="blis-catalog",
         )
 
