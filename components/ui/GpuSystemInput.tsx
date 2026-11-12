@@ -151,9 +151,10 @@ export function GpuSystemInput({
       </Select>
       {current && (
         <div className={styles.helperText}>
-          {current.vramGb != null && <>{current.vramGb} GB</>}
-          {current.bandwidthTbps != null && <> · {current.bandwidthTbps} TB/s</>}
-          {current.tflopsBf16 != null && <> · {current.tflopsBf16.toFixed(0)} TFLOPS</>}
+          {[
+            current.bandwidthTbps != null ? `${current.bandwidthTbps} TB/s` : null,
+            current.tflopsBf16 != null ? `${current.tflopsBf16.toFixed(0)} TFLOPS` : null,
+          ].filter(Boolean).join(' · ')}
         </div>
       )}
     </div>

@@ -1100,7 +1100,7 @@ export default function BenchmarkComparisonPage() {
 
         <div className={styles.settingsRow}>
           <div>
-            <span className={styles.settingsLabel}>Serving backend from settings</span>
+            <span className={styles.settingsLabel}>Serving backend</span>
             <span className={styles.settingsValue}>
               {BACKEND_LABELS[inferenceBackend] ?? inferenceBackend}
               {' · '}
