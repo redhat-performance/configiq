@@ -11,7 +11,11 @@ import {
   Button,
   FormSelect,
   FormSelectOption,
+  MenuToggle,
   PageSection,
+  Select,
+  SelectList,
+  SelectOption,
   Spinner,
   Switch,
   TextInput,
@@ -28,6 +32,7 @@ import {
 } from '@/lib/hooks/useCatalog'
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
+import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import {
   comparisonRequestsPerLoadUnit,
   measuredPoolTopology,
@@ -152,6 +157,21 @@ function optionLabel(key: BenchmarkFilterKey, value: string): string {
   if (key === 'tp') return `TP ${value}`
   if (key === 'backend') return BACKEND_LABELS[value] ?? value
   return value
+}
+
+/**
+ * A short label for the closed runtime-configuration control. The menu keeps
+ * the service's full configuration label; the control only needs enough to
+ * identify which run is selected, because the full label does not fit and is
+ * unreadable when clipped by the native select.
+ */
+function configurationSummary(option: ConfigurationOption): string {
+  const { measurement_source, backend, backend_version, precision, kv_quantization } = option.values
+  const engine = backend
+    ? [BACKEND_LABELS[backend] ?? backend, backend_version].filter(Boolean).join(' ')
+    : null
+  const quantized = kv_quantization ? `KV ${kv_quantization}` : precision
+  return [measurement_source, engine, quantized, `${option.rows} rows`].filter(Boolean).join(' · ')
 }
 
 function isHttpsUrl(value: string | null | undefined): value is string {
@@ -337,7 +357,7 @@ function simulatorPlans({
     const support = simulatorSupport[simulator.id]
     const plan = (skipReason: string, backend: BackendOption | null = null): SimulatorPlan => ({
       simulator: simulator.id,
-      label: support?.label ?? simulator.label,
+      label: simulatorDisplayLabel(simulator.id, support?.label ?? simulator.label),
       backend,
       version: null,
       requiresFabric: false,
@@ -410,6 +430,7 @@ export default function BenchmarkComparisonPage() {
   const [rootOptions, setRootOptions] = React.useState<Record<BenchmarkFilterKey, string[]> | null>(null)
   const [seeded, setSeeded] = React.useState(false)
   const [configurationKey, setConfigurationKey] = React.useState('')
+  const [configurationOpen, setConfigurationOpen] = React.useState(false)
   const configurationRef = React.useRef<ConfigurationOption | null>(null)
   const [source, setSource] = React.useState<DatasetSource | null>(null)
   const [inferencexSource, setInferenceXSource] = React.useState<InferenceXSource | null>(null)
@@ -931,7 +952,7 @@ export default function BenchmarkComparisonPage() {
           <p className={styles.eyebrow}>Validation</p>
           <h1>Benchmark comparison</h1>
           <p className={styles.intro}>
-            Compare measured benchmark data with every simulator in the catalog that supports this model, GPU, and serving backend.
+            Compare benchmark observations with simulator predictions.
           </p>
         </div>
         {(source || inferencexSource) && (
@@ -984,12 +1005,14 @@ export default function BenchmarkComparisonPage() {
               value={resolvedFilters?.model ?? selection.model}
               onChange={value => handleSelectionChange('model', value)}
               items={modelItems}
+              isDisabled={isComparing}
               placeholder="Search measured models..."
               helperText="Models with benchmark measurements in this dataset."
             />
             <GpuSystemInput
               id="benchmark-gpu"
               value={gpuValue}
+              isDisabled={isComparing}
               onChange={value => {
                 const option = gpuInputOptions.find(entry => entry.systemId === value)
                 handleSelectionChange('accelerator', option?.label ?? value)
@@ -1010,7 +1033,7 @@ export default function BenchmarkComparisonPage() {
                     value={resolvedFilters?.[key] ?? selection[key]}
                     onChange={(_event, value) => handleSelectionChange(key, String(value))}
                     aria-label={key === 'isl' ? 'Input tokens' : key === 'osl' ? 'Output tokens' : 'Tensor parallel size'}
-                    isDisabled={isResolving || options[key].length === 0}
+                    isDisabled={isResolving || isComparing || options[key].length === 0}
                   >
                     {options[key].map(value => (
                       <FormSelectOption key={value} value={value} label={optionLabel(key, value)} />
@@ -1022,29 +1045,55 @@ export default function BenchmarkComparisonPage() {
             <div className={`${styles.field} ${styles.configurationField}`}>
               <label htmlFor="benchmark-configuration">Measured runtime configuration</label>
               <div id="benchmark-configuration">
-                <FormSelect
-                  value={configurationKey}
-                  onChange={(_event, value) => {
-                    const key = String(value)
-                    configurationRef.current = configurations.find(option => option.key === key) ?? null
-                    setConfigurationKey(key)
+                <Select
+                  isOpen={configurationOpen && !isResolving && !isComparing && configurations.length > 0}
+                  selected={configurationKey}
+                  onSelect={(_event, value) => {
+                    if (typeof value !== 'string') return
+                    configurationRef.current = configurations.find(option => option.key === value) ?? null
+                    setConfigurationKey(value)
+                    setConfigurationOpen(false)
                     clearResults()
                   }}
-                  aria-label="Measured runtime configuration"
-                  isDisabled={isResolving || configurations.length === 0}
+                  onOpenChange={next => {
+                    if (!isResolving && !isComparing) setConfigurationOpen(next)
+                  }}
+                  toggle={ref => (
+                    <MenuToggle
+                      ref={ref}
+                      aria-label="Measured runtime configuration"
+                      isFullWidth
+                      isExpanded={configurationOpen}
+                      isDisabled={isResolving || isComparing || configurations.length === 0}
+                      onClick={() => setConfigurationOpen(open => !open)}
+                      className={styles.configurationToggle}
+                    >
+                      <span className={styles.configurationToggleText}>
+                        {selectedConfiguration
+                          ? configurationSummary(selectedConfiguration)
+                          : 'No matching runtime configuration'}
+                      </span>
+                    </MenuToggle>
+                  )}
+                  popperProps={{ maxWidth: '640px' }}
                 >
-                  {configurations.length === 0 && <FormSelectOption value="" label="No matching runtime configuration" />}
-                  {configurations.map(configuration => (
-                    <FormSelectOption
-                      key={configuration.key}
-                      value={configuration.key}
-                      label={`${configuration.label} · ${configuration.rows} rows`}
-                    />
-                  ))}
-                </FormSelect>
+                  <SelectList>
+                    {configurations.map(configuration => (
+                      <SelectOption
+                        key={configuration.key}
+                        value={configuration.key}
+                        description={`${configuration.rows} rows`}
+                        className={styles.configurationOption}
+                      >
+                        {configuration.label}
+                      </SelectOption>
+                    ))}
+                  </SelectList>
+                </Select>
               </div>
               <p className={styles.helperText}>
                 Keeps measurement source, precision, quantization, and serving settings from different runs separate.
+                The selected run&apos;s details appear when you open the list.
               </p>
             </div>
           </div>

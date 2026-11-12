@@ -140,7 +140,7 @@ export const GLOSSARY: Record<string, { title: string; body: string }> = {
   },
   gpuUtil: {
     title: 'GPU memory utilization',
-    body: 'Fraction of each GPU\'s memory available to the backend for weights and KV cache. AISimulate maps this generic value to the selected backend and uses a backend-specific default when left on auto.',
+    body: 'Fraction of each GPU\'s memory available to the backend for weights and KV cache. AISim maps this generic value to the selected backend and uses a backend-specific default when left on auto.',
   },
   selfHosted: {
     title: 'Self-hosted (hardware only)',

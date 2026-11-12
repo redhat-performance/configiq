@@ -73,6 +73,25 @@ export function predictionColor(simulator: string, index: number): string {
   return SIMULATOR_COLORS[simulator] ?? PREDICTION_COLORS[index % PREDICTION_COLORS.length]
 }
 
+/**
+ * Heading colors for the measured series.
+ *
+ * Red Hat red (#c9190b) and BLIS blue (#0f62fe) already read well as 11.5px
+ * uppercase text. InferenceX orange (#ec7a08, 2.9:1) and AISimulate green
+ * (#76b900, 2.4:1) do not, so those headings use a darkened shade of the same
+ * hue that still clears 4.5:1 on white.
+ */
+export const BENCHMARK_TEXT_COLORS = {
+  benchmark: '#c9190b',
+  inferencex: '#9e4a00',
+} as const
+
+/** Simulator heading colors; simulators without an entry stay neutral. */
+export const SIMULATOR_TEXT_COLORS: Record<string, string> = {
+  aisimulate: '#4a6e00',
+  blis: '#0f62fe',
+}
+
 function formatValue(value: number | null, digits: number): string {
   return value === null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits })
 }
@@ -198,13 +217,15 @@ function MetricTable({
         <thead>
           <tr>
             <th scope="col">Concurrency</th>
-            <th scope="col">Red Hat</th>
-            {hasInferencex && <th scope="col">InferenceX</th>}
+            <th scope="col" style={{ color: BENCHMARK_TEXT_COLORS.benchmark }}>Red Hat</th>
+            {hasInferencex && <th scope="col" style={{ color: BENCHMARK_TEXT_COLORS.inferencex }}>InferenceX</th>}
             {seriesBy.map(({ entry }) => (
-              <th scope="col" key={entry.simulator}>{entry.label}</th>
+              <th scope="col" key={entry.simulator} style={{ color: SIMULATOR_TEXT_COLORS[entry.simulator] }}>{entry.label}</th>
             ))}
             {seriesBy.map(({ entry }) => (
-              <th scope="col" key={`${entry.simulator}-delta`}>Δ {entry.label}</th>
+              <th scope="col" key={`${entry.simulator}-delta`} style={{ color: SIMULATOR_TEXT_COLORS[entry.simulator] }}>
+                Δ {entry.label}
+              </th>
             ))}
           </tr>
         </thead>

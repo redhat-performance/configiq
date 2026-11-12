@@ -36,14 +36,7 @@ import {
 import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useCatalog } from "@/lib/hooks/useCatalog";
-
-/**
- * Upstream product names shown in the version footer. The catalog keeps the
- * stable ids and full labels used by request contracts; chrome stays short.
- */
-const FOOTER_SIMULATOR_LABELS: Record<string, string> = {
-  aisimulate: 'AISim',
-};
+import { simulatorDisplayLabel } from "@/lib/simulator-labels";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -285,7 +278,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>ConfigIQ {getVersionString()} · {getShortCommit()}</div>
           {simulators.map(simulator => (
             <div key={simulator.id} style={{ fontSize: '10px', marginTop: '2px' }}>
-              {FOOTER_SIMULATOR_LABELS[simulator.id] ?? simulator.label} {simulator.version ?? 'version unavailable'}
+              {simulatorDisplayLabel(simulator.id, simulator.label)} {simulator.version ?? 'version unavailable'}
               {simulator.revision ? ` · ${simulator.revision.slice(0, 7)}` : ''}
             </div>
           ))}
