@@ -74,12 +74,12 @@ export function predictionColor(simulator: string, index: number): string {
 }
 
 /**
- * Heading colors for the measured series.
+ * Heading colors for the measured and predicted series.
  *
- * Red Hat red (#c9190b) and BLIS blue (#0f62fe) already read well as 11.5px
- * uppercase text. InferenceX orange (#ec7a08, 2.9:1) and AISimulate green
- * (#76b900, 2.4:1) do not, so those headings use a darkened shade of the same
- * hue that still clears 4.5:1 on white.
+ * Headings sit on the striped table header (#e8e8e8). InferenceX orange
+ * (#ec7a08), AISimulate green (#76b900), and BLIS blue (#0f62fe, 4.08:1) all
+ * miss the 4.5:1 normal-text threshold there at 11.5px, so each series keeps
+ * its hue in a darker shade that clears 4.5:1 on that background.
  */
 export const BENCHMARK_TEXT_COLORS = {
   benchmark: '#c9190b',
@@ -89,7 +89,7 @@ export const BENCHMARK_TEXT_COLORS = {
 /** Simulator heading colors; simulators without an entry stay neutral. */
 export const SIMULATOR_TEXT_COLORS: Record<string, string> = {
   aisimulate: '#4a6e00',
-  blis: '#0f62fe',
+  blis: '#0043ce',
 }
 
 function formatValue(value: number | null, digits: number): string {

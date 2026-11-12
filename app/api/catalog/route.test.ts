@@ -222,6 +222,8 @@ describe('GET /api/catalog', () => {
   it('does not retry a capability read the service rejects', async () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     let backendsAttempts = 0
+    const failure = new Response('bad request', { status: 400 })
+    const cancelFailureBody = vi.spyOn(failure.body!, 'cancel')
     vi.stubGlobal('fetch', vi.fn((url: string) => {
       const parsed = new URL(url)
       if (parsed.pathname === '/simulators') {
@@ -231,7 +233,7 @@ describe('GET /api/catalog', () => {
       }
       if (parsed.pathname === '/backends') {
         backendsAttempts += 1
-        return Promise.resolve(new Response('bad request', { status: 400 }))
+        return Promise.resolve(failure)
       }
       return Promise.resolve(Response.json({
         simulator: 'aisimulate',
@@ -246,6 +248,7 @@ describe('GET /api/catalog', () => {
     // A malformed request will fail the same way on every attempt, so the
     // default simulator's catalogue is unreadable and the request fails.
     expect(backendsAttempts).toBe(1)
+    expect(cancelFailureBody).toHaveBeenCalled()
     expect(response.status).toBe(502)
     expect(await response.json()).toMatchObject({ error: { code: 'AISIM_INVALID_RESPONSE' } })
   })

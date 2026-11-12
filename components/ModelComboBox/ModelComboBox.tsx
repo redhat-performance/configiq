@@ -357,6 +357,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
             id={id ? `${id}-validated-only` : 'validated-only'}
             label="Tested only"
             isChecked={supportedOnly}
+            isDisabled={isDisabled}
             onChange={handleToggle}
             isReversed
           />

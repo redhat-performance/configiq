@@ -117,6 +117,9 @@ async function fetchJson(
         signal: AbortSignal.timeout(timeoutSeconds * 1000),
       })
       if (response.ok) return await response.json()
+      // Release the unread failure body so its connection is not held until
+      // the attempt timeout, whether this attempt retries or gives up.
+      await response.body?.cancel()
       // Retry only failures a later attempt can plausibly fix. A 4xx response
       // means the request itself is wrong.
       if (response.status !== 429 && response.status < 500) return null

@@ -270,6 +270,21 @@ describe('tested-only filter', () => {
     });
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('stays inert while the whole control is disabled', async () => {
+    const { onChange } = await mount({
+      value: 'Qwen/Qwen3-32B',
+      supportedModels: ['Qwen/Qwen3-8B'],
+      isDisabled: true,
+    });
+    const toggle = container.querySelector<HTMLInputElement>('#mb-validated-only');
+    expect(toggle?.disabled).toBe(true);
+    await act(async () => {
+      toggle?.click();
+      await Promise.resolve();
+    });
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
 
 describe('custom model entry', () => {

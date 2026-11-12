@@ -174,13 +174,14 @@ describe('ComparisonPreview', () => {
       .find(th => th.textContent?.trim() === label)
       ?.style.color
 
-    // Red Hat red and BLIS blue are readable as-is; InferenceX orange and
-    // AISimulate green use darkened shades that still clear 4.5:1 on white.
+    // Red Hat red is readable on the striped header; InferenceX orange,
+    // AISimulate green, and BLIS blue use darker shades of the same hue that
+    // still clear 4.5:1 there.
     expect(headerColor('Red Hat')).toBe('#c9190b')
     expect(headerColor('InferenceX')).toBe('#9e4a00')
     expect(headerColor('AISimulate')).toBe('#4a6e00')
-    expect(headerColor('BLIS')).toBe('#0f62fe')
-    expect(headerColor('Δ BLIS')).toBe('#0f62fe')
+    expect(headerColor('BLIS')).toBe('#0043ce')
+    expect(headerColor('Δ BLIS')).toBe('#0043ce')
     // The row selector stays neutral.
     expect(headerColor('Concurrency')).toBe('')
   })

@@ -398,7 +398,7 @@ function simulatorPlans({
 
     return {
       simulator: simulator.id,
-      label: support.label,
+      label: simulatorDisplayLabel(simulator.id, support.label),
       backend,
       version: matchedVersion,
       requiresFabric: backend.disaggregationRequiresFabric,
