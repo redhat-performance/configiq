@@ -44,5 +44,8 @@ next-env.d.ts
 data/tested-models/
 __pycache__/
 
+# Playwright output
+playwright-report/
+test-results/
 # Local-only dev scratch (container runner, logs)
 .local-dev/
