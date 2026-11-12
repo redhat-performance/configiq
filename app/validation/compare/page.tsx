@@ -1093,7 +1093,6 @@ export default function BenchmarkComparisonPage() {
               </div>
               <p className={styles.helperText}>
                 Keeps measurement source, precision, quantization, and serving settings from different runs separate.
-                The selected run&apos;s details appear when you open the list.
               </p>
             </div>
           </div>

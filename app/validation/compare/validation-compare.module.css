@@ -160,8 +160,6 @@
 
 .configurationField { grid-column: 1 / -1; }
 
-.configurationField .helperText { max-width: 680px; }
-
 .configurationToggle { min-width: 0; }
 
 .configurationToggle :global(.pf-v6-c-menu-toggle__text) {
