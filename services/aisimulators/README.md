@@ -137,13 +137,16 @@ widths the caller supplied, and its aggregated response reports those explicit
 values (or null).
 
 BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
-`0.31.0`, the newest release that models prefill/decode disaggregation and
-accepts `max_model_len: auto`. `0.32.0` is opt-in and models both colocated and
-P/D serving, but requires `max_model_len` stated; the adapter then writes
-`isl + osl` instead of `auto`. Any other `backend_version`, including AISimulate
-aliases such as `current`, is refused with a 422 that names the modeled releases
-— BLIS treats `engine_version` as a check, not a selector, so the service never
-substitutes a different release silently.
+`0.31.0`, the newest release that models prefill/decode disaggregation.
+`0.32.0` is opt-in and models both colocated and P/D serving. The adapter always
+states a concrete `engine.max_model_len`: the request's `max_seq_len` when set,
+otherwise the catalog model's native context, otherwise `isl + osl`. It does not
+emit `auto`, because BLIS resolves that from the model graph and some catalog
+graphs (for example `gpt-oss-120b`) omit the context window. Any other
+`backend_version`, including AISimulate aliases such as `current`, is refused
+with a 422 that names the modeled releases — BLIS treats `engine_version` as a
+check, not a selector, so the service never substitutes a different release
+silently.
 
 `GET /backends`, `/models`, `/systems`, and `/networks` take `simulator` so a
 client can ask what the selected simulator supports. `/backends?simulator=...`
@@ -174,7 +177,14 @@ BLIS `/predict` supports both colocated and prefill/decode-disaggregated vLLM
 scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
-disaggregates every request. BLIS `/recommend` searches aggregate TP candidates
+disaggregates every request. Both modes accept `requests_per_load_unit` and
+simulate `max(1, round(batch_size x requests_per_load_unit))` total requests
+when it is specified, the same rule AISimulate uses. When omitted, both modes
+simulate one total request.
+The run also pins the prompt and output token distributions to the requested
+ISL/OSL (`min = max = requested`, stdev 0), so a prompt longer than BLIS's
+default 7000-token ceiling is simulated instead of rejected.
+BLIS `/recommend` searches aggregate TP candidates
 for `min_gpus` and `throughput_demand`. It defaults to `roce-200g` when the
 `fabric` field is omitted and also searches bounded P/D TP and worker-count
 combinations, with one node per pool and DP=PP=1. Send `fabric: null` to request

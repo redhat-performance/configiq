@@ -104,6 +104,21 @@ html, body {
 /* Numbers always tabular */
 .gc-num { font-variant-numeric: tabular-nums; }
 
+/* Selected preset pill (Workload, Concurrency, Serving mode).
+   Borrows PatternFly's selected ToggleGroup colours so a selected preset gets
+   the same light-blue fill as the Sizing goal, not just an outline change. */
+.gc-preset-button[aria-pressed="true"] {
+  --pf-v6-c-button--BackgroundColor: var(--pf-t--global--color--brand--subtle--default, #e0f0ff);
+  --pf-v6-c-button--BorderColor: var(--pf-t--global--border--color--brand--subtle--clicked, #92c5f9);
+  --pf-v6-c-button--Color: var(--pf-t--global--text--color--regular, #151515);
+  --pf-v6-c-button--hover--BackgroundColor: var(--pf-t--global--color--brand--subtle--200, #b9dafc);
+  --pf-v6-c-button--hover--BorderColor: var(--pf-t--global--border--color--brand--subtle--clicked, #92c5f9);
+  --pf-v6-c-button--hover--Color: var(--pf-t--global--text--color--regular, #151515);
+  --pf-v6-c-button--m-clicked--BackgroundColor: var(--pf-t--global--color--brand--subtle--200, #b9dafc);
+  --pf-v6-c-button--m-clicked--BorderColor: var(--pf-t--global--border--color--brand--subtle--clicked, #92c5f9);
+  --pf-v6-c-button--m-clicked--Color: var(--pf-t--global--text--color--regular, #151515);
+}
+
 /* ============================================================
    Hard floors — guard against PatternFly components rendering
    text too light or too small. Bump common offenders.

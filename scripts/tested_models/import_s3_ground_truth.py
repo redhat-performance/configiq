@@ -7,18 +7,21 @@ import argparse
 import csv
 import hashlib
 import json
-import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-from dataset_common import dataframe_sha256, load_required_models, normalize_rows, pair_id, write_parquet
+from dataset_common import (
+    dataframe_sha256,
+    is_upstream_vllm_version,
+    load_required_models,
+    normalize_rows,
+    pair_id,
+    write_parquet,
+)
 
 REQUIRED_COLUMNS = {"model", "accelerator", "version"}
-# The public dataset is the upstream-only subset: plain upstream vLLM releases.
-UPSTREAM_VERSION_PATTERN = re.compile(r"^vLLM-\d+\.\d+\.\d+$")
-
 NUMERIC_COLUMNS = {
     "isl", "osl", "tp", "concurrency", "measured concurrency", "measured rps",
     "output_tok/sec", "total_tok/sec", "prompt_token_count_mean", "prompt_token_count_p99",
@@ -84,7 +87,7 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
                 raise ValueError(f"approved model has a missing accelerator on CSV row {source_rows + 1}")
             approved_rows += 1
             version = (row["version"] or "").strip()
-            if not UPSTREAM_VERSION_PATTERN.fullmatch(version):
+            if not is_upstream_vllm_version(version):
                 # Productized RHAIIS builds and non-release labels must never
                 # widen the public upstream-only dataset.
                 dropped_versions[version or "<blank>"] += 1
@@ -94,6 +97,17 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
 
     if not groups:
         raise ValueError("source CSV contains no approved model and accelerator pairs")
+
+    ids: dict[str, tuple[str, str]] = {}
+    for model_id, accelerator in groups:
+        item_id = pair_id(model_id, accelerator)
+        previous = ids.get(item_id)
+        if previous is not None and previous != (model_id, accelerator):
+            raise ValueError(
+                f"distinct model/accelerator pairs map to the same ID {item_id}: "
+                f"{previous!r} and {(model_id, accelerator)!r}"
+            )
+        ids[item_id] = (model_id, accelerator)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     pairs = []

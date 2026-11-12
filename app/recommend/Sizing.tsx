@@ -23,13 +23,15 @@ import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
 import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
+import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
 import { buildModelItems, needsHfConfig } from '@/lib/model-options';
@@ -39,6 +41,7 @@ import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeed
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
+import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
@@ -234,7 +237,7 @@ function friendlyErrorHint(code: string | null): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Sizing() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
@@ -271,6 +274,9 @@ export default function Sizing() {
 
   // Input state
   const [model, setModel] = React.useState('');
+  // Persist the model only after a pick in this tool. Filter-driven
+  // replacements must not overwrite the cross-tool default.
+  const modelTouched = React.useRef(false);
   const [hfConfig, setHfConfig] = React.useState<Record<string, unknown> | null>(null);
   // A simulator that models a catalog also says which models it cannot price.
   // The default model may be one of them; surface that instead of replacing it.
@@ -287,7 +293,8 @@ export default function Sizing() {
     setModel(settingsDefaultModel);
     setModelFromSettingsApplied(true);
   }, [hydrated, settingsDefaultModel]);
-  const [gpuSystem, setGpuSystem] = React.useState(() => getAppConfig().defaultSystem);
+  const [gpuSystem, setGpuSystem] = React.useState('');
+  const [gpuReady, setGpuReady] = React.useState(false);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -296,6 +303,18 @@ export default function Sizing() {
     () => testedSystemsFirst(catalogGpus, testedSystemsForModel),
     [catalogGpus, testedSystemsForModel],
   );
+
+  // Start from the system remembered across tools. A saved system the current
+  // simulator cannot offer falls back to the first selectable one without
+  // replacing the stored preference.
+  React.useEffect(() => {
+    if (!hydrated || catalogLoading || gpuReady) return;
+    const preferred = settingsDefaultSystem && selectableGpus.some(gpu => gpu.systemId === settingsDefaultSystem)
+      ? settingsDefaultSystem
+      : selectableGpus[0]?.systemId ?? '';
+    setGpuSystem(preferred);
+    setGpuReady(true);
+  }, [hydrated, catalogLoading, gpuReady, settingsDefaultSystem, selectableGpus]);
   const [isl, setIsl] = React.useState(2048);
   const [osl, setOsl] = React.useState(128);
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
@@ -337,7 +356,16 @@ export default function Sizing() {
       : null;
 
   // Model status + HF config
-  const [modelStatus, setModelStatus] = React.useState<'idle' | 'supported' | 'catalog' | 'fetching' | 'fetched' | 'error'>('idle');
+  const [modelCheck, setModelCheck] = React.useState<ModelStatusCheck>({ model: '', status: 'idle' });
+  // A status applies only to the model it was computed for. Until the current
+  // model is checked, treat it as idle so a stale status cannot authorize
+  // saving an unvalidated model as the default.
+  const modelStatus = statusForModel(modelCheck, model);
+  useRememberDefaultModel(
+    model,
+    modelTouched.current && !modelUnsupported &&
+      (modelStatus === 'supported' || modelStatus === 'catalog' || modelStatus === 'fetched'),
+  );
 
   // Capacity runs return ranked alternatives. The result panel shows whichever
   // option is promoted; every other view keeps the primary recommendation so
@@ -458,7 +486,6 @@ export default function Sizing() {
     setConcurrencyInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTargetConcurrency(n);
-    setActiveConcurrencyPreset('');
     markInputsDirty();
   };
 
@@ -490,17 +517,18 @@ export default function Sizing() {
   // everything else (incl. tested models outside the catalog) needs its HF
   // config.json fetched and stored so it can be sent to AISimulators on calculate.
   React.useEffect(() => {
-    if (catalogLoading) { setModelStatus('idle'); return; }
+    const reportStatus = (status: ModelCheckStatus) => setModelCheck({ model, status });
+    if (catalogLoading) { reportStatus('idle'); return; }
     setHfConfig(null);
     let cancelled = false;
     const timer = setTimeout(() => {
-      if (!model.includes('/')) { setModelStatus('idle'); return; }
+      if (!model.includes('/')) { reportStatus('idle'); return; }
       const isTested = validatedModelIds.includes(model);
       if (!needsHfConfig(model, MODEL_OPTIONS)) {
-        setModelStatus(isTested ? 'supported' : 'catalog');
+        reportStatus(isTested ? 'supported' : 'catalog');
         return;
       }
-      setModelStatus('fetching');
+      reportStatus('fetching');
       fetchModelConfig(model, hfToken).then(r => {
         // Ignore a response for a model the user has since moved away from.
         if (cancelled) return;
@@ -508,11 +536,11 @@ export default function Sizing() {
           setHfConfig(r.config as Record<string, unknown>);
           // Tested models keep their blue "supported" status even though we
           // fetched the config from HF; others show the neutral "fetched".
-          setModelStatus(isTested ? 'supported' : 'fetched');
+          reportStatus(isTested ? 'supported' : 'fetched');
         } else {
           // Tested models stay blue — AISimulators can still resolve them from HF
           // server-side when we send no model_config.
-          setModelStatus(isTested ? 'supported' : 'error');
+          reportStatus(isTested ? 'supported' : 'error');
         }
       });
     }, 500);
@@ -524,10 +552,11 @@ export default function Sizing() {
   const currentGpuOption = selectableGpus.find(g => g.systemId === gpuSystem) ?? selectableGpus[0] ?? null;
 
   React.useEffect(() => {
-    if (!catalogLoading && selectableGpus.length > 0 && !selectableGpus.some(gpu => gpu.systemId === gpuSystem)) {
+    if (!gpuReady || selectableGpus.length === 0) return;
+    if (!selectableGpus.some(gpu => gpu.systemId === gpuSystem)) {
       setGpuSystem(selectableGpus[0].systemId);
     }
-  }, [catalogLoading, gpuSystem, selectableGpus]);
+  }, [gpuReady, gpuSystem, selectableGpus]);
 
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
     if (!result || !params) return null;
@@ -589,7 +618,9 @@ export default function Sizing() {
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
   const [activePreset, setActivePreset] = React.useState<string>('default');
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  // Selection follows the actual value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     reset();
@@ -609,12 +640,7 @@ export default function Sizing() {
   };
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === p.key) {
-      setActiveConcurrencyPreset('');
-      return;
-    }
     setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
-    setActiveConcurrencyPreset(p.key);
     markInputsDirty();
   };
 
@@ -756,7 +782,7 @@ export default function Sizing() {
             <ComboBox
               id="adv-model"
               value={model}
-              onChange={(value) => { setModel(value); markInputsDirty(); }}
+              onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="e.g. meta-llama/Llama-3.1-70B-Instruct"
               allowCustom
@@ -765,19 +791,19 @@ export default function Sizing() {
             />
           </div>
 
-          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+          <GpuSystemInput id="adv-gpu" value={gpuSystem} onChange={(value) => { setGpuSystem(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
         </div>
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
             so it cannot size workloads. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}
@@ -866,9 +892,9 @@ export default function Sizing() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -880,7 +906,7 @@ export default function Sizing() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
-            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}

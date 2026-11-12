@@ -23,7 +23,7 @@ describe('private InferenceX dataset', () => {
   it('fetches server-side with a token and caches the validated snapshot', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(snapshot), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     const first = await getInferenceXDataset()
     const second = await getInferenceXDataset()
@@ -44,7 +44,7 @@ describe('private InferenceX dataset', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 200 }))
       .mockRejectedValue(new Error('Hugging Face is unreachable'))
     vi.stubGlobal('fetch', fetchMock)
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     try {
       const first = await getInferenceXDataset()
@@ -67,7 +67,7 @@ describe('private InferenceX dataset', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify(snapshot), { status: 200 }))
       .mockResolvedValue(new Response(JSON.stringify({ ...snapshot, retrievedAt: '2026-10-29T16:30:00.000Z' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     try {
       const first = await getInferenceXDataset()
@@ -86,7 +86,7 @@ describe('private InferenceX dataset', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, sourceUrl: 'javascript:alert(1)',
     }), { status: 200 })))
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     await expect(getInferenceXDataset()).rejects.toThrow('invalid source URL')
   })
@@ -95,7 +95,7 @@ describe('private InferenceX dataset', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, rows: [{ ...snapshot.rows[0], source_run_url: 'javascript:alert(1)' }],
     }), { status: 200 })))
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     await expect(getInferenceXDataset()).rejects.toThrow('invalid or unapproved benchmark rows')
   })
@@ -104,7 +104,7 @@ describe('private InferenceX dataset', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       ...snapshot, rows: [{ ...snapshot.rows[0], model: 'InferenceX/unverified-model' }],
     }), { status: 200 })))
-    const { getInferenceXDataset } = await import('./ground-truth-dataset')
+    const { getInferenceXDataset } = await import('./benchmark-dataset')
 
     await expect(getInferenceXDataset()).rejects.toThrow('unapproved benchmark rows')
   })

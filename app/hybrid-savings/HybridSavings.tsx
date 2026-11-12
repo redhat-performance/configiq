@@ -30,12 +30,14 @@ import { HybridCostCard } from './HybridCostCard'
 import { AppliedCostAssumptions } from './AppliedCostAssumptions'
 import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
+import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets'
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets'
 import {
   useCostings,
   type FrontierModel,
@@ -279,6 +281,9 @@ export default function HybridSavings() {
         : infrastructureStates.length === 0 ? 'Infrastructure source status unavailable' : 'No stale feed reported'
 
   const [model, setModel] = React.useState('')
+  // Only an explicit model pick should replace the saved default; the automatic
+  // starting point must never overwrite it.
+  const modelTouched = React.useRef(false)
   // A simulator that reports a complete model catalog cannot price a model
   // outside it. Show that explicitly rather than replacing the selection.
   const modelUnsupported = model !== '' && (support?.modelsExhaustive ?? false) && !modelOptions.includes(model)
@@ -289,7 +294,9 @@ export default function HybridSavings() {
   const [targetTtftMs, setTargetTtftMs] = React.useState(1000)
   const [targetTpotMs, setTargetTpotMs] = React.useState(30)
   const [targetConcurrency, setTargetConcurrency] = React.useState(1)
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState('')
+  // Selection follows the committed value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, targetConcurrency)
   const [prefixTokens, setPrefixTokens] = React.useState(0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
@@ -346,6 +353,12 @@ export default function HybridSavings() {
     }, 500)
     return () => { clearTimeout(timer); cancelled = true }
   }, [model, modelOptions, catalogLoading, hfToken])
+
+  useRememberDefaultModel(
+    model,
+    modelTouched.current && !modelUnsupported &&
+      (modelOptions.includes(model) || modelConfig?.model === model),
+  )
 
   const apiModelItems = React.useMemo(() => buildApiModelItems(costings.models, model), [costings.models, model])
   const standardHostedOffers = React.useMemo(() => costings.models.filter(isStandardTokenOffer), [costings.models])
@@ -571,12 +584,7 @@ export default function HybridSavings() {
   }
 
   const applyConcurrencyPreset = (preset: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === preset.key) {
-      setActiveConcurrencyPreset('')
-      return
-    }
     setTargetConcurrency(preset.concurrency)
-    setActiveConcurrencyPreset(preset.key)
   }
 
   const runSizing = () => {
@@ -626,7 +634,7 @@ export default function HybridSavings() {
         This simulator does not support the backend selected in Settings. Choose a supported backend there to calculate.
       </Alert>}
       {modelUnsupported && <Alert title="Model not supported by the selected simulator" variant="danger" isInline>
-        {model} is not in the {support?.label ?? 'selected simulator'} model catalog, which lists every model it can price.
+        {model} is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog, which lists every model it can price.
         Choose a catalog model or switch simulators in Settings.
       </Alert>}
 
@@ -636,7 +644,7 @@ export default function HybridSavings() {
             <h2>Model and workload</h2>
             <div className={styles.inputGrid}>
               <div className={styles.modelField}>
-                <ComboBox id="hybrid-model" value={model} onChange={setModel} items={modelItems}
+                <ComboBox id="hybrid-model" value={model} onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value) }} items={modelItems}
                   allowCustom supportedModels={testedModelsAvailable ? validatedModelIds : undefined} hfToken={hfToken}
                   helperText="Choose a model checkpoint to compare." />
               </div>
@@ -647,7 +655,7 @@ export default function HybridSavings() {
               <div className={styles.workloadPresets} role="group" aria-label="Workload type" id="hybrid-profile">
                 <span className={styles.workloadLabel}>Workload:</span>
                 {workloadPresets.map(profile => (
-                  <Button key={profile.key} type="button" variant={activePreset?.key === profile.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset?.key === profile.key} onClick={() => applyProfile(profile)}>
+                  <Button key={profile.key} type="button" className="gc-preset-button" variant={activePreset?.key === profile.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset?.key === profile.key} onClick={() => applyProfile(profile)}>
                     {profile.label}
                   </Button>
                 ))}
@@ -656,7 +664,7 @@ export default function HybridSavings() {
                 <div className={styles.concurrencyPresets} role="group" aria-label="Concurrency">
                   <span className={styles.workloadLabel}>Concurrency:</span>
                   {getAppConfig().concurrencyPresets.map(preset => (
-                    <Button key={preset.key} type="button" variant={activeConcurrencyPreset === preset.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === preset.key} onClick={() => applyConcurrencyPreset(preset)}>
+                    <Button key={preset.key} type="button" className="gc-preset-button" variant={activeConcurrencyPreset === preset.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === preset.key} onClick={() => applyConcurrencyPreset(preset)}>
                       {preset.label}
                     </Button>
                   ))}
@@ -699,7 +707,7 @@ export default function HybridSavings() {
                 <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={setAverageOutputTokens} />
                 <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} onChange={setTargetTtftMs} />
                 <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} onChange={setTargetTpotMs} />
-                <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={value => { setTargetConcurrency(value); setActiveConcurrencyPreset('') }} />
+                <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={setTargetConcurrency} />
                 <NumberField id="hybrid-prefix" label="Cached prefix tokens per request" value={prefixTokens} min={0} max={averageInputTokens} step={1} onChange={setPrefixTokens} />
               </div>
               {requestMix.twoSided && !requestMix.aligned && (

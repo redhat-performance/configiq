@@ -37,14 +37,16 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
+import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { useSettings } from '@/contexts/SettingsContext';
+import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
-import type { ConcurrencyPreset } from '@/lib/concurrency-presets';
+import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
@@ -163,7 +165,7 @@ const QUICK_ESTIMATE_TOUR: TourStep[] = [
 
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
@@ -192,7 +194,8 @@ export default function Performance() {
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
   const [model, setModel] = React.useState('');
-  const [gpu, setGpu] = React.useState(() => getAppConfig().defaultSystem);
+  const [gpu, setGpu] = React.useState('');
+  const [gpuReady, setGpuReady] = React.useState(false);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -203,11 +206,20 @@ export default function Performance() {
   );
   const [prefillChecked, setPrefillChecked] = React.useState(false);
   const modelWasPrefilled = React.useRef(false);
+  const gpuWasPrefilled = React.useRef(false);
+  // Persist the model only after an explicit pick (or a handoff). Filter-driven
+  // replacements must not overwrite the cross-tool default.
+  const modelTouched = React.useRef(false);
 
   React.useEffect(() => {
     const prefill = parsePerformancePrefill(globalThis.location?.search || '');
     modelWasPrefilled.current = Boolean(prefill.model);
-    if (prefill.model) setModel(prefill.model);
+    gpuWasPrefilled.current = Boolean(prefill.system);
+    if (prefill.model) {
+      // A handoff from another tool is an explicit choice; keep remembering it.
+      modelTouched.current = true;
+      setModel(prefill.model);
+    }
     if (prefill.system) setGpu(prefill.system);
     setPrefillChecked(true);
   }, []);
@@ -223,19 +235,26 @@ export default function Performance() {
     if (!modelWasPrefilled.current) setModel(settingsDefaultModel);
   }, [hydrated, prefillChecked, settingsDefaultModel]);
 
-  // If defaultSystem not in catalog, fall back to first available
-  // but only if it's the initial default, not a prefilled value
-  const gpuWasPrefilled = React.useRef(false);
+  // Start from the system remembered across tools once the handoff URL and
+  // saved settings have both settled. A saved system the current simulator
+  // cannot offer falls back to the first selectable one without replacing the
+  // stored preference.
   React.useEffect(() => {
-    const prefill = parsePerformancePrefill(globalThis.location?.search || '');
-    gpuWasPrefilled.current = Boolean(prefill.system);
-  }, []);
+    if (!hydrated || !prefillChecked || catalogLoading || gpuReady) return;
+    const preferred = gpuWasPrefilled.current ? gpu : settingsDefaultSystem;
+    const next = selectableGpus.some(option => option.systemId === preferred)
+      ? preferred
+      : selectableGpus[0]?.systemId ?? '';
+    setGpu(next);
+    setGpuReady(true);
+  }, [hydrated, prefillChecked, catalogLoading, gpuReady, gpu, settingsDefaultSystem, selectableGpus]);
 
   React.useEffect(() => {
-    if (prefillChecked && selectableGpus.length > 0 && !selectableGpus.find(g => g.systemId === gpu)) {
+    if (!gpuReady || selectableGpus.length === 0) return;
+    if (!selectableGpus.some(option => option.systemId === gpu)) {
       setGpu(selectableGpus[0].systemId);
     }
-  }, [gpu, prefillChecked, selectableGpus]);
+  }, [gpuReady, gpu, selectableGpus]);
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -257,6 +276,9 @@ export default function Performance() {
 
   // HuggingFace config fetching
   const [hfConfig, setHfConfig] = React.useState<HFModelConfig | null>(null);
+  // The model the config was fetched for; prevents a previous model's config
+  // from validating a new one while its own fetch is still pending.
+  const [hfConfigModel, setHfConfigModel] = React.useState('');
   const [isFetchingConfig, setIsFetchingConfig] = React.useState(false);
   const [isUsingFallback, setIsUsingFallback] = React.useState(false);
   const [fallbackReason, setFallbackReason] = React.useState<string>('');
@@ -277,6 +299,13 @@ export default function Performance() {
     : testError
     ? 'error'
     : 'idle';
+
+  useRememberDefaultModel(
+    model,
+    modelTouched.current && !modelUnsupported &&
+      (modelStatus === 'supported' || modelStatus === 'catalog' ||
+        (modelStatus === 'fetched' && hfConfigModel === model)),
+  );
 
   // Collapsible state for "Why this GPU count?" card
   const [whyGpuExpanded, setWhyGpuExpanded] = React.useState(false);
@@ -413,7 +442,6 @@ export default function Performance() {
     setConcurrentUsersInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestConcurrentUsers(n);
-    setActiveConcurrencyPreset('');
     markInputsDirty();
   };
 
@@ -481,15 +509,12 @@ export default function Performance() {
 
   const resetToDefaults = () => applyPreset(DEFAULT_WORKLOAD);
 
-  const [activeConcurrencyPreset, setActiveConcurrencyPreset] = React.useState<string>('');
+  // Selection follows the actual value, so typing a matching concurrency
+  // selects the preset and changing it deselects without extra state.
+  const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrentUsersInput);
 
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
-    if (activeConcurrencyPreset === p.key) {
-      setActiveConcurrencyPreset('');
-      return;
-    }
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
-    setActiveConcurrencyPreset(p.key);
     markInputsDirty();
   };
 
@@ -499,6 +524,7 @@ export default function Performance() {
     setFallbackReason('');
     // Clear any prior model's config so it can't leak into the next estimate.
     setHfConfig(null);
+    setHfConfigModel('');
 
     // Fetch HF config for models not in the catalog, so we can send it to the backend
     // instead of having the backend try to fetch it from HuggingFace.
@@ -521,12 +547,14 @@ export default function Performance() {
 
       if (result.success && result.config) {
         setHfConfig(result.config);
+        setHfConfigModel(model);
         setTestError(null);
         setIsUsingFallback(false);
         console.log('✅ Fetched HF config:', result.config);
       } else {
         // Fetch failed - will use fallback estimation
         setHfConfig(null);
+        setHfConfigModel('');
         setIsUsingFallback(true);
         setFallbackReason(result.error || 'Unknown error');
         console.warn('⚠️ Failed to fetch HF config, will use estimation:', result.error);
@@ -1229,7 +1257,7 @@ export default function Performance() {
           step: memoryOverride ? 0.5 : undefined,
           rangeValue: memoryOverride && effectiveGpuMemoryUtilization != null ? effectiveGpuMemoryUtilization * 100 : undefined,
           onChange: memoryOverride ? (val: number) => { setGpuMemoryUtilization(val / 100); markInputsDirty(); } : undefined,
-          help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISimulate default.',
+          help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISim default.',
         },
       ],
       badge: memoryOverride ? 'Manual override' : 'Auto-computed',
@@ -1466,7 +1494,7 @@ export default function Performance() {
             <ComboBox
               id="predict-performance-model"
               value={model}
-              onChange={(value) => { setModel(value); markInputsDirty(); }}
+              onChange={(value, source) => { modelTouched.current = source === 'user'; setModel(value); markInputsDirty(); }}
               items={modelItems}
               placeholder="Type model name or select from dropdown..."
               allowCustom
@@ -1476,20 +1504,20 @@ export default function Performance() {
           </div>
 
           {/* Column 2: GPU target */}
-              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
+              <GpuSystemInput id="predict-performance-gpu" value={gpu} onChange={(value) => { setGpu(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={selectableGpus} testedSystemIds={[...testedSystemsForModel]} />
 
         </div>
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
             so it cannot predict performance. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}
@@ -1512,9 +1540,9 @@ export default function Performance() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
-            <Button key={p.key} variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" onClick={() => applyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -1526,7 +1554,7 @@ export default function Performance() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
-            <Button key={p.key} variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
+            <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
               {p.label}
             </Button>
           ))}
@@ -2355,15 +2383,19 @@ export default function Performance() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
                           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
                           <Button
+                            className="gc-preset-button"
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
+                            aria-pressed={servingMode === 'agg'}
                             onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
                           >
                             Aggregated
                           </Button>
                           <Button
+                            className="gc-preset-button"
                             variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
                             size="sm"
+                            aria-pressed={servingMode === 'disagg'}
                             isDisabled={!disaggSupported}
                             onClick={() => {
                               if (!disaggSupported) return;

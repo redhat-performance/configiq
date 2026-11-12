@@ -130,7 +130,14 @@ def test_catalog_resolves_slug_and_hugging_face_id_to_one_entry(tmp_path: Path):
     assert by_slug.catalog_name == "qwen3-32b"
     assert by_hf_id.catalog_name == "qwen3-32b"
     assert by_slug.hf_repo == "Qwen/Qwen3-32B"
+    assert by_slug.context_length == 40960
     assert by_slug.origin == "blis-catalog"
+
+
+def test_catalog_reads_context_from_text_config(tmp_path: Path):
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+
+    assert catalog.resolve_model("org/Vision").context_length == 131072
 
 
 def test_catalog_refuses_models_it_cannot_price(tmp_path: Path):
@@ -245,7 +252,20 @@ def test_generated_documents_use_catalog_id_and_requested_deployment():
     assert pool["engine"]["quantization"] == "nvfp4"
     assert pool["engine"]["cache_dtype"] == "fp8"
     assert pool["engine"]["enable_prefix_caching"] is True
-    assert pool["engine"]["max_model_len"] == "auto"
+    assert pool["engine"]["max_model_len"] == 2176
+
+
+def test_generated_documents_state_the_catalog_context_window():
+    _scenario, deployment = build_documents(_scenario_request(
+        model=ModelResolution(
+            catalog_name="gpt-oss-120b",
+            hf_repo="openai/gpt-oss-120b",
+            context_length=131072,
+            origin="blis-catalog",
+        ),
+    ))
+
+    assert deployment["pools"][0]["engine"]["max_model_len"] == 131072
 
 
 def test_generated_scenario_is_two_yaml_documents(tmp_path: Path):
@@ -471,7 +491,13 @@ def test_run_command_passes_catalog_registry_and_scenario_directory():
         "--scenarios", "/tmp/scenarios",
         "--scenario", "generated.yaml",
         "--prompt-tokens", "2048",
+        "--prompt-tokens-min", "2048",
+        "--prompt-tokens-max", "2048",
+        "--prompt-tokens-stdev", "0",
         "--output-tokens", "128",
+        "--output-tokens-min", "128",
+        "--output-tokens-max", "128",
+        "--output-tokens-stdev", "0",
         "--num-requests", "8",
         "--concurrency", "8",
         "--prefix-tokens", "16",
@@ -892,6 +918,51 @@ def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypa
     assert result.prefill_config["tp"] == 4
     assert result.decode_config["tp"] == 2
     assert result.serving_config is None
+
+
+def test_predict_maps_requests_per_load_unit_to_the_simulation_slice(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    calls = []
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        calls.append(run_request)
+        return _result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    def predict(**overrides):
+        return blis_service.estimate(blis_service.EstimateInput(
+            model_path="Qwen/Qwen3-32B",
+            system="h100_sxm",
+            backend="vllm",
+            backend_version=None,
+            isl=8192,
+            osl=1024,
+            concurrency=8,
+            tp=1,
+            pp=1,
+            dp=1,
+            **overrides,
+        ))
+
+    predict(requests_per_load_unit=10)
+    predict()
+
+    assert calls[0].num_requests == 80
+    # Omitting the field stops after one total request, matching /predict.
+    assert calls[1].num_requests == 1
+
+
+def test_prediction_requests_rejects_an_oversized_slice():
+    with pytest.raises(BlisUnsupportedRequest, match="supported limit"):
+        blis_service._prediction_requests(8, 1e308)
 
 
 def test_normalize_result_maps_the_engine_kv_pool():

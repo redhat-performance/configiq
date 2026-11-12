@@ -100,21 +100,39 @@ function catalogResponse(simulators: SimulatorCatalogEntry[], legacy?: LegacyCat
   )
 }
 
+/** Attempts for one upstream read: the gateway intermittently answers 503. */
+const UPSTREAM_ATTEMPTS = 3
+/** Backoff between attempts, multiplied by the attempt number. */
+const UPSTREAM_RETRY_DELAY_MS = 250
+
 async function fetchJson(
   url: string,
   timeoutSeconds: number,
 ): Promise<unknown | null> {
-  try {
-    const response = await fetch(url, {
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(timeoutSeconds * 1000),
-    })
-    if (!response.ok) return null
-    return await response.json()
-  } catch {
-    return null
+  for (let attempt = 1; attempt <= UPSTREAM_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(timeoutSeconds * 1000),
+      })
+      if (response.ok) return await response.json()
+      // Release the unread failure body so its connection is not held until
+      // the attempt timeout, whether this attempt retries or gives up.
+      await response.body?.cancel()
+      // Retry only failures a later attempt can plausibly fix. A 4xx response
+      // means the request itself is wrong.
+      if (response.status !== 429 && response.status < 500) return null
+    } catch (error) {
+      // A timeout means the service is not answering; retrying only multiplies
+      // the wait. Network resets and transient 5xx responses are worth a retry.
+      if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return null
+    }
+    if (attempt < UPSTREAM_ATTEMPTS) {
+      await new Promise(resolve => setTimeout(resolve, UPSTREAM_RETRY_DELAY_MS * attempt))
+    }
   }
+  return null
 }
 
 /** A release string, or null when absent or blank. */

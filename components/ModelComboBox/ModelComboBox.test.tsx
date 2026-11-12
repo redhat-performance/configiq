@@ -102,6 +102,11 @@ async function type(text: string) {
   });
 }
 
+/** Type one character at a time, the way a browser appends real keystrokes. */
+async function typeAppend(text: string) {
+  for (const char of text) await type(input().value + char);
+}
+
 async function key(k: string) {
   await act(async () => {
     input().dispatchEvent(
@@ -117,6 +122,58 @@ describe('browsing', () => {
     await open();
     expect(optionLabels()).toEqual(expect.arrayContaining(IDS));
     expect(optionLabels()).toHaveLength(IDS.length);
+  });
+
+  it('keeps the selected model id visible while focused and open', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+    await open();
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+  });
+
+  it('does not clear the selected model when the open field is clicked', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await act(async () => {
+      input().click();
+      await Promise.resolve();
+    });
+    expect(input().value).toBe('Qwen/Qwen3-8B');
+  });
+
+  it('shows typed text instead of the selection once editing begins', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await type('nemotron');
+    expect(input().value).toBe('nemotron');
+  });
+
+  it('starts a fresh search when typing after the selected model', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await typeAppend('nemotron');
+    expect(input().value).toBe('nemotron');
+    expect(optionLabels()).toContain('nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8');
+  });
+
+  it('keeps a pasted id that starts with the selected model', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    await type('Qwen/Qwen3-8B-Instruct');
+    expect(input().value).toBe('Qwen/Qwen3-8B-Instruct');
+  });
+
+  it('closes an open menu when the caret is clicked', async () => {
+    await mount({ value: 'Qwen/Qwen3-8B' });
+    await open();
+    expect(input().getAttribute('aria-expanded')).toBe('true');
+    const caret = container.querySelector<HTMLButtonElement>('button[aria-label="Model — Hugging Face ID"]');
+    expect(caret).not.toBeNull();
+    await act(async () => {
+      caret!.click();
+      await Promise.resolve();
+    });
+    expect(input().getAttribute('aria-expanded')).toBe('false');
   });
 
   it('groups rows by vendor, ordered case-insensitively', async () => {
@@ -168,7 +225,7 @@ describe('keyboard navigation', () => {
     await key('ArrowDown');
     const first = optionLabels()[0];
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith(first);
+    expect(onChange).toHaveBeenCalledWith(first, 'user');
   });
 
   it('keeps focus index aligned with the rendered rows after filtering', async () => {
@@ -177,7 +234,7 @@ describe('keyboard navigation', () => {
     await type('120b');
     await key('ArrowDown');
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith('nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8');
+    expect(onChange).toHaveBeenCalledWith('nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8', 'user');
   });
 
   it('closes on Escape without selecting', async () => {
@@ -199,7 +256,7 @@ describe('tested-only filter', () => {
       container.querySelector<HTMLInputElement>('#mb-validated-only')?.click();
       await Promise.resolve();
     });
-    expect(onChange).toHaveBeenCalledWith('Qwen/Qwen3-8B');
+    expect(onChange).toHaveBeenCalledWith('Qwen/Qwen3-8B', 'auto');
   });
 
   it('leaves an already-tested selection alone', async () => {
@@ -209,6 +266,21 @@ describe('tested-only filter', () => {
     });
     await act(async () => {
       container.querySelector<HTMLInputElement>('#mb-validated-only')?.click();
+      await Promise.resolve();
+    });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('stays inert while the whole control is disabled', async () => {
+    const { onChange } = await mount({
+      value: 'Qwen/Qwen3-32B',
+      supportedModels: ['Qwen/Qwen3-8B'],
+      isDisabled: true,
+    });
+    const toggle = container.querySelector<HTMLInputElement>('#mb-validated-only');
+    expect(toggle?.disabled).toBe(true);
+    await act(async () => {
+      toggle?.click();
       await Promise.resolve();
     });
     expect(onChange).not.toHaveBeenCalled();
@@ -228,7 +300,7 @@ describe('custom model entry', () => {
     await open();
     await type('my-org/My-Model');
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith('my-org/My-Model');
+    expect(onChange).toHaveBeenCalledWith('my-org/My-Model', 'user');
   });
 });
 
@@ -246,7 +318,7 @@ describe('all-option mode', () => {
     await open();
     await key('ArrowDown');
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith('');
+    expect(onChange).toHaveBeenCalledWith('', 'user');
   });
 
   it('drops the all option while searching', async () => {
@@ -274,7 +346,7 @@ describe('provider and hardware choices', () => {
     expect(document.querySelectorAll('[class*="optionMeta"]')).toHaveLength(0);
     await key('ArrowDown');
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith('cheap');
+    expect(onChange).toHaveBeenCalledWith('cheap', 'user');
   });
 
   it('searches price descriptions and selects the matching offer', async () => {
@@ -283,7 +355,7 @@ describe('provider and hardware choices', () => {
     await type('$300');
     expect(optionLabels()).toEqual(['A provider$300 / month']);
     await key('Enter');
-    expect(onChange).toHaveBeenCalledWith('other');
+    expect(onChange).toHaveBeenCalledWith('other', 'user');
   });
 
   it('keeps alphabetical browsing as the default without mutating source order', async () => {

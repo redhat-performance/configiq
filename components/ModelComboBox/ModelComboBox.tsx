@@ -37,9 +37,12 @@ function isModelItem(item: ComboBoxItem): item is ComboBoxOption & ModelFacets {
   return 'types' in item
 }
 
+/** Distinguishes a user pick from a change made by the control itself. */
+export type ComboBoxChangeSource = 'user' | 'auto'
+
 interface ComboBoxProps {
   value: string
-  onChange: (value: string) => void
+  onChange: (value: string, source: ComboBoxChangeSource) => void
   items: ComboBoxItem[]
   placeholder?: string
   id?: string
@@ -52,6 +55,8 @@ interface ComboBoxProps {
   preserveOrder?: boolean
   /** When set, prepend an option with an empty value that clears the filter. */
   allLabel?: string
+  /** Disable typing and the menu, for example while a request is running. */
+  isDisabled?: boolean
 }
 
 interface GroupedItems {
@@ -114,9 +119,12 @@ function RowMeta({ item }: { item: ComboBoxItem }) {
   )
 }
 
-export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel }: ComboBoxProps) {
+export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel, isDisabled = false }: ComboBoxProps) {
   const [open, setOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
+  // Show the field's text only once the user starts typing. Until then the
+  // current selection stays visible (and copyable) instead of the placeholder.
+  const [editing, setEditing] = React.useState(false)
   const [supportedOnly, setSupportedOnly] = React.useState(false)
   const prevModel = React.useRef(value)
   const [focusIndex, setFocusIndex] = React.useState(-1)
@@ -134,7 +142,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     if (checked) {
       prevModel.current = value
       if (!validatedItems.some(i => i.value === value) && validatedItems.length > 0) {
-        onChange(validatedItems[0].value)
+        onChange(validatedItems[0].value, 'auto')
         wasAutoReplacedRef.current = true
       } else {
         wasAutoReplacedRef.current = false
@@ -142,7 +150,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     } else {
       // Only restore prevModel if enabling the filter caused an auto-replacement
       if (wasAutoReplacedRef.current) {
-        onChange(prevModel.current)
+        onChange(prevModel.current, 'auto')
       }
       wasAutoReplacedRef.current = false
     }
@@ -190,21 +198,36 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     if (supportedOnly) {
       prevModel.current = val
     }
-    onChange(val)
+    onChange(val, 'user')
     setOpen(false)
+    setEditing(false)
     setFilter('')
     setFocusIndex(-1)
   }
 
   function handleInputChange(_event: React.FormEvent<HTMLInputElement>, val: string) {
-    setFilter(val)
+    // The field shows the selected label until editing begins. A keystroke at
+    // the end of that text arrives already appended, so keep only the typed
+    // part instead of searching for the label plus the new text.
+    const displayed = selectedItem?.label ?? value
+    // Only strip a single appended keystroke. A pasted ID may legitimately
+    // start with the current label and must keep its full text.
+    const nextValue = !editing && displayed &&
+      val.length === displayed.length + 1 &&
+      val.startsWith(displayed)
+      ? val.slice(displayed.length)
+      : val
+    setEditing(true)
+    setFilter(nextValue)
     setFocusIndex(-1)
     if (!open) setOpen(true)
   }
 
   function handleInputFocus() {
     setOpen(true)
-    setFilter('')
+    // Keep the selection visible, but let a keystroke replace it rather than
+    // appending to it.
+    if (!editing) textInputRef.current?.select()
   }
 
   function handleInputKeyDown(event: React.KeyboardEvent) {
@@ -237,12 +260,14 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         break
       case 'Escape':
         setOpen(false)
+        setEditing(false)
         setFilter('')
         setFocusIndex(-1)
         textInputRef.current?.blur()
         break
       case 'Tab':
         setOpen(false)
+        setEditing(false)
         setFilter('')
         setFocusIndex(-1)
         break
@@ -250,7 +275,8 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
   }
 
   function handleClear() {
-    onChange('')
+    onChange('', 'user')
+    setEditing(false)
     setFilter('')
     setFocusIndex(-1)
     textInputRef.current?.focus()
@@ -264,15 +290,26 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
     }
   }
 
-  const displayValue = open ? filter : (selectedItem?.label ?? value)
+  const displayValue = editing ? filter : (selectedItem?.label ?? value)
 
   const toggle = (tRef: React.RefObject<HTMLDivElement | HTMLButtonElement>) => (
     <MenuToggle
       ref={tRef as React.RefObject<HTMLButtonElement>}
       variant="typeahead"
       aria-label={label}
-      onClick={() => { setOpen(prev => !prev); if (!open) setFilter('') }}
-      isExpanded={open}
+      isDisabled={isDisabled}
+      onClick={() => {
+        if (isDisabled) return
+        if (open) {
+          setOpen(false)
+          setEditing(false)
+          setFilter('')
+          setFocusIndex(-1)
+        } else {
+          setOpen(true)
+        }
+      }}
+      isExpanded={open && !isDisabled}
       isFullWidth
       className={styles.menuToggle}
     >
@@ -280,7 +317,8 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         <TextInputGroupMain
           value={displayValue}
           title={selectedItem?.label}
-          onClick={() => { if (!open) { setOpen(true); setFilter('') } }}
+          disabled={isDisabled}
+          onClick={() => { if (!isDisabled) setOpen(true) }}
           onChange={handleInputChange}
           onFocus={handleInputFocus}
           onKeyDown={handleInputKeyDown}
@@ -290,7 +328,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
           ref={textInputRef}
           placeholder={placeholder ?? (modelSearch ? 'Search by name, size, type or precision...' : 'Type or select...')}
           role="combobox"
-          isExpanded={open}
+          isExpanded={open && !isDisabled}
           aria-controls={id ? `${id}-listbox` : undefined}
           aria-activedescendant={focusIndex >= 0 ? `${id}-opt-${focusIndex}` : undefined}
         />
@@ -301,7 +339,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
             </div>
           )}
           {value && !open && (
-            <Button variant="plain" onClick={handleClear} aria-label="Clear selection" className={styles.clearBtn}>
+            <Button variant="plain" onClick={handleClear} isDisabled={isDisabled} aria-label="Clear selection" className={styles.clearBtn}>
               <TimesIcon />
             </Button>
           )}
@@ -319,6 +357,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
             id={id ? `${id}-validated-only` : 'validated-only'}
             label="Tested only"
             isChecked={supportedOnly}
+            isDisabled={isDisabled}
             onChange={handleToggle}
             isReversed
           />
@@ -327,10 +366,10 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
 
       <Select
         id={id ? `${id}-select` : undefined}
-        isOpen={open}
+        isOpen={open && !isDisabled}
         selected={value}
         onSelect={handleSelect}
-        onOpenChange={isOpen => { setOpen(isOpen); if (!isOpen) { setFilter(''); setFocusIndex(-1) } }}
+        onOpenChange={isOpen => { if (isDisabled) return; setOpen(isOpen); if (!isOpen) { setEditing(false); setFilter(''); setFocusIndex(-1) } }}
         toggle={toggle}
         shouldFocusFirstItemOnOpen={false}
         popperProps={{ width: 'trigger', maxWidth: 'trigger', ...(portalMenu ? { appendTo: () => document.body } : {}) }}

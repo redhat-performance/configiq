@@ -129,6 +129,11 @@ export interface PerformanceMetrics {
 export interface InferenceConfigResult {
   /** Simulator that produced this estimate, as reported by the API. */
   simulator: string
+  /**
+   * Engine release the simulator actually resolved, when it reports one.
+   * `null` means the response did not name it.
+   */
+  engine_version?: string | null
   memory_available: boolean
   memory_analysis: MemoryAnalysis
   vllm_config: VLLMConfig

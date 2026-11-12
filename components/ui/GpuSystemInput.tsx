@@ -22,9 +22,19 @@ interface GpuSystemInputProps {
   testedSystemIds?: string[]
   /** When set, prepend an option with an empty value that clears the filter. */
   allLabel?: string
+  /** Disable the toggle and its menu, for example while a request is running. */
+  isDisabled?: boolean
 }
 
-export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemIds = [], allLabel }: GpuSystemInputProps) {
+export function GpuSystemInput({
+  id,
+  value,
+  onChange,
+  gpuOptions,
+  testedSystemIds = [],
+  allLabel,
+  isDisabled = false,
+}: GpuSystemInputProps) {
   const [open, setOpen] = React.useState(false)
   const current = gpuOptions.find(g => g.systemId === value)
   const testedSystems = React.useMemo(() => new Set(testedSystemIds), [testedSystemIds])
@@ -72,8 +82,9 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
   const toggle = (tRef: React.RefObject<HTMLButtonElement>) => (
     <MenuToggle
       ref={tRef}
-      onClick={() => setOpen(!open)}
-      isExpanded={open}
+      onClick={() => { if (!isDisabled) setOpen(!open) }}
+      isExpanded={open && !isDisabled}
+      isDisabled={isDisabled}
       isFullWidth
       className={styles.menuToggle}
     >
@@ -82,6 +93,7 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
   )
 
   const handleSelect = (_event: React.MouseEvent | undefined, val: string | number | undefined) => {
+    if (isDisabled) return
     if (typeof val === 'string') {
       onChange(val)
       setOpen(false)
@@ -93,10 +105,10 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
       <label htmlFor={id} className={styles.label}>GPU system</label>
       <Select
         id={id}
-        isOpen={open}
+        isOpen={open && !isDisabled}
         selected={value}
         onSelect={handleSelect}
-        onOpenChange={setOpen}
+        onOpenChange={next => { if (!isDisabled) setOpen(next) }}
         toggle={toggle}
         popperProps={{ width: 'trigger', maxWidth: 'trigger' }}
       >
@@ -139,9 +151,10 @@ export function GpuSystemInput({ id, value, onChange, gpuOptions, testedSystemId
       </Select>
       {current && (
         <div className={styles.helperText}>
-          {current.vramGb != null && <>{current.vramGb} GB</>}
-          {current.bandwidthTbps != null && <> · {current.bandwidthTbps} TB/s</>}
-          {current.tflopsBf16 != null && <> · {current.tflopsBf16.toFixed(0)} TFLOPS</>}
+          {[
+            current.bandwidthTbps != null ? `${current.bandwidthTbps} TB/s` : null,
+            current.tflopsBf16 != null ? `${current.tflopsBf16.toFixed(0)} TFLOPS` : null,
+          ].filter(Boolean).join(' · ')}
         </div>
       )}
     </div>

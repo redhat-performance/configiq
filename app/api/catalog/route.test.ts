@@ -168,6 +168,91 @@ describe('GET /api/catalog', () => {
     expect(fetchMock).toHaveBeenCalledTimes(9)
   })
 
+  it('retries a transient capability read instead of dropping the simulator', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+    const responses: Record<string, unknown> = {
+      '/simulators': {
+        simulators: [{
+          id: 'aisimulate',
+          label: 'AISimulate',
+          default: true,
+          version: AISIMULATE_FIXTURE_VERSION,
+          revision: AISIMULATE_FIXTURE_REVISION,
+        }],
+      },
+      '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisimulate&include=specs': {
+        simulator: 'aisimulate',
+        models: [{ id: 'Qwen/Qwen3-8B' }],
+      },
+      '/systems?simulator=aisimulate&include=specs': {
+        simulator: 'aisimulate',
+        systems: [{ id: 'h200_sxm' }],
+      },
+      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+    }
+    // The gateway intermittently answers 503 while this proxy reads several
+    // capability endpoints at once. One failed attempt must not make the whole
+    // simulator look unavailable to the client.
+    let backendsAttempts = 0
+    const fetchMock = vi.fn((url: string) => {
+      const parsed = new URL(url)
+      const key = parsed.pathname + parsed.search
+      if (key === '/backends?simulator=aisimulate') {
+        backendsAttempts += 1
+        if (backendsAttempts === 1) return Promise.resolve(new Response('unavailable', { status: 503 }))
+      }
+      if (!(key in responses)) return Promise.resolve(new Response('missing', { status: 404 }))
+      return Promise.resolve(Response.json(responses[key]))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await GET(new Request('https://configiq.dev/api/catalog'))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(backendsAttempts).toBe(2)
+    expect(body.simulators[0]).toMatchObject({
+      id: 'aisimulate',
+      available: true,
+      backends: [{ id: 'vllm' }],
+    })
+  })
+
+  it('does not retry a capability read the service rejects', async () => {
+    vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
+    let backendsAttempts = 0
+    const failure = new Response('bad request', { status: 400 })
+    const cancelFailureBody = vi.spyOn(failure.body!, 'cancel')
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      const parsed = new URL(url)
+      if (parsed.pathname === '/simulators') {
+        return Promise.resolve(Response.json({
+          simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true }],
+        }))
+      }
+      if (parsed.pathname === '/backends') {
+        backendsAttempts += 1
+        return Promise.resolve(failure)
+      }
+      return Promise.resolve(Response.json({
+        simulator: 'aisimulate',
+        models: [{ id: 'Qwen/Qwen3-8B' }],
+        systems: [{ id: 'h200_sxm' }],
+        networks: [],
+      }))
+    }))
+
+    const response = await GET(new Request('https://configiq.dev/api/catalog'))
+
+    // A malformed request will fail the same way on every attempt, so the
+    // default simulator's catalogue is unreadable and the request fails.
+    expect(backendsAttempts).toBe(1)
+    expect(cancelFailureBody).toHaveBeenCalled()
+    expect(response.status).toBe(502)
+    expect(await response.json()).toMatchObject({ error: { code: 'AISIM_INVALID_RESPONSE' } })
+  })
+
   it('reports a blank simulator version as unavailable instead of an empty value', async () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     stubGateway({

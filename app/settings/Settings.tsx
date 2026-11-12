@@ -1,17 +1,14 @@
 'use client';
 
 import * as React from 'react';
-import { Button, Label, Switch } from '@patternfly/react-core';
-import { EyeIcon, EyeSlashIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@patternfly/react-icons';
+import { Button, Label, MenuToggle, Select, SelectList, SelectOption, Switch } from '@patternfly/react-core';
+import { EyeIcon, EyeSlashIcon, CheckCircleIcon } from '@patternfly/react-icons';
 import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
-import { ModelInput } from '@/components/ui/ModelInput';
 import { useCatalog } from '@/lib/hooks/useCatalog';
+import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
-import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import styles from './Settings.module.css';
-
-type ModelStatus = 'idle' | 'supported' | 'measured' | 'approved' | 'catalog' | 'unsupported' | 'fetching' | 'fetched' | 'error';
 
 const BACKEND_LABELS: Record<string, string> = {
   vllm: 'vLLM',
@@ -19,26 +16,14 @@ const BACKEND_LABELS: Record<string, string> = {
   sglang: 'SGLang',
 };
 
-/** Plain-language names for the sizing goals a simulator can advertise. */
-const GOAL_LABELS: Record<string, string> = {
-  min_gpus: 'latency-SLO sizing',
-  throughput_demand: 'throughput-demand sizing',
-  pareto: 'Pareto frontier scans',
-  concurrency_capacity: 'concurrency-capacity sizing',
-};
-
-function goalLabel(goal: string): string {
-  return GOAL_LABELS[goal] ?? goal.replaceAll('_', ' ');
-}
-
 export function Settings() {
   const {
-    hydrated, defaultModel, setDefaultModel, hfToken, setHfToken,
+    setDefaultModel, hfToken, setHfToken,
     inferenceBackend, setInferenceBackend, backendVersion, setBackendVersion,
     simulator, setSimulator,
     costingsEnabled, setCostingsEnabled,
   } = useSettings();
-  const { modelOptions, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
+  const { backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
   const support = simulatorSupport[simulator];
   // The selectable backends are the union the service reports, so a simulator
   // that supports a backend the default one does not can still be used.
@@ -54,66 +39,32 @@ export function Settings() {
   const selectedBackend = support
     ? support.backends.find(b => b.id === inferenceBackend) ?? support.backends[0]
     : backendChoices.find(b => b.id === inferenceBackend);
-  const modelChoices = support?.models ?? modelOptions;
-  const { validatedModelIds, modelStatus: registryModelStatus, isAvailable: testedModelsAvailable } = useTestedModels();
+  // Some simulators scope releases per system rather than reporting one shared
+  // list. Offer the union so an explicit pin is still possible.
+  const selectedVersions = React.useMemo(() => {
+    const versions = new Set(selectedBackend?.versions ?? []);
+    for (const scoped of Object.values(selectedBackend?.systems ?? {})) {
+      for (const version of scoped) versions.add(version);
+    }
+    return [...versions];
+  }, [selectedBackend]);
+  const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
-  const [localModel, setLocalModel] = React.useState('');
-  const [modelStatus, setModelStatus] = React.useState<ModelStatus>('idle');
   const [hfReveal, setHfReveal] = React.useState(false);
   const [modelSaved, setModelSaved] = React.useState(false);
   const [tokenSaved, setTokenSaved] = React.useState(false);
   const [backendSaved, setBackendSaved] = React.useState(false);
   const [simulatorSaved, setSimulatorSaved] = React.useState(false);
+  const [versionOpen, setVersionOpen] = React.useState(false);
   const [costingsSaved, setCostingsSaved] = React.useState(false);
   const [costingsOpen, setCostingsOpen] = React.useState(false);
   const [validatedOpen, setValidatedOpen] = React.useState(false);
 
-  // Sync local model input once context has loaded from localStorage
-  const modelSynced = React.useRef(false);
-  React.useEffect(() => {
-    if (!hydrated || modelSynced.current) return;
-    modelSynced.current = true;
-    setLocalModel(defaultModel);
-  }, [hydrated, defaultModel]);
-
-  // Debounced auto-save for model (1500ms — gives the user time to finish typing)
-  React.useEffect(() => {
-    if (!modelSynced.current || localModel === defaultModel) return;
-    const timer = setTimeout(() => {
-      setDefaultModel(localModel);
-      setModelSaved(true);
-      const clear = setTimeout(() => setModelSaved(false), 3000);
-      return () => clearTimeout(clear);
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [localModel, defaultModel, setDefaultModel]);
-
-  // Model catalog + HF status check (same debounced pattern as other pages)
-  React.useEffect(() => {
-    if (catalogLoading) { setModelStatus('idle'); return; }
-    if (!localModel || !localModel.includes('/')) { setModelStatus('idle'); return; }
-    const timer = setTimeout(() => {
-      // The registry is authoritative for tested status. An unavailable
-      // registry leaves the status unknown instead of falling back to the
-      // approved-for-measurement list.
-      const status = registryModelStatus(localModel);
-      if (status === 'validated') { setModelStatus('supported'); return; }
-      if (status === 'measured_no_envelope') { setModelStatus('measured'); return; }
-      if (status === 'approved_no_data') { setModelStatus('approved'); return; }
-      const inCatalog = modelChoices.includes(localModel);
-      if (inCatalog) { setModelStatus('catalog'); return; }
-      // Only call a model unsupported when the simulator says its list is the
-      // complete set it can price. A simulator that also resolves models on
-      // demand gets the benefit of the doubt and is checked against HF below;
-      // the API remains the authority and never silently substitutes.
-      if (support?.modelsExhaustive) { setModelStatus('unsupported'); return; }
-      setModelStatus('fetching');
-      fetchModelConfig(localModel, hfToken).then(r => {
-        setModelStatus(r.success && r.config ? 'fetched' : 'error');
-      });
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [localModel, hfToken, modelChoices, support, catalogLoading, hydrated, registryModelStatus, testedModelsAvailable]);
+  const saveModelAsDefault = (modelId: string) => {
+    setDefaultModel(modelId);
+    setModelSaved(true);
+    setTimeout(() => setModelSaved(false), 2000);
+  };
 
   const handleTokenChange = (v: string) => {
     setHfToken(v);
@@ -146,44 +97,19 @@ export function Settings() {
       <div className={styles.header}>
         <h1 className={styles.pageTitle}>Settings</h1>
         <p className={styles.subtitle}>
-          Configure once — defaults apply across all tools automatically.
+          Configure once — defaults apply across all tools automatically. Your model and GPU choices follow you between tools.
         </p>
       </div>
 
       <div className={styles.sections}>
-        {/* ── Default model ── */}
-        <div className={styles.section}>
-          <div className={styles.sectionHead}>
-            <div>
-              <div className={styles.sectionTitle}>Default model</div>
-              <div className={styles.sectionDesc}>
-                Pre-filled in Predict performance, KV cache calculator, and Recommend sizing. Use any Hugging Face model ID.
-              </div>
-            </div>
-            {modelSaved && (
-              <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>
-            )}
-          </div>
-          <div className={styles.fieldWrap}>
-            <ModelInput
-              id="settings-model"
-              model={localModel}
-              onChange={setLocalModel}
-              modelOptions={modelChoices}
-              isLoading={catalogLoading}
-              status={modelStatus}
-              placeholder={catalogLoading ? 'Loading catalog…' : 'e.g. Qwen/Qwen3-32B'}
-              helperText="All tools use this model by default. Type to autocomplete from the catalog."
-            />
-          </div>
-        </div>
-
         {/* ── Tested models ── */}
         <div className={styles.section}>
-          <div
-            className={styles.sectionHead}
-            style={{ cursor: 'pointer' }}
+          <button
+            type="button"
+            className={`${styles.sectionHead} ${styles.sectionToggle}`}
             onClick={() => setValidatedOpen(o => !o)}
+            aria-expanded={validatedOpen}
+            aria-controls="validated-models-panel"
           >
             <div>
               <div className={styles.sectionTitle}>
@@ -193,13 +119,15 @@ export function Settings() {
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Models with a validated performance envelope in the tested-model registry.
+                Models with a validated performance envelope in the tested-model registry. Select one to use it as your default model.
               </div>
             </div>
-            <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>
-          </div>
+            {modelSaved
+              ? <Label color="green" icon={<CheckCircleIcon />}>Saved as default</Label>
+              : <Label color="blue" isCompact>{testedModelsAvailable ? `${validatedModelIds.length} models` : 'Unavailable'}</Label>}
+          </button>
           {validatedOpen && (
-            <div className={styles.fieldWrap}>
+            <div className={styles.fieldWrap} id="validated-models-panel">
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 8px' }}>
                  {validatedModelIds.map(m => (
                   <Label
@@ -207,12 +135,7 @@ export function Settings() {
                     color="blue"
                     isCompact
                     style={{ cursor: 'pointer' }}
-                    onClick={() => {
-                      setLocalModel(m);
-                      setDefaultModel(m);
-                      setModelSaved(true);
-                      setTimeout(() => setModelSaved(false), 2000);
-                    }}
+                    onClick={() => saveModelAsDefault(m)}
                   >
                     {m.split('/').pop()}
                   </Label>
@@ -277,11 +200,11 @@ export function Settings() {
           </div>
         </div>
 
-        {/* ── Simulator ── */}
+        {/* ── Simulator backend ── */}
         <div className={styles.section}>
           <div className={styles.sectionHead}>
             <div>
-              <div className={styles.sectionTitle}>Simulator</div>
+              <div className={styles.sectionTitle}>Simulator backend</div>
               <div className={styles.sectionDesc}>
                 Simulator used by Predict performance, Recommend sizing and Hybrid savings.
               </div>
@@ -303,38 +226,10 @@ export function Settings() {
                     value={entry.id}
                     disabled={!simulatorSupportsBackend(entry.id, inferenceBackend, simulatorSupport[entry.id])}
                   >
-                    {entry.label}
+                    {simulatorDisplayLabel(entry.id, entry.label)}
                   </option>
                 ))}
               </select>
-              <div className={styles.helperText}>
-                Predict, Recommend and Hybrid savings use the selected simulator. Each tool appears only
-                when that simulator reports the capability it needs, such as a memory breakdown for KV
-                cache or a Pareto sweep and capacity sizing for Recommend.
-              </div>
-              <ul className={styles.capabilityList}>
-                {simulators.map(entry => {
-                  const entrySupport = simulatorSupport[entry.id];
-                  const backends = entry.id === simulator && support
-                    ? support.backends
-                    : entrySupport?.backends ?? [];
-                  const goals = entrySupport?.objectives ?? [];
-                  return (
-                    <li key={entry.id}>
-                      <strong>{entry.label}</strong>
-                      {entry.description ? `: ${entry.description}` : ''}
-                      {entrySupport?.available
-                        ? ` · goals: ${goals.length > 0 ? goals.map(goalLabel).join(', ') : 'none reported'}`
-                        : ' · capabilities unavailable'}
-                      {backends.length > 0 ? ` · backends: ${backends.map(b => BACKEND_LABELS[b.id] ?? b.id).join(', ')}` : ''}
-                    </li>
-                  );
-                })}
-                <li>
-                  A simulator never silently substitutes for another. A goal or topology the selected
-                  simulator does not report is offered as unavailable rather than answered by a different simulator.
-                </li>
-              </ul>
             </div>
           </div>
         </div>
@@ -374,25 +269,53 @@ export function Settings() {
                 </select>
               </div>
               <div className={styles.versionField}>
-                <label className={styles.fieldLabel} htmlFor="settings-backend-version">Version</label>
-                <input
+                <label className={styles.fieldLabel} htmlFor="settings-backend-version-toggle">Version</label>
+                <Select
                   id="settings-backend-version"
-                  type="text"
-                  value={backendVersion}
-                  onChange={e => handleVersionChange(e.target.value)}
-                  className={styles.textInput}
-                  placeholder={selectedBackend?.defaultVersion ?? ''}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
+                  isOpen={versionOpen}
+                  selected={backendVersion || ''}
+                  onSelect={(_event, value) => {
+                    if (value == null) return;
+                    handleVersionChange(String(value));
+                    setVersionOpen(false);
+                  }}
+                  onOpenChange={setVersionOpen}
+                  toggle={toggleRef => (
+                    <MenuToggle
+                      ref={toggleRef}
+                      id="settings-backend-version-toggle"
+                      aria-label="Backend version"
+                      onClick={() => setVersionOpen(open => !open)}
+                      isExpanded={versionOpen}
+                      isFullWidth
+                      className={styles.versionToggle}
+                    >
+                      {backendVersion || 'Simulator default'}
+                    </MenuToggle>
+                  )}
+                  popperProps={{ width: 'trigger', maxWidth: 'trigger' }}
+                >
+                  <SelectList className={styles.versionList}>
+                    <SelectOption value="" isSelected={!backendVersion}>
+                      {selectedBackend?.defaultVersion
+                        ? `Simulator default (${selectedBackend.defaultVersion})`
+                        : 'Simulator default'}
+                    </SelectOption>
+                    {selectedVersions.map(version => (
+                      <SelectOption key={version} value={version} isSelected={version === backendVersion}>
+                        {version}
+                      </SelectOption>
+                    ))}
+                  </SelectList>
+                </Select>
               </div>
             </div>
             {selectedBackend ? (
               <div className={styles.helperText}>
-                {selectedBackend.versions.length > 0
+                {selectedVersions.length > 0
                   ? support
-                    ? `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use the simulator's default (${selectedBackend.defaultVersion ?? 'its own default'}).`
-                    : `Supported versions: ${selectedBackend.versions.join(', ')}. Leave blank to use each system's default.`
+                    ? `Supported versions: ${selectedVersions.join(', ')}. Leave blank to use the simulator's default (${selectedBackend.defaultVersion ?? 'its own default'}); Benchmark comparison then uses the newest release measured for the selected backend and GPU.`
+                    : `Supported versions: ${selectedVersions.join(', ')}. Leave blank to use each system's default; Benchmark comparison then uses the newest measured release.`
                   : 'No versions reported by the server'}
               </div>
             ) : support && !catalogLoading ? (
@@ -406,8 +329,7 @@ export function Settings() {
         <div className={styles.section}>
           <button
             type="button"
-            className={styles.sectionHead}
-            style={{ cursor: 'pointer', width: '100%', background: 'none', border: 'none', font: 'inherit', textAlign: 'left' }}
+            className={`${styles.sectionHead} ${styles.sectionToggle}`}
             onClick={() => setCostingsOpen(o => !o)}
             aria-expanded={costingsOpen}
             aria-controls="costings-settings-panel"

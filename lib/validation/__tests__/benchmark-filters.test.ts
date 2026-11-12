@@ -4,10 +4,10 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   normalizeBackendVersion,
-} from '../ground-truth-dataset'
-import type { DatasetRow, GroundTruthFilters } from '../ground-truth-types'
+} from '../benchmark-dataset'
+import type { DatasetRow, BenchmarkFilters } from '../benchmark-types'
 
-const filters: GroundTruthFilters = {
+const filters: BenchmarkFilters = {
   accelerator: 'H200',
   model: 'example/model',
   backend: 'vllm',
@@ -48,6 +48,49 @@ describe('shared measured backend filters', () => {
     expect(normalizeBackendVersion('vllm', null)).toBe('Version not reported')
     expect(normalizeBackendVersion('vllm', 'nightly-abc123')).toBe('nightly-abc123')
     expect(filterRows([{ ...internal, backend_version: 'nightly-abc123' }], filters)).toEqual([])
+  })
+
+  it('matches a bare release pin to a vendor build of that release', () => {
+    const vendor: DatasetRow = {
+      ...inferencex,
+      backend: 'sglang',
+      backend_version: 'v0.5.14-rocm720-mi35x-20260706',
+    }
+    const pin: BenchmarkFilters = { ...filters, backend: 'sglang', backendVersion: '0.5.14' }
+
+    expect(filterRows([vendor], pin)).toHaveLength(1)
+    expect(filterRows([{ ...vendor, backend_version: 'v0.5.21-rocm720-mi35x' }], pin)).toEqual([])
+  })
+
+  it('keeps two vendor builds of the same release distinct', () => {
+    const buildA: DatasetRow = {
+      ...inferencex,
+      backend: 'sglang',
+      backend_version: 'v0.5.14-rocm720-mi35x',
+    }
+    const buildB: DatasetRow = { ...buildA, backend_version: 'v0.5.14-cuda130' }
+    const pin: BenchmarkFilters = {
+      ...filters,
+      backend: 'sglang',
+      backendVersion: 'v0.5.14-rocm720-mi35x',
+    }
+
+    expect(filterRows([buildA, buildB], pin)).toHaveLength(1)
+  })
+
+  it('does not widen a specific build pin to a bare release row', () => {
+    const bare: DatasetRow = {
+      ...inferencex,
+      backend: 'sglang',
+      backend_version: 'v0.5.14',
+    }
+    const pin: BenchmarkFilters = {
+      ...filters,
+      backend: 'sglang',
+      backendVersion: 'v0.5.14-rocm720-mi35x',
+    }
+
+    expect(filterRows([bare], pin)).toEqual([])
   })
 })
 

@@ -67,10 +67,10 @@ beforeEach(async () => {
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
-    hydrated: true, defaultModel: 'Qwen/Qwen3-8B',
+    hydrated: true, defaultModel: 'Qwen/Qwen3-8B', defaultSystem: 'l40s',
     hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
     costingsEnabled: true, preferredCloudProvider: null, pricingSource: 'merged',
-    setDefaultModel: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
+    setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
     setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
   })
@@ -380,6 +380,31 @@ describe('Hybrid page composition', () => {
     })
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(host.querySelector<HTMLInputElement>('#hybrid-api-model')!.value).toBe('unpriced/model')
+  })
+
+  it('does not remember a model replaced by the tested-only filter', async () => {
+    vi.mocked(useSettings).mockReturnValue({
+      ...vi.mocked(useSettings)(),
+      defaultModel: 'unpriced/model',
+    })
+    vi.mocked(useCatalog).mockReturnValue({
+      ...vi.mocked(useCatalog)(),
+      modelOptions: ['tested/model', 'tested/other', 'unpriced/model'],
+    })
+    const setDefaultModel = vi.mocked(useSettings)().setDefaultModel
+
+    await render()
+    expect(setDefaultModel).not.toHaveBeenCalled()
+
+    const testedOnly = host.querySelector<HTMLInputElement>('#hybrid-model-validated-only')!
+    await act(async () => {
+      testedOnly.click()
+      await Promise.resolve()
+    })
+    expect(setDefaultModel).not.toHaveBeenCalled()
+
+    await chooseComboOption('hybrid-model', 'tested/other')
+    expect(setDefaultModel).toHaveBeenCalledWith('tested/other')
   })
 
   it('uses one API model dropdown and keeps the exact selected offer in Data and assumptions', async () => {
@@ -969,6 +994,7 @@ describe('Hybrid page composition', () => {
     expect(buttons.map(button => button.textContent)).toEqual(appConfig.concurrencyPresets.map(preset => preset.label))
     expect(buttons.every(button => button.classList.contains('pf-m-tertiary'))).toBe(true)
     expect(buttons.every(button => button.getAttribute('aria-pressed') === 'false')).toBe(true)
+    expect(buttons.every(button => button.classList.contains('gc-preset-button'))).toBe(true)
 
     await click('X-Small (2)')
     expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
@@ -978,6 +1004,9 @@ describe('Hybrid page composition', () => {
     await editNumber('hybrid-concurrency', '5')
     expect(group.querySelector('button[aria-pressed="true"]')).toBeNull()
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('5')
+
+    await editNumber('hybrid-concurrency', '2')
+    expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')
 
     await click('X-Small (2)')
     expect(group.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.textContent).toBe('X-Small (2)')

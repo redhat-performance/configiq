@@ -147,7 +147,9 @@ That report is advisory: it never fails the build or installs the bundle.
 Preparation applies the upstream-only version filter and refuses to publish when
 the prepared set would delete pairs that exist only in the remote dataset. Run
 the complete extraction if pairs are missing; pass `--allow-removal` only when
-removing pairs is intentional.
+removing pairs is intentional. It also rejects distinct model/accelerator labels
+that normalize to the same Parquet pair ID before writing either file. The
+publisher checks upstream version and backend fields again before upload.
 
 Hugging Face publishing uses a Trusted Publisher on the dataset repository,
 restricted to `redhat-performance/configiq`, branch `main`, and workflow
@@ -177,6 +179,25 @@ a specific published revision, dispatch `tested-models.yml` with its `revision`
 input. If the data is published to a repository other than the default one
 above, set the `TESTED_DATASET_REPO` repository variable as well. Do not commit
 the dataset or its source credentials.
+
+### Refresh the private InferenceX comparison dataset
+
+The same Monday 00:00 `America/New_York` workflow has an independent
+`refresh-inferencex` job. It collects published InferenceX single-turn 8k/1k
+measurements for models in `public/config.json`'s `approvedModels` list and
+updates `redhat-performance/configiq-inferencex-comparison` only when the
+measurements change. The publisher refuses to upload if that dataset is public.
+The InferenceX job does not use the S3 role.
+
+Scheduled InferenceX publishing requires the repository variable
+`INFERENCEX_PUBLISH_ENABLED=true`. On a manual run from `main`, select the
+separate `publish_inferencex` input to refresh the private dataset. When it is
+the only publish input selected, the S3 job is skipped. The InferenceX job
+uses a write-enabled Hugging Face Trusted Publisher restricted to
+`redhat-performance/configiq`, `refs/heads/main`, and
+`.github/workflows/publish-performance-data.yml`; it does not store a long-lived
+write token in GitHub. The deployed comparison app uses its separate
+server-side read token to load the private dataset.
 
 ### 2. Build and validate the bundle
 

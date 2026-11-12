@@ -1,4 +1,4 @@
-export const GROUND_TRUTH_FILTER_KEYS = [
+export const BENCHMARK_FILTER_KEYS = [
   'accelerator',
   'model',
   'backend',
@@ -8,8 +8,8 @@ export const GROUND_TRUTH_FILTER_KEYS = [
   'tp',
 ] as const
 
-export type GroundTruthFilterKey = typeof GROUND_TRUTH_FILTER_KEYS[number]
-export type GroundTruthFilters = Record<GroundTruthFilterKey, string>
+export type BenchmarkFilterKey = typeof BENCHMARK_FILTER_KEYS[number]
+export type BenchmarkFilters = Record<BenchmarkFilterKey, string>
 export type DatasetRow = Record<string, unknown>
 
 export interface DatasetConfiguration extends Record<string, string | null> {
@@ -30,6 +30,8 @@ export interface DatasetConfiguration extends Record<string, string | null> {
   spec_decoding: string | null
   request_type: string | null
   turns: string | null
+  tp_prefill: string | null
+  tp_decode: string | null
   inferencex_topology: string | null
   inferencex_curve: string | null
   inferencex_offload: string | null
@@ -51,7 +53,7 @@ export interface ConfigurationOption {
   rows: number
 }
 
-export interface GroundTruthPoint {
+export interface BenchmarkPoint {
   concurrency: number
   ttftSeconds: number | null
   tpotSeconds: number | null
