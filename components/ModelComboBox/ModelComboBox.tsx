@@ -55,6 +55,8 @@ interface ComboBoxProps {
   preserveOrder?: boolean
   /** When set, prepend an option with an empty value that clears the filter. */
   allLabel?: string
+  /** Disable typing and the menu, for example while a request is running. */
+  isDisabled?: boolean
 }
 
 interface GroupedItems {
@@ -117,7 +119,7 @@ function RowMeta({ item }: { item: ComboBoxItem }) {
   )
 }
 
-export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel }: ComboBoxProps) {
+export function ComboBox({ value, onChange, items, placeholder, id, allowCustom = false, supportedModels, hfToken, helperText, label = 'Model — Hugging Face ID', portalMenu = false, preserveOrder = false, allLabel, isDisabled = false }: ComboBoxProps) {
   const [open, setOpen] = React.useState(false)
   const [filter, setFilter] = React.useState('')
   // Show the field's text only once the user starts typing. Until then the
@@ -295,7 +297,9 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
       ref={tRef as React.RefObject<HTMLButtonElement>}
       variant="typeahead"
       aria-label={label}
+      isDisabled={isDisabled}
       onClick={() => {
+        if (isDisabled) return
         if (open) {
           setOpen(false)
           setEditing(false)
@@ -305,7 +309,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
           setOpen(true)
         }
       }}
-      isExpanded={open}
+      isExpanded={open && !isDisabled}
       isFullWidth
       className={styles.menuToggle}
     >
@@ -313,7 +317,8 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
         <TextInputGroupMain
           value={displayValue}
           title={selectedItem?.label}
-          onClick={() => setOpen(true)}
+          disabled={isDisabled}
+          onClick={() => { if (!isDisabled) setOpen(true) }}
           onChange={handleInputChange}
           onFocus={handleInputFocus}
           onKeyDown={handleInputKeyDown}
@@ -323,7 +328,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
           ref={textInputRef}
           placeholder={placeholder ?? (modelSearch ? 'Search by name, size, type or precision...' : 'Type or select...')}
           role="combobox"
-          isExpanded={open}
+          isExpanded={open && !isDisabled}
           aria-controls={id ? `${id}-listbox` : undefined}
           aria-activedescendant={focusIndex >= 0 ? `${id}-opt-${focusIndex}` : undefined}
         />
@@ -334,7 +339,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
             </div>
           )}
           {value && !open && (
-            <Button variant="plain" onClick={handleClear} aria-label="Clear selection" className={styles.clearBtn}>
+            <Button variant="plain" onClick={handleClear} isDisabled={isDisabled} aria-label="Clear selection" className={styles.clearBtn}>
               <TimesIcon />
             </Button>
           )}
@@ -352,6 +357,7 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
             id={id ? `${id}-validated-only` : 'validated-only'}
             label="Tested only"
             isChecked={supportedOnly}
+            isDisabled={isDisabled}
             onChange={handleToggle}
             isReversed
           />
@@ -360,10 +366,10 @@ export function ComboBox({ value, onChange, items, placeholder, id, allowCustom 
 
       <Select
         id={id ? `${id}-select` : undefined}
-        isOpen={open}
+        isOpen={open && !isDisabled}
         selected={value}
         onSelect={handleSelect}
-        onOpenChange={isOpen => { setOpen(isOpen); if (!isOpen) { setEditing(false); setFilter(''); setFocusIndex(-1) } }}
+        onOpenChange={isOpen => { if (isDisabled) return; setOpen(isOpen); if (!isOpen) { setEditing(false); setFilter(''); setFocusIndex(-1) } }}
         toggle={toggle}
         shouldFocusFirstItemOnOpen={false}
         popperProps={{ width: 'trigger', maxWidth: 'trigger', ...(portalMenu ? { appendTo: () => document.body } : {}) }}

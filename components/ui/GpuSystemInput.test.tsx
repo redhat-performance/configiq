@@ -87,9 +87,10 @@ describe('GpuSystemInput grouping and specs', () => {
     expect(groupTitles).toEqual(['Nvidia Blackwell', 'Nvidia Hopper'])
   })
 
-  it('describes the selected system below the dropdown', async () => {
+  it('describes the selected system below the dropdown without repeating its memory', async () => {
     await mount()
-    expect(container.textContent).toContain('141 GB · 4.8 TB/s · 989 TFLOPS')
+    expect(container.textContent).toContain('4.8 TB/s · 989 TFLOPS')
+    expect(container.textContent).not.toContain('141 GB · 4.8 TB/s')
   })
 })
 

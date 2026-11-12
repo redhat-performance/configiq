@@ -383,7 +383,7 @@ export default function KvCacheCalc() {
           Calculate KV cache memory requirements for any model on supported GPU systems
         </p>
         <div className={styles.helperText}>
-          Memory estimates use AISimulate, independent of the global Simulator setting.
+          Memory estimates use AISim, independent of the global Simulator setting.
         </div>
       </div>
 

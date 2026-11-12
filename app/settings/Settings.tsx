@@ -6,6 +6,7 @@ import { EyeIcon, EyeSlashIcon, CheckCircleIcon } from '@patternfly/react-icons'
 import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
 import { useCatalog } from '@/lib/hooks/useCatalog';
+import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import styles from './Settings.module.css';
 
@@ -225,7 +226,7 @@ export function Settings() {
                     value={entry.id}
                     disabled={!simulatorSupportsBackend(entry.id, inferenceBackend, simulatorSupport[entry.id])}
                   >
-                    {entry.label}
+                    {simulatorDisplayLabel(entry.id, entry.label)}
                   </option>
                 ))}
               </select>

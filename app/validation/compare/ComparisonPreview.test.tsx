@@ -4,13 +4,15 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BenchmarkPoint } from '@/lib/validation/benchmark-types'
-import ComparisonPreview, { type PredictionSeries } from './ComparisonPreview'
+import ComparisonPreview, { predictionColor, selectConcurrencyTicks, type PredictionSeries } from './ComparisonPreview'
 
 vi.mock('@patternfly/react-charts/victory', () => ({
   Chart: ({ children }: { children?: React.ReactNode }) => <div data-testid="chart">{children}</div>,
   ChartAxis: () => null,
   ChartGroup: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
-  ChartLine: ({ name }: { name?: string }) => <span data-line={name} />,
+  ChartLine: ({ name, style }: { name?: string; style?: { data?: { stroke?: string } } }) => (
+    <span data-line={name} data-stroke={style?.data?.stroke} />
+  ),
   ChartScatter: ({ name }: { name?: string }) => <span data-points={name} />,
   ChartVoronoiContainer: () => null,
 }))
@@ -130,5 +132,108 @@ describe('ComparisonPreview', () => {
     const table = host.querySelector('table')
     expect(table?.textContent).toContain('not comparable')
     expect(table?.textContent).not.toContain('+100.0%')
+  })
+
+  it('omits the InferenceX column when there is no InferenceX data', async () => {
+    await render()
+
+    const headers = [...host.querySelectorAll('thead th')].map(th => th.textContent)
+    expect(headers).not.toContain('InferenceX')
+  })
+
+  it('shows the InferenceX column when there is InferenceX data', async () => {
+    await act(async () => {
+      root.render(
+        <ComparisonPreview
+          benchmark={benchmark}
+          inferencex={[{ ...benchmark[0], ttftSeconds: 0.11 }]}
+          series={series}
+        />,
+      )
+    })
+
+    const headers = [...host.querySelectorAll('thead th')].map(th => th.textContent)
+    expect(headers).toContain('InferenceX')
+  })
+
+  it('colors column headings with their series color', async () => {
+    await act(async () => {
+      root.render(
+        <ComparisonPreview
+          benchmark={benchmark}
+          inferencex={[{ ...benchmark[0], ttftSeconds: 0.11 }]}
+          series={[
+            { ...series[0], simulator: 'aisimulate', label: 'AISimulate' },
+            series[0],
+          ]}
+        />,
+      )
+    })
+
+    const headerColor = (label: string) => [...host.querySelectorAll<HTMLTableCellElement>('thead th')]
+      .find(th => th.textContent?.trim() === label)
+      ?.style.color
+
+    // Red Hat red is readable on the striped header; InferenceX orange,
+    // AISimulate green, and BLIS blue use darker shades of the same hue that
+    // still clear 4.5:1 there.
+    expect(headerColor('Red Hat')).toBe('#c9190b')
+    expect(headerColor('InferenceX')).toBe('#9e4a00')
+    expect(headerColor('AISimulate')).toBe('#4a6e00')
+    expect(headerColor('BLIS')).toBe('#0043ce')
+    expect(headerColor('Δ BLIS')).toBe('#0043ce')
+    // The row selector stays neutral.
+    expect(headerColor('Concurrency')).toBe('')
+  })
+})
+
+describe('selectConcurrencyTicks', () => {
+  const levels = [1, 5, 10, 20, 40, 80, 160, 320, 640]
+
+  it('drops low ticks that would overlap on a narrow chart', () => {
+    expect(selectConcurrencyTicks(levels, 240)).toEqual([40, 320, 640])
+  })
+
+  it('keeps 5 when its label has room', () => {
+    expect(selectConcurrencyTicks([1, 5, 25, 100, 200, 300], 648)).toEqual([5, 25, 100, 200, 300])
+  })
+
+  it('keeps the maximum level labelled', () => {
+    const ticks = selectConcurrencyTicks(levels, 600)
+    expect(ticks.at(-1)).toBe(640)
+  })
+
+  it('keeps every tick when there is enough room', () => {
+    expect(selectConcurrencyTicks([16, 64, 256, 512], 800)).toEqual([16, 64, 256, 512])
+  })
+})
+
+describe('predictionColor', () => {
+  it('uses the NVIDIA green for AISimulate', () => {
+    expect(predictionColor('aisimulate', 0)).toBe('#76b900')
+  })
+
+  it('uses the IBM blue for BLIS', () => {
+    expect(predictionColor('blis', 1)).toBe('#0f62fe')
+  })
+
+  it('falls back to the shared palette for an unknown simulator', () => {
+    expect(predictionColor('other', 1)).toBe('#5752d1')
+  })
+
+  it('draws each simulator line in its brand color', async () => {
+    await act(async () => {
+      root.render(
+        <ComparisonPreview
+          benchmark={benchmark}
+          inferencex={[]}
+          series={[{ ...series[0], simulator: 'aisimulate', label: 'AISimulate' }, series[0]]}
+        />,
+      )
+    })
+
+    const stroke = (name: string) => host.querySelector(`[data-line="${name}"]`)?.getAttribute('data-stroke')
+    expect(stroke('aisimulate-line')).toBe('#76b900')
+    expect(stroke('blis-line')).toBe('#0f62fe')
   })
 })

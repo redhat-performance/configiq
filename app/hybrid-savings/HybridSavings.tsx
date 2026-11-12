@@ -32,6 +32,7 @@ import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
+import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { getAppConfig } from '@/lib/app-config'
@@ -633,7 +634,7 @@ export default function HybridSavings() {
         This simulator does not support the backend selected in Settings. Choose a supported backend there to calculate.
       </Alert>}
       {modelUnsupported && <Alert title="Model not supported by the selected simulator" variant="danger" isInline>
-        {model} is not in the {support?.label ?? 'selected simulator'} model catalog, which lists every model it can price.
+        {model} is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog, which lists every model it can price.
         Choose a catalog model or switch simulators in Settings.
       </Alert>}
 

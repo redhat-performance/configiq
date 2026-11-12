@@ -75,6 +75,8 @@ describe('GET /api/validation/benchmark', () => {
     expect(body.matchedRows).toBe(1)
     expect(body.benchmarkPoints).toHaveLength(1)
     expect(body.inferencexPoints).toEqual([])
+    expect(body.benchmarkVersion).toBe('v0.24.0')
+    expect(body.inferencexVersion).toBeNull()
   })
 
   it('returns only InferenceX measurements for an InferenceX configuration', async () => {
@@ -85,6 +87,8 @@ describe('GET /api/validation/benchmark', () => {
     expect(body.matchedRows).toBe(1)
     expect(body.benchmarkPoints).toEqual([])
     expect(body.inferencexPoints).toHaveLength(1)
+    expect(body.benchmarkVersion).toBeNull()
+    expect(body.inferencexVersion).toBe('v0.24.0')
     expect(body.inferencexRunUrl).toBe('https://example.com/inferencex-run')
     expect(body.inferencexRuns).toEqual([
       { url: 'https://example.com/inferencex-run', date: '2026-10-20' },

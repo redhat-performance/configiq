@@ -3,11 +3,19 @@
 import * as React from 'react'
 import Link from 'next/link'
 import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionToggle,
   Alert,
   Button,
   FormSelect,
   FormSelectOption,
+  MenuToggle,
   PageSection,
+  Select,
+  SelectList,
+  SelectOption,
   Spinner,
   Switch,
   TextInput,
@@ -24,6 +32,7 @@ import {
 } from '@/lib/hooks/useCatalog'
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
+import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import {
   comparisonRequestsPerLoadUnit,
   measuredPoolTopology,
@@ -99,6 +108,8 @@ interface DataResponse {
   matchedRows?: number
   benchmarkPoints?: BenchmarkPoint[]
   inferencexPoints?: BenchmarkPoint[]
+  benchmarkVersion?: string | null
+  inferencexVersion?: string | null
   inferencexRunUrl?: string | null
   inferencexDate?: string | null
   inferencexRuns?: InferenceXRun[]
@@ -128,13 +139,17 @@ interface SimulatorPlan {
 interface ComparisonResults {
   benchmark: BenchmarkPoint[]
   inferencex: BenchmarkPoint[]
+  /** Release the Red Hat rows report, as resolved by the API. */
+  benchmarkVersion: string | null
+  /** Release the InferenceX rows report, as resolved by the API. */
+  inferencexVersion: string | null
   runs: InferenceXRun[]
   series: PredictionSeries[]
   skipped: string[]
 }
 
 const EMPTY_RESULTS: ComparisonResults = {
-  benchmark: [], inferencex: [], runs: [], series: [], skipped: [],
+  benchmark: [], inferencex: [], benchmarkVersion: null, inferencexVersion: null, runs: [], series: [], skipped: [],
 }
 
 function optionLabel(key: BenchmarkFilterKey, value: string): string {
@@ -142,6 +157,21 @@ function optionLabel(key: BenchmarkFilterKey, value: string): string {
   if (key === 'tp') return `TP ${value}`
   if (key === 'backend') return BACKEND_LABELS[value] ?? value
   return value
+}
+
+/**
+ * A short label for the closed runtime-configuration control. The menu keeps
+ * the service's full configuration label; the control only needs enough to
+ * identify which run is selected, because the full label does not fit and is
+ * unreadable when clipped by the native select.
+ */
+function configurationSummary(option: ConfigurationOption): string {
+  const { measurement_source, backend, backend_version, precision, kv_quantization } = option.values
+  const engine = backend
+    ? [BACKEND_LABELS[backend] ?? backend, backend_version].filter(Boolean).join(' ')
+    : null
+  const quantized = kv_quantization ? `KV ${kv_quantization}` : precision
+  return [measurement_source, engine, quantized, `${option.rows} rows`].filter(Boolean).join(' · ')
 }
 
 function isHttpsUrl(value: string | null | undefined): value is string {
@@ -327,7 +357,7 @@ function simulatorPlans({
     const support = simulatorSupport[simulator.id]
     const plan = (skipReason: string, backend: BackendOption | null = null): SimulatorPlan => ({
       simulator: simulator.id,
-      label: support?.label ?? simulator.label,
+      label: simulatorDisplayLabel(simulator.id, support?.label ?? simulator.label),
       backend,
       version: null,
       requiresFabric: false,
@@ -368,7 +398,7 @@ function simulatorPlans({
 
     return {
       simulator: simulator.id,
-      label: support.label,
+      label: simulatorDisplayLabel(simulator.id, support.label),
       backend,
       version: matchedVersion,
       requiresFabric: backend.disaggregationRequiresFabric,
@@ -400,6 +430,7 @@ export default function BenchmarkComparisonPage() {
   const [rootOptions, setRootOptions] = React.useState<Record<BenchmarkFilterKey, string[]> | null>(null)
   const [seeded, setSeeded] = React.useState(false)
   const [configurationKey, setConfigurationKey] = React.useState('')
+  const [configurationOpen, setConfigurationOpen] = React.useState(false)
   const configurationRef = React.useRef<ConfigurationOption | null>(null)
   const [source, setSource] = React.useState<DatasetSource | null>(null)
   const [inferencexSource, setInferenceXSource] = React.useState<InferenceXSource | null>(null)
@@ -410,6 +441,7 @@ export default function BenchmarkComparisonPage() {
   const [notice, setNotice] = React.useState<Notice | null>(null)
   const [overrideAssumptions, setOverrideAssumptions] = React.useState(false)
   const [assumptionInputs, setAssumptionInputs] = React.useState<PredictionAssumptions | null>(null)
+  const [assumptionsOpen, setAssumptionsOpen] = React.useState(false)
   const requestId = React.useRef(0)
   // Incremented whenever the visible result set is invalidated, so a slower
   // comparison cannot overwrite results for a newer selection.
@@ -714,6 +746,8 @@ export default function BenchmarkComparisonPage() {
         setResults({
           benchmark: benchmarkPoints,
           inferencex: inferencexPoints,
+          benchmarkVersion: data.benchmarkVersion ?? null,
+          inferencexVersion: data.inferencexVersion ?? null,
           runs: data.inferencexRuns ?? [],
           series: [],
           skipped: [],
@@ -731,6 +765,8 @@ export default function BenchmarkComparisonPage() {
       setResults({
         benchmark: benchmarkPoints,
         inferencex: inferencexPoints,
+        benchmarkVersion: data.benchmarkVersion ?? null,
+        inferencexVersion: data.inferencexVersion ?? null,
         runs: data.inferencexRuns ?? [],
         series: [],
         skipped: [],
@@ -916,7 +952,7 @@ export default function BenchmarkComparisonPage() {
           <p className={styles.eyebrow}>Validation</p>
           <h1>Benchmark comparison</h1>
           <p className={styles.intro}>
-            Compare measured benchmark data with every simulator in the catalog that supports this model, GPU, and serving backend.
+            Compare benchmark observations with simulator predictions.
           </p>
         </div>
         {(source || inferencexSource) && (
@@ -969,12 +1005,14 @@ export default function BenchmarkComparisonPage() {
               value={resolvedFilters?.model ?? selection.model}
               onChange={value => handleSelectionChange('model', value)}
               items={modelItems}
+              isDisabled={isComparing}
               placeholder="Search measured models..."
               helperText="Models with benchmark measurements in this dataset."
             />
             <GpuSystemInput
               id="benchmark-gpu"
               value={gpuValue}
+              isDisabled={isComparing}
               onChange={value => {
                 const option = gpuInputOptions.find(entry => entry.systemId === value)
                 handleSelectionChange('accelerator', option?.label ?? value)
@@ -995,7 +1033,7 @@ export default function BenchmarkComparisonPage() {
                     value={resolvedFilters?.[key] ?? selection[key]}
                     onChange={(_event, value) => handleSelectionChange(key, String(value))}
                     aria-label={key === 'isl' ? 'Input tokens' : key === 'osl' ? 'Output tokens' : 'Tensor parallel size'}
-                    isDisabled={isResolving || options[key].length === 0}
+                    isDisabled={isResolving || isComparing || options[key].length === 0}
                   >
                     {options[key].map(value => (
                       <FormSelectOption key={value} value={value} label={optionLabel(key, value)} />
@@ -1007,26 +1045,51 @@ export default function BenchmarkComparisonPage() {
             <div className={`${styles.field} ${styles.configurationField}`}>
               <label htmlFor="benchmark-configuration">Measured runtime configuration</label>
               <div id="benchmark-configuration">
-                <FormSelect
-                  value={configurationKey}
-                  onChange={(_event, value) => {
-                    const key = String(value)
-                    configurationRef.current = configurations.find(option => option.key === key) ?? null
-                    setConfigurationKey(key)
+                <Select
+                  isOpen={configurationOpen && !isResolving && !isComparing && configurations.length > 0}
+                  selected={configurationKey}
+                  onSelect={(_event, value) => {
+                    if (typeof value !== 'string') return
+                    configurationRef.current = configurations.find(option => option.key === value) ?? null
+                    setConfigurationKey(value)
+                    setConfigurationOpen(false)
                     clearResults()
                   }}
-                  aria-label="Measured runtime configuration"
-                  isDisabled={isResolving || configurations.length === 0}
+                  onOpenChange={next => {
+                    if (!isResolving && !isComparing) setConfigurationOpen(next)
+                  }}
+                  toggle={ref => (
+                    <MenuToggle
+                      ref={ref}
+                      aria-label="Measured runtime configuration"
+                      isFullWidth
+                      isExpanded={configurationOpen}
+                      isDisabled={isResolving || isComparing || configurations.length === 0}
+                      onClick={() => setConfigurationOpen(open => !open)}
+                      className={styles.configurationToggle}
+                    >
+                      <span className={styles.configurationToggleText}>
+                        {selectedConfiguration
+                          ? configurationSummary(selectedConfiguration)
+                          : 'No matching runtime configuration'}
+                      </span>
+                    </MenuToggle>
+                  )}
+                  popperProps={{ maxWidth: '640px' }}
                 >
-                  {configurations.length === 0 && <FormSelectOption value="" label="No matching runtime configuration" />}
-                  {configurations.map(configuration => (
-                    <FormSelectOption
-                      key={configuration.key}
-                      value={configuration.key}
-                      label={`${configuration.label} · ${configuration.rows} rows`}
-                    />
-                  ))}
-                </FormSelect>
+                  <SelectList>
+                    {configurations.map(configuration => (
+                      <SelectOption
+                        key={configuration.key}
+                        value={configuration.key}
+                        description={`${configuration.rows} rows`}
+                        className={styles.configurationOption}
+                      >
+                        {configuration.label}
+                      </SelectOption>
+                    ))}
+                  </SelectList>
+                </Select>
               </div>
               <p className={styles.helperText}>
                 Keeps measurement source, precision, quantization, and serving settings from different runs separate.
@@ -1037,7 +1100,7 @@ export default function BenchmarkComparisonPage() {
 
         <div className={styles.settingsRow}>
           <div>
-            <span className={styles.settingsLabel}>Serving backend from settings</span>
+            <span className={styles.settingsLabel}>Serving backend</span>
             <span className={styles.settingsValue}>
               {BACKEND_LABELS[inferenceBackend] ?? inferenceBackend}
               {' · '}
@@ -1055,151 +1118,176 @@ export default function BenchmarkComparisonPage() {
           own default.
         </p>
 
-        <div className={styles.assumptionsCard}>
-          <div className={styles.assumptionsHead}>
-            <div>
-              <h3>Prediction assumptions</h3>
-              <p>
-                Defaults follow the selected benchmark run. Turn on the override to change topology, precision, or
-                parallelism for every prediction; percentage differences are hidden when assumptions differ.
-              </p>
-            </div>
-            <Switch
-              id="benchmark-override-assumptions"
-              label="Override prediction assumptions"
-              isChecked={overrideAssumptions}
-              isDisabled={isComparing}
-              onChange={(_event, checked) => {
-                setOverrideAssumptions(checked)
-                setAssumptionInputs(checked ? { ...defaults } : null)
-                clearResults()
-              }}
-            />
-          </div>
-
-          <div className={styles.assumptionGrid}>
-            <div className={styles.assumptionField}>
-              <span className={styles.assumptionLabel}>Serving mode</span>
-              <div className={styles.servingModeRow}>
-                <Button
-                  variant={assumptions.servingMode === 'agg' ? 'secondary' : 'tertiary'}
-                  size="sm"
-                  aria-pressed={assumptions.servingMode === 'agg'}
-                  isDisabled={!overrideAssumptions || isComparing}
-                  onClick={() => setAssumption('servingMode', 'agg')}
-                >
-                  Aggregated
-                </Button>
-                <Button
-                  variant={assumptions.servingMode === 'disagg' ? 'secondary' : 'tertiary'}
-                  size="sm"
-                  aria-pressed={assumptions.servingMode === 'disagg'}
-                  isDisabled={!overrideAssumptions || !disaggAvailable || isComparing}
-                  onClick={() => setAssumption('servingMode', 'disagg')}
-                >
-                  Disaggregated
-                </Button>
-              </div>
-              <p className={styles.assumptionNote}>
-                {measuredMode === 'disagg'
-                  ? 'The benchmark run is disaggregated.'
-                  : 'The benchmark run is aggregated.'}
-                {!disaggAvailable ? ' No catalog simulator models disaggregation for this release.' : ''}
-              </p>
-            </div>
-
-            <div className={styles.assumptionField}>
-              <label className={styles.assumptionLabel} htmlFor="benchmark-weight-precision">Weight precision</label>
-              <FormSelect
-                id="benchmark-weight-precision"
-                value={assumptions.weightPrecision}
-                isDisabled={!overrideAssumptions || isComparing}
-                onChange={(_event, value) => setAssumption('weightPrecision', String(value))}
-              >
-                <FormSelectOption value="" label="Simulator default" />
-                {['FP16', 'FP8', 'INT8', 'INT4', 'MXFP4', 'NVFP4'].map(value => (
-                  <FormSelectOption key={value} value={value} label={value} />
-                ))}
-              </FormSelect>
-            </div>
-
-            <div className={styles.assumptionField}>
-              <label className={styles.assumptionLabel} htmlFor="benchmark-kv-precision">KV cache precision</label>
-              <FormSelect
-                id="benchmark-kv-precision"
-                value={assumptions.kvCachePrecision}
-                isDisabled={!overrideAssumptions || isComparing}
-                onChange={(_event, value) => setAssumption('kvCachePrecision', String(value))}
-              >
-                <FormSelectOption value="" label="Simulator default" />
-                {['FP16', 'FP8', 'NVFP4'].map(value => (
-                  <FormSelectOption key={value} value={value} label={value} />
-                ))}
-              </FormSelect>
-            </div>
-
-            {(['ppSize', 'dpSize'] as const).map(key => (
-              <div className={styles.assumptionField} key={key}>
-                <label className={styles.assumptionLabel} htmlFor={`benchmark-${key}`}>
-                  {key === 'ppSize' ? 'Pipeline parallel (PP)' : 'Attention data parallel (DP)'}
-                </label>
-                <TextInput
-                  id={`benchmark-${key}`}
-                  type="number"
-                  min={1}
-                  value={assumptions[key]}
-                  isDisabled={!overrideAssumptions || isComparing}
-                  onChange={(_event, value) => setAssumption(key, value)}
+        <Accordion asDefinitionList={false} className={styles.assumptionsCard}>
+          <AccordionItem isExpanded={assumptionsOpen}>
+            <AccordionToggle
+              id="benchmark-assumptions-toggle"
+              onClick={() => setAssumptionsOpen(open => !open)}
+            >
+              <span className={styles.accordionToggle}>
+                <span className={styles.accordionTitle}>Prediction assumptions</span>
+                {!assumptionsOpen && (
+                  <span className={styles.accordionSummary}>
+                    <span><span className={styles.accordionKey}>override</span> {overrideAssumptions ? 'on' : 'off'}</span>
+                    <span><span className={styles.accordionKey}>mode</span> {assumptions.servingMode === 'agg' ? 'aggregated' : 'disaggregated'}</span>
+                    <span><span className={styles.accordionKey}>weights</span> {assumptions.weightPrecision || 'auto'}</span>
+                    <span><span className={styles.accordionKey}>KV</span> {assumptions.kvCachePrecision || 'auto'}</span>
+                    <span><span className={styles.accordionKey}>PP</span> {assumptions.ppSize}</span>
+                    <span><span className={styles.accordionKey}>DP</span> {assumptions.dpSize}</span>
+                    {isMoe && <span><span className={styles.accordionKey}>MoE TP</span> {assumptions.moeTpSize || 'auto'}</span>}
+                    {isMoe && <span><span className={styles.accordionKey}>EP</span> {assumptions.moeEpSize || 'auto'}</span>}
+                    {assumptions.servingMode === 'disagg' && fabricRequired && (
+                      <span><span className={styles.accordionKey}>fabric</span> {assumptions.fabric || 'none'}</span>
+                    )}
+                  </span>
+                )}
+              </span>
+            </AccordionToggle>
+            <AccordionContent>
+              <div className={styles.assumptionsHead}>
+                <div>
+                  <p>
+                    Defaults follow the selected benchmark run. Turn on the override to change topology, precision, or
+                    parallelism for every prediction; percentage differences are hidden when assumptions differ.
+                  </p>
+                </div>
+                <Switch
+                  id="benchmark-override-assumptions"
+                  label="Override prediction assumptions"
+                  isChecked={overrideAssumptions}
+                  isDisabled={isComparing}
+                  onChange={(_event, checked) => {
+                    setOverrideAssumptions(checked)
+                    setAssumptionInputs(checked ? { ...defaults } : null)
+                    clearResults()
+                  }}
                 />
               </div>
-            ))}
 
-            {isMoe && (['moeTpSize', 'moeEpSize'] as const).map(key => (
-              <div className={styles.assumptionField} key={key}>
-                <label className={styles.assumptionLabel} htmlFor={`benchmark-${key}`}>
-                  {key === 'moeTpSize' ? 'MoE tensor parallel (TP)' : 'Expert parallel (EP)'}
-                </label>
-                <TextInput
-                  id={`benchmark-${key}`}
-                  type="number"
-                  min={1}
-                  value={assumptions[key]}
-                  isDisabled={!overrideAssumptions || isComparing}
-                  placeholder="Simulator default"
-                  onChange={(_event, value) => setAssumption(key, value)}
-                />
+              <div className={styles.assumptionGrid}>
+                <div className={styles.assumptionField}>
+                  <span className={styles.assumptionLabel}>Serving mode</span>
+                  <div className={styles.servingModeRow}>
+                    <Button
+                      variant={assumptions.servingMode === 'agg' ? 'secondary' : 'tertiary'}
+                      size="sm"
+                      aria-pressed={assumptions.servingMode === 'agg'}
+                      isDisabled={!overrideAssumptions || isComparing}
+                      onClick={() => setAssumption('servingMode', 'agg')}
+                    >
+                      Aggregated
+                    </Button>
+                    <Button
+                      variant={assumptions.servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+                      size="sm"
+                      aria-pressed={assumptions.servingMode === 'disagg'}
+                      isDisabled={!overrideAssumptions || !disaggAvailable || isComparing}
+                      onClick={() => setAssumption('servingMode', 'disagg')}
+                    >
+                      Disaggregated
+                    </Button>
+                  </div>
+                  <p className={styles.assumptionNote}>
+                    {measuredMode === 'disagg'
+                      ? 'The benchmark run is disaggregated.'
+                      : 'The benchmark run is aggregated.'}
+                    {!disaggAvailable ? ' No catalog simulator models disaggregation for this release.' : ''}
+                  </p>
+                </div>
+
+                <div className={styles.assumptionField}>
+                  <label className={styles.assumptionLabel} htmlFor="benchmark-weight-precision">Weight precision</label>
+                  <FormSelect
+                    id="benchmark-weight-precision"
+                    value={assumptions.weightPrecision}
+                    isDisabled={!overrideAssumptions || isComparing}
+                    onChange={(_event, value) => setAssumption('weightPrecision', String(value))}
+                  >
+                    <FormSelectOption value="" label="Simulator default" />
+                    {['FP16', 'FP8', 'INT8', 'INT4', 'MXFP4', 'NVFP4'].map(value => (
+                      <FormSelectOption key={value} value={value} label={value} />
+                    ))}
+                  </FormSelect>
+                </div>
+
+                <div className={styles.assumptionField}>
+                  <label className={styles.assumptionLabel} htmlFor="benchmark-kv-precision">KV cache precision</label>
+                  <FormSelect
+                    id="benchmark-kv-precision"
+                    value={assumptions.kvCachePrecision}
+                    isDisabled={!overrideAssumptions || isComparing}
+                    onChange={(_event, value) => setAssumption('kvCachePrecision', String(value))}
+                  >
+                    <FormSelectOption value="" label="Simulator default" />
+                    {['FP16', 'FP8', 'NVFP4'].map(value => (
+                      <FormSelectOption key={value} value={value} label={value} />
+                    ))}
+                  </FormSelect>
+                </div>
+
+                {(['ppSize', 'dpSize'] as const).map(key => (
+                  <div className={styles.assumptionField} key={key}>
+                    <label className={styles.assumptionLabel} htmlFor={`benchmark-${key}`}>
+                      {key === 'ppSize' ? 'Pipeline parallel (PP)' : 'Attention data parallel (DP)'}
+                    </label>
+                    <TextInput
+                      id={`benchmark-${key}`}
+                      type="number"
+                      min={1}
+                      value={assumptions[key]}
+                      isDisabled={!overrideAssumptions || isComparing}
+                      onChange={(_event, value) => setAssumption(key, value)}
+                    />
+                  </div>
+                ))}
+
+                {isMoe && (['moeTpSize', 'moeEpSize'] as const).map(key => (
+                  <div className={styles.assumptionField} key={key}>
+                    <label className={styles.assumptionLabel} htmlFor={`benchmark-${key}`}>
+                      {key === 'moeTpSize' ? 'MoE tensor parallel (TP)' : 'Expert parallel (EP)'}
+                    </label>
+                    <TextInput
+                      id={`benchmark-${key}`}
+                      type="number"
+                      min={1}
+                      value={assumptions[key]}
+                      isDisabled={!overrideAssumptions || isComparing}
+                      placeholder="Simulator default"
+                      onChange={(_event, value) => setAssumption(key, value)}
+                    />
+                  </div>
+                ))}
+
+                {assumptions.servingMode === 'disagg' && fabricRequired && (
+                  <div className={styles.assumptionField}>
+                    <label className={styles.assumptionLabel} htmlFor="benchmark-fabric">Inter-node fabric</label>
+                    <FormSelect
+                      id="benchmark-fabric"
+                      value={assumptions.fabric}
+                      isDisabled={!overrideAssumptions || fabricOptions.length === 0 || isComparing}
+                      onChange={(_event, value) => setAssumption('fabric', String(value))}
+                    >
+                      {fabricOptions.length === 0 && <FormSelectOption value="" label="No fabrics in the catalog" />}
+                      {fabricOptions.map(fabric => (
+                        <FormSelectOption key={fabric} value={fabric} label={fabric} />
+                      ))}
+                    </FormSelect>
+                    <p className={styles.assumptionNote}>
+                      Used for prefill-to-decode KV transfer. The simulator catalog names the available fabrics.
+                    </p>
+                  </div>
+                )}
               </div>
-            ))}
 
-            {assumptions.servingMode === 'disagg' && fabricRequired && (
-              <div className={styles.assumptionField}>
-                <label className={styles.assumptionLabel} htmlFor="benchmark-fabric">Inter-node fabric</label>
-                <FormSelect
-                  id="benchmark-fabric"
-                  value={assumptions.fabric}
-                  isDisabled={!overrideAssumptions || fabricOptions.length === 0 || isComparing}
-                  onChange={(_event, value) => setAssumption('fabric', String(value))}
-                >
-                  {fabricOptions.length === 0 && <FormSelectOption value="" label="No fabrics in the catalog" />}
-                  {fabricOptions.map(fabric => (
-                    <FormSelectOption key={fabric} value={fabric} label={fabric} />
-                  ))}
-                </FormSelect>
-                <p className={styles.assumptionNote}>
-                  Used for prefill-to-decode KV transfer. The simulator catalog names the available fabrics.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <p className={styles.assumptionNote}>
-            Benchmark rows do not record pipeline, data, or expert parallelism. Predictions therefore start from
-            PP 1, DP 1, and the simulator&apos;s own MoE width resolution. Changing them is an explicit override.
-          </p>
-        </div>
+              <p className={`${styles.assumptionNote} ${styles.assumptionsFootnote}`}>
+                Benchmark rows do not record pipeline, data, or expert parallelism. Predictions therefore start from
+                PP 1, DP 1, and the simulator&apos;s own MoE width resolution. Changing them is an explicit override.
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
 
         <div className={styles.filterFooter}>
-          <p>Measurements are grouped by source and target concurrency. Repeated runs within each source are averaged.</p>
           <Button variant="primary" isDisabled={!canCompare} onClick={() => void runComparison()}>
             {isComparing && <Spinner size="sm" className={styles.buttonSpinner} />}
             {isComparing ? 'Comparing…' : 'Compare'}
@@ -1214,11 +1302,21 @@ export default function BenchmarkComparisonPage() {
             <p>{measuredCount > 0 ? `${measuredCount} measured concurrency levels` : 'Run a comparison to load measured and predicted performance.'}</p>
           </div>
           <div className={styles.legend} aria-label="Chart series">
-            {results.benchmark.length > 0 && <span><i className={styles.benchmarkSwatch} />Red Hat</span>}
-            {results.inferencex.length > 0 && <span><i className={styles.inferencexSwatch} />InferenceX · SemiAnalysis</span>}
+            {results.benchmark.length > 0 && (
+              <span>
+                <i className={styles.benchmarkSwatch} />
+                Red Hat benchmark · {results.benchmarkVersion ?? 'version not reported'}
+              </span>
+            )}
+            {results.inferencex.length > 0 && (
+              <span>
+                <i className={styles.inferencexSwatch} />
+                InferenceX benchmark · SemiAnalysis · {results.inferencexVersion ?? 'version not reported'}
+              </span>
+            )}
             {results.series.map((entry, index) => (
               <span key={entry.simulator}>
-                <i className={styles.seriesSwatch} style={{ background: predictionColor(index) }} />
+                <i className={styles.seriesSwatch} style={{ background: predictionColor(entry.simulator, index) }} />
                 {entry.label} · {entry.version ?? 'version not reported'}
                 {entry.overridden
                   ? ' · overridden assumptions'

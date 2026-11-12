@@ -6,11 +6,14 @@ import {
   getFilterOptions,
   getBenchmarkDataset,
   getInferenceXDataset,
+  normalizeBackendVersion,
   parseBenchmarkFilters,
   parseConfiguration,
   rowMatchesConfiguration,
+  UNREPORTED_VERSION,
 } from '@/lib/validation/benchmark-dataset'
 import { benchmarkOptions, resolveBenchmarkFilters } from '@/lib/validation/benchmark-resolve'
+import type { DatasetRow } from '@/lib/validation/benchmark-types'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +24,20 @@ function failure(message: string, status: number) {
     { status: 'failed', error: message },
     { status, headers: { 'Cache-Control': 'no-store' } },
   )
+}
+
+/**
+ * The release a set of measured rows reports, normalized for display. Rows in a
+ * configuration share one release; report nothing when that is not true so the
+ * client does not attribute a mixed set to a single version.
+ */
+function measuredVersion(rows: DatasetRow[]): string | null {
+  const versions = [...new Set(
+    rows
+      .map(row => normalizeBackendVersion(row.backend, row.backend_version))
+      .filter(version => version !== UNREPORTED_VERSION),
+  )]
+  return versions.length === 1 ? versions[0] : null
 }
 
 export async function GET(request: NextRequest) {
@@ -103,7 +120,8 @@ export async function GET(request: NextRequest) {
     if (internalRows.length === 0 && selectedInferenceXRows.length === 0) {
       return NextResponse.json(
         { status: 'ok', source: benchmark?.source ?? null, inferencexSource: inferencex?.source ?? null,
-          matchedRows: 0, benchmarkPoints: [], inferencexPoints: [], inferencexRunUrl: null, inferencexRuns: [] },
+          matchedRows: 0, benchmarkPoints: [], inferencexPoints: [], inferencexRunUrl: null, inferencexRuns: [],
+          benchmarkVersion: null, inferencexVersion: null },
         { headers: { 'Cache-Control': 'no-store' } },
       )
     }
@@ -118,6 +136,8 @@ export async function GET(request: NextRequest) {
         matchedRows: internalRows.length + selectedInferenceXRows.length,
         benchmarkPoints: aggregateBenchmarkRows(internalRows),
         inferencexPoints: aggregateBenchmarkRows(selectedInferenceXRows),
+        benchmarkVersion: measuredVersion(internalRows),
+        inferencexVersion: measuredVersion(selectedInferenceXRows),
         inferencexRunUrl: inferencexRuns[0]?.url ?? null,
         inferencexDate: inferencexRuns[0]?.date ?? null,
         inferencexRuns,

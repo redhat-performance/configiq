@@ -37,6 +37,7 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
+import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
@@ -1256,7 +1257,7 @@ export default function Performance() {
           step: memoryOverride ? 0.5 : undefined,
           rangeValue: memoryOverride && effectiveGpuMemoryUtilization != null ? effectiveGpuMemoryUtilization * 100 : undefined,
           onChange: memoryOverride ? (val: number) => { setGpuMemoryUtilization(val / 100); markInputsDirty(); } : undefined,
-          help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISimulate default.',
+          help: 'Range: 10–100%, in 0.5% steps. Leave on auto to use the backend-specific AISim default.',
         },
       ],
       badge: memoryOverride ? 'Manual override' : 'Auto-computed',
@@ -1509,14 +1510,14 @@ export default function Performance() {
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support?.label ?? 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
             so it cannot predict performance. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support?.label ?? 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}

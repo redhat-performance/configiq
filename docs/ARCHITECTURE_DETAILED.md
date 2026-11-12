@@ -142,7 +142,8 @@ GPU sizing formulas or call external service URLs directly from the browser.
    selection and returns effective filters, filter options, measured runtime
    configurations, adjustment reasons, an unavailable reason, and
    `versionFallback`; `mode=data` returns the aggregated benchmark rows for a
-   resolved selection.
+   resolved selection, plus `benchmarkVersion` / `inferencexVersion` reporting
+   the normalized release each source's matched rows use.
 2. The route reads the public Red Hat Hugging Face Parquet files and a private
    Hugging Face InferenceX snapshot with a server-side read token. It caches
    both sources for five minutes and derives filter options from their union.
