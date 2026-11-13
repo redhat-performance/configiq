@@ -204,7 +204,8 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           {status === 'asking' ? 'Asking…' : 'Ask'}
         </Button>
         <span className={styles.hint}>
-          Explains the documentation. It does not run sizing.
+          Explains the docs and looks up read-only facts. It never runs sizing;
+          links open pre-filled so you can calculate.
         </span>
       </div>
 

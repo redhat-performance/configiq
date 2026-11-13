@@ -300,7 +300,7 @@ export function HelpMenu() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    fetch('/help-index.json', { signal: controller.signal })
+    fetch('/help-index.json', { signal: controller.signal, cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error(`help index: ${response.status}`);
         return response.json() as Promise<unknown>;

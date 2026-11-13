@@ -38,7 +38,7 @@ actually chose; when a field is omitted the service resolves it.
 |---|---|---|
 | `isl` | `4000` | Input sequence length |
 | `osl` | `1000` | Output sequence length |
-| `top_n` | `5` | Number of configurations returned |
+| `top_n` | `5` | Number of configurations returned. `concurrency_capacity` returns `8` by default, or `6` when no disaggregated option exists, unless `top_n` is set explicitly |
 | `objective` | `min_gpus` | Also `throughput_demand`, `concurrency_capacity`, `pareto` |
 | `sla_mode` | `enforce` | `none` is required by the demand and capacity objectives |
 | `ttft` / `tpot` | none | Required by `sla_mode='enforce'` unless an end-to-end latency bound is set |
@@ -127,5 +127,7 @@ One call per workload. There is no single mixed-workload endpoint. See
 
 ## MCP
 
-The same API is available as MCP tools through the ConfigIQ MCP gateway. See
-[MCP server](mcp-server.md).
+The sizing and pricing APIs are available as MCP tools. The ConfigIQ MCP
+gateway presents them with short, stable tool names, and the sizing service can
+also mount MCP directly with its own generated names. See
+[MCP server](mcp-server.md) for the two shapes.

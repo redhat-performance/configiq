@@ -48,6 +48,20 @@ describe('help search', () => {
     ).toEqual([{ id: 'a', title: 'Ok', section: 'A', body: 'body', url: '/docs/a' }]);
   });
 
+  it('drops an index entry whose URL is not local documentation', () => {
+    const parsed = parseHelpIndex({
+      entries: [
+        { id: 'ok', title: 'Ok', url: '/docs/settings#sharing-a-view', section: 'Settings', body: '' },
+        { id: 'js', title: 'Script', url: 'javascript:alert(1)', section: '', body: '' },
+        { id: 'offsite', title: 'Other', url: 'https://evil.example/docs/x', section: '', body: '' },
+        { id: 'proto', title: 'Proto-relative', url: '//evil.example/docs/x', section: '', body: '' },
+        { id: 'root', title: 'Root', url: '/settings', section: '', body: '' },
+      ],
+    });
+
+    expect(parsed.map((entry) => entry.id)).toEqual(['ok']);
+  });
+
   it('drops stopwords so natural-language queries still match', () => {
     expect(tokenise('How do I change the concurrency?')).toEqual(['change', 'concurrency']);
   });

@@ -15,7 +15,7 @@
     "type-check": "tsc --noEmit",
     "prepare": "husky",
     "docs:build": "node scripts/build-docs.mjs",
-    "docs:check": "node scripts/build-docs.mjs"
+    "docs:check": "node scripts/build-docs.mjs --check"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

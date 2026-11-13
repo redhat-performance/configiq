@@ -50,6 +50,12 @@ describe('docs manifest', () => {
     expect(typeCheck).toBeGreaterThan(build);
   });
 
+  it('has a docs:check that verifies instead of rewriting', () => {
+    expect(pkg.scripts?.['docs:check']).toBeDefined();
+    expect(pkg.scripts?.['docs:check']).toContain('--check');
+    expect(pkg.scripts?.['docs:check']).not.toBe(pkg.scripts?.['docs:build']);
+  });
+
   it('does not ship a Markdown parser to the browser', () => {
     // Docs are rendered to HTML at build time. A runtime markdown package here
     // means someone reintroduced client-side parsing.

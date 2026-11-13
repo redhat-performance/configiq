@@ -190,6 +190,7 @@ function validateAnchors(rendered, errors) {
 }
 
 async function main() {
+  const check = process.argv.includes('--check');
   const manifest = JSON.parse(await readFile(MANIFEST_PATH, 'utf8'));
   const sections = [...manifest.sections].sort((a, b) => a.order - b.order);
   const fileToSlug = new Map(
@@ -199,6 +200,9 @@ async function main() {
   const errors = [];
   const rendered = new Map();
   const searchEntries = [];
+  // Render everything first. Nothing is written until the anchors validate,
+  // so a failed build cannot leave a half-updated generated directory.
+  const outputs = new Map();
 
   for (const section of sections) {
     let source;
@@ -228,8 +232,7 @@ async function main() {
 
     searchEntries.push(...extractSearchSections(html, section));
 
-    await mkdir(GENERATED_DIR, { recursive: true });
-    await writeFile(
+    outputs.set(
       path.join(GENERATED_DIR, `${section.slug}.json`),
       `${JSON.stringify({ slug: section.slug, title: section.title, html, toc }, null, 2)}\n`,
     );
@@ -253,21 +256,45 @@ export const GENERATED_DOCS = {
 ${sections.map((section, position) => `  '${section.slug}': doc${position},`).join('\n')}
 } as const;
 `;
-  await writeFile(path.join(GENERATED_DIR, 'index.ts'), indexFile);
+  outputs.set(path.join(GENERATED_DIR, 'index.ts'), indexFile);
 
-  await mkdir(path.dirname(HELP_INDEX_PATH), { recursive: true });
-  await writeFile(
-    HELP_INDEX_PATH,
-    `${JSON.stringify({ entries: searchEntries }, null, 2)}\n`,
-  );
+  const helpIndex = `${JSON.stringify({ entries: searchEntries }, null, 2)}\n`;
+  outputs.set(HELP_INDEX_PATH, helpIndex);
 
   // The assistant retrieves from a generated module rather than reading
   // `public/` at runtime, so the corpus in the production image is the corpus
   // the build validated.
-  await writeFile(
-    path.join(GENERATED_DIR, 'help-index.json'),
-    `${JSON.stringify({ entries: searchEntries }, null, 2)}\n`,
-  );
+  outputs.set(path.join(GENERATED_DIR, 'help-index.json'), helpIndex);
+
+  if (check) {
+    const stale = [];
+    for (const [file, expected] of outputs) {
+      let actual = null;
+      try {
+        actual = await readFile(file, 'utf8');
+      } catch {
+        // Reported as missing below.
+      }
+      if (actual !== expected) {
+        stale.push(normalisePath(path.relative(ROOT, file)));
+      }
+    }
+    if (stale.length > 0) {
+      console.error('Generated docs are out of date:');
+      for (const file of stale) console.error(`  - ${file}`);
+      console.error('Run `npm run docs:build` and commit the result.');
+      process.exit(1);
+    }
+    console.log(
+      `docs:check: ${sections.length} sections and ${searchEntries.length} search entries are current`,
+    );
+    return;
+  }
+
+  for (const [file, contents] of outputs) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, contents);
+  }
 
   console.log(
     `docs: rendered ${sections.length} sections and ${searchEntries.length} search entries`,

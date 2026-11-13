@@ -118,7 +118,10 @@ describe('HelpMenu', () => {
 
     await openMenu();
 
-    expect(fetch).toHaveBeenCalledWith('/help-index.json', expect.anything());
+    expect(fetch).toHaveBeenCalledWith(
+      '/help-index.json',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
     expect(fetch).toHaveBeenCalledWith('/api/assistant', expect.anything());
     expect(document.querySelector('#help-search-input')).not.toBeNull();
   });
@@ -228,6 +231,6 @@ describe('HelpMenu', () => {
     });
 
     expect(document.querySelector('#assistant-question')).not.toBeNull();
-    expect(document.body.textContent).toContain('does not run sizing');
+    expect(document.body.textContent).toContain('never runs sizing');
   });
 });

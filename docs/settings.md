@@ -49,6 +49,13 @@ it. Opening a link never changes your saved settings:
 - If the link's simulator is unavailable in this deployment, the existing
   unavailable notice is shown. There is no fallback.
 
+Benchmark comparison is the one page whose shared link does not use a catalog
+system id. Its `accelerator` value is the label the benchmark dataset publishes
+(for example `H200`, not `h200_sxm`), because the dataset is the source of that
+selection and a measured row can exist for a GPU the catalog does not list. The
+page matches the label to a catalog entry when it can and otherwise keeps the
+dataset label, so the view opens on the same measured run the sender saw.
+
 ## Related
 
 - [User scenarios](user-scenarios.md): which tool to use for which ask
