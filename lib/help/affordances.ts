@@ -190,4 +190,11 @@ export const HELP_AFFORDANCES: HelpAffordance[] = [
     label: 'Documentation',
     keywords: ['docs', 'documentation', 'help', 'reference'],
   },
+  {
+    id: 'docs-user-scenarios',
+    route: '/docs',
+    doc: 'user-scenarios',
+    label: 'User scenarios',
+    keywords: ['scenario', 'workload', 'which tool', 'how to size', 'examples'],
+  },
 ];

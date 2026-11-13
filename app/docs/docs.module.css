@@ -171,3 +171,59 @@
   background: #f0f7ff;
   color: var(--gc-text);
 }
+
+.lede {
+  margin: 10px 0 0;
+  max-width: 640px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--gc-text-2);
+}
+
+.indexGrid {
+  list-style: none;
+  margin: 28px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.indexCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  text-decoration: none;
+}
+
+.indexCard:hover,
+.indexCard:focus-visible {
+  border-color: var(--gc-link);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  text-decoration: none;
+}
+
+.indexCard:focus-visible {
+  outline: 2px solid var(--gc-link);
+  outline-offset: 2px;
+}
+
+.indexTitle {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--gc-text);
+}
+
+.indexDescription {
+  font-family: var(--font-display);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--gc-text-2);
+}

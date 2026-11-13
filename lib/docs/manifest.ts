@@ -6,6 +6,8 @@ export interface DocsSection {
   /** Repository-relative Markdown path, used by the build script. */
   file: string;
   order: number;
+  /** One sentence shown on the `/docs` index card. */
+  description: string;
 }
 
 export interface DocsManifest {

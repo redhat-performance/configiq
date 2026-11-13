@@ -121,15 +121,15 @@ export function tokenise(value: string): string[] {
 }
 
 /**
- * Validate the build-time docs index. A malformed or partial file degrades to
- * "no docs results" instead of breaking the help popover.
- */
-/**
  * A help-index entry points at documentation we generated. Reject anything
  * else rather than handing a fetched `javascript:` or off-site URL to a link.
  */
 const DOCS_URL = /^\/docs(?:\/[a-z0-9-]+)?(?:#[A-Za-z0-9._-]+)?$/;
 
+/**
+ * Validate the build-time docs index. A malformed or partial file degrades to
+ * "no docs results" instead of breaking the help popover.
+ */
 export function parseHelpIndex(raw: unknown): DocsSearchEntry[] {
   if (!raw || typeof raw !== 'object') return [];
   const entries = (raw as { entries?: unknown }).entries;

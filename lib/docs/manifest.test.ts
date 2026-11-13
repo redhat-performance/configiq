@@ -33,6 +33,26 @@ describe('docs manifest', () => {
     }
   });
 
+  it('has a one-sentence description for every index entry', () => {
+    for (const section of DOCS_SECTIONS) {
+      expect(section.description.trim().length, section.slug).toBeGreaterThan(0);
+      expect(section.description.trim().endsWith('.'), section.slug).toBe(true);
+    }
+  });
+
+  it('links every guide from the overview', () => {
+    // The overview is the entry point in the rendered docs and on GitHub, so a
+    // section that is missing there is only reachable by guessing its URL.
+    const overview = readFileSync(path.join(ROOT, 'docs/overview.md'), 'utf8');
+    for (const section of DOCS_SECTIONS) {
+      if (section.slug === 'overview') continue;
+      const relative = section.file.replace(/^docs\//, '');
+      expect(overview, `docs/overview.md does not link to ${section.file}`).toContain(
+        `(${relative})`,
+      );
+    }
+  });
+
   it('builds docs before type-check, test, locally and in CI', () => {
     expect(pkg.scripts?.['docs:build']).toBeDefined();
     expect(pkg.scripts?.predev).toContain('docs:build');
