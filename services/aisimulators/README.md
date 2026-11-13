@@ -71,6 +71,15 @@ facts:
   The public model identifier is the Hugging Face repo from that entry's
   `model.yaml` (`Qwen/Qwen3-32B`); the catalog slug (`qwen3-32b`) is accepted as
   an input alias.
+- A model graph may state kernel block sizes on its attention caches, as
+  sparse-attention families such as DeepSeek-V4 do. The generated engine
+  `block_size` is a multiple of those values and of the sparse backend's own
+  kernel block: DeepSeek-V4 requires 256 tokens, DeepSeek-V4.1 requires 64 on
+  SM90 and 128 on other parts, and a DSA sparse-MLA indexer requires 64. A
+  disaggregated deployment states one block size in both pools, because BLIS
+  moves whole blocks across the handoff and refuses pools that disagree.
+  Graphs that state no constraint keep the existing 16-token colocated and
+  64-token disaggregated-pool defaults.
 - Hardware and network keys are the catalog's own files. ConfigIQ system IDs are
   translated to catalog keys (`h100_sxm` → `h100`, `gb200` → `gb200-nvl72`);
   PCIe parts are deliberately not translated.

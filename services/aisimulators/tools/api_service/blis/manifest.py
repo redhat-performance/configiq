@@ -9,8 +9,9 @@ to one or is refused.
 from __future__ import annotations
 
 import json
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,14 @@ class ModelResolution:
     catalog_name: str
     hf_repo: str | None
     context_length: int | None = None
+    #: Smallest engine block size every attention kernel of this model accepts,
+    #: from the graph's attention-cache sizes. `BlisCatalog.block_size_for`
+    #: widens it to the part's sparse-kernel rule.
+    block_size: int | None = None
+    #: The graph's `global.architecture`, which selects the sparse-kernel rule.
+    architecture: str | None = None
+    #: Whether the graph's attention is the DSA sparse-MLA family.
+    dsa: bool = False
     origin: str = "blis-catalog"
 
 
@@ -109,6 +118,9 @@ class CatalogModel:
     slug: str
     hf_repo: str | None
     config: dict[str, Any]
+    block_size: int | None = None
+    architecture: str | None = None
+    dsa: bool = False
 
     @property
     def model_id(self) -> str:
@@ -121,6 +133,8 @@ class BlisCatalog:
     models: dict[str, CatalogModel]
     hardware: frozenset[str]
     networks: frozenset[str]
+    #: Major CUDA compute capability each hardware key states, when it states one.
+    compute_capabilities: dict[str, int | None] = field(default_factory=dict)
 
     def model_ids(self) -> list[str]:
         """Public model identifiers a picker can offer, sorted."""
@@ -145,8 +159,30 @@ class BlisCatalog:
             context_length=_positive_int(
                 _config_value(model.config, "max_position_embeddings", "context")
             ),
+            block_size=model.block_size,
+            architecture=model.architecture,
+            dsa=model.dsa,
             origin="blis-catalog",
         )
+
+    def block_size_for(self, model: ModelResolution, hardware: str) -> int | None:
+        """The engine block size a model needs on one catalog hardware part.
+
+        The graph's attention-cache block sizes are a lower bound. BLIS's sparse
+        backends also require their own kernel block, which depends on the model
+        family and, for DeepSeek-V4.1, the part's compute capability. The
+        emitted size must be a multiple of both.
+        """
+        required = _kernel_block_size(
+            model.architecture,
+            model.dsa,
+            self.compute_capabilities.get(hardware),
+        )
+        if required is None:
+            return model.block_size
+        if model.block_size is None:
+            return required
+        return math.lcm(required, model.block_size)
 
     def specs_for(self, model_path: str) -> dict[str, Any]:
         model = self.models.get(model_path)
@@ -193,6 +229,100 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return value
 
 
+def _attention_block_size(graph: dict[str, Any]) -> int | None:
+    """The smallest engine block every attention kernel of the model accepts.
+
+    A derived model graph states a kernel `block_size` on each attention cache
+    that has one. A scenario's `engine.block_size` must be a multiple of every
+    stated value (DeepSeek-V4's sparse attention and indexer, for example, run
+    256-token kernel blocks), so the least common multiple is the smallest block
+    that fits every cache. Models whose graph states none have no constraint.
+
+    The walk covers every layer kind the graph defines, including layers BLIS's
+    target-stack expansion does not execute (MTP and draft stacks). Overstating
+    the multiple is safe: BLIS checks only that the stated size is a multiple of
+    its sparse kernel block, while underestimating one would be refused at
+    startup.
+    """
+    sizes: list[int] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("op") == "Attention":
+                caches = value.get("caches")
+                if isinstance(caches, list):
+                    for cache in caches:
+                        if isinstance(cache, dict):
+                            size = _positive_int(cache.get("block_size"))
+                            if size is not None:
+                                sizes.append(size)
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(graph)
+    return math.lcm(*sizes) if sizes else None
+
+
+def _has_dsa_sparse_mla(graph: dict[str, Any]) -> bool:
+    """Whether the graph's attention is the DSA sparse-MLA family.
+
+    BLIS identifies it by a 576-wide sparse-MLA head on a plain attention node
+    (no role), which its indexer runs on 64-token kernel blocks.
+    """
+    found = False
+
+    def walk(value: Any) -> None:
+        nonlocal found
+        if found:
+            return
+        if isinstance(value, dict):
+            if (
+                value.get("op") == "Attention"
+                and value.get("kind") == "sparse_mla"
+                and not value.get("role")
+                and _positive_int(value.get("d_h")) == 576
+            ):
+                found = True
+                return
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(graph)
+    return found
+
+
+def _kernel_block_size(
+    architecture: str | None,
+    dsa: bool,
+    compute_capability: int | None,
+) -> int | None:
+    """The block multiple BLIS's sparse kernels require beyond the graph caches.
+
+    BLIS's kernel refuses a DeepSeek-V4-family block that is not a multiple of
+    its sparse backend's kernel block: V4 runs 256-token blocks on every part,
+    while V4.1 runs 64 on SM90 and 128 elsewhere. A DSA sparse-MLA indexer runs
+    64-token blocks. Those are kernel facts, not graph cache sizes, so they are
+    applied alongside the graph-derived cache LCM. Unknown compute capability is
+    treated as non-SM90, where 128 is also a valid multiple of the SM90 rule.
+
+    Mirrors `v4BlockSize` and `dsaBlockSize` in blis-substrate's
+    `kernel/sparse_mla.go` at the pinned release; change both together.
+    """
+    if architecture == "DeepseekV4ForCausalLM":
+        return 256
+    if architecture == "DeepseekV41ForCausalLM":
+        return 64 if compute_capability == 9 else 128
+    if dsa:
+        return 64
+    return None
+
+
 def _read_model(directory: Path) -> CatalogModel:
     metadata = _read_yaml(directory / "model.yaml") if (directory / "model.yaml").is_file() else {}
     source = metadata.get("source") if isinstance(metadata.get("source"), dict) else {}
@@ -206,8 +336,25 @@ def _read_model(directory: Path) -> CatalogModel:
             raise BlisManifestError(f"could not read BLIS model config {config_path}: {exc}") from exc
         if isinstance(raw_config, dict):
             config = raw_config
+    graph_path = directory / "graph.yaml"
+    if not graph_path.is_file():
+        graph_path = directory / "graph.yml"
+    graph = _read_yaml(graph_path) if graph_path.is_file() else {}
+    global_section = graph.get("global") if isinstance(graph.get("global"), dict) else {}
+    architecture = (
+        global_section.get("architecture")
+        if isinstance(global_section.get("architecture"), str)
+        else None
+    )
     slug = directory.name
-    return CatalogModel(slug=slug, hf_repo=repo, config=config)
+    return CatalogModel(
+        slug=slug,
+        hf_repo=repo,
+        config=config,
+        block_size=_attention_block_size(graph),
+        architecture=architecture,
+        dsa=_has_dsa_sparse_mla(graph),
+    )
 
 
 def _stems(directory: Path) -> frozenset[str]:
@@ -216,6 +363,27 @@ def _stems(directory: Path) -> frozenset[str]:
     return frozenset(
         path.stem for path in directory.iterdir() if path.is_file() and path.suffix in {".yaml", ".yml"}
     )
+
+
+def _read_compute_capabilities(directory: Path) -> dict[str, int | None]:
+    """The major CUDA compute capability each catalog chip states."""
+    capabilities: dict[str, int | None] = {}
+    if not directory.is_dir():
+        return capabilities
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.suffix not in {".yaml", ".yml"}:
+            continue
+        raw = _read_yaml(path).get("ComputeCapability")
+        major: int | None = None
+        if isinstance(raw, str):
+            try:
+                major = int(raw.split(".", 1)[0].strip())
+            except ValueError:
+                major = None
+        elif isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            major = int(raw)
+        capabilities[path.stem] = major
+    return capabilities
 
 
 @lru_cache(maxsize=4)
@@ -238,6 +406,7 @@ def _load_catalog(path: str) -> BlisCatalog:
         models=models,
         hardware=_stems(root / "hardware"),
         networks=_stems(root / "networks"),
+        compute_capabilities=_read_compute_capabilities(root / "hardware"),
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 from dataclasses import asdict, dataclass
@@ -145,7 +146,20 @@ def normalize_weight_quantization(raw: str | None) -> str | None:
     return _optional_quantization(raw, _WEIGHT_QUANTIZATION, "weight quantization")
 
 
-def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
+def _deployment_block_size(model: ModelResolution, pools: tuple[ScenarioPoolRequest, ...]) -> int:
+    """The one engine block size every pool in a deployment states.
+
+    BLIS moves whole blocks across a P/D handoff and refuses pools that disagree.
+    The smallest size that satisfies the model's kernel multiple and every pool's
+    configured size is their least common multiple.
+    """
+    sizes = [pool.block_size for pool in pools]
+    if model.block_size is not None:
+        sizes.append(model.block_size)
+    return math.lcm(*sizes)
+
+
+def _pool_engine(pool: ScenarioPoolRequest, block_size: int | None = None) -> dict[str, Any]:
     raw_weight_quant = pool.weight_quantization.strip().lower() if pool.weight_quantization else None
     raw_moe_quant = pool.moe_quantization.strip().lower() if pool.moe_quantization else None
     if raw_moe_quant and raw_weight_quant != raw_moe_quant:
@@ -156,7 +170,7 @@ def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
         raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
     cache_dtype = _optional_quantization(pool.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
     engine: dict[str, Any] = {
-        "block_size": pool.block_size,
+        "block_size": block_size if block_size is not None else pool.block_size,
         "max_num_batched_tokens": pool.max_num_batched_tokens,
         "max_num_seqs": pool.max_num_seqs,
         "max_model_len": pool.max_model_len,
@@ -195,7 +209,8 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
         raise BlisUnsupportedRequest("BLIS parallelism and workload values must be positive integers")
 
     pools: list[dict[str, Any]] = []
-    for pool in (prefill, decode):
+    pool_requests = (prefill, decode)
+    for pool in pool_requests:
         if min(
             pool.nodes,
             pool.tp,
@@ -230,6 +245,9 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 f"BLIS {pool.role} pool has {pool.nodes * request.gpus_per_node} GPU slots, "
                 f"but TP×PP requires {pool.tp * pool.pp}"
             )
+
+    block_size = _deployment_block_size(request.model, pool_requests)
+    for pool in pool_requests:
         pools.append({
             "role": pool.role,
             "nodes": pool.nodes,
@@ -239,7 +257,7 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 "dp": pool.dp,
                 "enable_expert_parallel": pool.enable_expert_parallel,
             },
-            "engine": _pool_engine(pool),
+            "engine": _pool_engine(pool, block_size),
         })
 
     name = _scenario_name(request)
@@ -320,7 +338,7 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
         else request.model.context_length or request.isl + request.osl
     )
     engine: dict[str, Any] = {
-        "block_size": 16,
+        "block_size": request.model.block_size or 16,
         "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
         "max_num_seqs": request.max_num_seqs or request.concurrency,
         "max_model_len": max_model_len,

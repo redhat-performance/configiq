@@ -7,7 +7,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -271,6 +271,7 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     catalog = load_catalog()
     model = catalog.resolve_model(model_path)
     hardware = catalog.resolve_hardware(system)
+    model = replace(model, block_size=catalog.block_size_for(model, hardware))
     try:
         system_spec = load_system_spec(system)
     except Exception as exc:
