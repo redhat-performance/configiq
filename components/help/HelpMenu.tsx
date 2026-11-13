@@ -43,18 +43,32 @@ interface HelpPanelProps {
 function ResultLink({ result, hide }: { result: HelpResult; hide: () => void }) {
   if (!result.url) return null;
   return (
-    <Link
-      href={result.url}
-      className={styles.result}
-      data-help-item
-      onClick={hide}
-      // The docs routes are static; a client-side transition is fine and keeps
-      // the popover from being torn down mid-navigation.
-      prefetch={false}
-    >
-      <span className={styles.resultTitle}>{result.title}</span>
-      <span className={styles.resultContext}>{result.context}</span>
-    </Link>
+    <span className={styles.resultRow}>
+      <Link
+        href={result.url}
+        className={styles.result}
+        data-help-item
+        onClick={hide}
+        // The docs routes are static; a client-side transition is fine and keeps
+        // the popover from being torn down mid-navigation.
+        prefetch={false}
+      >
+        <span className={styles.resultTitle}>{result.title}</span>
+        <span className={styles.resultContext}>{result.context}</span>
+      </Link>
+      {result.docUrl && (
+        <Link
+          href={result.docUrl}
+          className={styles.resultDocLink}
+          data-help-item
+          aria-label={`Read about ${result.title} in the documentation`}
+          onClick={hide}
+          prefetch={false}
+        >
+          Docs
+        </Link>
+      )}
+    </span>
   );
 }
 

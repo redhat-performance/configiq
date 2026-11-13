@@ -42,6 +42,34 @@
   color: var(--gc-text);
 }
 
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.resultRow .result {
+  flex: 1;
+}
+
+.resultDocLink {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gc-link);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.resultDocLink:hover,
+.resultDocLink:focus-visible {
+  background: #f0f4f8;
+  text-decoration: none;
+}
+
 .result:hover,
 .result:focus-visible {
   background: #f0f4f8;

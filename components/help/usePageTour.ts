@@ -4,12 +4,20 @@ import * as React from 'react';
 import { PageTourContext, type PageTourContextValue } from './PageTourProvider';
 
 /**
- * Read the active page tour. Must be used inside `PageTourProvider`.
+ * No-provider fallback.
+ *
+ * A page component can legitimately render outside the app shell (unit tests,
+ * an embed, a future standalone route). In that case there is no tour to offer,
+ * so the button renders nothing instead of throwing and taking the page down.
  */
+const NO_TOUR: PageTourContextValue = {
+  tour: undefined,
+  showTour: false,
+  startTour: () => {},
+  completeTour: () => {},
+};
+
+/** Read the active page tour, or a no-op when no provider is mounted. */
 export function usePageTour(): PageTourContextValue {
-  const context = React.useContext(PageTourContext);
-  if (!context) {
-    throw new Error('usePageTour must be used inside PageTourProvider');
-  }
-  return context;
+  return React.useContext(PageTourContext) ?? NO_TOUR;
 }

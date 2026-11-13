@@ -1,0 +1,105 @@
+// @vitest-environment happy-dom
+import * as React from 'react';
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { recommendLink } from './pages';
+import type { LinkValues } from './common';
+import { useDeepLink, type DeepLinkState } from './useDeepLink';
+
+let root: ReturnType<typeof createRoot> | null = null;
+let host: HTMLDivElement;
+
+function mount(state: { current: DeepLinkState<typeof recommendLink.fields> | null }) {
+  function Harness({
+    ready,
+    apply,
+  }: {
+    ready: boolean;
+    apply: (values: LinkValues<typeof recommendLink.fields>) => void;
+  }) {
+    const deepLink = useDeepLink(recommendLink, ready, apply);
+    state.current = deepLink;
+    return <span>{deepLink.applied ? 'applied' : 'pending'}</span>;
+  }
+
+  host = document.createElement('div');
+  document.body.append(host);
+  root = createRoot(host);
+  return Harness;
+}
+
+function render(element: React.ReactElement) {
+  act(() => {
+    root?.render(element);
+  });
+}
+
+beforeEach(() => {
+  window.history.replaceState({}, '', '/recommend');
+});
+
+afterEach(() => {
+  act(() => {
+    root?.unmount();
+  });
+  root = null;
+  host?.remove();
+});
+
+describe('useDeepLink', () => {
+  it('parses the current search string without applying it before the page is ready', () => {
+    window.history.replaceState({}, '', '/recommend?v=1&model=Qwen%2FQwen3-32B&goal=capacity&nope=1');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+    render(<Harness ready={false} apply={apply} />);
+
+    expect(state.current?.parsed?.values).toEqual({
+      model: 'Qwen/Qwen3-32B',
+      goal: 'capacity',
+    });
+    expect(state.current?.warnings).toEqual(['Ignored unknown parameter "nope".']);
+    expect(apply).not.toHaveBeenCalled();
+    expect(state.current?.applied).toBe(false);
+  });
+
+  it('applies once the ready gate opens, and only once', () => {
+    window.history.replaceState({}, '', '/recommend?v=1&concurrency=32&goal=demand');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+
+    render(<Harness ready={false} apply={apply} />);
+    render(<Harness ready apply={apply} />);
+    render(<Harness ready apply={apply} />);
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply).toHaveBeenCalledWith({ concurrency: 32, goal: 'demand' });
+    expect(state.current?.applied).toBe(true);
+  });
+
+  it('does not apply an empty link but still reports the page as settled', () => {
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+
+    render(<Harness ready apply={apply} />);
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(state.current?.applied).toBe(true);
+    expect(state.current?.warnings).toEqual([]);
+  });
+
+  it('never applies a link whose values were all rejected', () => {
+    window.history.replaceState({}, '', '/recommend?concurrency=0&goal=turbo');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+
+    render(<Harness ready apply={apply} />);
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(state.current?.warnings).toHaveLength(2);
+  });
+});

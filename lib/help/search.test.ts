@@ -91,6 +91,25 @@ describe('help search', () => {
     expect(elsewhere.some((result) => result.kind === 'page')).toBe(false);
   });
 
+  it('attaches the mapped documentation to a control result', () => {
+    const index = buildHelpIndex(docs);
+    const result = searchHelp('concurrency presets', index)
+      .find((entry) => entry.id === 'control/predict-concurrency');
+
+    expect(result).toBeDefined();
+    expect(result?.url).toBe('/predict');
+    expect(result?.docUrl).toBe('/docs/user-scenarios#sizing-multiple-workloads');
+  });
+
+  it('leaves docUrl off controls with no mapped documentation', () => {
+    const index = buildHelpIndex(docs);
+    const result = suggestionsForRoute(index, '/predict')
+      .find((entry) => entry.id === 'control/predict-calculate');
+
+    expect(result).toBeDefined();
+    expect(result?.docUrl).toBeUndefined();
+  });
+
   it('returns nothing for an empty query', () => {
     const index = buildHelpIndex(docs);
     expect(searchHelp('   ', index)).toEqual([]);

@@ -16,8 +16,6 @@ export interface HelpAffordance {
   anchor?: string;
   label: string;
   keywords: string[];
-  /** Optional pre-filled view to open instead of the bare route. */
-  linkTemplate?: string;
 }
 
 export const HELP_AFFORDANCES: HelpAffordance[] = [
@@ -61,14 +59,14 @@ export const HELP_AFFORDANCES: HelpAffordance[] = [
   {
     id: 'predict-assumptions',
     route: '/predict',
-    doc: 'model-gpu-caveats',
+    doc: 'caveats',
     label: 'Change assumptions',
     keywords: ['assumptions', 'tp', 'pp', 'precision', 'max_model_len', 'chunked prefill'],
   },
   {
     id: 'predict-disagg',
     route: '/predict',
-    doc: 'model-gpu-caveats',
+    doc: 'caveats',
     anchor: 'disaggregated-serving-needs-a-fabric',
     label: 'Disaggregated serving and fabric',
     keywords: ['disagg', 'disaggregated', 'prefill', 'decode', 'fabric', 'network'],

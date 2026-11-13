@@ -1,5 +1,24 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HELP_TOURS, getTourById, getTourForRoute, normaliseRoute } from './tours';
+
+const ROOT = process.cwd();
+
+/**
+ * The component that renders each tour's route.
+ *
+ * A step whose target is missing still renders (centred), so this mapping is
+ * what keeps a renamed `data-tour` attribute from quietly degrading a tour.
+ */
+const ROUTE_SOURCES: Record<string, string> = {
+  '/predict': 'app/predict/Performance.tsx',
+  '/recommend': 'app/recommend/Sizing.tsx',
+  '/kv-cache': 'app/kv-cache/KvCacheCalc.tsx',
+  '/gpu-explorer': 'app/gpu-explorer/page.tsx',
+  '/hybrid-savings': 'app/hybrid-savings/HybridSavings.tsx',
+  '/validation/compare': 'app/validation/compare/page.tsx',
+};
 
 describe('tour registry', () => {
   it('normalises a pathname before lookup', () => {
@@ -37,5 +56,23 @@ describe('tour registry', () => {
         expect(step.description.trim().length).toBeGreaterThan(0);
       }
     }
+  });
+
+  it('points every step at a target the page actually renders', () => {
+    for (const tour of HELP_TOURS) {
+      const source = ROUTE_SOURCES[tour.route];
+      expect(source, `${tour.id} has no source mapping; add one`).toBeDefined();
+
+      const contents = readFileSync(path.join(ROOT, source), 'utf8');
+      for (const step of tour.steps) {
+        const target = /data-tour="([a-z0-9-]+)"/.exec(step.target)?.[1];
+        expect(contents.includes(`data-tour="${target}"`), `${tour.route} ${step.target}`).toBe(true);
+      }
+    }
+  });
+
+  it('registers each route only once', () => {
+    const routes = HELP_TOURS.map((tour) => tour.route);
+    expect(new Set(routes).size).toBe(routes.length);
   });
 });

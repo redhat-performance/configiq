@@ -31,6 +31,8 @@ export interface HelpResult {
   body: string;
   /** Present for anything that can be opened. Glossary results have no page. */
   url?: string;
+  /** Documentation that explains this control, when one is mapped to it. */
+  docUrl?: string;
   score: number;
 }
 
@@ -41,6 +43,7 @@ interface SourceEntry {
   context: string;
   body: string;
   url?: string;
+  docUrl?: string;
   /** Route an affordance lives on. */
   route?: string;
   keywords?: string[];
@@ -182,7 +185,10 @@ function sourceEntries(docs: DocsSearchEntry[]): SourceEntry[] {
       // A control entry points at the control, not the docs. Documentation
       // about the same topic is a separate entry and ranks on its own.
       body: '',
-      url: affordance.linkTemplate ?? affordance.route,
+      url: affordance.route,
+      docUrl: affordance.doc
+        ? `/docs/${affordance.doc}${affordance.anchor ? `#${affordance.anchor}` : ''}`
+        : undefined,
       route: affordance.route,
       keywords: affordance.keywords,
     });
@@ -298,6 +304,7 @@ export function searchHelp(
       context: entry.context,
       body: entry.body,
       url: entry.url,
+      docUrl: entry.docUrl,
       score,
     });
   }
@@ -329,6 +336,7 @@ export function suggestionsForRoute(
       context: entry.context,
       body: entry.body,
       url: entry.url,
+      docUrl: entry.docUrl,
       score: 0,
     }));
 }

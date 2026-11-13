@@ -129,9 +129,24 @@ describe('HelpMenu', () => {
     await type('shared link');
 
     const link = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find(
-      (anchor) => anchor.getAttribute('href') === '/docs/settings#sharing-a-view',
+      (anchor) =>
+        anchor.getAttribute('href') === '/docs/settings#sharing-a-view' &&
+        (anchor.textContent ?? '').includes('Sharing a view'),
     );
-    expect(link?.textContent).toContain('Sharing a view');
+    expect(link).not.toBeNull();
+  });
+
+  it('offers the mapped documentation beside a control result', async () => {
+    await render();
+    await openMenu();
+    await type('concurrency presets');
+
+    const docLink = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find(
+      (anchor) => anchor.getAttribute('href') === '/docs/user-scenarios#sizing-multiple-workloads',
+    );
+    expect(docLink).not.toBeNull();
+    expect(docLink?.textContent).toBe('Docs');
+    expect(docLink?.getAttribute('aria-label')).toContain('Concurrency presets');
   });
 
   it('shows a glossary definition without leaving the popover', async () => {

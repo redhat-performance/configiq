@@ -452,6 +452,50 @@ describe('performance page remembered model', () => {
   });
 });
 
+describe('performance page link provenance', () => {
+  it('offers a shared simulator instead of switching to it silently', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt(
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=blis&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    // Nothing is applied for the recipient until they choose it.
+    expect(settings.applyViewForSession).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('This view was shared using');
+    expect(container.textContent).toContain('BLIS');
+
+    const useShared = Array.from(container.querySelectorAll('button')).find((button) =>
+      /Use BLIS for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'blis',
+      backend: 'vllm',
+      backendVersion: BLIS_FIXTURE_VERSION,
+    });
+  });
+
+  it('applies backend and version silently when the simulator matches', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt('?v=1&system=h100_sxm&simulator=aisimulate&backend=sglang&backendVersion=0.4.0');
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      backend: 'sglang',
+      backendVersion: '0.4.0',
+    });
+    expect(container.textContent).not.toContain('This view was shared using');
+  });
+});
+
 describe('performance page parameter defaults', () => {
   it('starts at one concurrent user without pre-selecting a concurrency preset', async () => {
     await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
