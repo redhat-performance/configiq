@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -63,7 +64,7 @@ def catalog() -> BlisCatalog:
 
 def _write_catalog(root: Path) -> Path:
     """A catalog shaped exactly like blis-catalog's on-disk layout."""
-    def write_model(slug: str, repo: str, config: dict, *, graph: bool = True) -> None:
+    def write_model(slug: str, repo: str, config: dict, *, graph: bool | dict = True) -> None:
         directory = root / "models" / slug
         directory.mkdir(parents=True)
         (directory / "model.yaml").write_text(yaml.safe_dump({
@@ -72,7 +73,8 @@ def _write_catalog(root: Path) -> Path:
         }))
         (directory / "config.json").write_text(json.dumps(config))
         if graph:
-            (directory / "graph.yaml").write_text("kind: Graph\n")
+            document = graph if isinstance(graph, dict) else {"kind": "Graph"}
+            (directory / "graph.yaml").write_text(yaml.safe_dump(document))
 
     write_model("qwen3-32b", "Qwen/Qwen3-32B", {
         "architectures": ["Qwen3ForCausalLM"],
@@ -105,9 +107,69 @@ def _write_catalog(root: Path) -> Path:
     # Declared but not priceable: blis-catalog ships no derived graph.
     write_model("no-graph", "org/NoGraph", {}, graph=False)
 
+    # Sparse-attention models state kernel block sizes on their attention caches.
+    write_model("deepseek-v4-pro", "deepseek-ai/DeepSeek-V4-Pro", {}, graph={
+        "kind": "ModelGraph",
+        "global": {"architecture": "DeepseekV4ForCausalLM"},
+        "layer_kinds": [{"id": "csa128", "nodes": [{
+            "op": "Attention",
+            "kind": "sparse_mla",
+            "caches": [
+                {"name": "swa", "kind": "window", "block_size": 64},
+                {"name": "compressed", "kind": "kv", "block_size": 256},
+                {"name": "compressor_state", "kind": "state", "entries": 144},
+            ],
+        }]}],
+    })
+    write_model("deepseek-v4.1-flash", "deepseek-ai/DeepSeek-V4.1-Flash", {}, graph={
+        "kind": "ModelGraph",
+        "global": {"architecture": "DeepseekV41ForCausalLM"},
+        "layer_kinds": [{"id": "csa64", "nodes": [{
+            "op": "Attention",
+            "kind": "sparse_mla",
+            "caches": [
+                {"name": "swa", "kind": "window", "block_size": 32},
+                {"name": "compressed", "kind": "kv", "block_size": 64},
+            ],
+        }]}],
+    })
+    # A DSA sparse-MLA graph states no cache block sizes; the indexer's kernel
+    # block comes from the model family, not the graph.
+    write_model("glm-5.2", "zai-org/GLM-5.2", {}, graph={
+        "kind": "ModelGraph",
+        "layer_kinds": [{"id": "dsa", "nodes": [{
+            "op": "Attention",
+            "kind": "sparse_mla",
+            "d_h": 576,
+        }]}],
+    })
+    # A 512-wide sparse head is not the DSA mark: BLIS runs it on the model's own
+    # backend, whose block size the graph states none of.
+    write_model("glm-5.3-flash", "zai-org/GLM-5.3-Flash", {}, graph={
+        "kind": "ModelGraph",
+        "layer_kinds": [{"id": "sparse", "nodes": [{
+            "op": "Attention",
+            "kind": "sparse_mla",
+            "d_h": 512,
+            "role": "block_index_scores",
+        }, {
+            "op": "Attention",
+            "kind": "sparse_mla",
+            "d_h": 512,
+        }]}],
+    })
+
     (root / "hardware").mkdir()
-    for name in ("h100", "h200", "a100-sxm", "gb200-nvl72"):
-        (root / "hardware" / f"{name}.yaml").write_text("MemoryGiB: 80\n")
+    for name, capability in {
+        "h100": "9.0",
+        "h200": "9.0",
+        "a100-sxm": "8.0",
+        "gb200-nvl72": "10.0",
+        "b200": "10.0",
+    }.items():
+        (root / "hardware" / f"{name}.yaml").write_text(
+            f"MemoryGiB: 80\nComputeCapability: \"{capability}\"\n"
+        )
     (root / "networks").mkdir()
     for name in ("roce-200g", "ib-400g"):
         (root / "networks" / f"{name}.yaml").write_text("kind: Network\n")
@@ -117,7 +179,15 @@ def _write_catalog(root: Path) -> Path:
 def test_catalog_reads_hugging_face_ids_and_skips_unpriceable_models(tmp_path: Path):
     catalog = load_catalog(str(_write_catalog(tmp_path)))
 
-    assert catalog.model_ids() == ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3-32B", "org/Vision"]
+    assert catalog.model_ids() == [
+        "Qwen/Qwen3-30B-A3B",
+        "Qwen/Qwen3-32B",
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "org/Vision",
+        "zai-org/GLM-5.2",
+        "zai-org/GLM-5.3-Flash",
+    ]
     assert "no-graph" not in catalog.models
 
 
@@ -138,6 +208,48 @@ def test_catalog_reads_context_from_text_config(tmp_path: Path):
     catalog = load_catalog(str(_write_catalog(tmp_path)))
 
     assert catalog.resolve_model("org/Vision").context_length == 131072
+
+
+def test_catalog_derives_the_attention_block_multiple_from_the_graph(tmp_path: Path):
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+
+    assert catalog.resolve_model("deepseek-ai/DeepSeek-V4-Pro").block_size == 256
+    assert catalog.resolve_model("deepseek-ai/DeepSeek-V4.1-Flash").block_size == 64
+    assert catalog.resolve_model("zai-org/GLM-5.2").block_size is None
+    assert catalog.resolve_model("Qwen/Qwen3-32B").block_size is None
+
+
+def test_catalog_applies_the_sparse_kernel_block_for_the_hardware(tmp_path: Path):
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+    pro = catalog.resolve_model("deepseek-ai/DeepSeek-V4-Pro")
+    v41 = catalog.resolve_model("deepseek-ai/DeepSeek-V4.1-Flash")
+    dsa = catalog.resolve_model("zai-org/GLM-5.2")
+    dense = catalog.resolve_model("Qwen/Qwen3-32B")
+
+    assert catalog.block_size_for(pro, "h200") == 256
+    assert catalog.block_size_for(pro, "b200") == 256
+    assert catalog.block_size_for(v41, "h200") == 64
+    assert catalog.block_size_for(v41, "b200") == 128
+    assert catalog.block_size_for(dsa, "h200") == 64
+    assert catalog.block_size_for(dense, "h200") is None
+
+
+def test_catalog_uses_the_safe_v41_multiple_when_a_part_states_no_capability(tmp_path: Path):
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+    v41 = catalog.resolve_model("deepseek-ai/DeepSeek-V4.1-Flash")
+
+    # 128 is a multiple of both the SM90 (64) and SM100 (128) kernel blocks, so
+    # an unstated or unparsable capability cannot produce a refused size.
+    assert catalog.block_size_for(v41, "unknown-part") == 128
+
+
+def test_catalog_does_not_treat_a_512_wide_sparse_head_as_dsa(tmp_path: Path):
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+    glm = catalog.resolve_model("zai-org/GLM-5.3-Flash")
+
+    assert glm.dsa is False
+    assert glm.block_size is None
+    assert catalog.block_size_for(glm, "h200") is None
 
 
 def test_catalog_refuses_models_it_cannot_price(tmp_path: Path):
@@ -207,6 +319,47 @@ def test_blis_rejects_non_vllm_before_loading_the_catalog():
         blis_service._resolve_request("Qwen/Qwen3-32B", "h200_sxm", "sglang", None)
 
 
+def _patch_resolver(monkeypatch, tmp_path: Path) -> BlisCatalog:
+    """Point request resolution at a synthetic catalog and node layout."""
+    catalog = load_catalog(str(_write_catalog(tmp_path)))
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "resolve_runtime",
+        lambda: BlisRuntime(binary="blis", catalog="catalog", registry="registry"),
+    )
+    return catalog
+
+
+def test_resolved_request_states_the_hardware_aware_block_size(tmp_path: Path, monkeypatch):
+    _patch_resolver(monkeypatch, tmp_path)
+
+    hopper = blis_service._resolve_request(
+        "deepseek-ai/DeepSeek-V4.1-Flash", "h200_sxm", "vllm", "0.31.0"
+    )
+    blackwell = blis_service._resolve_request(
+        "deepseek-ai/DeepSeek-V4.1-Flash", "b200_sxm", "vllm", "0.31.0"
+    )
+
+    assert (hopper.hardware, hopper.model.block_size) == ("h200", 64)
+    assert (blackwell.hardware, blackwell.model.block_size) == ("b200", 128)
+
+
+def test_resolved_request_refuses_a_dsa_model_below_sm90(tmp_path: Path, monkeypatch):
+    _patch_resolver(monkeypatch, tmp_path)
+
+    with pytest.raises(BlisUnsupportedRequest, match="below SM90"):
+        blis_service._resolve_request("zai-org/GLM-5.2", "a100_sxm", "vllm", "0.31.0")
+
+    hopper = blis_service._resolve_request("zai-org/GLM-5.2", "h200_sxm", "vllm", "0.31.0")
+    assert hopper.model.block_size == 64
+
+
 def _scenario_request(**overrides) -> ScenarioRequest:
     values = {
         "model": ModelResolution(
@@ -251,6 +404,7 @@ def test_generated_documents_use_catalog_id_and_requested_deployment():
     }
     assert pool["engine"]["quantization"] == "nvfp4"
     assert pool["engine"]["cache_dtype"] == "fp8"
+    assert pool["engine"]["block_size"] == 16
     assert pool["engine"]["enable_prefix_caching"] is True
     assert pool["engine"]["max_model_len"] == 2176
 
@@ -266,6 +420,19 @@ def test_generated_documents_state_the_catalog_context_window():
     ))
 
     assert deployment["pools"][0]["engine"]["max_model_len"] == 131072
+
+
+def test_colocated_scenario_uses_the_model_attention_block_multiple():
+    _scenario, deployment = build_documents(_scenario_request(
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+    ))
+
+    assert deployment["pools"][0]["engine"]["block_size"] == 256
 
 
 def test_generated_scenario_is_two_yaml_documents(tmp_path: Path):
@@ -294,6 +461,7 @@ def test_serving_config_reports_the_settings_blis_resolved():
                         "max_model_len": "auto",
                         "max_num_seqs": 8,
                         "max_num_batched_tokens": 8192,
+                        "block_size": 128,
                         "gpu_memory_utilization": 0.92,
                         "enable_prefix_caching": True,
                         "quantization": "nvfp4",
@@ -309,6 +477,7 @@ def test_serving_config_reports_the_settings_blis_resolved():
     assert config["tensor_parallel_size"] == 4
     assert config["max_model_len"] is None
     assert config["max_model_len_policy"] == "auto"
+    assert config["block_size"] == 128
     assert config["enable_prefix_caching"] is True
     assert config["enable_chunked_prefill"] is None
     assert config["backend_version"] == "0.31.0"
@@ -411,6 +580,54 @@ def test_disagg_documents_define_two_pools_transfer_and_router(tmp_path: Path):
         "decode-filter",
     }
     assert filename.endswith(".yaml")
+
+
+def test_disagg_pools_use_the_model_attention_block_multiple():
+    request = _scenario_request(
+        fabric="ib-400g",
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+        prefill_pool=_pool_request("prefill", nodes=2),
+        decode_pool=_pool_request("decode", nodes=1),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [256, 256]
+
+
+def test_disagg_pools_share_one_block_size_across_roles():
+    request = _scenario_request(
+        fabric="ib-400g",
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+        prefill_pool=replace(_pool_request("prefill", nodes=2), block_size=512),
+        decode_pool=_pool_request("decode", nodes=1),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [512, 512]
+
+
+def test_disagg_pools_reconcile_configured_block_sizes_without_a_model_constraint():
+    request = _scenario_request(
+        fabric="ib-400g",
+        prefill_pool=replace(_pool_request("prefill", nodes=2), block_size=512),
+        decode_pool=replace(_pool_request("decode", nodes=1), block_size=256),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [512, 512]
 
 
 def test_disagg_documents_reject_missing_fabric():

@@ -3328,6 +3328,9 @@ class TestEstimate:
             "max_model_len_policy": None,
             "max_num_seqs": 64,
             "max_num_batched_tokens": None,
+            # AISimulate does not resolve a KV block size, so the summary field
+            # stays null rather than reporting a number the run never stated.
+            "block_size": None,
             "gpu_memory_utilization": 0.97,
             "enable_chunked_prefill": True,
             "enable_prefix_caching": True,

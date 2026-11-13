@@ -1330,6 +1330,10 @@ components:
           type: integer
           nullable: true
           description: Maximum tokens in a scheduled batch, when specified by the simulator.
+        block_size:
+          type: integer
+          nullable: true
+          description: KV-cache block size in tokens the simulator resolved, when it reports one.
         gpu_memory_utilization:
           type: number
           nullable: true
