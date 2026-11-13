@@ -22,6 +22,11 @@ import {
 } from '@patternfly/react-core'
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox'
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
+import { CopyLinkButton } from '@/components/help/CopyLinkButton'
+import { TourButton } from '@/components/help/TourButton'
+import { WarningPanel } from '@/components/ui/WarningPanel'
+import { validationCompareLink, type ValidationCompareLinkValues } from '@/lib/deep-links/pages'
+import { useDeepLink } from '@/lib/deep-links/useDeepLink'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
   engineVersionSupport,
@@ -414,6 +419,7 @@ export default function BenchmarkComparisonPage() {
     defaultSystem,
     inferenceBackend,
     backendVersion,
+    simulator,
   } = useSettings()
   const {
     gpuOptions,
@@ -576,6 +582,42 @@ export default function BenchmarkComparisonPage() {
     setSelection(next)
     void resolve(next)
   }, [backendVersion, defaultModel, defaultSystem, gpuOptions, inferenceBackend, resolve, rootOptions, seeded])
+
+  // A shared view applies once the dataset has seeded a selection and that
+  // starting comparison has finished, so the seed cannot overwrite the link.
+  // A model or GPU the dataset does not cover resolves to the page's normal
+  // unavailable notice; it is never swapped for a different one.
+  const { warnings: linkWarnings } = useDeepLink(
+    validationCompareLink,
+    hydrated && !catalogLoading && seeded && rootOptions !== null && !isResolving,
+    (values) => {
+      const next: Selection = {
+        model: values.model ?? selection.model,
+        accelerator: values.accelerator ?? selection.accelerator,
+        isl: values.isl !== undefined ? String(values.isl) : selection.isl,
+        osl: values.osl !== undefined ? String(values.osl) : selection.osl,
+        tp: values.tp !== undefined ? String(values.tp) : selection.tp,
+      }
+      setSelection(next)
+      clearResults()
+      setNotice(null)
+      void resolve(next)
+    },
+  )
+
+  const buildShareUrl = (): string => {
+    const values: ValidationCompareLinkValues = {
+      model: selection.model || undefined,
+      accelerator: selection.accelerator || undefined,
+      isl: selection.isl ? Number(selection.isl) : undefined,
+      osl: selection.osl ? Number(selection.osl) : undefined,
+      tp: selection.tp ? Number(selection.tp) : undefined,
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    }
+    return validationCompareLink.build(values)
+  }
 
   // Settings owns the serving backend and version. A change there re-resolves
   // the same benchmark selection instead of resetting the page.
@@ -955,21 +997,29 @@ export default function BenchmarkComparisonPage() {
             Compare benchmark observations with simulator predictions.
           </p>
         </div>
-        {(source || inferencexSource) && (
-          <div className={styles.sourceBadges}>
-            {source && <div className={styles.sourceBadge}>
-              <a href={source.url} target="_blank" rel="noreferrer">Benchmark data from Red Hat · Hugging Face</a>
-              <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
-            </div>}
-            {inferencexSource && <div className={styles.sourceBadge}>
-              {isHttpsUrl(inferencexSource.url)
-                ? <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
-                : <span>Benchmark data from SemiAnalysis InferenceX</span>}
-              <span>{inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows · snapshot {new Date(inferencexSource.retrievedAt).toLocaleDateString()}</span>
-            </div>}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CopyLinkButton getUrl={buildShareUrl} />
+            <TourButton />
           </div>
-        )}
+          {(source || inferencexSource) && (
+            <div className={styles.sourceBadges}>
+              {source && <div className={styles.sourceBadge}>
+                <a href={source.url} target="_blank" rel="noreferrer">Benchmark data from Red Hat · Hugging Face</a>
+                <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
+              </div>}
+              {inferencexSource && <div className={styles.sourceBadge}>
+                {isHttpsUrl(inferencexSource.url)
+                  ? <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
+                  : <span>Benchmark data from SemiAnalysis InferenceX</span>}
+                <span>{inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows · snapshot {new Date(inferencexSource.retrievedAt).toLocaleDateString()}</span>
+              </div>}
+            </div>
+          )}
+        </div>
       </div>
+
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
 
       {isResolving && !source && !inferencexSource && (
         <Alert variant="info" isInline title="Loading benchmark data" className={styles.notice}>
@@ -988,7 +1038,7 @@ export default function BenchmarkComparisonPage() {
         </Alert>
       )}
 
-      <section className={styles.filterCard} aria-labelledby="benchmark-inputs-title" aria-busy={isResolving}>
+      <section className={styles.filterCard} aria-labelledby="benchmark-inputs-title" aria-busy={isResolving} data-tour="inputs">
         <div className={styles.cardHead}>
           <div>
             <h2 id="benchmark-inputs-title">Benchmark inputs</h2>
@@ -1287,7 +1337,7 @@ export default function BenchmarkComparisonPage() {
           </AccordionItem>
         </Accordion>
 
-        <div className={styles.filterFooter}>
+        <div className={styles.filterFooter} data-tour="compare">
           <Button variant="primary" isDisabled={!canCompare} onClick={() => void runComparison()}>
             {isComparing && <Spinner size="sm" className={styles.buttonSpinner} />}
             {isComparing ? 'Comparing…' : 'Compare'}
@@ -1295,7 +1345,7 @@ export default function BenchmarkComparisonPage() {
         </div>
       </section>
 
-      <section aria-labelledby="comparison-charts-title" className={styles.results}>
+      <section aria-labelledby="comparison-charts-title" className={styles.results} data-tour="results">
         <div className={styles.resultsHead}>
           <div>
             <h2 id="comparison-charts-title">Performance by concurrency</h2>

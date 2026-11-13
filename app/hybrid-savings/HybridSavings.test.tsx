@@ -73,6 +73,7 @@ beforeEach(async () => {
     setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
     setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
+    applyViewForSession: vi.fn(),
   })
   vi.mocked(useCostings).mockReturnValue({
     models, health: null, modelsUpdatedAt: null, modelsStale: false,

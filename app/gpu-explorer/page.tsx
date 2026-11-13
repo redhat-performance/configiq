@@ -22,6 +22,11 @@ import { useCatalog, type GpuOption } from '@/lib/hooks/useCatalog';
 import { useSettings } from '@/contexts/SettingsContext';
 import { useCostings } from '@/lib/hooks/useCostings';
 import { GpuBubbleChart } from './GpuBubbleChart';
+import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { TourButton } from '@/components/help/TourButton';
+import { WarningPanel } from '@/components/ui/WarningPanel';
+import { gpuExplorerLink, type GpuExplorerLinkValues } from '@/lib/deep-links/pages';
+import { useDeepLink } from '@/lib/deep-links/useDeepLink';
 import styles from './gpu-explorer.module.css';
 
 type Preset = 'balanced' | 'cost-efficiency' | 'performance';
@@ -48,6 +53,35 @@ export default function GpuExplorerPage() {
   React.useEffect(() => {
     setMounted(true);
   }, []);
+
+  // A shared view applies its axes and filters once the catalog and pricing
+  // have settled, so a link cannot be overwritten by a later catalog response.
+  const { warnings } = useDeepLink(
+    gpuExplorerLink,
+    mounted && !isLoading && !costings.isLoading,
+    (values) => {
+      if (values.preset) setPreset(values.preset);
+      if (values.vendor) setVendorFilter(values.vendor);
+      if (values.x) setXAxis(values.x);
+      if (values.y) setYAxis(values.y);
+    },
+  );
+
+  const buildShareUrl = (): string => {
+    const defaults: GpuExplorerLinkValues = {
+      preset: 'balanced',
+      vendor: 'all',
+      x: 'vram',
+      y: 'throughput-index',
+    };
+    const values: GpuExplorerLinkValues = {
+      preset,
+      vendor: vendorFilter,
+      x: xAxis,
+      y: yAxis,
+    };
+    return gpuExplorerLink.build(gpuExplorerLink.omitDefaults(values, defaults));
+  };
 
   const filteredGPUs = gpuOptions.filter(gpu => {
     if (vendorFilter === 'all') return true;
@@ -161,16 +195,37 @@ export default function GpuExplorerPage() {
   return (
     <>
       <div style={{ padding: '20px 24px 0' }}>
-        <h1 className={styles.pageTitle}>GPU explorer</h1>
-        <p className={styles.subtitle}>LLM inference planning — compare GPU generations by memory, bandwidth, and cost efficiency</p>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 16,
+          }}
+        >
+          <div>
+            <h1 className={styles.pageTitle}>GPU explorer</h1>
+            <p className={styles.subtitle}>LLM inference planning — compare GPU generations by memory, bandwidth, and cost efficiency</p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={buildShareUrl} />
+            <TourButton />
+          </div>
+        </div>
       </div>
+
+      {warnings.length > 0 && (
+        <div style={{ padding: '8px 24px 0' }}>
+          <WarningPanel warnings={warnings} />
+        </div>
+      )}
 
       <PageSection>
         <Card>
           <CardBody>
             <Flex direction={{ default: 'column' }} spaceItems={{ default: 'spaceItemsMd' }}>
               {/* Presets */}
-              <FlexItem>
+              <FlexItem data-tour="presets">
                 <Text component="p" style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#6a6e73', marginBottom: '8px', display: 'block', fontSize: '14px' }}>
                   Preset:
                 </Text>
@@ -182,7 +237,7 @@ export default function GpuExplorerPage() {
               </FlexItem>
 
               {/* Vendor Filter */}
-              <FlexItem>
+              <FlexItem data-tour="vendor">
                 <Flex spaceItems={{ default: 'spaceItemsLg' }}>
                   <FlexItem>
                     <Text component="p" style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#6a6e73', fontSize: '14px' }}>
@@ -211,7 +266,7 @@ export default function GpuExplorerPage() {
               </FlexItem>
 
               {/* Axis Selectors */}
-              <FlexItem>
+              <FlexItem data-tour="axes">
                 <Flex direction={{ default: 'row' }} spaceItems={{ default: 'spaceItemsLg' }}>
                   <FlexItem flex={{ default: 'flex_1' }}>
                     <Text component="p" style={{ fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#6a6e73', marginBottom: '8px', display: 'block', fontSize: '14px' }}>
@@ -240,7 +295,7 @@ export default function GpuExplorerPage() {
               </FlexItem>
 
               {/* Chart */}
-              <FlexItem style={{ marginTop: '24px' }}>
+              <FlexItem style={{ marginTop: '24px' }} data-tour="chart">
                 {!mounted || isLoading ? (
                   <div style={{ padding: '60px', textAlign: 'center', background: '#f5f5f5', borderRadius: '8px' }}>
                     <Text component="p" style={{ color: '#6a6e73' }}>Loading GPU catalog…</Text>
@@ -264,7 +319,7 @@ export default function GpuExplorerPage() {
               </FlexItem>
 
               {/* Legend */}
-              <FlexItem>
+              <FlexItem data-tour="legend">
                 <Card isCompact>
                   <CardBody>
                     <Text component="p" style={{ display: 'block', marginBottom: '8px', color: '#3c3f42', fontSize: '13px', lineHeight: '1.6' }}>

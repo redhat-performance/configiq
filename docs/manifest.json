@@ -1,0 +1,64 @@
+{
+  "sections": [
+    {
+      "slug": "overview",
+      "title": "Overview",
+      "file": "docs/overview.md",
+      "order": 10
+    },
+    {
+      "slug": "user-scenarios",
+      "title": "User scenarios",
+      "file": "docs/user-scenarios.md",
+      "order": 20
+    },
+    {
+      "slug": "api",
+      "title": "REST API",
+      "file": "docs/api.md",
+      "order": 30
+    },
+    {
+      "slug": "mcp-server",
+      "title": "MCP server",
+      "file": "docs/mcp-server.md",
+      "order": 40
+    },
+    {
+      "slug": "tested-models",
+      "title": "Tested models",
+      "file": "docs/tested-models.md",
+      "order": 50
+    },
+    {
+      "slug": "pareto",
+      "title": "Pareto validation",
+      "file": "docs/pareto-validation.md",
+      "order": 60
+    },
+    {
+      "slug": "settings",
+      "title": "Settings and simulators",
+      "file": "docs/settings.md",
+      "order": 70
+    },
+    {
+      "slug": "costs",
+      "title": "Costs",
+      "file": "docs/costs.md",
+      "order": 80
+    },
+    {
+      "slug": "caveats",
+      "title": "Model and GPU caveats",
+      "file": "docs/model-gpu-caveats.md",
+      "order": 90
+    },
+    {
+      "slug": "contributing",
+      "title": "Contributing",
+      "file": "docs/contributing-guide.md",
+      "order": 100
+    }
+  ]
+}

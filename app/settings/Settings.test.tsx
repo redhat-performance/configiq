@@ -44,6 +44,7 @@ beforeEach(() => {
     setCostingsEnabled: vi.fn(),
     setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
+    applyViewForSession: vi.fn(),
   })
   vi.mocked(useCatalog).mockReturnValue({
     gpuOptions: [],

@@ -13,6 +13,12 @@ vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
 }));
 
+// The tour button needs the app shell's provider; these tests render the page
+// in isolation, so the button is not part of what they exercise.
+vi.mock('@/components/help/TourButton', () => ({
+  TourButton: () => null,
+}));
+
 vi.mock('@/lib/app-config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/app-config')>();
   return {
@@ -201,6 +207,7 @@ const makeSettings = (
   setCostingsEnabled: vi.fn(),
   setPreferredCloudProvider: vi.fn(),
   setPricingSource: vi.fn(),
+  applyViewForSession: vi.fn(),
 });
 const estimateResult: InferenceConfigResult = {
   simulator: 'aisimulate',
@@ -396,7 +403,7 @@ describe('performance page widget handoff', () => {
 });
 
 describe('performance page remembered model', () => {
-  it('waits for the new model config before replacing the saved default', async () => {
+  it('keeps the saved default through a shared link, then remembers an explicit pick', async () => {
     let resolveSecond:
       | ((result: Awaited<ReturnType<typeof fetchModelConfig>>) => void)
       | undefined;
@@ -418,7 +425,9 @@ describe('performance page remembered model', () => {
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 550));
     });
-    expect(setDefaultModel).toHaveBeenCalledWith('org/model-a');
+    // A shared link changes this view only; the recipient's remembered default
+    // must survive opening it.
+    expect(setDefaultModel).not.toHaveBeenCalledWith('org/model-a');
 
     const input = container.querySelector<HTMLInputElement>('#predict-performance-model')!;
     await act(async () => {
