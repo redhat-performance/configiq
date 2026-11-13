@@ -7,8 +7,8 @@
 //
 // The browser must call this route rather than AISimulators directly, so the
 // per-host gateway (host.containers.internal on each deployment) is resolved
-// server-side. That keeps the .dev/.xyz two-host split correct client-side and
-// removes the need for a build-time NEXT_PUBLIC_AISIMULATORS_API_URL.
+// server-side, so the browser never needs a public API URL or a rewritten
+// environment-specific hostname.
 //
 // Nothing here names a simulator. The default simulator, its label, version,
 // models, systems, backends, fabrics, and sizing objectives all come from the

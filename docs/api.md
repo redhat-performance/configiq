@@ -63,7 +63,7 @@ form, not a statement about the API contract.
 ### Recommend a configuration
 
 ```bash
-curl -X POST https://aisimulators.dev/recommend \
+curl -X POST https://aisimulators.configiq.dev/recommend \
   -H "Content-Type: application/json" \
   -d '{
     "model_path": "meta-llama/Llama-3.1-70B-Instruct",
@@ -79,7 +79,7 @@ curl -X POST https://aisimulators.dev/recommend \
 ### Predict performance
 
 ```bash
-curl -X POST https://aisimulators.dev/predict \
+curl -X POST https://aisimulators.configiq.dev/predict \
   -H "Content-Type: application/json" \
   -d '{
     "model_path": "meta-llama/Llama-3.1-70B-Instruct",
@@ -96,7 +96,7 @@ new work.
 ### Estimate memory
 
 ```bash
-curl -X POST https://aisimulators.dev/memory \
+curl -X POST https://aisimulators.configiq.dev/memory \
   -H "Content-Type: application/json" \
   -d '{
     "model_path": "meta-llama/Llama-3.1-70B-Instruct",

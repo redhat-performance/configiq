@@ -11,8 +11,10 @@ info:
 servers:
   - url: http://localhost:7860
     description: Local development
-  - url: https://aisimulators.dev
-    description: Production
+  - url: https://aisimulators.configiq.dev
+    description: Commit-tracking environment
+  - url: https://aisimulators.configiq.io
+    description: Release environment
 
 tags:
   - name: sizing

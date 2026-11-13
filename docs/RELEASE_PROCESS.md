@@ -11,7 +11,8 @@ The deployment contract consists of four container images:
 - `ghcr.io/redhat-performance/configiq` (Next.js webapp)
 - `ghcr.io/redhat-performance/aisimulators` (GPU sizing / estimation API)
 - `ghcr.io/redhat-performance/aicostings` (GPU / LLM pricing API)
-- `ghcr.io/redhat-performance/tritonserver` (mixed FIL/vLLM inference server)
+- `ghcr.io/redhat-performance/tritonserver` (FIL classifiers; carries the
+  assistant's vLLM runtime)
 
 Keep the image versions compatible when releasing the frontend and services.
 
@@ -55,7 +56,7 @@ from the catalog API, so adding a simulator needs no footer change.
 
 When the four images are released together, they carry the same tag set:
 
-- **`latest`** - Most recent tagged release (release-tracking; the `.xyz` host follows this)
+- **`latest`** - Most recent tagged release (release-tracking; the `configiq.io` host follows this)
 - **`dev`** - Latest commit from `main` (commit-tracking; the `.dev` host follows this)
 - **`X.Y.Z`** - Specific version tags
 
@@ -66,7 +67,7 @@ site directory. That vLLM is what the assistant's model server runs; Triton
 itself serves FIL only. Build validation checks FIL, vLLM, and native K2
 architecture support.
 
-The two-host tag model (`.dev` → `:dev`, `.xyz` → `:latest`) is implemented in
+The two-host tag model (`.dev` → `:dev`, `.io` → `:latest`) is implemented in
 the `configiq-deploy` repo; `podman auto-update` on each host polls whatever tag
 its running containers use, so the per-host tag is the only lever.
 
@@ -162,7 +163,7 @@ network files.
 ## Deployment
 
 Deployment is handled by the `configiq-deploy` repo (rootless Podman + systemd
-quadlets + nginx on IBM Cloud VMs). The `.dev` hosts follow `:dev`; the `.xyz`
+quadlets + nginx on IBM Cloud VMs). The `.dev` hosts follow `:dev`; the `.io`
 hosts follow `:latest`. The Triton quadlet is pinned to an immutable GHCR
 digest, and the same image digest is used by the K2 prefetch script.
 

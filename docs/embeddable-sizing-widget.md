@@ -21,7 +21,7 @@ its model and GPU options through the `config` property.
 ></configiq-sizing-widget>
 
 <script type="module">
-  const configiqOrigin = 'https://configiq.xyz';
+  const configiqOrigin = 'https://configiq.io';
   await import(new URL('/widgets/configiq-sizing-widget-v1.js', configiqOrigin));
 
   const widget = document.querySelector('#sizing');

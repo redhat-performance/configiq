@@ -9,8 +9,10 @@ separate from the horizontally scaled sizing service.
 
 ### Use the deployed instance (no install)
 
-The gateway is already running at `https://aisimulators.dev/mcp`. Point any MCP
-client at it and go straight to the example below.
+The gateway is already running at `https://aisimulators.configiq.dev/mcp` for
+the commit-tracking environment, and at `https://aisimulators.configiq.io/mcp`
+for the release. Point any MCP client at one and go straight to the example
+below.
 
 ### Run the gateway locally
 
@@ -48,10 +50,13 @@ Every client needs the gateway URL:
 
 | Client | How to connect |
 |---|---|
-| Claude Desktop, deployed gateway | Add a custom connector with `https://aisimulators.dev/mcp` |
+| Claude Desktop, deployed gateway | Add a custom connector with `https://aisimulators.configiq.io/mcp` |
 | Claude Desktop, local gateway | `mcp-remote` stdio bridge (see below) |
-| MCP Inspector | `npx @modelcontextprotocol/inspector https://aisimulators.dev/mcp` |
-| Any client that accepts a `url` | `https://aisimulators.dev/mcp` |
+| MCP Inspector | `npx @modelcontextprotocol/inspector https://aisimulators.configiq.io/mcp` |
+| Any client that accepts a `url` | `https://aisimulators.configiq.io/mcp` |
+
+The commit-tracking environment serves the same paths at
+`https://aisimulators.configiq.dev/mcp`.
 
 For a client that only speaks Streamable HTTP, use the `/mcp/http` path.
 
@@ -61,7 +66,7 @@ Claude Desktop connects to a remote server through a **custom connector**, not
 through a URL in `claude_desktop_config.json`:
 
 1. Open **Settings → Connectors → Add custom connector**.
-2. Name it `ConfigIQ` and enter `https://aisimulators.dev/mcp`.
+2. Name it `ConfigIQ` and enter `https://aisimulators.configiq.io/mcp`.
 
 The connector is opened from Anthropic's infrastructure, so the URL must be
 publicly reachable. It cannot point at `localhost`.
@@ -90,7 +95,7 @@ way to reach a local server from a client that only launches commands. Restart
 Claude Desktop after editing the file.
 
 Clients that accept a URL natively, including MCP Inspector, can use
-`https://aisimulators.dev/mcp` or `http://localhost:8090/mcp` directly.
+`https://aisimulators.configiq.io/mcp` or `http://localhost:8090/mcp` directly.
 
 ## Use it: an example
 
@@ -169,10 +174,12 @@ data: it never changes a GPU count.
 
 ## Deployment notes
 
-- Legacy `aisimulators.dev` and `aicostings.dev` MCP paths redirect to this
-  gateway during migration. MCP clients do not reliably follow HTTP redirects,
-  so clients should be reconfigured to the canonical URL instead of relying on
-  the redirect. Their REST endpoints remain owned by the original services.
+- The retired top-level API hosts (`aisimulators.dev`, `aicostings.dev`, and
+  the `.xyz` names) answer with a 308 redirect to the apex subdomains
+  (`aisimulators.configiq.io`, `aisimulators.configiq.dev`), so an MCP path
+  published under an old name keeps working. MCP clients do not reliably follow
+  HTTP redirects, so configure the canonical URL instead of relying on the
+  redirect. Their REST endpoints remain owned by the original services.
 - The gateway container listens on port 8090. The sizing service container
   listens on port 7860.
 

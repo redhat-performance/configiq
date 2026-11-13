@@ -21,7 +21,7 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     env:
-      PLAYWRIGHT_BASE_URL: https://configiq.xyz
+      PLAYWRIGHT_BASE_URL: https://configiq.io
       PLAYWRIGHT_MATRIX_ROTATION: ${{ github.run_number }}
 
     steps:

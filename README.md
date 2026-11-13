@@ -6,10 +6,10 @@ LLM inference sizing, GPU comparison, and cost modeling for engineers and infras
 
 ## Live
 
-- [configiq.xyz](https://configiq.xyz) (latest release)
+- [configiq.io](https://configiq.io) (latest release)
 - [configiq.dev](https://configiq.dev) (latest commit)
 
-Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://aisimulators.dev/docs) for multi-simulator sizing and estimation.
+Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://aisimulators.configiq.dev/docs) for multi-simulator sizing and estimation.
 
 ## Documentation
 
@@ -86,7 +86,7 @@ npm test             # Vitest test suite
 |-------|-----------|
 | Framework | Next.js 16 App Router + TypeScript |
 | UI | PatternFly v6 |
-| Backend APIs | [AISimulators](https://aisimulators.dev/docs) for multi-simulator sizing, estimation, and capabilities; aicostings for pricing |
+| Backend APIs | [AISimulators](https://aisimulators.configiq.dev/docs) for multi-simulator sizing, estimation, and capabilities; aicostings for pricing |
 
 ## Project structure
 
