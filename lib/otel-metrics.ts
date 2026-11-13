@@ -1,4 +1,5 @@
 import { metrics } from '@opentelemetry/api';
+import { HELP_TOURS } from '@/lib/help/tours';
 
 const meter = metrics.getMeter('configiq-webapp');
 
@@ -24,6 +25,16 @@ const recommendRequests = meter.createCounter('configiq.recommend.requests', {
 
 const predictRequests = meter.createCounter('configiq.predict.requests', {
   description: 'Prediction requests received by ConfigIQ',
+  unit: '1',
+});
+
+const helpTourStarted = meter.createCounter('configiq.help.tour.started', {
+  description: 'Product tours started by the user',
+  unit: '1',
+});
+
+const helpTourCompleted = meter.createCounter('configiq.help.tour.completed', {
+  description: 'Product tours completed or dismissed by the user',
   unit: '1',
 });
 
@@ -92,4 +103,52 @@ export function recordErrorCode(route: string, code: string, statusCode: number,
 export function recordModelRequest(route: 'recommend' | 'predict', model: unknown): void {
   const counter = route === 'recommend' ? recommendRequests : predictRequests;
   counter.add(1, { 'model.category': modelCategory(model) });
+}
+
+/**
+ * Bounded tour id: unknown values are dropped rather than becoming an
+ * unbounded metric label.
+ */
+const HELP_TOUR_IDS = new Set(HELP_TOURS.map((tour) => tour.id));
+
+export function recordHelpTour(tourId: string, phase: 'started' | 'completed'): void {
+  if (!HELP_TOUR_IDS.has(tourId)) return;
+  const counter = phase === 'started' ? helpTourStarted : helpTourCompleted;
+  counter.add(1, { 'help.tour.id': tourId });
+}
+
+const helpSearches = meter.createCounter('configiq.help.searches', {
+  description: 'Help searches, by whether the index returned a result',
+  unit: '1',
+});
+
+/**
+ * A search is counted by whether it matched, never by its text. An unmatched
+ * search is the signal that a page or term needs documentation.
+ */
+export function recordHelpSearch(matched: number): void {
+  helpSearches.add(1, { 'help.search.matched': String(matched > 0) });
+}
+
+const assistantAnswers = meter.createCounter('configiq.assistant.answers', {
+  description: 'Assistant answers by outcome, including suppressed answers',
+  unit: '1',
+});
+
+const assistantToolCalls = meter.createCounter('configiq.assistant.tool.calls', {
+  description: 'Read-only assistant tool calls by tool and outcome',
+  unit: '1',
+});
+
+/**
+ * Assistants are counted by outcome, never by question text: customer workload
+ * shapes can be sensitive and prompts are not logged by default.
+ */
+export function recordAssistantAnswer(outcome: 'answered' | 'suppressed' | 'error'): void {
+  assistantAnswers.add(1, { 'assistant.outcome': outcome });
+}
+
+export function recordAssistantToolCall(tool: string, ok: boolean): void {
+  // Tool names come from a fixed registry, so the label cannot grow unbounded.
+  assistantToolCalls.add(1, { 'assistant.tool': tool, 'assistant.tool.ok': String(ok) });
 }

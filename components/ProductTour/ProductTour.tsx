@@ -3,232 +3,407 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from '@patternfly/react-core';
+import type { TourPosition, TourStep } from '@/lib/help/tours';
 import styles from './ProductTour.module.css';
 
-export interface TourStep {
-  target: string; // CSS selector or data-tour attribute
-  title: string;
-  description: string;
-  position?: 'top' | 'bottom' | 'left' | 'right';
-}
+export type { TourPosition, TourStep };
 
 interface ProductTourProps {
   steps: TourStep[];
-  tourId: string; // Used for localStorage key: `${tourId}-tour-seen`
   onComplete: () => void;
 }
 
-export function ProductTour({ steps, tourId, onComplete }: ProductTourProps) {
+interface Box {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+interface TooltipBox {
+  top: number;
+  left: number;
+}
+
+interface TourLayout {
+  spotlight: Box;
+  tooltip: TooltipBox;
+  placement: TourPosition;
+}
+
+const SPOTLIGHT_PADDING = 8;
+const TOOLTIP_GAP = 16;
+const VIEWPORT_MARGIN = 12;
+const FALLBACK_WIDTH = 360;
+const FALLBACK_HEIGHT = 200;
+/** Steps whose target never appears are skipped instead of stalling the tour. */
+const FALLBACK_ORDER: TourPosition[] = ['bottom', 'top', 'right', 'left'];
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
+function queryTarget(selector: string): Element | null {
+  if (!selector) return null;
+  try {
+    return document.querySelector(selector);
+  } catch {
+    return null;
+  }
+}
+
+/** Index of the next step at or after `from` whose target exists, or -1. */
+function nextAvailableStep(steps: TourStep[], from: number): number {
+  for (let i = Math.max(from, 0); i < steps.length; i += 1) {
+    if (queryTarget(steps[i].target)) return i;
+  }
+  return -1;
+}
+
+function sideHasRoom(
+  side: TourPosition,
+  spotlight: Box,
+  tooltipWidth: number,
+  tooltipHeight: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): boolean {
+  switch (side) {
+    case 'top':
+      return spotlight.top >= tooltipHeight + TOOLTIP_GAP;
+    case 'bottom':
+      return viewportHeight - (spotlight.top + spotlight.height) >= tooltipHeight + TOOLTIP_GAP;
+    case 'left':
+      return spotlight.left >= tooltipWidth + TOOLTIP_GAP;
+    case 'right':
+      return viewportWidth - (spotlight.left + spotlight.width) >= tooltipWidth + TOOLTIP_GAP;
+    default:
+      return false;
+  }
+}
+
+function placeTooltip(
+  spotlight: Box,
+  preferred: TourPosition,
+  tooltipWidth: number,
+  tooltipHeight: number,
+): { position: TooltipBox; placement: TourPosition } {
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  const candidates = [preferred, ...FALLBACK_ORDER.filter((side) => side !== preferred)];
+  const placement =
+    candidates.find((side) =>
+      sideHasRoom(side, spotlight, tooltipWidth, tooltipHeight, viewportWidth, viewportHeight),
+    ) ?? preferred;
+
+  const centerX = spotlight.left + spotlight.width / 2;
+  const centerY = spotlight.top + spotlight.height / 2;
+
+  let top = 0;
+  let left = 0;
+  switch (placement) {
+    case 'top':
+      top = spotlight.top - TOOLTIP_GAP - tooltipHeight;
+      left = centerX - tooltipWidth / 2;
+      break;
+    case 'right':
+      top = centerY - tooltipHeight / 2;
+      left = spotlight.left + spotlight.width + TOOLTIP_GAP;
+      break;
+    case 'left':
+      top = centerY - tooltipHeight / 2;
+      left = spotlight.left - TOOLTIP_GAP - tooltipWidth;
+      break;
+    case 'bottom':
+    default:
+      top = spotlight.top + spotlight.height + TOOLTIP_GAP;
+      left = centerX - tooltipWidth / 2;
+      break;
+  }
+
+  // Never let the tooltip leave the viewport, even when no side has room.
+  const maxLeft = Math.max(VIEWPORT_MARGIN, viewportWidth - tooltipWidth - VIEWPORT_MARGIN);
+  const maxTop = Math.max(VIEWPORT_MARGIN, viewportHeight - tooltipHeight - VIEWPORT_MARGIN);
+
+  return {
+    placement,
+    position: {
+      top: Math.min(Math.max(top, VIEWPORT_MARGIN), maxTop),
+      left: Math.min(Math.max(left, VIEWPORT_MARGIN), maxLeft),
+    },
+  };
+}
+
+function spotlightFor(element: Element): Box {
+  const rect = element.getBoundingClientRect();
+  return {
+    top: rect.top - SPOTLIGHT_PADDING,
+    left: rect.left - SPOTLIGHT_PADDING,
+    width: rect.width + SPOTLIGHT_PADDING * 2,
+    height: rect.height + SPOTLIGHT_PADDING * 2,
+  };
+}
+
+export function ProductTour({ steps, onComplete }: ProductTourProps) {
   const [currentStep, setCurrentStep] = React.useState(0);
-  const [tooltipPosition, setTooltipPosition] = React.useState({ top: 0, left: 0 });
-  const [spotlightRect, setSpotlightRect] = React.useState({ top: 0, left: 0, width: 0, height: 0 });
+  const [layout, setLayout] = React.useState<TourLayout | null>(null);
   const [mounted, setMounted] = React.useState(false);
 
-  const step = steps[currentStep];
-  const isLastStep = currentStep === steps.length - 1;
-  const isFirstStep = currentStep === 0;
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const previousFocus = React.useRef<HTMLElement | null>(null);
+  const completedRef = React.useRef(false);
+  const onCompleteRef = React.useRef(onComplete);
 
-  // Only render portal on client-side
+  React.useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
+  const finish = React.useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    onCompleteRef.current();
+  }, []);
+
+  const step = steps[currentStep];
+
+  // Only render the portal on the client.
   React.useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Handle Esc key to skip tour
+  // Move past steps whose target is not in the DOM. This is what keeps a
+  // first visit working: result tiles only exist after a calculation.
   React.useEffect(() => {
-    const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onComplete();
-      }
-    };
-    window.addEventListener('keydown', handleEsc);
-    return () => window.removeEventListener('keydown', handleEsc);
-  }, [onComplete]);
-
-  React.useEffect(() => {
-    const updatePositions = () => {
-      const targetEl = document.querySelector(step.target);
-      if (!targetEl) {
-        console.warn(`ProductTour: target not found: ${step.target}`);
-        return;
-      }
-
-      // Use getBoundingClientRect() directly for FIXED positioning
-      // (no scroll offset needed)
-      const rect = targetEl.getBoundingClientRect();
-
-      // Update spotlight position with padding
-      const padding = 8;
-      const spotlightTop = rect.top - padding;
-      const spotlightLeft = rect.left - padding;
-      const spotlightWidth = rect.width + padding * 2;
-      const spotlightHeight = rect.height + padding * 2;
-
-      setSpotlightRect({
-        top: spotlightTop,
-        left: spotlightLeft,
-        width: spotlightWidth,
-        height: spotlightHeight
-      });
-
-      // Position tooltip based on step.position (FIXED positioning, no scroll offset)
-      let top = 0;
-      let left = 0;
-
-      switch (step.position) {
-        case 'bottom':
-          top = rect.bottom + 16;
-          left = rect.left + rect.width / 2;
-          break;
-        case 'top':
-          top = rect.top - 16;
-          left = rect.left + rect.width / 2;
-          break;
-        case 'left':
-          top = rect.top + rect.height / 2;
-          left = rect.left - 16;
-          break;
-        case 'right':
-          top = rect.top + rect.height / 2;
-          left = rect.right + 16;
-          break;
-        default:
-          top = rect.bottom + 16;
-          left = rect.left + rect.width / 2;
-      }
-
-      setTooltipPosition({ top, left });
-    };
-
-    // Scroll element into view first, then measure after scroll settles
-    const targetEl = document.querySelector(step.target);
-    if (!targetEl) {
-      console.warn(`ProductTour: target element not found on mount: ${step.target}`);
+    if (!mounted) return;
+    if (steps.length === 0) {
+      finish();
       return;
     }
+    if (queryTarget(steps[currentStep]?.target ?? '')) return;
+    const next = nextAvailableStep(steps, currentStep + 1);
+    if (next === -1) {
+      finish();
+      return;
+    }
+    setCurrentStep(next);
+  }, [mounted, steps, currentStep, finish]);
 
-    // Scroll into view with instant scrolling for more predictable behavior
-    targetEl.scrollIntoView({ behavior: 'auto', block: 'center' });
+  // Measure the step target and keep the spotlight and tooltip in place.
+  React.useEffect(() => {
+    if (!mounted || !step) return;
 
-    // Wait longer for layout to settle (300ms)
-    const timer = setTimeout(() => {
-      updatePositions();
-    }, 300);
+    let frame = 0;
+    let resizeObserver: ResizeObserver | null = null;
 
-    // Update on scroll/resize
-    const handleScroll = () => {
-      updatePositions();
+    const update = () => {
+      const target = queryTarget(step.target);
+      if (!target) {
+        setLayout(null);
+        return;
+      }
+      const spotlight = spotlightFor(target);
+      const tooltipEl = dialogRef.current;
+      const tooltipWidth = tooltipEl?.offsetWidth || FALLBACK_WIDTH;
+      const tooltipHeight = tooltipEl?.offsetHeight || FALLBACK_HEIGHT;
+      const { position, placement } = placeTooltip(
+        spotlight,
+        step.position ?? 'bottom',
+        tooltipWidth,
+        tooltipHeight,
+      );
+      setLayout({ spotlight, tooltip: position, placement });
     };
 
-    const handleResize = () => {
-      updatePositions();
+    const scheduleUpdate = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
     };
 
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('resize', handleResize);
+    const target = queryTarget(step.target);
+
+    // Bring the target into view before measuring. Smooth scrolling is
+    // skipped when the user asks for reduced motion.
+    target?.scrollIntoView({
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    });
+
+    // The first measurement runs after layout settles.
+    frame = requestAnimationFrame(update);
+    const settleTimer = window.setTimeout(update, 320);
+
+    window.addEventListener('scroll', scheduleUpdate, { passive: true });
+    window.addEventListener('resize', scheduleUpdate);
+
+    if (target && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(scheduleUpdate);
+      resizeObserver.observe(target);
+    }
 
     return () => {
-      clearTimeout(timer);
-      window.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', handleResize);
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('scroll', scheduleUpdate);
+      window.removeEventListener('resize', scheduleUpdate);
+      resizeObserver?.disconnect();
     };
-  }, [currentStep, step]);
+  }, [mounted, step, currentStep]);
 
-  const handleNext = () => {
-    if (isLastStep) {
-      onComplete();
-    } else {
-      setCurrentStep(prev => prev + 1);
+  // Move focus into the dialog and restore it when the tour closes.
+  React.useEffect(() => {
+    if (!mounted) return;
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = requestAnimationFrame(() => dialogRef.current?.focus());
+
+    return () => {
+      cancelAnimationFrame(frame);
+      const element = previousFocus.current;
+      if (element && document.contains(element)) {
+        element.focus();
+      }
+    };
+  }, [mounted]);
+
+  // Esc closes the tour from anywhere on the page.
+  React.useEffect(() => {
+    if (!mounted) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finish();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mounted, finish]);
+
+  const handleNext = React.useCallback(() => {
+    const next = nextAvailableStep(steps, currentStep + 1);
+    if (next === -1) {
+      finish();
+      return;
+    }
+    setCurrentStep(next);
+  }, [steps, currentStep, finish]);
+
+  const handleBack = React.useCallback(() => {
+    // Walk backwards to the nearest previously shown step.
+    for (let i = currentStep - 1; i >= 0; i -= 1) {
+      if (queryTarget(steps[i].target)) {
+        setCurrentStep(i);
+        return;
+      }
+    }
+  }, [steps, currentStep]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Tab') return;
+    const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    if (!focusable || focusable.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+
+    if (event.shiftKey && (active === first || active === dialogRef.current)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
     }
   };
 
-  const handleBack = () => {
-    if (!isFirstStep) {
-      setCurrentStep(prev => prev - 1);
-    }
-  };
+  if (!mounted || !step) return null;
 
-  const handleSkip = () => {
-    onComplete();
-  };
-
-  if (!mounted) return null;
+  const titleId = 'product-tour-title';
+  const descriptionId = 'product-tour-description';
+  // "Back" is only offered when an earlier step is actually on screen.
+  const hasPreviousStep = steps
+    .slice(0, currentStep)
+    .some((earlier) => queryTarget(earlier.target) !== null);
+  const isLastStep = nextAvailableStep(steps, currentStep + 1) === -1;
 
   const tourContent = (
     <>
-      {/* Invisible click target to skip tour */}
-      <div className={styles.overlay} onClick={handleSkip} />
+      {/* Blocks page interaction while the tour is open. Clicking it is
+          deliberately inert — only Esc or "Skip tour" ends the tour. */}
+      <div className={styles.overlay} aria-hidden="true" />
 
-      {/* Spotlight on target element */}
-      <div
-        className={styles.spotlight}
-        style={{
-          top: `${spotlightRect.top}px`,
-          left: `${spotlightRect.left}px`,
-          width: `${spotlightRect.width}px`,
-          height: `${spotlightRect.height}px`,
-        }}
-      />
+      {layout && (
+        <div
+          className={styles.spotlight}
+          style={{
+            top: `${layout.spotlight.top}px`,
+            left: `${layout.spotlight.left}px`,
+            width: `${layout.spotlight.width}px`,
+            height: `${layout.spotlight.height}px`,
+          }}
+          aria-hidden="true"
+        />
+      )}
 
-      {/* Tooltip */}
       <div
-        className={`${styles.tooltip} ${styles[`tooltip-${step.position || 'bottom'}`]}`}
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        tabIndex={-1}
+        className={`${styles.tooltip} ${styles[`tooltip-${layout?.placement ?? step.position ?? 'bottom'}`]}`}
         style={{
-          top: `${tooltipPosition.top}px`,
-          left: `${tooltipPosition.left}px`,
+          top: `${layout?.tooltip.top ?? 0}px`,
+          left: `${layout?.tooltip.left ?? 0}px`,
+          visibility: layout ? 'visible' : 'hidden',
         }}
+        onKeyDown={handleKeyDown}
       >
         <div className={styles.tooltipHeader}>
-          <h3 className={styles.tooltipTitle}>{step.title}</h3>
+          <h3 id={titleId} className={styles.tooltipTitle}>
+            {step.title}
+          </h3>
           <span className={styles.tooltipProgress}>
             {currentStep + 1} of {steps.length}
           </span>
         </div>
-        <p className={styles.tooltipDescription}>{step.description}</p>
+        <p id={descriptionId} className={styles.tooltipDescription}>
+          {step.description}
+        </p>
 
-        {/* Progress dots */}
-        <div className={styles.progressDots}>
+        <div className={styles.progressDots} aria-hidden="true">
           {steps.map((_, i) => (
-            <div
-              key={i}
-              className={`${styles.dot} ${i === currentStep ? styles.dotActive : ''}`}
-            />
+            <div key={i} className={`${styles.dot} ${i === currentStep ? styles.dotActive : ''}`} />
           ))}
         </div>
 
         <div className={styles.tooltipActions}>
-          <div style={{ display: 'flex', gap: '12px' }}>
-            {!isFirstStep && (
-              <button className={styles.backButton} onClick={handleBack}>
+          <div className={styles.secondaryActions}>
+            {hasPreviousStep && (
+              <button type="button" className={styles.backButton} onClick={handleBack}>
                 Back
               </button>
             )}
-            <button className={styles.skipButton} onClick={handleSkip}>
+            <button type="button" className={styles.skipButton} onClick={finish}>
               Skip tour
             </button>
           </div>
-          <Button
-            variant="primary"
-            onClick={handleNext}
-            style={{
-              backgroundColor: '#0066cc',
-              borderColor: '#0066cc'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = '#004d99';
-              e.currentTarget.style.borderColor = '#004d99';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = '#0066cc';
-              e.currentTarget.style.borderColor = '#0066cc';
-            }}
-          >
-            {isLastStep ? 'Got it!' : 'Next'}
+          <Button variant="primary" onClick={handleNext}>
+            {isLastStep ? 'Got it' : 'Next'}
           </Button>
         </div>
       </div>
     </>
   );
 
-  // Render portal to document.body to avoid transform/positioning issues
   return createPortal(tourContent, document.body);
 }

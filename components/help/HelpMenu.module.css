@@ -1,0 +1,185 @@
+.trigger {
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-display);
+}
+
+.trigger:hover {
+  color: #ffffff;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  font-family: var(--font-display);
+  text-align: left;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.groupTitle {
+  margin: 4px 0 2px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gc-text-2);
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-decoration: none;
+  color: var(--gc-text);
+}
+
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.resultRow .result {
+  flex: 1;
+}
+
+.resultDocLink {
+  flex: none;
+  padding: 2px 6px;
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gc-link);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.resultDocLink:hover,
+.resultDocLink:focus-visible {
+  background: #f0f4f8;
+  text-decoration: none;
+}
+
+.result:hover,
+.result:focus-visible {
+  background: #f0f4f8;
+  text-decoration: none;
+}
+
+.result:focus-visible {
+  outline: 2px solid var(--gc-link);
+  outline-offset: 1px;
+}
+
+.resultTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--gc-text);
+}
+
+.resultContext {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gc-text-2);
+  letter-spacing: 0.02em;
+}
+
+.resultBody {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--gc-text-2);
+}
+
+.glossaryResult {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+}
+
+.tourRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--gc-link);
+  border-radius: 6px;
+  background: #f0f7ff;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-display);
+}
+
+.tourRow:hover {
+  background: #e3effc;
+}
+
+.tourRow:focus-visible {
+  outline: 2px solid var(--gc-link);
+  outline-offset: 1px;
+}
+
+.tourRow > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tourIcon {
+  color: var(--gc-link);
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  flex: none;
+}
+
+.status {
+  margin: 0;
+  padding: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--gc-text-2);
+}
+
+.footer {
+  margin: 4px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid #e0e0e0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--gc-text-2);
+}
+
+.kbd {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  border: 1px solid #c9c9c9;
+  border-radius: 3px;
+  padding: 0 4px;
+  background: #f5f5f5;
+  color: var(--gc-text);
+}
+
+.assistantNote {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid #e0e0e0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--gc-text-2);
+}

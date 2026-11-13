@@ -30,6 +30,11 @@ import { HybridCostCard } from './HybridCostCard'
 import { AppliedCostAssumptions } from './AppliedCostAssumptions'
 import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
+import { CopyLinkButton } from '@/components/help/CopyLinkButton'
+import { TourButton } from '@/components/help/TourButton'
+import { WarningPanel } from '@/components/ui/WarningPanel'
+import { hybridSavingsLink, type HybridSavingsLinkValues } from '@/lib/deep-links/pages'
+import { useDeepLink } from '@/lib/deep-links/useDeepLink'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { simulatorDisplayLabel } from '@/lib/simulator-labels'
@@ -608,16 +613,85 @@ export default function HybridSavings() {
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
     (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
 
+  // A shared view applies after settings and the catalogs have settled, so the
+  // page's automatic starting model cannot replace the linked one. Nothing is
+  // persisted and no calculation is triggered.
+  const { warnings: linkWarnings } = useDeepLink(
+    hybridSavingsLink,
+    hydrated && assumptionsHydrated && !catalogLoading,
+    (values) => {
+      if (values.model) setModel(values.model)
+      if (values.apiModel) setApiModel(values.apiModel)
+      if (values.monthlyInputTokens !== undefined) setMonthlyInputTokens(values.monthlyInputTokens)
+      if (values.monthlyOutputTokens !== undefined) setMonthlyOutputTokens(values.monthlyOutputTokens)
+      if (values.averageInputTokens !== undefined) setAverageInputTokens(values.averageInputTokens)
+      if (values.averageOutputTokens !== undefined) setAverageOutputTokens(values.averageOutputTokens)
+      if (values.ttft !== undefined) setTargetTtftMs(values.ttft)
+      if (values.tpot !== undefined) setTargetTpotMs(values.tpot)
+      if (values.concurrency !== undefined) setTargetConcurrency(values.concurrency)
+      if (values.prefix !== undefined) setPrefixTokens(values.prefix)
+      if (values.hours !== undefined) setActiveHoursPerMonth(values.hours)
+      if (values.peak !== undefined) setPeakToAverage(values.peak)
+      if (values.billingMode) setCloudBillingMode(values.billingMode)
+      if (values.costLens) setCostLens(values.costLens)
+    },
+  )
+
+  const buildShareUrl = (): string => {
+    const values: HybridSavingsLinkValues = {
+      model: model || undefined,
+      apiModel: apiModel !== SAME_API_MODEL ? apiModel : undefined,
+      monthlyInputTokens,
+      monthlyOutputTokens,
+      averageInputTokens,
+      averageOutputTokens,
+      ttft: targetTtftMs,
+      tpot: targetTpotMs,
+      concurrency: targetConcurrency,
+      prefix: prefixTokens,
+      hours: activeHoursPerMonth,
+      peak: peakToAverage,
+      billingMode: cloudBillingMode,
+      costLens,
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    };
+    const defaults: HybridSavingsLinkValues = {
+      monthlyInputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens,
+      monthlyOutputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens,
+      averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
+      averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
+      ttft: 1000,
+      tpot: 30,
+      concurrency: 1,
+      prefix: 0,
+      hours: 730,
+      peak: 1,
+      billingMode: 'scale-to-zero',
+      costLens: 'fully-loaded',
+    };
+    return hybridSavingsLink.build(hybridSavingsLink.omitDefaults(values, defaults));
+  }
+
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <div>
-          <h1 className={styles.pageTitle}>Hybrid savings</h1>
-          <p className={styles.subtitle}>
-            Compare hosted API, rented GPU and purchased hardware costs per million output tokens.
-          </p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>Hybrid savings</h1>
+            <p className={styles.subtitle}>
+              Compare hosted API, rented GPU and purchased hardware costs per million output tokens.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={buildShareUrl} />
+            <TourButton />
+          </div>
         </div>
       </header>
+
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
 
       {(catalogError || costings.error) && (
         <Alert title="Some shared data could not be loaded" variant="warning" isInline>
@@ -638,7 +712,7 @@ export default function HybridSavings() {
         Choose a catalog model or switch simulators in Settings.
       </Alert>}
 
-      <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }}>
+      <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }} data-tour="workload">
         <Card className={styles.inputCard}>
           <CardBody>
             <h2>Model and workload</h2>
@@ -670,7 +744,7 @@ export default function HybridSavings() {
                   ))}
                 </div>
               )}
-              <div className={styles.calculateAction}>
+              <div className={styles.calculateAction} data-tour="calculate">
                 <Button type="submit" variant="primary" isDisabled={!canCalculate}>Calculate</Button>
               </div>
             </div>
@@ -742,7 +816,7 @@ export default function HybridSavings() {
           </CardBody>
         </Card>
       </Form>
-      <InfoStrip>
+      <InfoStrip data-tour="assumptions">
         <span className={styles.workloadSummary}>
           <span><strong>Based on {activePreset?.label ?? 'Custom'}</strong> · {formatter.format(averageInputTokens)} input / {formatter.format(averageOutputTokens)} output tokens per request · {formatter.format(activeHoursPerMonth)} hours/month · {billingModeLabel(assumptions.cloudBillingMode)} · {compactNumber(facts.monthlyTokens)} total tokens/month</span>
           <InfoStripAction onClick={() => setWorkloadAdvancedOpen(true)}>Adjust</InfoStripAction>
@@ -765,7 +839,7 @@ export default function HybridSavings() {
 
 
       {comparison && (
-        <section className={styles.resultsSection} aria-label="Cost comparison">
+        <section className={styles.resultsSection} aria-label="Cost comparison" data-tour="results">
           <div className={styles.sectionHeading}>
             <h2>Cost comparison</h2>
             {resultSimulator && <SimulatorBadge simulator={resultSimulator} />}

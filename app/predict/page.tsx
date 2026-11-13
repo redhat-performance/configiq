@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { PageSection } from '@patternfly/react-core';
 import Performance from './Performance';
 
@@ -15,7 +16,14 @@ export default function Page() {
         paddingRight: 0
       }}
     >
-      <Performance />
+      {/*
+        The page reads its shared-view link with `useSearchParams`, which Next
+        requires inside a Suspense boundary on a prerendered route. The shell
+        above stays static; only the tool is client-rendered.
+      */}
+      <Suspense fallback={null}>
+        <Performance />
+      </Suspense>
     </PageSection>
   );
 }

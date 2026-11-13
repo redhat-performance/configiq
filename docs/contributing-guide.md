@@ -41,6 +41,13 @@ If port 3000 is in use, Next.js will move to 3001. Check the terminal output for
 | `npm run build` | Production build — run this before opening a PR |
 | `npm run type-check` | TypeScript check without building |
 | `npm run lint` | ESLint check |
+| `npm test` | Run the test suite (builds the docs first) |
+| `npm run docs:build` | Render Markdown into the app and the help index |
+| `npm run docs:check` | Verify the generated docs match the Markdown sources |
+
+`docs:build` runs automatically before `dev`, `build`, and `test`, so you rarely
+call it by hand. `docs:check` never writes anything; use it to confirm a change
+that touches documentation is complete before you commit.
 
 ---
 
@@ -57,20 +64,30 @@ app/                    Next.js App Router pages
   hybrid-savings/       Hybrid Savings
   routing/              Routing Economics
   cluster-cost/         Cluster cost calculator
+  docs/                 Documentation index and rendered Markdown pages
+  api/                  Same-origin proxy routes for the services
 
 components/
   layout/
     AppShell.tsx        Top nav bar and PatternFly Page wrapper
+  help/                 Help popover: search, ask, and tours
 
 lib/
   api/                  AISimulators API clients and response adapters
+  assistant/            Assistant tools and prompt (server-side only)
+  deep-links/           Shared-view link format and parsing
+  docs/                 Docs manifest and generated output
   gpu-math/             Legacy static catalogs and historical fallback code
+  help/                 Search corpus, glossary, tours, and affordances
   pricing/              Pricing data and helpers
   hooks/                Same-origin catalog and pricing data hooks
   utils/
     format.ts           Number and unit formatting helpers
 
-docs/                   Architecture docs and decision records
+scripts/
+  build-docs.mjs        Renders docs/ and writes the help index
+
+docs/                   Architecture docs, guides, and decision records
 public/                 Static assets
 ```
 
@@ -113,11 +130,15 @@ Prefixes: `feature/` for new functionality, `fix/` for bug fixes, `chore/` for m
 Pre-commit hooks run automatically when you `git commit`. They check lint and types on staged files and block the commit if anything fails — fix the error and try again.
 
 ```bash
- git add app/predict/page.tsx
-git commit -m "Add GPU memory breakdown chart to estimate panel"
+git add app/predict/page.tsx
+git commit -s -m "Add GPU memory breakdown chart to estimate panel"
 ```
 
 Write commit messages in the imperative ("Add", "Fix", "Remove") and describe what the change does, not what files changed.
+
+Always commit with `-s`. Every commit must carry a `Signed-off-by:` trailer
+matching the committer identity, and `-s` adds it for you. For a commit you
+already made, fix it with `git commit --amend -s`.
 
 **4. Push your branch**
 
@@ -243,6 +264,28 @@ Define proper interfaces. The CI type-check step will catch `any` types.
 
 Add `"use client"` only when the component uses browser APIs, state (`useState`), or event handlers. If in doubt, check whether removing it causes an error.
 
+### Documentation is rendered at build time
+
+User-facing documentation lives in `docs/*.md`, and `scripts/build-docs.mjs`
+renders it into the app. Never parse Markdown in the browser or add a
+Markdown-rendering package to the client bundle.
+
+To add or change a page:
+
+1. Edit the Markdown file, or add the new file under `docs/`.
+2. Register it in `docs/manifest.json` with a unique `slug`, a `title`, a
+   one-sentence `description`, the repo-relative `file`, and an `order`.
+3. Link it from `docs/overview.md`; the manifest test fails if a section is
+   not reachable from the overview.
+4. Run `npm run docs:build`.
+
+Links between documents use the file name: `[Costs](costs.md)`. They are
+rewritten to `/docs/costs`. Links that point at an anchor must match a heading
+in that document, or the build fails.
+
+The same build produces `public/help-index.json`, which powers the in-app help
+search, so a documentation change is also a change to what search can find.
+
 ### No unnecessary comments
 
 Only add a comment when the *why* is non-obvious — a hidden constraint, a tricky invariant, a workaround for a specific bug. Well-named variables and functions are self-documenting.
@@ -255,7 +298,10 @@ Before marking a PR ready for review:
 
 - [ ] `npm run type-check` passes locally
 - [ ] `npm run lint` passes locally
+- [ ] `npm test` passes locally
 - [ ] `npm run build` passes locally
+- [ ] Documentation changes are registered in `docs/manifest.json` and
+      `npm run docs:check` passes
 - [ ] New GPU math is in AISimulators, not in a component or `lib/gpu-math/`
 - [ ] No new third-party UI libraries added to `package.json`
 - [ ] All UI text uses sentence case
@@ -279,6 +325,6 @@ These will be introduced in later phases.
 
 ## 9. Getting help
 
-- **CLAUDE.md** — context file for Claude Code; also useful background for any contributor
+- **CLAUDE.md** and **AGENTS.md** — context files for coding agents; also useful background for any contributor
 - **docs/** — architecture decisions and tech stack rationale
 - Open a GitHub issue if you find a bug or want to propose a feature before building it

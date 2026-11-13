@@ -20,6 +20,10 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
+import { CopyLinkButton } from '@/components/help/CopyLinkButton'
+import { TourButton } from '@/components/help/TourButton'
+import { kvCacheLink, type KvCacheLinkValues } from '@/lib/deep-links/pages'
+import { useDeepLink } from '@/lib/deep-links/useDeepLink'
 import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
 
@@ -169,6 +173,67 @@ export default function KvCacheCalc() {
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
     markInputsDirty()
+  }
+
+  // A shared view is applied once settings and the catalog have settled, so a
+  // catalog default cannot overwrite a value the link asked for. URL values
+  // change this view only; remembered defaults are left alone.
+  const { warnings: linkWarnings } = useDeepLink(
+    kvCacheLink,
+    hydrated && gpuReady && !catalogLoading,
+    (values) => {
+      if (values.model) setModel(values.model)
+      if (values.system) setSystem(values.system)
+      if (values.backend) setBackend(values.backend)
+      if (values.backendVersion) setBackendVersion(values.backendVersion)
+      if (values.maxNumTokens !== undefined) {
+        setMaxNumTokens(values.maxNumTokens)
+        setMaxNumTokensInput(String(values.maxNumTokens))
+        setActivePreset('custom')
+      }
+      if (values.maxBatchSize !== undefined) {
+        setMaxBatchSize(values.maxBatchSize)
+        setMaxBatchSizeInput(String(values.maxBatchSize))
+      }
+      if (values.tp !== undefined) { setTpSize(values.tp); setTpSizeInput(String(values.tp)) }
+      if (values.pp !== undefined) { setPpSize(values.pp); setPpSizeInput(String(values.pp)) }
+      if (values.moeTp !== undefined) setMoeTpSize(String(values.moeTp))
+      if (values.moeEp !== undefined) setMoeEpSize(String(values.moeEp))
+      if (values.servingMode) setServingMode(values.servingMode)
+      if (values.memFractionKind) setMemFractionKind(values.memFractionKind)
+      if (values.memFractionValue !== undefined) {
+        // Mark the fraction as chosen so the backend default does not replace it.
+        memFractionValueUserEdited.current = true
+        setMemFractionValue(values.memFractionValue)
+        setMemFractionValueInput(String(values.memFractionValue))
+      }
+    },
+  )
+
+  const buildShareUrl = (): string => {
+    const values: KvCacheLinkValues = {
+      model: model || undefined,
+      system: system || undefined,
+      backend,
+      backendVersion: backendVersion || undefined,
+      maxNumTokens,
+      maxBatchSize,
+      tp: tpSize,
+      pp: ppSize,
+      moeTp: moeTpSize ? parseInt(moeTpSize, 10) || undefined : undefined,
+      moeEp: moeEpSize ? parseInt(moeEpSize, 10) || undefined : undefined,
+      servingMode,
+      memFractionKind,
+      memFractionValue,
+    }
+    const defaults: KvCacheLinkValues = {
+      maxNumTokens: defaultMaxNumTokens,
+      maxBatchSize: 128,
+      tp: 1,
+      pp: 1,
+      servingMode: 'agg',
+    }
+    return kvCacheLink.build(kvCacheLink.omitDefaults(values, defaults))
   }
 
   // Use the selected backend's catalog defaults for the memory controls. The
@@ -378,17 +443,27 @@ export default function KvCacheCalc() {
     <div className={styles.page}>
       {/* Header */}
       <div className={styles.header}>
-        <h1 className={styles.pageTitle}>KV cache calculator</h1>
-        <p className={styles.subtitle}>
-          Calculate KV cache memory requirements for any model on supported GPU systems
-        </p>
-        <div className={styles.helperText}>
-          Memory estimates use AISim, independent of the global Simulator setting.
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>KV cache calculator</h1>
+            <p className={styles.subtitle}>
+              Calculate KV cache memory requirements for any model on supported GPU systems
+            </p>
+            <div className={styles.helperText}>
+              Memory estimates use AISim, independent of the global Simulator setting.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={buildShareUrl} />
+            <TourButton />
+          </div>
         </div>
       </div>
 
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
       {/* Input card */}
-      <div className={`${styles.card} ${styles.inputCard}`}>
+      <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
         <div className={styles.inputRow}>
           <div className={styles.field}>
             <ComboBox
@@ -405,7 +480,7 @@ export default function KvCacheCalc() {
           <GpuSystemInput id="kv-gpu" value={system} onChange={(value) => { setSystem(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={catalogGpus} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }} data-tour="calculate">
           <Button
             variant="primary"
             onClick={handleCalculate}
@@ -449,7 +524,7 @@ export default function KvCacheCalc() {
       )}
 
       {/* ---------- info strip ---------- */}
-      <InfoStrip>
+      <InfoStrip data-tour="workload">
         Based on your configuration — Maximum Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
@@ -693,14 +768,14 @@ export default function KvCacheCalc() {
 
       {/* Results — one section per pool (agg = single unlabelled pool) */}
       {results.length > 0 && !loading && (
-        <>
+        <div data-tour="results">
           {results.map(({ label, result }) => {
             const currentGpu = catalogGpus.find(g => g.systemId === result.metadata.system)
             return (
               <PhaseResults key={label || 'agg'} label={label} result={result} gpuLabel={currentGpu?.label} />
             )
           })}
-        </>
+        </div>
       )}
 
       {/* Debug panel */}

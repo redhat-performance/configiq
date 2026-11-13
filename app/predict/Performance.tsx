@@ -22,7 +22,7 @@ import EyeIcon from '@patternfly/react-icons/dist/esm/icons/eye-icon';
 import EyeSlashIcon from '@patternfly/react-icons/dist/esm/icons/eye-slash-icon';
 import styles from './Performance.module.css';
 import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
-import { ProductTour, type TourStep } from '@/components/ProductTour';
+import { TourButton } from '@/components/help/TourButton';
 import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
@@ -51,8 +51,16 @@ import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/infere
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
-import { parsePerformancePrefill } from './performance-prefill';
+import {
+  buildPredictLink,
+  omitDefaults,
+  parsePredictLink,
+  type ParsedPredictLink,
+  type PredictLinkValues,
+} from '@/lib/deep-links/predict';
+import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 
 function modelSuggestions(): string {
   return getAppConfig().suggestedModelNames.join(', ');
@@ -136,38 +144,11 @@ interface AccordionField {
   onChange?: (value: string | number) => void;
 }
 
-const QUICK_ESTIMATE_TOUR: TourStep[] = [
-  {
-    target: '[data-tour="model"]',
-    title: 'Start with a model',
-    description: 'Type any Hugging Face model ID or pick from popular models. We\'ll auto-detect the specs and fill in smart defaults.',
-    position: 'bottom'
-  },
-  {
-    target: '[data-tour="warning"]',
-    title: 'Default assumptions',
-    description: 'Predict performance starts with common defaults. Click "Adjust" to match your actual workload and traffic patterns.',
-    position: 'bottom'
-  },
-  {
-    target: '[data-tour="result-tile-gpus"]',
-    title: 'Your results at a glance',
-    description: 'These tiles show GPU count, memory requirements, and monthly cost. Click any tile to see the math behind it.',
-    position: 'right'
-  },
-  {
-    target: '[data-tour="assumptions"]',
-    title: 'Fine-tune your workload',
-    description: 'Expand these sections to adjust traffic patterns, sequence lengths, and hardware settings. Results update live as you edit.',
-    position: 'top'
-  }
-];
-
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem, applyViewForSession } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, simulators, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
@@ -211,18 +192,45 @@ export default function Performance() {
   // replacements must not overwrite the cross-tool default.
   const modelTouched = React.useRef(false);
 
+  // Shared-view state: parsed from the URL after mount and as the URL changes,
+  // then applied after hydration. The search string is read through
+  // `useSearchParams` so a pasted link opened on this page applies too.
+  const searchParams = useSearchParams();
+  const search = searchParams.toString();
+  const deepLink = React.useRef<ParsedPredictLink | null>(null);
+  const appliedDeepLink = React.useRef(false);
+  const appliedDeepLinkProvenance = React.useRef(false);
+  const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
+  const [provenanceMismatch, setProvenanceMismatch] = React.useState<string | null>(null);
+
   React.useEffect(() => {
-    const prefill = parsePerformancePrefill(globalThis.location?.search || '');
-    modelWasPrefilled.current = Boolean(prefill.model);
-    gpuWasPrefilled.current = Boolean(prefill.system);
-    if (prefill.model) {
-      // A handoff from another tool is an explicit choice; keep remembering it.
-      modelTouched.current = true;
-      setModel(prefill.model);
+    const parsed = parsePredictLink(search ? `?${search}` : '');
+    deepLink.current = parsed;
+    const { model: linkedModel, system: linkedSystem } = parsed.values;
+    modelWasPrefilled.current = Boolean(linkedModel);
+    gpuWasPrefilled.current = Boolean(linkedSystem);
+    if (linkedModel) {
+      // A shared link changes this view only. Leaving the model "untouched"
+      // keeps the recipient's remembered default intact.
+      setModel(linkedModel);
     }
-    if (prefill.system) setGpu(prefill.system);
+    if (linkedSystem) setGpu(linkedSystem);
+    setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
-  }, []);
+    appliedDeepLink.current = false;
+    appliedDeepLinkProvenance.current = false;
+    setProvenanceMismatch(null);
+
+    // Rewrite the address bar to the canonical link: unknown and invalid
+    // parameters are dropped, and `v=1` marks what this build understood. A
+    // link from an unknown format version is left as written.
+    if (!parsed.unsupportedVersion) {
+      const canonical = buildPredictLink(parsed.values, window.location.pathname);
+      if (window.location.search !== canonical.slice(canonical.indexOf('?'))) {
+        window.history.replaceState(window.history.state, '', canonical);
+      }
+    }
+  }, [search]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
   const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
@@ -258,8 +266,6 @@ export default function Performance() {
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
-  const [showTour, setShowTour] = React.useState(false);
-  const [tourSeen, setTourSeen] = React.useState(false);
 
   // 🧪 TEST: Inference config engine integration
   const [testResult, setTestResult] = React.useState<InferenceConfigResult | null>(null);
@@ -518,6 +524,112 @@ export default function Performance() {
     markInputsDirty();
   };
 
+  // Apply a shared view's inputs once settings and the catalog have settled.
+  // URL values change page state only; they never overwrite saved settings.
+  React.useEffect(() => {
+    if (!hydrated || !gpuReady || appliedDeepLink.current) return;
+    appliedDeepLink.current = true;
+    const values = deepLink.current?.values;
+    if (!values) return;
+
+    if (values.isl !== undefined) handleIslChange(String(values.isl));
+    if (values.osl !== undefined) handleOslChange(String(values.osl));
+    if (values.concurrency !== undefined) handleConcurrentUsersChange(String(values.concurrency));
+    if (values.tp !== undefined) handleTpSizeChange(String(values.tp));
+    if (values.pp !== undefined) handlePpSizeChange(String(values.pp));
+    if (values.prefix !== undefined) handlePrefixChange(String(values.prefix));
+    if (values.moeTp !== undefined) handleMoeEtpSizeChange(String(values.moeTp));
+    if (values.moeEp !== undefined) handleMoeEpSizeChange(String(values.moeEp));
+    if (values.servingMode !== undefined) setServingMode(values.servingMode);
+    if (values.fabric !== undefined) setNetworkFabric(values.fabric);
+    if (values.weightPrecision !== undefined) setTestWeightPrecision(values.weightPrecision);
+    if (values.kvPrecision !== undefined) setTestKVCachePrecision(values.kvPrecision);
+    if (values.maxModelLen !== undefined) {
+      handleSequenceLengthChange(String(values.maxModelLen), setMaxSeqLenInput, setMaxSeqLen);
+    }
+    if (values.prefillMaxSeqLen !== undefined) {
+      handleSequenceLengthChange(String(values.prefillMaxSeqLen), setPrefillMaxSeqLenInput, setPrefillMaxSeqLen);
+    }
+    if (values.decodeMaxSeqLen !== undefined) {
+      handleSequenceLengthChange(String(values.decodeMaxSeqLen), setDecodeMaxSeqLenInput, setDecodeMaxSeqLen);
+    }
+    if (values.maxNumSeqs !== undefined) setVllmManualMaxNumSeqs(values.maxNumSeqs);
+    if (values.gpuMemUtil !== undefined) setGpuMemoryUtilization(values.gpuMemUtil);
+    // The setters above are stable state updates; this must run once per link,
+    // which `search` marks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, gpuReady, search]);
+
+  // Provenance is applied separately: a differing simulator is never switched
+  // silently, it is offered through the banner below.
+  React.useEffect(() => {
+    if (!hydrated || appliedDeepLinkProvenance.current) return;
+    appliedDeepLinkProvenance.current = true;
+    const values = deepLink.current?.values;
+    if (!values) return;
+
+    if (values.simulator && values.simulator !== simulator) {
+      setProvenanceMismatch(values.simulator);
+      return;
+    }
+    applyViewForSession({ backend: values.backend, backendVersion: values.backendVersion });
+  }, [hydrated, simulator, applyViewForSession, search]);
+
+  const simulatorLabel = (id: string) =>
+    simulatorDisplayLabel(id, simulators.find((entry) => entry.id === id)?.label ?? id);
+
+  const handleUseSharedSimulator = () => {
+    const values = deepLink.current?.values;
+    if (!provenanceMismatch) return;
+    applyViewForSession({
+      simulator: provenanceMismatch,
+      backend: values?.backend,
+      backendVersion: values?.backendVersion,
+    });
+    setProvenanceMismatch(null);
+  };
+
+  const buildShareUrl = (): string => {
+    const values: PredictLinkValues = {
+      model: model || undefined,
+      system: gpu || undefined,
+      isl: parseInt(islInput, 10) || undefined,
+      osl: parseInt(oslInput, 10) || undefined,
+      concurrency: parseInt(concurrentUsersInput, 10) || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+      simulator: simulator || undefined,
+      servingMode,
+      fabric: servingMode === 'disagg' ? selectedNetworkFabric || undefined : undefined,
+      tp: parseInt(tpSizeInput, 10) || undefined,
+      pp: parseInt(ppSizeInput, 10) || undefined,
+      weightPrecision: testWeightPrecision,
+      kvPrecision: testKVCachePrecision,
+      maxModelLen: parseInt(maxSeqLenInput, 10) || undefined,
+      prefillMaxSeqLen: parseInt(prefillMaxSeqLenInput, 10) || undefined,
+      decodeMaxSeqLen: parseInt(decodeMaxSeqLenInput, 10) || undefined,
+      prefix: parseInt(prefixInput, 10) || 0,
+      maxNumSeqs: vllmManualMaxNumSeqs ?? undefined,
+      gpuMemUtil: gpuMemoryUtilization ?? undefined,
+      moeTp: parseInt(moeEtpSizeInput, 10) || undefined,
+      moeEp: parseInt(moeEpSizeInput, 10) || undefined,
+    };
+    // The page's own defaults, so a link describes the view rather than
+    // restating every value that was never changed.
+    const defaults: PredictLinkValues = {
+      isl: 2048,
+      osl: 128,
+      concurrency: 1,
+      servingMode: 'agg',
+      tp: 1,
+      pp: 1,
+      weightPrecision: 'FP16',
+      kvPrecision: 'FP16',
+      prefix: 0,
+    };
+    return buildPredictLink(omitDefaults(values, defaults));
+  };
+
   // Fetch HF config when model changes
   React.useEffect(() => {
     setIsUsingFallback(false);
@@ -721,17 +833,8 @@ export default function Performance() {
   }, [calcTrigger]);
 
 
-  // Check if user has seen the tour before
-  React.useEffect(() => {
-    const hasSeenTour = localStorage.getItem('predict-performance-tour-seen');
-    if (hasSeenTour) {
-      setTourSeen(true);
-    } else {
-      // Show tour after a brief delay on first visit
-      const timer = setTimeout(() => setShowTour(true), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, []);
+  // Tours are manual only: no first-visit auto-open and no persisted "seen"
+  // flag. The tour starts from the header button.
 
   // Reset overrides when major inputs change (model or GPU selection)
   React.useEffect(() => {
@@ -838,16 +941,6 @@ export default function Performance() {
   const weight = useCountUp(realWeightGB);
   const kv = useCountUp(realKVPerReqMB);
   const cost = useCountUp(realMonthlyCostForDisplay);
-
-  const handleTourComplete = () => {
-    setShowTour(false);
-    setTourSeen(true);
-    localStorage.setItem('predict-performance-tour-seen', 'true');
-  };
-
-  const handleTakeTour = () => {
-    setShowTour(true);
-  };
 
   // Load saved count on mount
   React.useEffect(() => {
@@ -1450,13 +1543,6 @@ export default function Performance() {
 
   return (
     <div className={styles.page}>
-      {showTour && (
-        <ProductTour
-          steps={QUICK_ESTIMATE_TOUR}
-          tourId="qe"
-          onComplete={handleTourComplete}
-        />
-      )}
       {/* ---------- header ---------- */}
       <div className={styles.header}>
         <div className={styles.headRow}>
@@ -1464,17 +1550,8 @@ export default function Performance() {
             <h1 className={styles.pageTitle}>Predict performance</h1>
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ position: 'relative' }}>
-              <Button
-                variant="link"
-                onClick={handleTakeTour}
-                style={{ fontSize: '14px' }}
-              >
-                Take a tour
-              </Button>
-              {!tourSeen && <div className={styles.tourBeacon} />}
-            </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <TourButton />
             <Button
               variant="plain"
               aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
@@ -1485,6 +1562,35 @@ export default function Performance() {
         </div>
       </div>
 
+
+      {provenanceMismatch && (
+        <div
+          role="status"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '8px 12px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            border: '1px solid var(--gc-link)',
+            borderRadius: '8px',
+            background: '#e7f4ff',
+            color: 'var(--gc-text)',
+            fontSize: '14px',
+          }}
+        >
+          <span>
+            This view was shared using{' '}
+            <strong>{simulatorLabel(provenanceMismatch)}</strong>; your
+            settings use <strong>{simulatorLabel(simulator)}</strong>.
+          </span>
+          <Button variant="link" onClick={handleUseSharedSimulator}>
+            Use {simulatorLabel(provenanceMismatch)} for this view
+          </Button>
+          <Link href="/settings">Open settings</Link>
+        </div>
+      )}
 
       {/* ---------- input row ---------- */}
       <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
@@ -1522,7 +1628,8 @@ export default function Performance() {
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+        <div data-tour="calculate" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 16 }}>
+          <CopyLinkButton getUrl={buildShareUrl} />
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
@@ -1535,6 +1642,7 @@ export default function Performance() {
       </div>
 
       {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (

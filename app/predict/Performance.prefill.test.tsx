@@ -9,8 +9,22 @@ import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 // catalog reports, and a plausible pin here would look like a real one.
 const BLIS_FIXTURE_VERSION = vi.hoisted(() => 'test-blis-version');
 
+// The page reads its shared-view link through `useSearchParams`. Tests mount it
+// directly, so supply the current window search rather than the app router.
+const navigation = vi.hoisted(() => ({ search: '' }));
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}));
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
+}));
+
+// The tour button needs the app shell's provider; these tests render the page
+// in isolation, so the button is not part of what they exercise.
+vi.mock('@/components/help/TourButton', () => ({
+  TourButton: () => null,
 }));
 
 vi.mock('@/lib/app-config', async (importOriginal) => {
@@ -201,6 +215,7 @@ const makeSettings = (
   setCostingsEnabled: vi.fn(),
   setPreferredCloudProvider: vi.fn(),
   setPricingSource: vi.fn(),
+  applyViewForSession: vi.fn(),
 });
 const estimateResult: InferenceConfigResult = {
   simulator: 'aisimulate',
@@ -292,6 +307,7 @@ afterEach(async () => {
 
 async function mountAt(search: string) {
   window.history.replaceState({}, '', `/predict${search}`);
+  navigation.search = window.location.search;
   await act(async () => {
     root.render(<Performance />);
     await Promise.resolve();
@@ -396,7 +412,7 @@ describe('performance page widget handoff', () => {
 });
 
 describe('performance page remembered model', () => {
-  it('waits for the new model config before replacing the saved default', async () => {
+  it('keeps the saved default through a shared link, then remembers an explicit pick', async () => {
     let resolveSecond:
       | ((result: Awaited<ReturnType<typeof fetchModelConfig>>) => void)
       | undefined;
@@ -418,7 +434,9 @@ describe('performance page remembered model', () => {
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 550));
     });
-    expect(setDefaultModel).toHaveBeenCalledWith('org/model-a');
+    // A shared link changes this view only; the recipient's remembered default
+    // must survive opening it.
+    expect(setDefaultModel).not.toHaveBeenCalledWith('org/model-a');
 
     const input = container.querySelector<HTMLInputElement>('#predict-performance-model')!;
     await act(async () => {
@@ -440,6 +458,60 @@ describe('performance page remembered model', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(setDefaultModel).toHaveBeenCalledWith('org/model-b');
+  });
+});
+
+describe('performance page link provenance', () => {
+  it('offers a shared simulator instead of switching to it silently', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt(
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=blis&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    // Nothing is applied for the recipient until they choose it.
+    expect(settings.applyViewForSession).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('This view was shared using');
+    expect(container.textContent).toContain('BLIS');
+
+    const useShared = Array.from(container.querySelectorAll('button')).find((button) =>
+      /Use BLIS for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'blis',
+      backend: 'vllm',
+      backendVersion: BLIS_FIXTURE_VERSION,
+    });
+  });
+
+  it('applies a second shared link without remounting the page', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+    const second = await mountAt('?v=1&model=settings%2Fdefault-model&system=h200_sxm');
+
+    expect(second.model?.value).toBe('settings/default-model');
+    expect(second.gpu?.value).toBe('h200_sxm');
+  });
+
+  it('applies backend and version silently when the simulator matches', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt('?v=1&system=h100_sxm&simulator=aisimulate&backend=sglang&backendVersion=0.4.0');
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      backend: 'sglang',
+      backendVersion: '0.4.0',
+    });
+    expect(container.textContent).not.toContain('This view was shared using');
   });
 });
 

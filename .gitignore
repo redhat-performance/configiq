@@ -44,5 +44,9 @@ next-env.d.ts
 data/tested-models/
 __pycache__/
 
+# Generated docs (built by `npm run docs:build`)
+lib/docs/generated/
+public/help-index.json
+
 # Local-only dev scratch (container runner, logs)
 .local-dev/

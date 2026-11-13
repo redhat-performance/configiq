@@ -42,7 +42,10 @@ import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
-
+import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { TourButton } from '@/components/help/TourButton';
+import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
+import { useDeepLink } from '@/lib/deep-links/useDeepLink';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
 import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/utils/format';
@@ -644,6 +647,73 @@ export default function Sizing() {
     markInputsDirty();
   };
 
+  // A shared view applies after settings, the catalog, and the starting model
+  // have settled. URL values change this form only; nothing is persisted, and
+  // opening a link never submits a request.
+  const { warnings: linkWarnings } = useDeepLink(
+    recommendLink,
+    hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
+    (values) => {
+      if (values.model) setModel(values.model);
+      if (values.system) setGpuSystem(values.system);
+      if (values.goal) setGoal(values.goal);
+      if (values.isl !== undefined) { setIsl(values.isl); setIslInput(String(values.isl)); }
+      if (values.osl !== undefined) { setOsl(values.osl); setOslInput(String(values.osl)); }
+      if (values.concurrency !== undefined) {
+        setTargetConcurrency(values.concurrency);
+        setConcurrencyInput(String(values.concurrency));
+      }
+      if (values.ttft !== undefined) { setTtft(values.ttft); setTtftInput(String(values.ttft)); }
+      if (values.tpot !== undefined) { setTpot(values.tpot); setTpotInput(String(values.tpot)); }
+      if (values.e2eLatency !== undefined) {
+        setRequestLatency(values.e2eLatency);
+        setLatencyInput(String(values.e2eLatency));
+      }
+      if (values.demandRate !== undefined) {
+        setDemandRate(values.demandRate);
+        setDemandRateInput(String(values.demandRate));
+      }
+      if (values.prefix !== undefined) { setPrefix(values.prefix); setPrefixInput(String(values.prefix)); }
+      if (values.maxSeqLen !== undefined) {
+        setMaxSeqLen(values.maxSeqLen);
+        setMaxSeqLenInput(String(values.maxSeqLen));
+      }
+      if (values.fabric) setNetworkFabric(values.fabric);
+    },
+  );
+
+  const buildShareUrl = (): string => {
+    const values: RecommendLinkValues = {
+      model: model || undefined,
+      system: gpuSystem || undefined,
+      goal,
+      isl,
+      osl,
+      concurrency: isCapacity ? targetConcurrency : undefined,
+      ttft: goal === 'latency' && requestLatency === null ? ttft : undefined,
+      tpot: goal === 'latency' && requestLatency === null ? tpot : undefined,
+      e2eLatency: goal === 'latency' && requestLatency !== null ? requestLatency : undefined,
+      demandRate: goal === 'demand' ? demandRate : undefined,
+      prefix,
+      maxSeqLen: maxSeqLen ?? undefined,
+      fabric: fabricRequired && !aggregateOnlyGoal ? selectedNetworkFabric || undefined : undefined,
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    };
+    const defaults: RecommendLinkValues = {
+      goal: 'demand',
+      isl: 2048,
+      osl: 128,
+      concurrency: 1,
+      ttft: 1000,
+      tpot: 30,
+      demandRate: DEFAULT_DEMAND_RATE,
+      prefix: 0,
+    };
+    return recommendLink.build(recommendLink.omitDefaults(values, defaults));
+  };
+
   // The recommend provider keeps the submitted request and its result across
   // navigation, but this page's form starts from scratch. Compare each restored
   // or newly submitted request with the visible form so a stale result is never
@@ -768,14 +838,24 @@ export default function Sizing() {
     <div className={styles.page}>
       {/* ─── Header ─── */}
       <div className={styles.header}>
-        <h1 className={styles.pageTitle}>Recommend sizing</h1>
-        <p className={styles.subtitle}>
-          Start with just a model name — we fill the rest, then let you tune every assumption.
-        </p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>Recommend sizing</h1>
+            <p className={styles.subtitle}>
+              Start with just a model name — we fill the rest, then let you tune every assumption.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={buildShareUrl} />
+            <TourButton />
+          </div>
+        </div>
       </div>
 
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
       {/* ─── Input card ─── */}
-      <div className={`${styles.card} ${styles.inputCard}`}>
+      <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
         {/* Model + GPU row */}
         <div className={styles.inputGrid}>
           <div>
@@ -842,7 +922,7 @@ export default function Sizing() {
         )}
 
         {/* Calculate and Pareto are alternative actions, not a chain. */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }} data-tour="calculate">
           <Button
             variant="secondary"
             onClick={handlePareto}
@@ -914,7 +994,7 @@ export default function Sizing() {
       )}
 
       {/* ---------- sizing goal ---------- */}
-      <div className={styles.goalRow}>
+      <div className={styles.goalRow} data-tour="goal">
         <span className={styles.goalLabel}>Sizing goal:</span>
         <ToggleGroup aria-label="Sizing goal">
           <ToggleGroupItem
@@ -950,7 +1030,7 @@ export default function Sizing() {
         </span>
       </div>
 
-      <InfoStrip>
+      <InfoStrip data-tour="targets">
         {isCapacity ? (
           <>
             Based on your configuration — ISL: {isl}, OSL: {osl}, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'sequence' : 'sequences'} at {capacityContextTokens.toLocaleString()} tokens each, no latency target.
@@ -1264,7 +1344,7 @@ export default function Sizing() {
       {/* ─── Result tiles ─── */}
       {result && (
         <>
-          <div className={styles.tilesGrid}>
+          <div className={styles.tilesGrid} data-tour="results">
             {/* GPUs Required */}
             <FlipTile
               dark
