@@ -319,7 +319,8 @@ def test_blis_rejects_non_vllm_before_loading_the_catalog():
         blis_service._resolve_request("Qwen/Qwen3-32B", "h200_sxm", "sglang", None)
 
 
-def test_resolved_request_states_the_hardware_aware_block_size(tmp_path: Path, monkeypatch):
+def _patch_resolver(monkeypatch, tmp_path: Path) -> BlisCatalog:
+    """Point request resolution at a synthetic catalog and node layout."""
     catalog = load_catalog(str(_write_catalog(tmp_path)))
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(
@@ -332,6 +333,11 @@ def test_resolved_request_states_the_hardware_aware_block_size(tmp_path: Path, m
         "resolve_runtime",
         lambda: BlisRuntime(binary="blis", catalog="catalog", registry="registry"),
     )
+    return catalog
+
+
+def test_resolved_request_states_the_hardware_aware_block_size(tmp_path: Path, monkeypatch):
+    _patch_resolver(monkeypatch, tmp_path)
 
     hopper = blis_service._resolve_request(
         "deepseek-ai/DeepSeek-V4.1-Flash", "h200_sxm", "vllm", "0.31.0"
@@ -342,6 +348,16 @@ def test_resolved_request_states_the_hardware_aware_block_size(tmp_path: Path, m
 
     assert (hopper.hardware, hopper.model.block_size) == ("h200", 64)
     assert (blackwell.hardware, blackwell.model.block_size) == ("b200", 128)
+
+
+def test_resolved_request_refuses_a_dsa_model_below_sm90(tmp_path: Path, monkeypatch):
+    _patch_resolver(monkeypatch, tmp_path)
+
+    with pytest.raises(BlisUnsupportedRequest, match="below SM90"):
+        blis_service._resolve_request("zai-org/GLM-5.2", "a100_sxm", "vllm", "0.31.0")
+
+    hopper = blis_service._resolve_request("zai-org/GLM-5.2", "h200_sxm", "vllm", "0.31.0")
+    assert hopper.model.block_size == 64
 
 
 def _scenario_request(**overrides) -> ScenarioRequest:
@@ -445,6 +461,7 @@ def test_serving_config_reports_the_settings_blis_resolved():
                         "max_model_len": "auto",
                         "max_num_seqs": 8,
                         "max_num_batched_tokens": 8192,
+                        "block_size": 128,
                         "gpu_memory_utilization": 0.92,
                         "enable_prefix_caching": True,
                         "quantization": "nvfp4",
@@ -460,6 +477,7 @@ def test_serving_config_reports_the_settings_blis_resolved():
     assert config["tensor_parallel_size"] == 4
     assert config["max_model_len"] is None
     assert config["max_model_len_policy"] == "auto"
+    assert config["block_size"] == 128
     assert config["enable_prefix_caching"] is True
     assert config["enable_chunked_prefill"] is None
     assert config["backend_version"] == "0.31.0"

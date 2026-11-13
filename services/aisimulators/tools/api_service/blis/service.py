@@ -271,6 +271,16 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     catalog = load_catalog()
     model = catalog.resolve_model(model_path)
     hardware = catalog.resolve_hardware(system)
+    capability = catalog.compute_capabilities.get(hardware)
+    # BLIS runs a DSA sparse-MLA indexer only on SM90 or newer parts, so refuse
+    # the request here with the catalog's own capability rather than letting the
+    # kernel fail after a run has been set up. An unstated capability is left to
+    # BLIS, which infers the part's generation from its native-format support.
+    if model.dsa and capability is not None and capability < 9:
+        raise BlisUnsupportedRequest(
+            f"BLIS has no sparse-MLA backend for {system!r}: its compute capability "
+            f"({capability}.x) is below SM90, which a DSA model requires"
+        )
     model = replace(model, block_size=catalog.block_size_for(model, hardware))
     try:
         system_spec = load_system_spec(system)
@@ -446,6 +456,9 @@ def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], bac
         "max_model_len_policy": max_model_len_policy,
         "max_num_seqs": engine.get("max_num_seqs"),
         "max_num_batched_tokens": engine.get("max_num_batched_tokens"),
+        # The block size the simulator resolved, which can be wider than the
+        # generated default when a sparse kernel or P/D handoff requires it.
+        "block_size": engine.get("block_size"),
         "gpu_memory_utilization": engine.get("gpu_memory_utilization"),
         # Chunked prefill is not a Scenario field. Leave it unknown rather than
         # claiming a default that the generated document did not specify.

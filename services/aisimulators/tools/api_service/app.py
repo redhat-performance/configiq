@@ -495,6 +495,8 @@ class ServingConfig(BaseModel):
     max_model_len_policy: str | None = None
     max_num_seqs: int | None = None
     max_num_batched_tokens: int | None = None
+    # Null when the simulator did not report the engine's KV block size.
+    block_size: int | None = None
     gpu_memory_utilization: float | None = None
     enable_chunked_prefill: bool | None = None
     # Null when the run did not state a value; the client must show the
