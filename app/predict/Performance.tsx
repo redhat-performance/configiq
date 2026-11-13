@@ -51,6 +51,7 @@ import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/infere
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
   buildPredictLink,
@@ -191,7 +192,11 @@ export default function Performance() {
   // replacements must not overwrite the cross-tool default.
   const modelTouched = React.useRef(false);
 
-  // Shared-view state: parsed once from the URL, then applied after hydration.
+  // Shared-view state: parsed from the URL after mount and as the URL changes,
+  // then applied after hydration. The search string is read through
+  // `useSearchParams` so a pasted link opened on this page applies too.
+  const searchParams = useSearchParams();
+  const search = searchParams.toString();
   const deepLink = React.useRef<ParsedPredictLink | null>(null);
   const appliedDeepLink = React.useRef(false);
   const appliedDeepLinkProvenance = React.useRef(false);
@@ -199,7 +204,7 @@ export default function Performance() {
   const [provenanceMismatch, setProvenanceMismatch] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const parsed = parsePredictLink(globalThis.location?.search || '');
+    const parsed = parsePredictLink(search ? `?${search}` : '');
     deepLink.current = parsed;
     const { model: linkedModel, system: linkedSystem } = parsed.values;
     modelWasPrefilled.current = Boolean(linkedModel);
@@ -212,7 +217,20 @@ export default function Performance() {
     if (linkedSystem) setGpu(linkedSystem);
     setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
-  }, []);
+    appliedDeepLink.current = false;
+    appliedDeepLinkProvenance.current = false;
+    setProvenanceMismatch(null);
+
+    // Rewrite the address bar to the canonical link: unknown and invalid
+    // parameters are dropped, and `v=1` marks what this build understood. A
+    // link from an unknown format version is left as written.
+    if (!parsed.unsupportedVersion) {
+      const canonical = buildPredictLink(parsed.values, window.location.pathname);
+      if (window.location.search !== canonical.slice(canonical.indexOf('?'))) {
+        window.history.replaceState(window.history.state, '', canonical);
+      }
+    }
+  }, [search]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
   const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
@@ -537,9 +555,10 @@ export default function Performance() {
     }
     if (values.maxNumSeqs !== undefined) setVllmManualMaxNumSeqs(values.maxNumSeqs);
     if (values.gpuMemUtil !== undefined) setGpuMemoryUtilization(values.gpuMemUtil);
-    // The setters above are stable state updates; this must run exactly once.
+    // The setters above are stable state updates; this must run once per link,
+    // which `search` marks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, gpuReady]);
+  }, [hydrated, gpuReady, search]);
 
   // Provenance is applied separately: a differing simulator is never switched
   // silently, it is offered through the banner below.
@@ -554,7 +573,7 @@ export default function Performance() {
       return;
     }
     applyViewForSession({ backend: values.backend, backendVersion: values.backendVersion });
-  }, [hydrated, simulator, applyViewForSession]);
+  }, [hydrated, simulator, applyViewForSession, search]);
 
   const simulatorLabel = (id: string) =>
     simulatorDisplayLabel(id, simulators.find((entry) => entry.id === id)?.label ?? id);

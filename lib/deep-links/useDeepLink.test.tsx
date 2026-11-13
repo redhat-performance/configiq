@@ -7,6 +7,12 @@ import { recommendLink } from './pages';
 import type { LinkValues } from './common';
 import { useDeepLink, type DeepLinkState } from './useDeepLink';
 
+const navigation = vi.hoisted(() => ({ search: '' }));
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}));
+
 let root: ReturnType<typeof createRoot> | null = null;
 let host: HTMLDivElement;
 
@@ -35,8 +41,13 @@ function render(element: React.ReactElement) {
   });
 }
 
+function setSearch(path: string) {
+  window.history.replaceState({}, '', path);
+  navigation.search = window.location.search;
+}
+
 beforeEach(() => {
-  window.history.replaceState({}, '', '/recommend');
+  setSearch('/recommend');
 });
 
 afterEach(() => {
@@ -49,7 +60,7 @@ afterEach(() => {
 
 describe('useDeepLink', () => {
   it('parses the current search string without applying it before the page is ready', () => {
-    window.history.replaceState({}, '', '/recommend?v=1&model=Qwen%2FQwen3-32B&goal=capacity&nope=1');
+    setSearch('/recommend?v=1&model=Qwen%2FQwen3-32B&goal=capacity&nope=1');
     const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
     const apply = vi.fn();
     const Harness = mount(state);
@@ -65,7 +76,7 @@ describe('useDeepLink', () => {
   });
 
   it('applies once the ready gate opens, and only once', () => {
-    window.history.replaceState({}, '', '/recommend?v=1&concurrency=32&goal=demand');
+    setSearch('/recommend?v=1&concurrency=32&goal=demand');
     const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
     const apply = vi.fn();
     const Harness = mount(state);
@@ -77,6 +88,51 @@ describe('useDeepLink', () => {
     expect(apply).toHaveBeenCalledTimes(1);
     expect(apply).toHaveBeenCalledWith({ concurrency: 32, goal: 'demand' });
     expect(state.current?.applied).toBe(true);
+  });
+
+  it('rewrites the address bar to the canonical link it understood', () => {
+    setSearch('/recommend?v=1&concurrency=32&nope=1&goal=turbo');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const Harness = mount(state);
+
+    render(<Harness ready apply={vi.fn()} />);
+
+    expect(window.location.pathname).toBe('/recommend');
+    expect(window.location.search).toBe('?v=1&concurrency=32');
+    // Warnings still describe what the original link asked for.
+    expect(state.current?.warnings).toEqual([
+      'Ignored unknown parameter "nope".',
+      'Ignored "goal": the value was not valid.',
+    ]);
+  });
+
+  it('applies a new link opened while the page is already mounted', () => {
+    setSearch('/recommend?v=1&concurrency=8');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+
+    render(<Harness ready apply={apply} />);
+    expect(apply).toHaveBeenCalledWith({ concurrency: 8 });
+
+    setSearch('/recommend?v=1&concurrency=64&goal=latency');
+    render(<Harness ready apply={apply} />);
+
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(apply).toHaveBeenLastCalledWith({ concurrency: 64, goal: 'latency' });
+  });
+
+  it('refuses a link from an unsupported format version instead of half-applying it', () => {
+    setSearch('/recommend?v=2&concurrency=32');
+    const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
+    const apply = vi.fn();
+    const Harness = mount(state);
+
+    render(<Harness ready apply={apply} />);
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(state.current?.parsed?.values).toEqual({});
+    expect(state.current?.warnings[0]).toContain('unsupported format version "2"');
   });
 
   it('does not apply an empty link but still reports the page as settled', () => {
@@ -92,7 +148,7 @@ describe('useDeepLink', () => {
   });
 
   it('never applies a link whose values were all rejected', () => {
-    window.history.replaceState({}, '', '/recommend?concurrency=0&goal=turbo');
+    setSearch('/recommend?concurrency=0&goal=turbo');
     const state = { current: null as DeepLinkState<typeof recommendLink.fields> | null };
     const apply = vi.fn();
     const Harness = mount(state);

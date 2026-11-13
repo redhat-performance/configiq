@@ -43,6 +43,21 @@ describe('predict deep links', () => {
     expect(parsed.warnings).toHaveLength(2);
   });
 
+  it('refuses a link from a format version it does not understand', () => {
+    const parsed = parsePredictLink('?v=99&model=Qwen%2FQwen3-32B');
+
+    expect(parsed.values).toEqual({});
+    expect(parsed.unsupportedVersion).toBe(true);
+    expect(parsed.warnings.some((warning) => warning.includes('format version'))).toBe(true);
+  });
+
+  it('reads a link with no version marker as the current version', () => {
+    const parsed = parsePredictLink('?model=Qwen%2FQwen3-32B');
+
+    expect(parsed.values).toEqual({ model: 'Qwen/Qwen3-32B' });
+    expect(parsed.unsupportedVersion).toBeUndefined();
+  });
+
   it('omits values that match the page defaults', () => {
     const values: PredictLinkValues = {
       model: 'Qwen/Qwen3-32B',

@@ -9,6 +9,14 @@ import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 // catalog reports, and a plausible pin here would look like a real one.
 const BLIS_FIXTURE_VERSION = vi.hoisted(() => 'test-blis-version');
 
+// The page reads its shared-view link through `useSearchParams`. Tests mount it
+// directly, so supply the current window search rather than the app router.
+const navigation = vi.hoisted(() => ({ search: '' }));
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}));
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
 }));
@@ -299,6 +307,7 @@ afterEach(async () => {
 
 async function mountAt(search: string) {
   window.history.replaceState({}, '', `/predict${search}`);
+  navigation.search = window.location.search;
   await act(async () => {
     root.render(<Performance />);
     await Promise.resolve();
@@ -480,6 +489,16 @@ describe('performance page link provenance', () => {
       backend: 'vllm',
       backendVersion: BLIS_FIXTURE_VERSION,
     });
+  });
+
+  it('applies a second shared link without remounting the page', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+    const second = await mountAt('?v=1&model=settings%2Fdefault-model&system=h200_sxm');
+
+    expect(second.model?.value).toBe('settings/default-model');
+    expect(second.gpu?.value).toBe('h200_sxm');
   });
 
   it('applies backend and version silently when the simulator matches', async () => {

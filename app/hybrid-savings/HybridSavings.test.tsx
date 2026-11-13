@@ -18,6 +18,12 @@ import { CostAssumptionsProvider, COST_ASSUMPTIONS_STORAGE_KEY } from '@/context
 import CostAssumptionsEditor from '@/app/sources/CostAssumptionsEditor'
 
 vi.mock('@/contexts/SettingsContext', () => ({ useSettings: vi.fn() }))
+// The page reads its shared-view link through `useSearchParams`. Tests mount it
+// directly, so supply the current window search rather than the app router.
+const navigation = vi.hoisted(() => ({ search: '' }))
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}))
 vi.mock('@/lib/hooks/useCostings', () => ({ useCostings: vi.fn() }))
 vi.mock('@/lib/hooks/useInfrastructureOffers', () => ({ useInfrastructureOffers: vi.fn() }))
 vi.mock('@/lib/api/recommend-stream', () => ({ readRecommendStream: vi.fn() }))
@@ -56,6 +62,7 @@ const sizing = {
 } as RecommendResponse
 beforeEach(async () => {
   window.history.replaceState({}, '', '/hybrid-savings')
+  navigation.search = window.location.search
   // Node 26 does not provide localStorage; keep the real in-memory behaviour
   // so tests that persist assumptions still exercise it.
   const store = new Map<string, string>()
@@ -1254,6 +1261,7 @@ describe('hybrid savings shared view', () => {
       '',
       '/hybrid-savings?v=1&model=Qwen%2FQwen3-8B&monthlyInputTokens=5000000&monthlyOutputTokens=1000000&nope=1',
     )
+    navigation.search = window.location.search
     await render()
 
     expect(host.querySelector<HTMLInputElement>('#hybrid-model')!.value).toBe('Qwen/Qwen3-8B')

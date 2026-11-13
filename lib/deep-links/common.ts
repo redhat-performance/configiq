@@ -54,6 +54,8 @@ export interface ParsedLink<F extends LinkFieldMap> {
   values: LinkValues<F>;
   /** Parameters dropped because they were malformed, plus unknown keys. */
   warnings: string[];
+  /** The link declared a format version this build does not understand. */
+  unsupportedVersion?: boolean;
 }
 
 export interface PageLink<F extends LinkFieldMap> {
@@ -82,6 +84,21 @@ export function defineLink<F extends LinkFieldMap>(path: string, fields: F): Pag
     for (const key of params.keys()) {
       if (key === 'v' || key in fields) continue;
       warnings.push(`Ignored unknown parameter "${key}".`);
+    }
+
+    // A link without `v` predates versioning, so it is read as version 1.
+    // A link from a version this build does not know may use the same names
+    // for different values, so it is refused whole rather than half-applied.
+    const version = params.get('v');
+    if (version !== null && version !== LINK_VERSION) {
+      return {
+        values: {},
+        unsupportedVersion: true,
+        warnings: [
+          ...warnings,
+          `This link uses an unsupported format version "${version}"; its settings were not applied.`,
+        ],
+      };
     }
 
     for (const key of keys) {

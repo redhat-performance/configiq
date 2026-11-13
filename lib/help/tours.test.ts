@@ -15,9 +15,9 @@ const ROUTE_SOURCES: Record<string, string> = {
   '/predict': 'app/predict/Performance.tsx',
   '/recommend': 'app/recommend/Sizing.tsx',
   '/kv-cache': 'app/kv-cache/KvCacheCalc.tsx',
-  '/gpu-explorer': 'app/gpu-explorer/page.tsx',
+  '/gpu-explorer': 'app/gpu-explorer/GpuExplorer.tsx',
   '/hybrid-savings': 'app/hybrid-savings/HybridSavings.tsx',
-  '/validation/compare': 'app/validation/compare/page.tsx',
+  '/validation/compare': 'app/validation/compare/Compare.tsx',
 };
 
 describe('tour registry', () => {
