@@ -186,19 +186,47 @@ const PAGE_HINTS: Array<{ pattern: RegExp; href: string; label: string }> = [
   { pattern: /\bsettings|simulator|backend\b/i, href: '/settings', label: 'Open Settings' },
 ];
 
-/** Pages whose link contract carries the provenance trio. */
-const PROVENANCE_ROUTES = new Set(['/predict', '/recommend', '/hybrid-savings', '/validation/compare']);
+/** Pages whose link contract carries the backend/version half of provenance. */
+const PROVENANCE_ROUTES = new Set([
+  '/predict',
+  '/recommend',
+  '/hybrid-savings',
+  '/validation/compare',
+  // AISimulate-only by contract: it carries the backend but never a simulator.
+  '/kv-cache',
+]);
 
+/** Pages that also accept a `simulator` field. */
+const SIMULATOR_ROUTES = new Set(['/predict', '/recommend', '/hybrid-savings', '/validation/compare']);
+
+/** Pages with a versioned link contract. Other pages take no query at all. */
+const LINK_ROUTES = new Set([...PROVENANCE_ROUTES, '/gpu-explorer']);
+
+/**
+ * Add provenance to a page link.
+ *
+ * Documentation links are `/docs/<slug>#<anchor>`: the fragment is the
+ * address, so they are returned untouched. Appending `?v=1` after the hash
+ * would move the query inside the fragment and break the anchor.
+ */
 function withProvenance(href: string, request: AssistantRequestInput): string {
-  const path = href.split('?')[0];
-  const params = new URLSearchParams(href.includes('?') ? href.slice(href.indexOf('?') + 1) : '');
+  if (href.startsWith('/docs/') || href === '/docs') return href;
+
+  const hashIndex = href.indexOf('#');
+  const hash = hashIndex === -1 ? '' : href.slice(hashIndex);
+  const withoutHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
+  const queryIndex = withoutHash.indexOf('?');
+  const path = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+  if (!LINK_ROUTES.has(path)) return href;
+
+  const params = new URLSearchParams(queryIndex === -1 ? '' : withoutHash.slice(queryIndex + 1));
   if (!params.has('v')) params.set('v', '1');
+  if (SIMULATOR_ROUTES.has(path) && request.simulator) params.set('simulator', request.simulator);
   if (PROVENANCE_ROUTES.has(path)) {
-    if (request.simulator) params.set('simulator', request.simulator);
     if (request.backend) params.set('backend', request.backend);
     if (request.backendVersion) params.set('backendVersion', request.backendVersion);
   }
-  return `${path}?${params.toString()}`;
+  return `${path}?${params.toString()}${hash}`;
 }
 
 function linksForAnswer(
@@ -311,9 +339,13 @@ async function runAssistant(
     }
     if (!allowTools || reply.toolCalls.length === 0) break;
 
-    messages.push({ role: 'assistant', content: reply.content, tool_calls: reply.toolCalls });
+    // Only the calls we answer are echoed back. An OpenAI-compatible server
+    // rejects a continuation whenever an assistant `tool_call` has no matching
+    // `tool` message, so dropping the tail must happen before the echo.
+    const calls = reply.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
+    messages.push({ role: 'assistant', content: reply.content, tool_calls: calls });
 
-    for (const call of reply.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND)) {
+    for (const call of calls) {
       const tool = toolByName(call.name);
       if (!tool) {
         messages.push({

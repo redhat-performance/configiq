@@ -39,12 +39,12 @@ function parseStream(text: string): AssistantEvent[] {
     .map((line) => JSON.parse(line) as AssistantEvent);
 }
 
-async function ask(question: string) {
+async function ask(question: string, overrides: Record<string, unknown> = {}) {
   const response = await POST(
     new Request('http://localhost/api/assistant', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, route: '/predict', simulator: 'blis' }),
+      body: JSON.stringify({ question, route: '/predict', simulator: 'blis', ...overrides }),
     }),
   );
   return { response, events: parseStream(await response.text()) };
@@ -137,6 +137,12 @@ describe('assistant answer', () => {
     expect(result.citations.length).toBeGreaterThan(0);
     expect(result.citations[0].url.startsWith('/docs/')).toBe(true);
     expect(result.model).toBe('test/assistant-model');
+
+    // A docs link is `/docs/<slug>#<anchor>`; adding `?v=1` after the hash
+    // would put the query inside the fragment and break the anchor.
+    const docLinks = result.links.filter((link) => link.href.startsWith('/docs/'));
+    expect(docLinks.length).toBeGreaterThan(0);
+    for (const link of docLinks) expect(link.href).not.toContain('?');
   });
 
   it('suppresses prose that states a number the sources do not support', async () => {
@@ -254,5 +260,100 @@ describe('assistant answer', () => {
     expect(recommendLink?.href).toContain('v=1');
     // A question asked on /predict should not link back to /predict.
     expect(result.links.some((link) => link.href.startsWith('/predict'))).toBe(false);
+  });
+
+  it('carries the backend and never a simulator on a KV cache link', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          call += 1;
+          if (call === 1) {
+            return completion({
+              content: '',
+              toolCalls: [
+                {
+                  id: 'call-memory',
+                  name: 'memory',
+                  arguments: '{"model":"Qwen/Qwen3-32B","system":"h200_sxm"}',
+                },
+              ],
+            });
+          }
+          return completion({ content: 'The KV cache holds 62,500 tokens.' });
+        }
+        if (url.endsWith('/memory')) {
+          return jsonResponse({
+            simulator: 'aisimulate',
+            total_gpu_capacity_bytes: 141_000_000_000,
+            total_kv_size_tokens: 62_500,
+            memory_breakdown: { weights_bytes: 70_000_000_000 },
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how much VRAM does this model need', {
+      simulator: 'aisimulate',
+      backend: 'vllm',
+      backendVersion: '0.10.1',
+    });
+
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    const kvLink = result.links.find((link) => link.href.includes('model='));
+    expect(kvLink).toBeDefined();
+    expect(kvLink?.href.startsWith('/kv-cache')).toBe(true);
+    expect(kvLink?.href).toContain('v=1');
+    expect(kvLink?.href).toContain('backend=vllm');
+    expect(kvLink?.href).toContain('backendVersion=0.10.1');
+    // /kv-cache is AISimulate-only: a simulator field would imply a choice the
+    // page does not offer.
+    expect(kvLink?.href).not.toContain('simulator=');
+  });
+
+  it('answers every tool call it echoes back to the model', async () => {
+    const chatBodies: Array<{ messages?: Array<Record<string, unknown>> }> = [];
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          chatBodies.push(JSON.parse(String(init?.body)) as { messages?: Array<Record<string, unknown>> });
+          call += 1;
+          if (call === 1) {
+            // More calls than the round limit: the tail must not be echoed.
+            return completion({
+              content: '',
+              toolCalls: [
+                { id: 'call-1', name: 'list_gpus', arguments: '{}' },
+                { id: 'call-2', name: 'list_backends', arguments: '{}' },
+                { id: 'call-3', name: 'list_models', arguments: '{}' },
+              ],
+            });
+          }
+          return completion({ content: 'The catalog lists GPUs and backends.' });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    const { events } = await ask('what is in the catalog');
+    expect(events.filter((event) => event.type === 'tool')).toHaveLength(2);
+
+    const followUp = chatBodies[1]?.messages ?? [];
+    const assistant = followUp.find((message) => Array.isArray(message.tool_calls));
+    const echoed = assistant?.tool_calls as Array<{ id: string }> | undefined;
+    expect(echoed?.map((entry) => entry.id)).toEqual(['call-1', 'call-2']);
+
+    const answered = followUp
+      .filter((message) => message.role === 'tool')
+      .map((message) => message.tool_call_id);
+    expect(answered).toEqual(['call-1', 'call-2']);
   });
 });

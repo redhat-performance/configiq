@@ -10,6 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
+    "pretest": "npm run docs:build",
     "test:watch": "vitest",
     "type-check": "tsc --noEmit",
     "prepare": "husky",

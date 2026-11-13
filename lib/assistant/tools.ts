@@ -1,4 +1,5 @@
 import type { AssistantLink } from './types';
+import { kvCacheLink } from '@/lib/deep-links/pages';
 
 /**
  * Read-only tools.
@@ -366,7 +367,9 @@ const memoryEstimate: ToolDefinition = {
     const body = {
       model_path: model,
       system,
-      backend: str(args.backend) ?? 'vllm',
+      // `backend` is a service default; forwarding it here would spread a copy
+      // of that default into the browser-side contract.
+      ...(str(args.backend) ? { backend: str(args.backend) } : {}),
       ...(typeof args.max_num_tokens === 'number' ? { max_num_tokens: args.max_num_tokens } : {}),
       ...(typeof args.max_batch_size === 'number' ? { max_batch_size: args.max_batch_size } : {}),
       ...(context.simulator ? { simulator: context.simulator } : {}),
@@ -375,6 +378,17 @@ const memoryEstimate: ToolDefinition = {
     const raw = asRecord(await context.fetchJsonPost(`${context.gatewayUrl}/memory`, body));
     if (!raw) return unavailable('Memory service unavailable', 'The memory endpoint did not answer.');
 
+    // `/memory` is an AISimulate capability. If a different simulator is named
+    // in the result, the numbers did not come from what the user selected, so
+    // report that instead of presenting them as the requested simulator's.
+    const reported = str(raw.simulator);
+    if (context.simulator && reported && reported !== context.simulator) {
+      return unavailable(
+        'Memory estimate unavailable for the selected simulator',
+        `The memory service answered as ${reported}, not ${context.simulator}. Sizing is not substituted across simulators.`,
+      );
+    }
+
     const totalCapacity = num(raw.total_gpu_capacity_bytes);
     const kvBytes = num(raw.total_kv_size_bytes);
     const perToken = num(raw.kv_size_per_token_bytes);
@@ -382,6 +396,7 @@ const memoryEstimate: ToolDefinition = {
     const breakdown = asRecord(raw.memory_breakdown);
 
     const evidence: string[] = [];
+    if (reported) evidence.push(`This memory estimate was produced by ${reported}.`);
     if (totalCapacity !== null) evidence.push(`Total GPU capacity is ${describeMemoryGb(totalCapacity) ?? totalCapacity}.`);
     if (kvBytes !== null) evidence.push(`KV cache size is ${describeMemoryGb(kvBytes) ?? kvBytes}.`);
     if (perToken !== null) evidence.push(`KV cache uses ${perToken} bytes per token.`);
@@ -402,7 +417,9 @@ const memoryEstimate: ToolDefinition = {
       data: raw,
       link: {
         label: `Open KV cache calculator for ${model}`,
-        href: `/kv-cache?model=${encodeURIComponent(model)}&system=${encodeURIComponent(system)}`,
+        // The page's own contract, so the link always parses and carries the
+        // version marker the recipient's page expects.
+        href: kvCacheLink.build({ model, system }),
       },
     };
   },

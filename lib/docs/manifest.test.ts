@@ -33,10 +33,13 @@ describe('docs manifest', () => {
     }
   });
 
-  it('builds docs before type-check, locally and in CI', () => {
+  it('builds docs before type-check, test, locally and in CI', () => {
     expect(pkg.scripts?.['docs:build']).toBeDefined();
     expect(pkg.scripts?.predev).toContain('docs:build');
     expect(pkg.scripts?.prebuild).toContain('docs:build');
+    // `npm test` imports the generated index through the assistant route, so a
+    // clean checkout fails without this exactly like `tsc` does.
+    expect(pkg.scripts?.pretest).toContain('docs:build');
 
     // `lib/docs/generated/` is not checked in, so a clean CI checkout must build
     // it before `tsc` resolves the docs route's imports.
