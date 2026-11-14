@@ -218,14 +218,20 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // The simulator whose settings a change is saved under. A shared view can
+  // override the simulator for this session only, and changing the backend or
+  // version ends that override: the value belongs to the simulator the profile
+  // will rest on, not to the one the link borrowed for a moment.
+  const restingSimulator = simulatorChoice || defaultSimulator;
+
   const setInferenceBackend = React.useCallback((v: InferenceBackend) => {
     setSessionOverride(null);
     setInferenceBackendState(v);
     localStorage.setItem(STORAGE_KEYS.inferenceBackend, v);
     // Settings resolves the backend's default version from the live catalog.
     setBackendVersionState('');
-    localStorage.setItem(versionStorageKey(simulator), '');
-  }, [simulator]);
+    localStorage.setItem(versionStorageKey(restingSimulator), '');
+  }, [restingSimulator]);
 
   const setSimulator = React.useCallback((v: Simulator) => {
     // An explicit choice ends any shared-view override.
@@ -240,8 +246,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const setBackendVersion = React.useCallback((v: string) => {
     setSessionOverride(null);
     setBackendVersionState(v);
-    localStorage.setItem(versionStorageKey(simulator), v);
-  }, [simulator]);
+    localStorage.setItem(versionStorageKey(restingSimulator), v);
+  }, [restingSimulator]);
 
   const applyViewForSession = React.useCallback((view: SessionViewOverride) => {
     setSessionOverride(view);

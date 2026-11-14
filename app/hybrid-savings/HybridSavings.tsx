@@ -35,6 +35,8 @@ import { TourButton } from '@/components/help/TourButton'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { hybridSavingsLink, type HybridSavingsLinkValues } from '@/lib/deep-links/pages'
 import { useDeepLink } from '@/lib/deep-links/useDeepLink'
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance'
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { simulatorDisplayLabel } from '@/lib/simulator-labels'
@@ -253,6 +255,7 @@ export default function HybridSavings() {
     gpuOptions: allGpuOptions,
     modelOptions: allModelOptions,
     simulatorSupport,
+    simulators,
     backendOptions,
     modelSpecs,
     isLoading: catalogLoading,
@@ -616,7 +619,7 @@ export default function HybridSavings() {
   // A shared view applies after settings and the catalogs have settled, so the
   // page's automatic starting model cannot replace the linked one. Nothing is
   // persisted and no calculation is triggered.
-  const { warnings: linkWarnings } = useDeepLink(
+  const { warnings: linkWarnings, parsed: linkValues } = useDeepLink(
     hybridSavingsLink,
     hydrated && assumptionsHydrated && !catalogLoading,
     (values) => {
@@ -635,6 +638,14 @@ export default function HybridSavings() {
       if (values.billingMode) setCloudBillingMode(values.billingMode)
       if (values.costLens) setCostLens(values.costLens)
     },
+  )
+
+  // A link generated with another simulator is never switched silently. The
+  // reader's own simulator keeps producing the numbers until they accept the
+  // shared one for this view; saved settings are never touched.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => linkValues?.values ?? null,
+    hydrated && assumptionsHydrated && !catalogLoading,
   )
 
   const buildShareUrl = (): string => {
@@ -692,6 +703,15 @@ export default function HybridSavings() {
       </header>
 
       {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={acceptSharedSimulator}
+        />
+      )}
 
       {(catalogError || costings.error) && (
         <Alert title="Some shared data could not be loaded" variant="warning" isInline>

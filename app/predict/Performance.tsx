@@ -60,6 +60,8 @@ import {
   type ParsedPredictLink,
   type PredictLinkValues,
 } from '@/lib/deep-links/predict';
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 
 function modelSuggestions(): string {
@@ -146,7 +148,7 @@ interface AccordionField {
 
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem, applyViewForSession } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, simulators, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
@@ -199,9 +201,7 @@ export default function Performance() {
   const search = searchParams.toString();
   const deepLink = React.useRef<ParsedPredictLink | null>(null);
   const appliedDeepLink = React.useRef(false);
-  const appliedDeepLinkProvenance = React.useRef(false);
   const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
-  const [provenanceMismatch, setProvenanceMismatch] = React.useState<string | null>(null);
   // A linked max_num_seqs enables the manual override, which the model/GPU
   // reset effect below clears. Applying it in the link pass would be undone on
   // the same commit, so it is parked here and applied after that reset.
@@ -225,8 +225,6 @@ export default function Performance() {
     setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
     appliedDeepLink.current = false;
-    appliedDeepLinkProvenance.current = false;
-    setProvenanceMismatch(null);
     // A previous link's deferred values must not leak into this one.
     linkedMaxNumSeqs.current = null;
     pendingLinkedSystem.current = null;
@@ -595,32 +593,16 @@ export default function Performance() {
   }, [hydrated, gpuReady, search]);
 
   // Provenance is applied separately: a differing simulator is never switched
-  // silently, it is offered through the banner below.
-  React.useEffect(() => {
-    if (!hydrated || appliedDeepLinkProvenance.current) return;
-    appliedDeepLinkProvenance.current = true;
-    const values = deepLink.current?.values;
-    if (!values) return;
-
-    if (values.simulator && values.simulator !== simulator) {
-      setProvenanceMismatch(values.simulator);
-      return;
-    }
-    applyViewForSession({ backend: values.backend, backendVersion: values.backendVersion });
-  }, [hydrated, simulator, applyViewForSession, search]);
-
-  const simulatorLabel = (id: string) =>
-    simulatorDisplayLabel(id, simulators.find((entry) => entry.id === id)?.label ?? id);
+  // silently, it is offered through the banner below. Declared after the link
+  // effect above so the parsed values it reads already exist.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => deepLink.current?.values ?? null,
+    hydrated && gpuReady,
+  );
 
   const handleUseSharedSimulator = () => {
     const values = deepLink.current?.values;
-    if (!provenanceMismatch) return;
-    applyViewForSession({
-      simulator: provenanceMismatch,
-      backend: values?.backend,
-      backendVersion: values?.backendVersion,
-    });
-    setProvenanceMismatch(null);
+    acceptSharedSimulator();
     // The catalog narrows to the shared simulator on the next render, which
     // replaces a system that simulator does not offer. Keep the linked system
     // to re-apply once it is selectable again.
@@ -1634,33 +1616,13 @@ export default function Performance() {
       </div>
 
 
-      {provenanceMismatch && (
-        <div
-          role="status"
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '8px 12px',
-            padding: '12px 16px',
-            marginBottom: '16px',
-            border: '1px solid var(--gc-link)',
-            borderRadius: '8px',
-            background: '#e7f4ff',
-            color: 'var(--gc-text)',
-            fontSize: '14px',
-          }}
-        >
-          <span>
-            This view was shared using{' '}
-            <strong>{simulatorLabel(provenanceMismatch)}</strong>; your
-            settings use <strong>{simulatorLabel(simulator)}</strong>.
-          </span>
-          <Button variant="link" onClick={handleUseSharedSimulator}>
-            Use {simulatorLabel(provenanceMismatch)} for this view
-          </Button>
-          <Link href="/settings">Open settings</Link>
-        </div>
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={handleUseSharedSimulator}
+        />
       )}
 
       {/* ---------- input row ---------- */}

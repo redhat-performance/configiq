@@ -47,6 +47,8 @@ import { TourButton } from '@/components/help/TourButton';
 import { FABRIC_NONE } from '@/lib/deep-links/common';
 import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
 import { useDeepLink } from '@/lib/deep-links/useDeepLink';
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
 import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/utils/format';
@@ -243,7 +245,7 @@ function friendlyErrorHint(code: string | null): string {
 export default function Sizing() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, simulators, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
   // An unavailable simulator has an explicit empty support entry, so its pages
@@ -651,7 +653,7 @@ export default function Sizing() {
   // A shared view applies after settings, the catalog, and the starting model
   // have settled. URL values change this form only; nothing is persisted, and
   // opening a link never submits a request.
-  const { warnings: linkWarnings } = useDeepLink(
+  const { warnings: linkWarnings, parsed: linkValues } = useDeepLink(
     recommendLink,
     hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
     (values) => {
@@ -697,6 +699,14 @@ export default function Sizing() {
       // A retained result no longer matches the form the link just described.
       markInputsDirty();
     },
+  );
+
+  // A link generated with another simulator is never switched silently: this
+  // page shows the shared values and offers the switch. A matching simulator
+  // applies the shared backend and version to this view only.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => linkValues?.values ?? null,
+    hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
   );
 
   const buildShareUrl = (): string => {
@@ -879,6 +889,15 @@ export default function Sizing() {
       </div>
 
       {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={acceptSharedSimulator}
+        />
+      )}
 
       {/* ─── Input card ─── */}
       <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">

@@ -35,6 +35,8 @@ vi.mock('@/contexts/RecommendContext', () => ({
   }),
 }));
 
+const settings = vi.hoisted(() => ({ applyViewForSession: vi.fn() }));
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: () => ({
     hydrated: true,
@@ -49,7 +51,7 @@ vi.mock('@/contexts/SettingsContext', () => ({
     preferredCloudProvider: null,
     setDefaultSystem: vi.fn(),
     setDefaultModel: vi.fn(),
-    applyViewForSession: vi.fn(),
+    applyViewForSession: settings.applyViewForSession,
   }),
 }));
 
@@ -76,7 +78,10 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     modelSpecs: new Map(),
     networkOptions: ['ib-400g'],
     backendOptions: [backend],
-    simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
+    simulators: [
+      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+      { id: 'blis', label: 'BLIS', version: 'test-blis', default: false },
+    ],
     simulatorSupport: {
       aisimulate: {
         id: 'aisimulate',
@@ -140,6 +145,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
   startSizing.mockClear();
+  settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
     json: async () => ({ data: [] }),
@@ -207,6 +213,43 @@ describe('recommend sizing shared views', () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     expect((await calculate()).fabric).toBe('ib-400g');
+  });
+
+  it('offers the shared simulator instead of switching silently', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0',
+    );
+
+    expect(container.textContent).toContain('This view was shared using');
+    expect(container.textContent).toContain('BLIS');
+    // Nothing is switched and nothing is persisted until the reader accepts.
+    expect(settings.applyViewForSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => /Use BLIS for this view/.test(button.textContent ?? ''))
+        ?.click();
+    });
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'blis',
+      backend: 'vllm',
+      backendVersion: '0.9.0',
+    });
+  });
+
+  it('adopts the shared backend and version when the simulator already matches', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=aisimulate&backend=vllm&backendVersion=0.9.0',
+    );
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      backend: 'vllm',
+      backendVersion: '0.9.0',
+    });
+    expect(container.textContent).not.toContain('This view was shared using');
   });
 
   it('carries the concurrency a latency link was sized for', async () => {
