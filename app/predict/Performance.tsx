@@ -202,6 +202,13 @@ export default function Performance() {
   const appliedDeepLinkProvenance = React.useRef(false);
   const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
   const [provenanceMismatch, setProvenanceMismatch] = React.useState<string | null>(null);
+  // A linked max_num_seqs enables the manual override, which the model/GPU
+  // reset effect below clears. Applying it in the link pass would be undone on
+  // the same commit, so it is parked here and applied after that reset.
+  const linkedMaxNumSeqs = React.useRef<number | null>(null);
+  // The linked system the shared simulator did not offer yet. It is re-applied
+  // once the catalog for the accepted simulator arrives.
+  const pendingLinkedSystem = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     const parsed = parsePredictLink(search ? `?${search}` : '');
@@ -220,6 +227,9 @@ export default function Performance() {
     appliedDeepLink.current = false;
     appliedDeepLinkProvenance.current = false;
     setProvenanceMismatch(null);
+    // A previous link's deferred values must not leak into this one.
+    linkedMaxNumSeqs.current = null;
+    pendingLinkedSystem.current = null;
 
     // Rewrite the address bar to the canonical link: unknown and invalid
     // parameters are dropped, and `v=1` marks what this build understood. A
@@ -263,6 +273,20 @@ export default function Performance() {
       setGpu(selectableGpus[0].systemId);
     }
   }, [gpuReady, gpu, selectableGpus]);
+
+  // Accepting a shared simulator narrows the catalog, and the effect above
+  // replaces a system that simulator does not offer. Put the linked system back
+  // once it is selectable; declare this after the replacement so it wins.
+  React.useEffect(() => {
+    const pending = pendingLinkedSystem.current;
+    if (!pending) return;
+    if (!selectableGpus.some(option => option.systemId === pending)) return;
+    pendingLinkedSystem.current = null;
+    setGpu(pending);
+    markInputsDirty();
+    // The narrowing is what matters here, not a keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableGpus]);
 
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
@@ -553,8 +577,18 @@ export default function Performance() {
     if (values.decodeMaxSeqLen !== undefined) {
       handleSequenceLengthChange(String(values.decodeMaxSeqLen), setDecodeMaxSeqLenInput, setDecodeMaxSeqLen);
     }
-    if (values.maxNumSeqs !== undefined) setVllmManualMaxNumSeqs(values.maxNumSeqs);
+    if (values.maxNumSeqs !== undefined) linkedMaxNumSeqs.current = values.maxNumSeqs;
     if (values.gpuMemUtil !== undefined) setGpuMemoryUtilization(values.gpuMemUtil);
+    if (values.prefillTp !== undefined) setPrefillCfg(c => ({ ...c, tp: String(values.prefillTp) }));
+    if (values.prefillPp !== undefined) setPrefillCfg(c => ({ ...c, pp: String(values.prefillPp) }));
+    if (values.prefillWorkers !== undefined) setPrefillCfg(c => ({ ...c, workers: String(values.prefillWorkers) }));
+    if (values.prefillBatch !== undefined) setPrefillCfg(c => ({ ...c, batch: String(values.prefillBatch) }));
+    if (values.decodeTp !== undefined) setDecodeCfg(c => ({ ...c, tp: String(values.decodeTp) }));
+    if (values.decodePp !== undefined) setDecodeCfg(c => ({ ...c, pp: String(values.decodePp) }));
+    if (values.decodeWorkers !== undefined) setDecodeCfg(c => ({ ...c, workers: String(values.decodeWorkers) }));
+    if (values.decodeBatch !== undefined) setDecodeCfg(c => ({ ...c, batch: String(values.decodeBatch) }));
+    // A retained result no longer matches the form the link just described.
+    markInputsDirty();
     // The setters above are stable state updates; this must run once per link,
     // which `search` marks.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -587,6 +621,10 @@ export default function Performance() {
       backendVersion: values?.backendVersion,
     });
     setProvenanceMismatch(null);
+    // The catalog narrows to the shared simulator on the next render, which
+    // replaces a system that simulator does not offer. Keep the linked system
+    // to re-apply once it is selectable again.
+    pendingLinkedSystem.current = values?.system ?? null;
   };
 
   const buildShareUrl = (): string => {
@@ -613,6 +651,20 @@ export default function Performance() {
       gpuMemUtil: gpuMemoryUtilization ?? undefined,
       moeTp: parseInt(moeEtpSizeInput, 10) || undefined,
       moeEp: parseInt(moeEpSizeInput, 10) || undefined,
+      // Pool parallelism belongs to a disaggregated view. Carrying it in an
+      // aggregated link would describe controls the recipient cannot see.
+      ...(servingMode === 'disagg'
+        ? {
+            prefillTp: parseInt(prefillCfg.tp, 10) || undefined,
+            prefillPp: parseInt(prefillCfg.pp, 10) || undefined,
+            prefillWorkers: parseInt(prefillCfg.workers, 10) || undefined,
+            prefillBatch: parseInt(prefillCfg.batch, 10) || undefined,
+            decodeTp: parseInt(decodeCfg.tp, 10) || undefined,
+            decodePp: parseInt(decodeCfg.pp, 10) || undefined,
+            decodeWorkers: parseInt(decodeCfg.workers, 10) || undefined,
+            decodeBatch: parseInt(decodeCfg.batch, 10) || undefined,
+          }
+        : {}),
     };
     // The page's own defaults, so a link describes the view rather than
     // restating every value that was never changed.
@@ -626,6 +678,14 @@ export default function Performance() {
       weightPrecision: 'FP16',
       kvPrecision: 'FP16',
       prefix: 0,
+      prefillTp: 1,
+      prefillPp: 1,
+      prefillWorkers: 1,
+      prefillBatch: 1,
+      decodeTp: 1,
+      decodePp: 1,
+      decodeWorkers: 1,
+      decodeBatch: 64,
     };
     return buildPredictLink(omitDefaults(values, defaults));
   };
@@ -849,6 +909,17 @@ export default function Performance() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, gpu]);
+
+  // Apply a linked max_num_seqs once the reset above has run. It has to live
+  // after that effect: the reset clears the override whenever the model or GPU
+  // changes, which is exactly what a link often does.
+  React.useEffect(() => {
+    if (!gpuReady || linkedMaxNumSeqs.current === null) return;
+    setVllmManualMaxNumSeqs(linkedMaxNumSeqs.current);
+    setVllmOverride(true);
+    linkedMaxNumSeqs.current = null;
+    // Deliberately also keyed on model and GPU: the reset above fires on either.
+  }, [gpuReady, model, gpu]);
 
   const toggleAcc = (id: string) => {
     setExpanded((e) => (e.includes(id) ? e.filter((x) => x !== id) : [...e, id]));

@@ -40,6 +40,13 @@ const ARCH_MULTIPLIER: Record<string, number> = {
   'ampere':       0.85,
 }
 
+/** Axes each preset plots. Shared by the preset buttons and link application. */
+const PRESET_AXES: Record<Preset, { x: XAxis; y: YAxis }> = {
+  balanced: { x: 'vram', y: 'throughput-index' },
+  'cost-efficiency': { x: 'price', y: 'throughput-index' },
+  performance: { x: 'mem-bw', y: 'throughput-index' },
+};
+
 export default function GpuExplorerPage() {
   const [mounted, setMounted] = React.useState(false);
   const [preset, setPreset] = React.useState<Preset>('balanced');
@@ -62,8 +69,14 @@ export default function GpuExplorerPage() {
     (values) => {
       if (values.preset) setPreset(values.preset);
       if (values.vendor) setVendorFilter(values.vendor);
-      if (values.x) setXAxis(values.x);
-      if (values.y) setYAxis(values.y);
+      // A preset implies its axes, but explicit axes in the same link are a
+      // customised view and win. There is no preset effect, so nothing
+      // overwrites what the link asked for.
+      const implied = values.preset ? PRESET_AXES[values.preset] : null;
+      const x = values.x ?? implied?.x;
+      const y = values.y ?? implied?.y;
+      if (x) setXAxis(x);
+      if (y) setYAxis(y);
     },
   );
 
@@ -154,23 +167,13 @@ export default function GpuExplorerPage() {
     }
   };
 
-  // Apply preset
-  React.useEffect(() => {
-    switch (preset) {
-      case 'balanced':
-        setXAxis('vram');
-        setYAxis('throughput-index');
-        break;
-      case 'cost-efficiency':
-        setXAxis('price'); // Hardware cost
-        setYAxis('throughput-index');
-        break;
-      case 'performance':
-        setXAxis('mem-bw');
-        setYAxis('throughput-index');
-        break;
-    }
-  }, [preset]);
+  // Selecting a preset sets its axes explicitly. This is a handler rather than
+  // an effect so a shared view's axes are not overwritten after it applies.
+  const applyPreset = (next: Preset) => {
+    setPreset(next);
+    setXAxis(PRESET_AXES[next].x);
+    setYAxis(PRESET_AXES[next].y);
+  };
 
   // Prepare all data for bubble chart with full specs
   const allData = filteredGPUs.map(gpu => ({
@@ -230,9 +233,9 @@ export default function GpuExplorerPage() {
                   Preset:
                 </Text>
                 <ToggleGroup>
-                  <ToggleGroupItem text="Balanced" isSelected={preset === 'balanced'} onChange={() => setPreset('balanced')} />
-                  <ToggleGroupItem text="Cost efficiency" isSelected={preset === 'cost-efficiency'} onChange={() => setPreset('cost-efficiency')} isDisabled={!costMetricsReady} />
-                  <ToggleGroupItem text="Performance" isSelected={preset === 'performance'} onChange={() => setPreset('performance')} />
+                  <ToggleGroupItem text="Balanced" isSelected={preset === 'balanced'} onChange={() => applyPreset('balanced')} />
+                  <ToggleGroupItem text="Cost efficiency" isSelected={preset === 'cost-efficiency'} onChange={() => applyPreset('cost-efficiency')} isDisabled={!costMetricsReady} />
+                  <ToggleGroupItem text="Performance" isSelected={preset === 'performance'} onChange={() => applyPreset('performance')} />
                 </ToggleGroup>
               </FlexItem>
 

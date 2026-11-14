@@ -71,7 +71,9 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         networks: ['ib-400g'],
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct', 'settings/default-model'],
-        systems: ['h200_sxm', 'h100_sxm'],
+        // BLIS deliberately lacks h100_sxm: it exercises a shared link whose
+        // system the recipient's current simulator does not offer.
+        systems: ['h200_sxm'],
         backends: [{
           id: 'vllm',
           aisimulateId: 'vllm',
@@ -408,6 +410,88 @@ describe('performance page widget handoff', () => {
 
     expect(container.querySelector('[data-testid="cloud-cost-tile"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="self-hosted-cost-tile"]')).not.toBeNull();
+  });
+});
+
+
+describe('performance page disagg link fields', () => {
+  it('restores both pool configurations from a shared link', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&servingMode=disagg' +
+      '&prefillTp=2&prefillPp=1&prefillWorkers=3&prefillBatch=8' +
+      '&decodeTp=4&decodePp=2&decodeWorkers=5&decodeBatch=128',
+    );
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    expect(fetchEstimateAsInferenceResult).toHaveBeenCalledOnce();
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input).toMatchObject({
+      mode: 'disagg',
+      prefill: { tp: 2, pp: 1, workers: 3, batch: 8 },
+      decode: { tp: 4, pp: 2, workers: 5, batch: 128 },
+    });
+  });
+
+  it('enables the manual override for a linked max_num_seqs', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&maxNumSeqs=64');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    expect(fetchEstimateAsInferenceResult).toHaveBeenCalledOnce();
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    // Without the override the value is restored into the form but never sent.
+    expect(input.max_num_seqs).toBe(64);
+  });
+
+  it('restores the linked system once the shared simulator is accepted', async () => {
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    const { gpu } = await mountAt(
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+    // BLIS's catalog has no h100, so the page settles on the system it offers.
+    expect(gpu?.value).toBe('h200_sxm');
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      // The banner uses the display label, which shortens AISimulate.
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(blisSettings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'aisimulate',
+      backend: 'vllm',
+      backendVersion: BLIS_FIXTURE_VERSION,
+    });
+
+    // Accepting widens the catalog. The linked system must come back rather
+    // than staying on the fallback the previous simulator forced.
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
   });
 });
 

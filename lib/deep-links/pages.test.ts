@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import { FABRIC_NONE } from './common';
 import {
   gpuExplorerLink,
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
   validationCompareLink,
+  type KvCacheLinkValues,
   type RecommendLinkValues,
 } from './pages';
 
@@ -112,6 +114,65 @@ describe('page link contracts', () => {
 
     expect(params.has('simulator')).toBe(false);
     expect(params.get('backend')).toBe('vllm');
+  });
+
+  it('round-trips the recommend fields it now owns', () => {
+    const values: RecommendLinkValues = {
+      model: 'Qwen/Qwen3-32B',
+      system: 'h200_sxm',
+      goal: 'latency',
+      concurrency: 32,
+      prefillMaxSeqLen: 8192,
+      decodeMaxSeqLen: 4096,
+      fabric: 'ib-400g',
+      simulator: 'blis',
+      backend: 'vllm',
+    };
+
+    expect(recommendLink.parse(query(recommendLink.build(values)))).toEqual({
+      values,
+      warnings: [],
+    });
+  });
+
+  it('carries an explicit "no fabric" choice instead of dropping it', () => {
+    // The page's None option is an empty string, which `build` would omit, and
+    // an omitted field means "use the recipient's default" — a different view.
+    const built = recommendLink.build({ fabric: FABRIC_NONE });
+    const params = new URLSearchParams(query(built));
+
+    expect(params.get('fabric')).toBe('none');
+    expect(recommendLink.parse(query(built)).values).toEqual({ fabric: FABRIC_NONE });
+  });
+
+  it('round-trips both pool parallelism sets for the KV cache calculator', () => {
+    const values: KvCacheLinkValues = {
+      model: 'Qwen/Qwen3-32B',
+      servingMode: 'disagg',
+      prefillTp: 2,
+      prefillPp: 1,
+      prefillMoeTp: 2,
+      prefillMoeEp: 2,
+      decodeTp: 4,
+      decodePp: 2,
+      decodeMoeTp: 4,
+      decodeMoeEp: 4,
+    };
+
+    expect(kvCacheLink.parse(query(kvCacheLink.build(values)))).toEqual({
+      values,
+      warnings: [],
+    });
+  });
+
+  it('identifies a measured row by its configuration key', () => {
+    const built = validationCompareLink.build({ configurationKey: 'fp16-tp4' });
+    const params = new URLSearchParams(query(built));
+
+    expect(params.get('configurationKey')).toBe('fp16-tp4');
+    expect(validationCompareLink.parse(query(built)).values).toEqual({
+      configurationKey: 'fp16-tp4',
+    });
   });
 
   it('declares no results, so a link cannot carry an answer', () => {

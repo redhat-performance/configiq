@@ -34,6 +34,14 @@ export const WEIGHT_PRECISIONS = ['FP16', 'FP8', 'INT8', 'INT4', 'MXFP4', 'NVFP4
 export const KV_PRECISIONS = ['FP16', 'FP8', 'NVFP4'] as const;
 
 /**
+ * `fabric=none` is the explicit "aggregate candidates only" choice. It is a
+ * sentinel because the page's own None option is an empty string, and `build`
+ * omits empty values; omitting the field instead means "use the recipient's
+ * default", which is a different view.
+ */
+export const FABRIC_NONE = 'none';
+
+/**
  * Provenance trio. Generated links always carry all three so a recipient can
  * tell which implementation produced the numbers, even when their own settings
  * differ.

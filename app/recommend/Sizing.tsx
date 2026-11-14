@@ -44,6 +44,7 @@ import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
+import { FABRIC_NONE } from '@/lib/deep-links/common';
 import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
 import { useDeepLink } from '@/lib/deep-links/useDeepLink';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
@@ -654,7 +655,11 @@ export default function Sizing() {
     recommendLink,
     hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
     (values) => {
-      if (values.model) setModel(values.model);
+      if (values.model) {
+        setModel(values.model);
+        // The link changed the form, not this reader's saved default.
+        modelTouched.current = false;
+      }
       if (values.system) setGpuSystem(values.system);
       if (values.goal) setGoal(values.goal);
       if (values.isl !== undefined) { setIsl(values.isl); setIslInput(String(values.isl)); }
@@ -678,7 +683,19 @@ export default function Sizing() {
         setMaxSeqLen(values.maxSeqLen);
         setMaxSeqLenInput(String(values.maxSeqLen));
       }
-      if (values.fabric) setNetworkFabric(values.fabric);
+      if (values.prefillMaxSeqLen !== undefined) {
+        setPrefillMaxSeqLen(values.prefillMaxSeqLen);
+        setPrefillMaxSeqLenInput(String(values.prefillMaxSeqLen));
+      }
+      if (values.decodeMaxSeqLen !== undefined) {
+        setDecodeMaxSeqLen(values.decodeMaxSeqLen);
+        setDecodeMaxSeqLenInput(String(values.decodeMaxSeqLen));
+      }
+      if (values.fabric !== undefined) {
+        setNetworkFabric(values.fabric === FABRIC_NONE ? '' : values.fabric);
+      }
+      // A retained result no longer matches the form the link just described.
+      markInputsDirty();
     },
   );
 
@@ -689,14 +706,23 @@ export default function Sizing() {
       goal,
       isl,
       osl,
-      concurrency: isCapacity ? targetConcurrency : undefined,
+      // Latency sizing submits a target concurrency too, so it belongs in every
+      // non-demand link; omitting it restored concurrency 1 on a fresh page.
+      concurrency: isDemand ? undefined : targetConcurrency,
       ttft: goal === 'latency' && requestLatency === null ? ttft : undefined,
       tpot: goal === 'latency' && requestLatency === null ? tpot : undefined,
       e2eLatency: goal === 'latency' && requestLatency !== null ? requestLatency : undefined,
       demandRate: goal === 'demand' ? demandRate : undefined,
       prefix,
       maxSeqLen: maxSeqLen ?? undefined,
-      fabric: fabricRequired && !aggregateOnlyGoal ? selectedNetworkFabric || undefined : undefined,
+      prefillMaxSeqLen: prefillMaxSeqLen ?? undefined,
+      decodeMaxSeqLen: decodeMaxSeqLen ?? undefined,
+      // An unset fabric means "use the simulator default", which is what the
+      // recipient gets if the field is absent. An explicit None is sentinel-
+      // encoded so it survives an empty-string build.
+      fabric: fabricRequired && !aggregateOnlyGoal
+        ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
+        : undefined,
       simulator: simulator || undefined,
       backend: inferenceBackend,
       backendVersion: backendVersion || undefined,

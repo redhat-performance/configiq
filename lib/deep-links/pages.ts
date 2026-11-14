@@ -38,6 +38,8 @@ export const recommendLink = defineLink('/recommend', {
   demandRate: z.coerce.number().min(0.0001).max(1_000_000),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
   maxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
+  prefillMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
+  decodeMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   fabric: text(MAX_ID_LENGTH),
   ...PROVENANCE_FIELDS,
 });
@@ -61,6 +63,15 @@ export const kvCacheLink = defineLink('/kv-cache', {
   moeTp: positiveInt(1024),
   moeEp: positiveInt(1024),
   servingMode: z.enum(SERVING_MODES),
+  // Both pools carry their own parallelism when the view is disaggregated.
+  prefillTp: positiveInt(1024),
+  prefillPp: positiveInt(1024),
+  prefillMoeTp: positiveInt(1024),
+  prefillMoeEp: positiveInt(1024),
+  decodeTp: positiveInt(1024),
+  decodePp: positiveInt(1024),
+  decodeMoeTp: positiveInt(1024),
+  decodeMoeEp: positiveInt(1024),
   memFractionKind: text(64),
   memFractionValue: z.coerce.number().min(0).max(1),
 });
@@ -102,6 +113,9 @@ export const validationCompareLink = defineLink('/validation/compare', {
   isl: positiveInt(MAX_SEQUENCE_LENGTH),
   osl: positiveInt(MAX_SEQUENCE_LENGTH),
   tp: positiveInt(1024),
+  // A measured row is identified by its configuration key, not just by the
+  // model/accelerator pair: precision and quantisation rows share both.
+  configurationKey: text(MAX_ID_LENGTH),
   ...PROVENANCE_FIELDS,
 });
 

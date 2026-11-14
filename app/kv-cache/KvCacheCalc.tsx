@@ -129,6 +129,9 @@ export default function KvCacheCalc() {
   const [memFractionKind, setMemFractionKind] = React.useState('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
+  // A fraction kind chosen by the reader or carried by a link; the backend
+  // default only fills an unchanged control.
+  const memFractionKindUserEdited = React.useRef(false)
   const [expanded, setExpanded] = React.useState<string[]>([])
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
@@ -200,7 +203,19 @@ export default function KvCacheCalc() {
       if (values.moeTp !== undefined) setMoeTpSize(String(values.moeTp))
       if (values.moeEp !== undefined) setMoeEpSize(String(values.moeEp))
       if (values.servingMode) setServingMode(values.servingMode)
-      if (values.memFractionKind) setMemFractionKind(values.memFractionKind)
+      if (values.prefillTp !== undefined) setPrefillPar(c => ({ ...c, tp: String(values.prefillTp) }))
+      if (values.prefillPp !== undefined) setPrefillPar(c => ({ ...c, pp: String(values.prefillPp) }))
+      if (values.prefillMoeTp !== undefined) setPrefillPar(c => ({ ...c, moeTp: String(values.prefillMoeTp) }))
+      if (values.prefillMoeEp !== undefined) setPrefillPar(c => ({ ...c, moeEp: String(values.prefillMoeEp) }))
+      if (values.decodeTp !== undefined) setDecodePar(c => ({ ...c, tp: String(values.decodeTp) }))
+      if (values.decodePp !== undefined) setDecodePar(c => ({ ...c, pp: String(values.decodePp) }))
+      if (values.decodeMoeTp !== undefined) setDecodePar(c => ({ ...c, moeTp: String(values.decodeMoeTp) }))
+      if (values.decodeMoeEp !== undefined) setDecodePar(c => ({ ...c, moeEp: String(values.decodeMoeEp) }))
+      if (values.memFractionKind) {
+        // The linked kind is a choice; the backend default must not replace it.
+        memFractionKindUserEdited.current = true
+        setMemFractionKind(values.memFractionKind)
+      }
       if (values.memFractionValue !== undefined) {
         // Mark the fraction as chosen so the backend default does not replace it.
         memFractionValueUserEdited.current = true
@@ -223,6 +238,20 @@ export default function KvCacheCalc() {
       moeTp: moeTpSize ? parseInt(moeTpSize, 10) || undefined : undefined,
       moeEp: moeEpSize ? parseInt(moeEpSize, 10) || undefined : undefined,
       servingMode,
+      // Pool parallelism belongs to a disaggregated view. Carrying it in an
+      // aggregated link would describe controls the recipient cannot see.
+      ...(servingMode === 'disagg'
+        ? {
+            prefillTp: parseInt(prefillPar.tp, 10) || undefined,
+            prefillPp: parseInt(prefillPar.pp, 10) || undefined,
+            prefillMoeTp: parseInt(prefillPar.moeTp, 10) || undefined,
+            prefillMoeEp: parseInt(prefillPar.moeEp, 10) || undefined,
+            decodeTp: parseInt(decodePar.tp, 10) || undefined,
+            decodePp: parseInt(decodePar.pp, 10) || undefined,
+            decodeMoeTp: parseInt(decodePar.moeTp, 10) || undefined,
+            decodeMoeEp: parseInt(decodePar.moeEp, 10) || undefined,
+          }
+        : {}),
       memFractionKind,
       memFractionValue,
     }
@@ -232,6 +261,10 @@ export default function KvCacheCalc() {
       tp: 1,
       pp: 1,
       servingMode: 'agg',
+      prefillTp: 1,
+      prefillPp: 1,
+      decodeTp: 1,
+      decodePp: 1,
     }
     return kvCacheLink.build(kvCacheLink.omitDefaults(values, defaults))
   }
@@ -255,7 +288,9 @@ export default function KvCacheCalc() {
       setMemFractionValue(1.0)
       setMemFractionValueInput('1.0')
     }
-    setMemFractionKind(selectedBackend.memoryFractionKind)
+    if (!memFractionKindUserEdited.current) {
+      setMemFractionKind(selectedBackend.memoryFractionKind)
+    }
   }, [backend, backendOptions, catalogLoading, hydrated, system])
 
   const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
@@ -548,6 +583,8 @@ export default function KvCacheCalc() {
                     if (systemMemoryFraction(backendOptions.find(option => option.id === nextBackend), system) != null) {
                       memFractionValueUserEdited.current = false
                     }
+                    // A new backend brings its own default fraction kind.
+                    memFractionKindUserEdited.current = false
                     setBackend(nextBackend)
                     markInputsDirty()
                   }}
@@ -727,7 +764,7 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-mem-kind"
                   value={memFractionKind}
-                  onChange={e => { setMemFractionKind(e.target.value); markInputsDirty(); }}
+                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value); markInputsDirty(); }}
                   className={styles.gpuSelect}
                 >
                   <option value="of_total">of_total</option>

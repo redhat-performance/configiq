@@ -60,6 +60,7 @@ import {
   type DatasetConfiguration,
   type DatasetSource,
 } from '@/lib/validation/benchmark-types'
+import { selectConfiguration } from './configuration-selection'
 import ComparisonPreview, {
   predictionColor,
   type EstimatePoint,
@@ -313,34 +314,6 @@ function positiveInteger(value: string): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }
 
-/**
- * How different two measured runtime configurations are. Keeping the same
- * source matters most, then the recorded precision and runtime settings, so a
- * changed workload dimension repairs to the run that still describes the same
- * deployment.
- */
-function configurationDistance(left: DatasetConfiguration, right: DatasetConfiguration): number {
-  let score = left.measurement_source === right.measurement_source ? 0 : 100
-  for (const field of Object.keys(left)) {
-    if (field === 'measurement_source') continue
-    const leftValue = left[field] ?? ''
-    const rightValue = right[field] ?? ''
-    if (leftValue !== rightValue) score += leftValue && rightValue ? 4 : 1
-  }
-  return score
-}
-
-function nearestConfiguration(
-  options: ConfigurationOption[],
-  previous: DatasetConfiguration | null,
-): ConfigurationOption | null {
-  if (options.length === 0) return null
-  if (!previous) return options[0]
-  return [...options].sort((left, right) =>
-    configurationDistance(left.values, previous) - configurationDistance(right.values, previous),
-  )[0]
-}
-
 function simulatorPlans({
   simulators,
   simulatorSupport,
@@ -438,6 +411,9 @@ export default function BenchmarkComparisonPage() {
   const [configurationKey, setConfigurationKey] = React.useState('')
   const [configurationOpen, setConfigurationOpen] = React.useState(false)
   const configurationRef = React.useRef<ConfigurationOption | null>(null)
+  // A shared view names one measured configuration; it wins over the nearest
+  // match to the previous selection for the resolve it arrives with.
+  const requestedConfigurationKey = React.useRef<string | null>(null)
   const [source, setSource] = React.useState<DatasetSource | null>(null)
   const [inferencexSource, setInferenceXSource] = React.useState<InferenceXSource | null>(null)
   const [results, setResults] = React.useState<ComparisonResults>(EMPTY_RESULTS)
@@ -502,8 +478,9 @@ export default function BenchmarkComparisonPage() {
       if (!data.filters.model) setRootOptions(data.options)
       const configurations = data.configurations ?? []
       const previous = configurationRef.current
-      const nextConfiguration = configurations.find(option => option.key === previous?.key)
-        ?? nearestConfiguration(configurations, previous?.values ?? null)
+      const requestedKey = requestedConfigurationKey.current
+      requestedConfigurationKey.current = null
+      const nextConfiguration = selectConfiguration(configurations, requestedKey, previous)
       configurationRef.current = nextConfiguration
       setConfigurationKey(nextConfiguration?.key ?? '')
 
@@ -598,6 +575,7 @@ export default function BenchmarkComparisonPage() {
         osl: values.osl !== undefined ? String(values.osl) : selection.osl,
         tp: values.tp !== undefined ? String(values.tp) : selection.tp,
       }
+      requestedConfigurationKey.current = values.configurationKey ?? null
       setSelection(next)
       clearResults()
       setNotice(null)
@@ -612,6 +590,7 @@ export default function BenchmarkComparisonPage() {
       isl: selection.isl ? Number(selection.isl) : undefined,
       osl: selection.osl ? Number(selection.osl) : undefined,
       tp: selection.tp ? Number(selection.tp) : undefined,
+      configurationKey: configurationKey || undefined,
       simulator: simulator || undefined,
       backend: inferenceBackend,
       backendVersion: backendVersion || undefined,

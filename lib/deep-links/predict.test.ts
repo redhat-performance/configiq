@@ -87,4 +87,36 @@ describe('predict deep links', () => {
       isl: 4000,
     });
   });
+
+  it('round-trips each disaggregated pool independently', () => {
+    // A prefill pool and a decode pool can differ in every parallelism field,
+    // so a shared view has to carry both rather than one aggregate pair.
+    const values: PredictLinkValues = {
+      model: 'Qwen/Qwen3-32B',
+      system: 'h100_sxm',
+      servingMode: 'disagg',
+      prefillTp: 2,
+      prefillPp: 1,
+      prefillWorkers: 3,
+      prefillBatch: 8,
+      decodeTp: 4,
+      decodePp: 2,
+      decodeWorkers: 5,
+      decodeBatch: 128,
+    };
+
+    const parsed = parsePredictLink(
+      buildPredictLink(values).slice(buildPredictLink(values).indexOf('?')),
+    );
+
+    expect(parsed.values).toEqual(values);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it('rejects a zero in a pool field instead of borrowing the other pool', () => {
+    const parsed = parsePredictLink('?decodeWorkers=0&decodeBatch=16');
+
+    expect(parsed.values).toEqual({ decodeBatch: 16 });
+    expect(parsed.warnings).toEqual(['Ignored "decodeWorkers": the value was not valid.']);
+  });
 });

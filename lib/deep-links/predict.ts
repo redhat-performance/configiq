@@ -56,6 +56,16 @@ const FIELDS = {
   gpuMemUtil: z.coerce.number().min(0.01).max(1),
   moeTp: positiveInt(1024),
   moeEp: positiveInt(1024),
+  // Disaggregated runs configure each pool independently: a prefill pool and a
+  // decode pool can differ in tensor/pipeline parallelism, workers, and batch.
+  prefillTp: positiveInt(1024),
+  prefillPp: positiveInt(1024),
+  prefillWorkers: positiveInt(1024),
+  prefillBatch: positiveInt(1_000_000),
+  decodeTp: positiveInt(1024),
+  decodePp: positiveInt(1024),
+  decodeWorkers: positiveInt(1024),
+  decodeBatch: positiveInt(1_000_000),
 } as const;
 
 export const predictLink = defineLink('/predict', FIELDS);
