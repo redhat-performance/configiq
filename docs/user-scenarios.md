@@ -68,6 +68,28 @@ concurrency) today. It does not infer a workload from a use-case description.
   validated shared-pool sizing.
 - GPU counts must come from recorded runs, not extrapolation.
 
+## Sharing a sized view
+
+Sizing is usually a conversation, and a link is how you hand someone the view
+you are looking at instead of describing it.
+
+- **Send the view, not a screenshot.** **Copy link** records every value that
+  differs from the page's starting state, along with the simulator, backend,
+  and backend version that produced it. The recipient opens the same form, not
+  the same answer: they press **Calculate** themselves.
+- **A partial link is safe to send.** A field the link leaves out keeps the
+  recipient's own value, so a link never resets a control you did not touch.
+- **Nothing is switched on their behalf.** If they use a different simulator,
+  the page names both and offers a one-click switch for that view only. Their
+  saved settings are untouched, and an unsupported combination is reported
+  rather than silently replaced.
+- **Disaggregated views travel intact.** Each pool's parallelism is carried
+  separately, and an aggregated link carries none of it, so the recipient sees
+  the same controls you did.
+
+See [Settings and simulators](settings.md#sharing-a-view) for the exact
+provenance rules.
+
 ## What customers get
 
 - **Predict:** expected TTFT, TPOT, and throughput for a given configuration.
@@ -80,4 +102,5 @@ concurrency) today. It does not infer a workload from a use-case description.
 
 - [MCP server](mcp-server.md): connect Claude and other MCP clients
 - [REST API](api.md): endpoints and examples
+- [Settings and simulators](settings.md#sharing-a-view): how a shared link behaves
 - [Tested models](tested-models.md): what "validated" means

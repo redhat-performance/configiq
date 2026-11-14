@@ -252,6 +252,18 @@ describe('recommend sizing shared views', () => {
     expect(container.textContent).not.toContain('This view was shared using');
   });
 
+  it('keeps whatever the link omits at the recipient value', async () => {
+    // A partial link changes only what it names. Filling in the rest would
+    // silently rewrite the view the recipient already had open.
+    await mountAt('?v=1&isl=4096');
+
+    const sent = await calculate();
+    expect(sent.isl).toBe(4096);
+    expect(sent.model_path).toBe('Qwen/Qwen2.5-7B-Instruct');
+    expect(sent.system).toBe('h200_sxm');
+    expect(sent.backend).toBe('vllm');
+  });
+
   it('carries the concurrency a latency link was sized for', async () => {
     // Latency sizing submits a target concurrency, so a link that dropped it
     // would describe a one-user view instead of the shared one.

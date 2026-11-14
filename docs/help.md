@@ -52,9 +52,11 @@ inputs.
 The documentation index is at [/docs](/docs), and every page has a stable
 address such as `/docs/settings#sharing-a-view`. A deep link carries the
 simulator, backend, and backend version that produced the view; opening one
-never changes your saved settings. See
+never changes your saved settings. A link writes only the values that differ
+from the page's starting state, so a partial link keeps your own values for
+whatever it leaves out. See
 [Settings and simulators](settings.md#sharing-a-view) for what happens when the
-link's simulator differs from yours.
+link's simulator differs from yours and for the fields a link always carries.
 
 ## Configuration
 

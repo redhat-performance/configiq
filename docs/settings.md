@@ -49,12 +49,32 @@ it. Opening a link never changes your saved settings:
 - If the link's simulator is unavailable in this deployment, the existing
   unavailable notice is shown. There is no fallback.
 
-Benchmark comparison is the one page whose shared link does not use a catalog
-system id. Its `accelerator` value is the label the benchmark dataset publishes
-(for example `H200`, not `h200_sxm`), because the dataset is the source of that
-selection and a measured row can exist for a GPU the catalog does not list. The
-page matches the label to a catalog entry when it can and otherwise keeps the
-dataset label, so the view opens on the same measured run the sender saw.
+### What a link carries
+
+A link records the view, not the page. Only values that differ from the page's
+starting state are written, so a link stays short and readable, and a field it
+leaves out keeps the value already in the recipient's form. Opening a partial
+link therefore never resets a control the sender did not touch.
+
+Two cases where an omitted field would be ambiguous are carried explicitly:
+
+- A disaggregated view writes each pool's parallelism separately — prefill and
+  decode tensor parallel, pipeline parallel, worker count, and batch size —
+  because the pools can differ in every one of them. An aggregated view writes
+  none of them, so a link never describes controls the recipient cannot see.
+- **None** in the recommend page's fabric list is a choice, not a blank. It is
+  written as `fabric=none`, which asks for aggregate candidates only. Omitting
+  `fabric` means something else: use whatever fabric the recipient's simulator
+  calls the default.
+
+### Benchmark comparison
+
+This is the one page whose shared link does not use a catalog system id. The
+`accelerator` value is the label the benchmark dataset publishes (for example
+`H200`, not `h200_sxm`), because the dataset is the source of that selection and
+a measured row can exist for a GPU the catalog does not list. The page matches
+the label to a catalog entry when it can and otherwise keeps the dataset label,
+so the view opens on the same measured run the sender saw.
 
 ## Related
 
