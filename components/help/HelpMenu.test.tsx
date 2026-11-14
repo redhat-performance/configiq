@@ -136,7 +136,9 @@ describe('HelpMenu', () => {
         anchor.getAttribute('href') === '/docs/settings#sharing-a-view' &&
         (anchor.textContent ?? '').includes('Sharing a view'),
     );
-    expect(link).not.toBeNull();
+    // `find` returns undefined when nothing matched; `not.toBeNull()` would
+    // accept that and pass without a result on screen.
+    expect(link).toBeDefined();
   });
 
   it('offers the mapped documentation beside a control result', async () => {
@@ -147,7 +149,7 @@ describe('HelpMenu', () => {
     const docLink = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find(
       (anchor) => anchor.getAttribute('href') === '/docs/user-scenarios#sizing-multiple-workloads',
     );
-    expect(docLink).not.toBeNull();
+    expect(docLink).toBeDefined();
     expect(docLink?.textContent).toBe('Docs');
     expect(docLink?.getAttribute('aria-label')).toContain('Concurrency presets');
   });

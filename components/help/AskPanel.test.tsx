@@ -116,7 +116,10 @@ describe('AskPanel', () => {
           {
             type: 'result',
             status: 'suppressed',
-            answer: '',
+            // The route withholds this prose; the panel must too, even though
+            // the field is nonempty. Rendering `event.answer` unconditionally
+            // would put an unverified number on screen.
+            answer: 'You need 96 GB of VRAM for this model.',
             citations: [{ url: '/docs/costs#tco', title: 'Total cost', section: 'Costs' }],
             links: [],
             evidence: ['Total cost includes hardware, power, and cooling.'],
@@ -132,5 +135,20 @@ describe('AskPanel', () => {
     expect(document.body.textContent).not.toContain('96 GB of VRAM');
     expect(document.body.textContent).toContain('could not verify the numbers');
     expect(document.body.textContent).toContain('Unverified: 96 GB');
+  });
+
+  it('leaves the question box usable when the stream ends without a result', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        streamResponse([{ type: 'retrieval', sections: [] }])),
+    );
+
+    await render();
+    await ask('Where do I set concurrency?');
+
+    const input = document.querySelector<HTMLTextAreaElement>('#assistant-question');
+    expect(input?.disabled).toBe(false);
+    expect(document.body.textContent).toContain('did not finish this answer');
   });
 });

@@ -71,14 +71,14 @@ function unavailable(code: string, message: string, status: number) {
 }
 
 /** A fetch helper with a timeout that returns null instead of throwing. */
-function jsonFetcher(timeoutMs: number) {
+function jsonFetcher(timeoutMs: number, signal?: AbortSignal) {
   return async (url: string, init?: RequestInit): Promise<unknown | null> => {
     try {
       const response = await fetch(url, {
         ...init,
         headers: { Accept: 'application/json', ...(init?.headers ?? {}) },
         cache: 'no-store',
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: withDeadline(signal, timeoutMs),
       });
       if (!response.ok) {
         await response.body?.cancel();
@@ -91,10 +91,27 @@ function jsonFetcher(timeoutMs: number) {
   };
 }
 
+/**
+ * Stop work when either the caller goes away or the deadline passes.
+ *
+ * `AbortSignal.any` keeps both reasons without a listener that would have to be
+ * removed, and it is available in every Node version this app targets.
+ */
+function withDeadline(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+interface ChatToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
-  tool_calls?: unknown;
+  tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   name?: string;
 }
@@ -129,11 +146,25 @@ function readToolCalls(raw: unknown): ToolCall[] {
   });
 }
 
+/**
+ * Put an assistant tool call back on the wire in the shape the chat API sent
+ * it. The model's own history replay is validated by OpenAI-compatible servers,
+ * and a `{id,name,arguments}` object is not a `tool_call` to them.
+ */
+function toWireToolCall(call: ToolCall): ChatToolCall {
+  return {
+    id: call.id,
+    type: 'function',
+    function: { name: call.name, arguments: call.arguments },
+  };
+}
+
 async function chatCompletion(
   tritonUrl: string,
   model: string,
   messages: ChatMessage[],
   withTools: boolean,
+  signal?: AbortSignal,
 ): Promise<ChatReply | null> {
   let response: Response;
   try {
@@ -150,7 +181,7 @@ async function chatCompletion(
           : {}),
       }),
       cache: 'no-store',
-      signal: AbortSignal.timeout(MODEL_TIMEOUT_MS),
+      signal: withDeadline(signal, MODEL_TIMEOUT_MS),
     });
   } catch {
     return null;
@@ -293,6 +324,7 @@ async function runAssistant(
   request: AssistantRequestInput,
   config: AssistantConfig,
   emit: Emit,
+  signal: AbortSignal,
 ): Promise<void> {
   const docs = retrievalDocs();
   const sections = docs.length > 0 ? retrieve(request.question, docs, 6) : [];
@@ -308,7 +340,7 @@ async function runAssistant(
     { role: 'user', content: `${context}\n\nQuestion: ${request.question}` },
   ];
 
-  const fetchJson = jsonFetcher(TOOL_TIMEOUT_MS);
+  const fetchJson = jsonFetcher(TOOL_TIMEOUT_MS, signal);
   const contextForTools: ToolContext = {
     gatewayUrl: process.env.AISIMULATORS_GATEWAY_URL?.trim() || null,
     costingsUrl: process.env.AICOSTINGS_GATEWAY_URL?.trim() || null,
@@ -327,8 +359,10 @@ async function runAssistant(
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS;
-    reply = await chatCompletion(config.tritonUrl!, config.model!, messages, allowTools);
+    reply = await chatCompletion(config.tritonUrl!, config.model!, messages, allowTools, signal);
     if (!reply) {
+      // A cancelled question is not a failure: the user closed the popover.
+      if (signal.aborted) return;
       emit({
         type: 'error',
         code: 'assistant_unavailable',
@@ -337,15 +371,21 @@ async function runAssistant(
       recordAssistantAnswer('error');
       return;
     }
+    if (signal.aborted) return;
     if (!allowTools || reply.toolCalls.length === 0) break;
 
     // Only the calls we answer are echoed back. An OpenAI-compatible server
     // rejects a continuation whenever an assistant `tool_call` has no matching
     // `tool` message, so dropping the tail must happen before the echo.
     const calls = reply.toolCalls.slice(0, MAX_TOOL_CALLS_PER_ROUND);
-    messages.push({ role: 'assistant', content: reply.content, tool_calls: calls });
+    messages.push({
+      role: 'assistant',
+      content: reply.content,
+      tool_calls: calls.map(toWireToolCall),
+    });
 
     for (const call of calls) {
+      if (signal.aborted) return;
       const tool = toolByName(call.name);
       if (!tool) {
         messages.push({
@@ -388,6 +428,7 @@ async function runAssistant(
 
   const draft = reply?.content?.trim() ?? '';
   if (!draft) {
+    if (signal.aborted) return;
     emit({
       type: 'error',
       code: 'assistant_unavailable',
@@ -448,27 +489,49 @@ export async function POST(request: Request) {
   }
 
   const encoder = new TextEncoder();
+  // One controller for both the model request and every tool read, so closing
+  // the popover stops the work instead of leaving a slot busy on the GPU.
+  const inference = new AbortController();
+  let cancelled = false;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit: Emit = (event) => {
-        controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        // A cancelled stream is closed; enqueueing after that throws.
+        if (cancelled) return;
+        try {
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        } catch {
+          cancelled = true;
+        }
       };
       try {
-        await runAssistant(parsed.data, config, emit);
+        await runAssistant(parsed.data, config, emit, inference.signal);
       } catch {
-        emit({
-          type: 'error',
-          code: 'assistant_unavailable',
-          message: 'The assistant could not finish this answer. Search and documentation still work.',
-        });
-        recordAssistantAnswer('error');
+        if (!cancelled) {
+          emit({
+            type: 'error',
+            code: 'assistant_unavailable',
+            message: 'The assistant could not finish this answer. Search and documentation still work.',
+          });
+          recordAssistantAnswer('error');
+        }
       } finally {
         release();
-        controller.close();
+        if (!cancelled) {
+          try {
+            controller.close();
+          } catch {
+            // Already closed by the runtime.
+          }
+        }
       }
     },
     cancel() {
-      // The user closed the popover; free the inference slot immediately.
+      // Stop inference first, then free the slot: releasing while the model is
+      // still generating would let a new question exceed the concurrency cap.
+      cancelled = true;
+      inference.abort();
       release();
     },
   });

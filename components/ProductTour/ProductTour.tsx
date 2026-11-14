@@ -255,20 +255,27 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
     };
   }, [mounted, step, currentStep]);
 
-  // Move focus into the dialog and restore it when the tour closes.
+  // Remember where focus was, and give it back when the tour closes.
   React.useEffect(() => {
     if (!mounted) return;
     previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = requestAnimationFrame(() => dialogRef.current?.focus());
 
     return () => {
-      cancelAnimationFrame(frame);
       const element = previousFocus.current;
       if (element && document.contains(element)) {
         element.focus();
       }
     };
   }, [mounted]);
+
+  // Focus the dialog once it is actually visible. The measurement effect sets
+  // `layout` a frame after mount, and the dialog is `visibility: hidden` until
+  // then, so focusing on mount targets an element that cannot take focus.
+  const visible = layout !== null;
+  React.useEffect(() => {
+    if (!mounted || !visible) return;
+    dialogRef.current?.focus();
+  }, [mounted, visible]);
 
   // Esc closes the tour from anywhere on the page.
   React.useEffect(() => {

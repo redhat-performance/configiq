@@ -70,7 +70,11 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
     setError(null);
   };
 
-  const handleEvent = (event: AssistantEvent) => {
+  /**
+   * Apply one stream event. Returns true when the event is terminal, so the
+   * caller can tell a finished answer from a stream that stopped early.
+   */
+  const handleEvent = (event: AssistantEvent): boolean => {
     if (event.type === 'retrieval') {
       if (event.sections.length > 0) {
         setProgress((current) => [
@@ -81,19 +85,19 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           },
         ]);
       }
-      return;
+      return false;
     }
     if (event.type === 'tool') {
       setProgress((current) => [
         ...current,
         { id: `tool-${current.length}`, text: event.summary },
       ]);
-      return;
+      return false;
     }
     if (event.type === 'error') {
       setStatus('error');
       setError(event.message);
-      return;
+      return true;
     }
     if (event.type === 'result') {
       setStatus('done');
@@ -103,7 +107,9 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       setUnsupported(event.unsupportedNumbers);
       // Suppressed prose is never shown; the sources below carry the answer.
       setAnswer(event.status === 'answered' ? event.answer : '');
+      return true;
     }
+    return false;
   };
 
   const ask = async () => {
@@ -146,6 +152,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let terminal = false;
 
       for (;;) {
         const { done, value } = await reader.read();
@@ -156,13 +163,20 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
         for (const line of lines) {
           if (!line.trim()) continue;
           const event = readEvent(line);
-          if (event) handleEvent(event);
+          if (event && handleEvent(event)) terminal = true;
         }
       }
 
       if (buffer.trim()) {
         const event = readEvent(buffer);
-        if (event) handleEvent(event);
+        if (event && handleEvent(event)) terminal = true;
+      }
+
+      // A stream can end without a result (a proxy timeout, a restart). Leaving
+      // the box in “asking” would disable the input until the popover closes.
+      if (!terminal) {
+        setStatus('error');
+        setError('The assistant did not finish this answer. Search still works.');
       }
     } catch (caught) {
       if (caught instanceof DOMException && caught.name === 'AbortError') return;

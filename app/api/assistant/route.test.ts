@@ -348,8 +348,17 @@ describe('assistant answer', () => {
 
     const followUp = chatBodies[1]?.messages ?? [];
     const assistant = followUp.find((message) => Array.isArray(message.tool_calls));
-    const echoed = assistant?.tool_calls as Array<{ id: string }> | undefined;
+    const echoed = assistant?.tool_calls as
+      | Array<{ id: string; type: string; function: { name: string; arguments: string } }>
+      | undefined;
     expect(echoed?.map((entry) => entry.id)).toEqual(['call-1', 'call-2']);
+    // The chat API validates the replayed call, so it must be on the wire in
+    // the same shape the model produced: `{id, type, function:{name,arguments}}`.
+    for (const entry of echoed ?? []) {
+      expect(entry.type).toBe('function');
+      expect(typeof entry.function?.name).toBe('string');
+      expect(typeof entry.function?.arguments).toBe('string');
+    }
 
     const answered = followUp
       .filter((message) => message.role === 'tool')

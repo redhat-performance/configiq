@@ -12,6 +12,7 @@
     "test": "vitest run",
     "pretest": "npm run docs:build",
     "test:watch": "vitest",
+    "pretype-check": "npm run docs:build",
     "type-check": "tsc --noEmit",
     "prepare": "husky",
     "docs:build": "node scripts/build-docs.mjs",

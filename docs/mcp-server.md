@@ -44,14 +44,32 @@ snapshotted when the server is built.
 
 ## Connect
 
-Point any MCP client at the gateway URL:
+Every client needs the gateway URL:
 
-| Client | URL |
+| Client | How to connect |
 |---|---|
-| Claude Desktop | `https://aisimulators.dev/mcp` or your local URL |
-| MCP Inspector | `npx @modelcontextprotocol/inspector <url>` |
+| Claude Desktop, deployed gateway | Add a custom connector with `https://aisimulators.dev/mcp` |
+| Claude Desktop, local gateway | `mcp-remote` stdio bridge (see below) |
+| MCP Inspector | `npx @modelcontextprotocol/inspector https://aisimulators.dev/mcp` |
+| Any client that accepts a `url` | `https://aisimulators.dev/mcp` |
 
-Claude Desktop reads `claude_desktop_config.json` from:
+For a client that only speaks Streamable HTTP, use the `/mcp/http` path.
+
+### Claude Desktop: hosted gateway
+
+Claude Desktop connects to a remote server through a **custom connector**, not
+through a URL in `claude_desktop_config.json`:
+
+1. Open **Settings → Connectors → Add custom connector**.
+2. Name it `ConfigIQ` and enter `https://aisimulators.dev/mcp`.
+
+The connector is opened from Anthropic's infrastructure, so the URL must be
+publicly reachable. It cannot point at `localhost`.
+
+### Claude Desktop: local gateway
+
+A local gateway is reached with a stdio bridge. Add this to
+`claude_desktop_config.json`:
 
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Linux: `~/.config/Claude/claude_desktop_config.json`
@@ -60,14 +78,19 @@ Claude Desktop reads `claude_desktop_config.json` from:
 {
   "mcpServers": {
     "configiq": {
-      "url": "https://aisimulators.dev/mcp"
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://localhost:8090/mcp"]
     }
   }
 }
 ```
 
-For a local gateway, use `"url": "http://localhost:8090/mcp"` instead. For a
-client that only speaks Streamable HTTP, use the `/mcp/http` URL.
+`mcp-remote` runs locally, forwards stdio to the gateway, and is the supported
+way to reach a local server from a client that only launches commands. Restart
+Claude Desktop after editing the file.
+
+Clients that accept a URL natively, including MCP Inspector, can use
+`https://aisimulators.dev/mcp` or `http://localhost:8090/mcp` directly.
 
 ## Use it: an example
 
@@ -146,9 +169,10 @@ data: it never changes a GPU count.
 
 ## Deployment notes
 
-- Legacy `aisimulators.dev` and `aicostings.dev` MCP paths are routed to this
-  gateway by the deployment repository during migration. Their REST endpoints
-  remain owned by the original services.
+- Legacy `aisimulators.dev` and `aicostings.dev` MCP paths redirect to this
+  gateway during migration. MCP clients do not reliably follow HTTP redirects,
+  so clients should be reconfigured to the canonical URL instead of relying on
+  the redirect. Their REST endpoints remain owned by the original services.
 - The gateway container listens on port 8090. The sizing service container
   listens on port 7860.
 
