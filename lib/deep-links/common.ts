@@ -66,12 +66,30 @@ export interface ParsedLink<F extends LinkFieldMap> {
   unsupportedVersion?: boolean;
 }
 
-export interface PageLink<F extends LinkFieldMap> {
+/** The keys of `PROVENANCE_FIELDS`, as a type. */
+export type ProvenanceKey = keyof typeof PROVENANCE_FIELDS;
+
+/**
+ * The fields a page binds to its own state.
+ *
+ * A page that spreads `PROVENANCE_FIELDS` reads those three from settings
+ * instead: they are applied for the session by `useLinkProvenance`, never by
+ * the page's own bindings.
+ */
+export type PageFieldKeys<F extends LinkFieldMap> = Exclude<keyof F, ProvenanceKey>;
+
+export interface PageLink<F extends LinkFieldMap, B extends keyof F = keyof F> {
   path: string;
   fields: F;
   parse: (search: string) => ParsedLink<F>;
   build: (values: LinkValues<F>, path?: string) => string;
   omitDefaults: (values: LinkValues<F>, defaults: LinkValues<F>) => LinkValues<F>;
+  /**
+   * Phantom marker: the fields this page is responsible for binding. It is
+   * never present at runtime; it exists so a binding table that misses a
+   * contract field fails to compile.
+   */
+  readonly boundFields?: B;
 }
 
 /**
@@ -80,7 +98,7 @@ export interface PageLink<F extends LinkFieldMap> {
  * `path` is used for generated links and in messages; `fields` is the complete
  * set of parameters the page accepts.
  */
-export function defineLink<F extends LinkFieldMap>(path: string, fields: F): PageLink<F> {
+export function defineLink<F extends LinkFieldMap>(path: string, fields: F): PageLink<F, keyof F> {
   type Values = LinkValues<F>;
   const keys = Object.keys(fields) as (keyof F & string)[];
 
@@ -146,4 +164,21 @@ export function defineLink<F extends LinkFieldMap>(path: string, fields: F): Pag
   }
 
   return { path, fields, parse, build, omitDefaults };
+}
+
+/**
+ * Mark a link whose provenance trio the page reads from settings.
+ *
+ * The marker narrows the page's binding obligation to the fields it owns, so
+ * `useSharedView` asks for a bound accessor per remaining field and the trio is
+ * handled once, by `useLinkProvenance`. It cannot be applied to a contract that
+ * lacks a provenance field: the compiler rejects the argument.
+ */
+export function withProvenance<F extends LinkFieldMap & Record<ProvenanceKey, z.ZodTypeAny>>(
+  link: PageLink<F, keyof F>,
+): PageLink<F, PageFieldKeys<F>> {
+  // The marker is type-only: `boundFields` is never set at runtime. Narrowing
+  // it is the whole point of this helper, so it cannot be expressed by copying
+  // the object.
+  return link as PageLink<F, PageFieldKeys<F>>;
 }

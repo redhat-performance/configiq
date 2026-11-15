@@ -23,7 +23,8 @@ import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import { CopyLinkButton } from '@/components/help/CopyLinkButton'
 import { TourButton } from '@/components/help/TourButton'
 import { kvCacheLink, type KvCacheLinkValues } from '@/lib/deep-links/pages'
-import { useDeepLink } from '@/lib/deep-links/useDeepLink'
+import { defineAccessors } from '@/lib/deep-links/shared-view'
+import { useSharedView } from '@/lib/deep-links/useSharedView'
 import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
 
@@ -178,84 +179,103 @@ export default function KvCacheCalc() {
     markInputsDirty()
   }
 
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the contract, so a new parameter fails to
+  // compile until it is bound here.
+  const linkFields = defineAccessors(kvCacheLink, {
+    model: { read: () => model || undefined, write: setModel },
+    system: { read: () => system || undefined, write: setSystem },
+    backend: { read: () => backend, write: setBackend },
+    backendVersion: { read: () => backendVersion || undefined, write: setBackendVersion },
+    maxNumTokens: {
+      read: () => maxNumTokens,
+      write: (value) => {
+        setMaxNumTokens(value)
+        setMaxNumTokensInput(String(value))
+        setActivePreset('custom')
+      },
+    },
+    maxBatchSize: {
+      read: () => maxBatchSize,
+      write: (value) => { setMaxBatchSize(value); setMaxBatchSizeInput(String(value)) },
+    },
+    tp: {
+      read: () => tpSize,
+      write: (value) => { setTpSize(value); setTpSizeInput(String(value)) },
+    },
+    pp: {
+      read: () => ppSize,
+      write: (value) => { setPpSize(value); setPpSizeInput(String(value)) },
+    },
+    moeTp: {
+      read: () => (moeTpSize ? parseInt(moeTpSize, 10) || undefined : undefined),
+      write: (value) => setMoeTpSize(String(value)),
+    },
+    moeEp: {
+      read: () => (moeEpSize ? parseInt(moeEpSize, 10) || undefined : undefined),
+      write: (value) => setMoeEpSize(String(value)),
+    },
+    servingMode: { read: () => servingMode, write: setServingMode },
+    // Pool parallelism belongs to a disaggregated view. Carrying it in an
+    // aggregated link would describe controls the recipient cannot see.
+    prefillTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.tp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, tp: String(value) })),
+    },
+    prefillPp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.pp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, pp: String(value) })),
+    },
+    prefillMoeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.moeTp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, moeTp: String(value) })),
+    },
+    prefillMoeEp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.moeEp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, moeEp: String(value) })),
+    },
+    decodeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.tp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, tp: String(value) })),
+    },
+    decodePp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.pp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, pp: String(value) })),
+    },
+    decodeMoeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.moeTp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, moeTp: String(value) })),
+    },
+    decodeMoeEp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.moeEp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, moeEp: String(value) })),
+    },
+    memFractionKind: {
+      read: () => memFractionKind,
+      write: (value) => {
+        // The linked kind is a choice; the backend default must not replace it.
+        memFractionKindUserEdited.current = true
+        setMemFractionKind(value)
+      },
+    },
+    memFractionValue: {
+      read: () => memFractionValue,
+      write: (value) => {
+        // Mark the fraction as chosen so the backend default does not replace it.
+        memFractionValueUserEdited.current = true
+        setMemFractionValue(value)
+        setMemFractionValueInput(String(value))
+      },
+    },
+  })
+
   // A shared view is applied once settings and the catalog have settled, so a
   // catalog default cannot overwrite a value the link asked for. URL values
   // change this view only; remembered defaults are left alone.
-  const { warnings: linkWarnings } = useDeepLink(
-    kvCacheLink,
-    hydrated && gpuReady && !catalogLoading,
-    (values) => {
-      if (values.model) setModel(values.model)
-      if (values.system) setSystem(values.system)
-      if (values.backend) setBackend(values.backend)
-      if (values.backendVersion) setBackendVersion(values.backendVersion)
-      if (values.maxNumTokens !== undefined) {
-        setMaxNumTokens(values.maxNumTokens)
-        setMaxNumTokensInput(String(values.maxNumTokens))
-        setActivePreset('custom')
-      }
-      if (values.maxBatchSize !== undefined) {
-        setMaxBatchSize(values.maxBatchSize)
-        setMaxBatchSizeInput(String(values.maxBatchSize))
-      }
-      if (values.tp !== undefined) { setTpSize(values.tp); setTpSizeInput(String(values.tp)) }
-      if (values.pp !== undefined) { setPpSize(values.pp); setPpSizeInput(String(values.pp)) }
-      if (values.moeTp !== undefined) setMoeTpSize(String(values.moeTp))
-      if (values.moeEp !== undefined) setMoeEpSize(String(values.moeEp))
-      if (values.servingMode) setServingMode(values.servingMode)
-      if (values.prefillTp !== undefined) setPrefillPar(c => ({ ...c, tp: String(values.prefillTp) }))
-      if (values.prefillPp !== undefined) setPrefillPar(c => ({ ...c, pp: String(values.prefillPp) }))
-      if (values.prefillMoeTp !== undefined) setPrefillPar(c => ({ ...c, moeTp: String(values.prefillMoeTp) }))
-      if (values.prefillMoeEp !== undefined) setPrefillPar(c => ({ ...c, moeEp: String(values.prefillMoeEp) }))
-      if (values.decodeTp !== undefined) setDecodePar(c => ({ ...c, tp: String(values.decodeTp) }))
-      if (values.decodePp !== undefined) setDecodePar(c => ({ ...c, pp: String(values.decodePp) }))
-      if (values.decodeMoeTp !== undefined) setDecodePar(c => ({ ...c, moeTp: String(values.decodeMoeTp) }))
-      if (values.decodeMoeEp !== undefined) setDecodePar(c => ({ ...c, moeEp: String(values.decodeMoeEp) }))
-      if (values.memFractionKind) {
-        // The linked kind is a choice; the backend default must not replace it.
-        memFractionKindUserEdited.current = true
-        setMemFractionKind(values.memFractionKind)
-      }
-      if (values.memFractionValue !== undefined) {
-        // Mark the fraction as chosen so the backend default does not replace it.
-        memFractionValueUserEdited.current = true
-        setMemFractionValue(values.memFractionValue)
-        setMemFractionValueInput(String(values.memFractionValue))
-      }
-    },
-  )
-
-  const buildShareUrl = (): string => {
-    const values: KvCacheLinkValues = {
-      model: model || undefined,
-      system: system || undefined,
-      backend,
-      backendVersion: backendVersion || undefined,
-      maxNumTokens,
-      maxBatchSize,
-      tp: tpSize,
-      pp: ppSize,
-      moeTp: moeTpSize ? parseInt(moeTpSize, 10) || undefined : undefined,
-      moeEp: moeEpSize ? parseInt(moeEpSize, 10) || undefined : undefined,
-      servingMode,
-      // Pool parallelism belongs to a disaggregated view. Carrying it in an
-      // aggregated link would describe controls the recipient cannot see.
-      ...(servingMode === 'disagg'
-        ? {
-            prefillTp: parseInt(prefillPar.tp, 10) || undefined,
-            prefillPp: parseInt(prefillPar.pp, 10) || undefined,
-            prefillMoeTp: parseInt(prefillPar.moeTp, 10) || undefined,
-            prefillMoeEp: parseInt(prefillPar.moeEp, 10) || undefined,
-            decodeTp: parseInt(decodePar.tp, 10) || undefined,
-            decodePp: parseInt(decodePar.pp, 10) || undefined,
-            decodeMoeTp: parseInt(decodePar.moeTp, 10) || undefined,
-            decodeMoeEp: parseInt(decodePar.moeEp, 10) || undefined,
-          }
-        : {}),
-      memFractionKind,
-      memFractionValue,
-    }
-    const defaults: KvCacheLinkValues = {
+  const shared = useSharedView(kvCacheLink, {
+    fields: linkFields,
+    ready: hydrated && gpuReady && !catalogLoading,
+    defaults: {
       maxNumTokens: defaultMaxNumTokens,
       maxBatchSize: 128,
       tp: 1,
@@ -265,9 +285,9 @@ export default function KvCacheCalc() {
       prefillPp: 1,
       decodeTp: 1,
       decodePp: 1,
-    }
-    return kvCacheLink.build(kvCacheLink.omitDefaults(values, defaults))
-  }
+    } satisfies KvCacheLinkValues,
+  })
+  const linkWarnings = shared.warnings
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -489,7 +509,7 @@ export default function KvCacheCalc() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
-            <CopyLinkButton getUrl={buildShareUrl} />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
         </div>

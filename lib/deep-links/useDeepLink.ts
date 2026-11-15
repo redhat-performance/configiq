@@ -27,8 +27,8 @@ export interface DeepLinkState<F extends LinkFieldMap> {
  * Nothing here writes to persisted settings: opening a link changes this view
  * only, so a recipient's defaults survive.
  */
-export function useDeepLink<F extends LinkFieldMap>(
-  link: PageLink<F>,
+export function useDeepLink<F extends LinkFieldMap, B extends keyof F>(
+  link: PageLink<F, B>,
   ready: boolean,
   apply: (values: LinkValues<F>) => void,
 ): DeepLinkState<F> {

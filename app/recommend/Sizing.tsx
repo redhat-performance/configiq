@@ -46,7 +46,8 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
 import { FABRIC_NONE } from '@/lib/deep-links/common';
 import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
-import { useDeepLink } from '@/lib/deep-links/useDeepLink';
+import { defineAccessors } from '@/lib/deep-links/shared-view';
+import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
@@ -55,6 +56,21 @@ import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/uti
 
 /** Offered rate a demand run starts from; the UI labels it as the default. */
 const DEFAULT_DEMAND_RATE = 10;
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
+  goal: 'demand',
+  isl: 2048,
+  osl: 128,
+  concurrency: 1,
+  ttft: 1000,
+  tpot: 30,
+  demandRate: DEFAULT_DEMAND_RATE,
+  prefix: 0,
+};
 
 /** Match a retained request back to the sizing goal that produced it. */
 function goalFromParams(params: RecommendParams | null): SizingGoal {
@@ -650,105 +666,105 @@ export default function Sizing() {
     markInputsDirty();
   };
 
-  // A shared view applies after settings, the catalog, and the starting model
-  // have settled. URL values change this form only; nothing is persisted, and
-  // opening a link never submits a request.
-  const { warnings: linkWarnings, parsed: linkValues } = useDeepLink(
-    recommendLink,
-    hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
-    (values) => {
-      if (values.model) {
-        setModel(values.model);
+  // One row per link field: how this view exports it and how an incoming link
+  // applies it. The table is total over the fields this page owns, so a new
+  // contract field fails to compile until it is bound on both sides.
+  const linkFields = defineAccessors(recommendLink, {
+    model: {
+      read: () => model || undefined,
+      write: (value) => {
+        setModel(value);
         // The link changed the form, not this reader's saved default.
         modelTouched.current = false;
-      }
-      if (values.system) setGpuSystem(values.system);
-      if (values.goal) setGoal(values.goal);
-      if (values.isl !== undefined) { setIsl(values.isl); setIslInput(String(values.isl)); }
-      if (values.osl !== undefined) { setOsl(values.osl); setOslInput(String(values.osl)); }
-      if (values.concurrency !== undefined) {
-        setTargetConcurrency(values.concurrency);
-        setConcurrencyInput(String(values.concurrency));
-      }
-      if (values.ttft !== undefined) { setTtft(values.ttft); setTtftInput(String(values.ttft)); }
-      if (values.tpot !== undefined) { setTpot(values.tpot); setTpotInput(String(values.tpot)); }
-      if (values.e2eLatency !== undefined) {
-        setRequestLatency(values.e2eLatency);
-        setLatencyInput(String(values.e2eLatency));
-      }
-      if (values.demandRate !== undefined) {
-        setDemandRate(values.demandRate);
-        setDemandRateInput(String(values.demandRate));
-      }
-      if (values.prefix !== undefined) { setPrefix(values.prefix); setPrefixInput(String(values.prefix)); }
-      if (values.maxSeqLen !== undefined) {
-        setMaxSeqLen(values.maxSeqLen);
-        setMaxSeqLenInput(String(values.maxSeqLen));
-      }
-      if (values.prefillMaxSeqLen !== undefined) {
-        setPrefillMaxSeqLen(values.prefillMaxSeqLen);
-        setPrefillMaxSeqLenInput(String(values.prefillMaxSeqLen));
-      }
-      if (values.decodeMaxSeqLen !== undefined) {
-        setDecodeMaxSeqLen(values.decodeMaxSeqLen);
-        setDecodeMaxSeqLenInput(String(values.decodeMaxSeqLen));
-      }
-      if (values.fabric !== undefined) {
-        setNetworkFabric(values.fabric === FABRIC_NONE ? '' : values.fabric);
-      }
-      // A retained result no longer matches the form the link just described.
-      markInputsDirty();
+      },
     },
-  );
+    system: { read: () => gpuSystem || undefined, write: setGpuSystem },
+    goal: { read: () => goal, write: setGoal },
+    isl: {
+      read: () => isl,
+      write: (value) => { setIsl(value); setIslInput(String(value)); },
+    },
+    osl: {
+      read: () => osl,
+      write: (value) => { setOsl(value); setOslInput(String(value)); },
+    },
+    // Latency and capacity sizing both submit a target concurrency, so it
+    // belongs in every non-demand link; omitting it restored concurrency 1 on
+    // a fresh page.
+    concurrency: {
+      read: () => (isDemand ? undefined : targetConcurrency),
+      write: (value) => { setTargetConcurrency(value); setConcurrencyInput(String(value)); },
+    },
+    ttft: {
+      read: () => (goal === 'latency' && requestLatency === null ? ttft : undefined),
+      write: (value) => { setTtft(value); setTtftInput(String(value)); },
+    },
+    tpot: {
+      read: () => (goal === 'latency' && requestLatency === null ? tpot : undefined),
+      write: (value) => { setTpot(value); setTpotInput(String(value)); },
+    },
+    e2eLatency: {
+      read: () => (goal === 'latency' && requestLatency !== null ? requestLatency : undefined),
+      write: (value) => { setRequestLatency(value); setLatencyInput(String(value)); },
+    },
+    demandRate: {
+      read: () => (goal === 'demand' ? demandRate : undefined),
+      write: (value) => { setDemandRate(value); setDemandRateInput(String(value)); },
+    },
+    prefix: {
+      read: () => prefix,
+      write: (value) => { setPrefix(value); setPrefixInput(String(value)); },
+    },
+    maxSeqLen: {
+      read: () => maxSeqLen ?? undefined,
+      write: (value) => { setMaxSeqLen(value); setMaxSeqLenInput(String(value)); },
+    },
+    prefillMaxSeqLen: {
+      read: () => prefillMaxSeqLen ?? undefined,
+      write: (value) => { setPrefillMaxSeqLen(value); setPrefillMaxSeqLenInput(String(value)); },
+    },
+    decodeMaxSeqLen: {
+      read: () => decodeMaxSeqLen ?? undefined,
+      write: (value) => { setDecodeMaxSeqLen(value); setDecodeMaxSeqLenInput(String(value)); },
+    },
+    // An unset fabric means "use the simulator default", which is what the
+    // recipient gets if the field is absent. An explicit None is sentinel-
+    // encoded so it survives an empty-string build.
+    fabric: {
+      read: () => (
+        fabricRequired && !aggregateOnlyGoal
+          ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
+          : undefined
+      ),
+      write: (value) => setNetworkFabric(value === FABRIC_NONE ? '' : value),
+    },
+  });
+
+  // A shared view applies after settings, the catalog, and the starting model
+  // have settled. URL values change this form only; nothing is persisted, and
+  // opening a link never submits a request. The provenance trio is applied for
+  // the session by `useLinkProvenance` instead of by this form.
+  const shared = useSharedView(recommendLink, {
+    fields: linkFields,
+    ready: hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
+    defaults: RECOMMEND_LINK_DEFAULTS,
+    provenance: {
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    },
+    // A retained result no longer matches the form the link just described.
+    onApplied: markInputsDirty,
+  });
+  const linkWarnings = shared.warnings;
 
   // A link generated with another simulator is never switched silently: this
   // page shows the shared values and offers the switch. A matching simulator
   // applies the shared backend and version to this view only.
   const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
-    () => linkValues?.values ?? null,
+    () => shared.parsed?.values ?? null,
     hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
   );
-
-  const buildShareUrl = (): string => {
-    const values: RecommendLinkValues = {
-      model: model || undefined,
-      system: gpuSystem || undefined,
-      goal,
-      isl,
-      osl,
-      // Latency sizing submits a target concurrency too, so it belongs in every
-      // non-demand link; omitting it restored concurrency 1 on a fresh page.
-      concurrency: isDemand ? undefined : targetConcurrency,
-      ttft: goal === 'latency' && requestLatency === null ? ttft : undefined,
-      tpot: goal === 'latency' && requestLatency === null ? tpot : undefined,
-      e2eLatency: goal === 'latency' && requestLatency !== null ? requestLatency : undefined,
-      demandRate: goal === 'demand' ? demandRate : undefined,
-      prefix,
-      maxSeqLen: maxSeqLen ?? undefined,
-      prefillMaxSeqLen: prefillMaxSeqLen ?? undefined,
-      decodeMaxSeqLen: decodeMaxSeqLen ?? undefined,
-      // An unset fabric means "use the simulator default", which is what the
-      // recipient gets if the field is absent. An explicit None is sentinel-
-      // encoded so it survives an empty-string build.
-      fabric: fabricRequired && !aggregateOnlyGoal
-        ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
-        : undefined,
-      simulator: simulator || undefined,
-      backend: inferenceBackend,
-      backendVersion: backendVersion || undefined,
-    };
-    const defaults: RecommendLinkValues = {
-      goal: 'demand',
-      isl: 2048,
-      osl: 128,
-      concurrency: 1,
-      ttft: 1000,
-      tpot: 30,
-      demandRate: DEFAULT_DEMAND_RATE,
-      prefix: 0,
-    };
-    return recommendLink.build(recommendLink.omitDefaults(values, defaults));
-  };
 
   // The recommend provider keeps the submitted request and its result across
   // navigation, but this page's form starts from scratch. Compare each restored
@@ -882,7 +898,7 @@ export default function Sizing() {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
-            <CopyLinkButton getUrl={buildShareUrl} />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
         </div>

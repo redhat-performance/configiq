@@ -26,7 +26,8 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
 import { WarningPanel } from '@/components/ui/WarningPanel';
 import { gpuExplorerLink, type GpuExplorerLinkValues } from '@/lib/deep-links/pages';
-import { useDeepLink } from '@/lib/deep-links/useDeepLink';
+import { defineAccessors } from '@/lib/deep-links/shared-view';
+import { useSharedView } from '@/lib/deep-links/useSharedView';
 import styles from './gpu-explorer.module.css';
 
 type Preset = 'balanced' | 'cost-efficiency' | 'performance';
@@ -39,6 +40,14 @@ const ARCH_MULTIPLIER: Record<string, number> = {
   'ada-lovelace': 1.0,
   'ampere':       0.85,
 }
+
+/** The link's own starting points; a field left at one is omitted from a link. */
+const GPU_EXPLORER_LINK_DEFAULTS: GpuExplorerLinkValues = {
+  preset: 'balanced',
+  vendor: 'all',
+  x: 'vram',
+  y: 'throughput-index',
+};
 
 /** Axes each preset plots. Shared by the preset buttons and link application. */
 const PRESET_AXES: Record<Preset, { x: XAxis; y: YAxis }> = {
@@ -63,38 +72,28 @@ export default function GpuExplorerPage() {
 
   // A shared view applies its axes and filters once the catalog and pricing
   // have settled, so a link cannot be overwritten by a later catalog response.
-  const { warnings } = useDeepLink(
-    gpuExplorerLink,
-    mounted && !isLoading && !costings.isLoading,
-    (values) => {
-      if (values.preset) setPreset(values.preset);
-      if (values.vendor) setVendorFilter(values.vendor);
-      // A preset implies its axes, but explicit axes in the same link are a
-      // customised view and win. There is no preset effect, so nothing
-      // overwrites what the link asked for.
-      const implied = values.preset ? PRESET_AXES[values.preset] : null;
-      const x = values.x ?? implied?.x;
-      const y = values.y ?? implied?.y;
-      if (x) setXAxis(x);
-      if (y) setYAxis(y);
-    },
-  );
-
-  const buildShareUrl = (): string => {
-    const defaults: GpuExplorerLinkValues = {
-      preset: 'balanced',
-      vendor: 'all',
-      x: 'vram',
-      y: 'throughput-index',
-    };
-    const values: GpuExplorerLinkValues = {
-      preset,
-      vendor: vendorFilter,
-      x: xAxis,
-      y: yAxis,
-    };
-    return gpuExplorerLink.build(gpuExplorerLink.omitDefaults(values, defaults));
-  };
+  const shared = useSharedView(gpuExplorerLink, {
+    fields: defineAccessors(gpuExplorerLink, {
+      preset: {
+        read: () => preset,
+        // A preset implies its axes, but explicit axes in the same link are a
+        // customised view and win. There is no preset effect, so nothing
+        // overwrites what the link asked for.
+        write: (value, values) => {
+          setPreset(value);
+          const implied = PRESET_AXES[value];
+          if (values.x === undefined) setXAxis(implied.x);
+          if (values.y === undefined) setYAxis(implied.y);
+        },
+      },
+      vendor: { read: () => vendorFilter, write: (value) => setVendorFilter(value) },
+      x: { read: () => xAxis, write: (value) => setXAxis(value) },
+      y: { read: () => yAxis, write: (value) => setYAxis(value) },
+    }),
+    ready: mounted && !isLoading && !costings.isLoading,
+    defaults: GPU_EXPLORER_LINK_DEFAULTS,
+  });
+  const warnings = shared.warnings;
 
   const filteredGPUs = gpuOptions.filter(gpu => {
     if (vendorFilter === 'all') return true;
@@ -211,7 +210,7 @@ export default function GpuExplorerPage() {
             <p className={styles.subtitle}>LLM inference planning — compare GPU generations by memory, bandwidth, and cost efficiency</p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
-            <CopyLinkButton getUrl={buildShareUrl} />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
         </div>

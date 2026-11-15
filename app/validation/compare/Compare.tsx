@@ -26,7 +26,8 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton'
 import { TourButton } from '@/components/help/TourButton'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { validationCompareLink, type ValidationCompareLinkValues } from '@/lib/deep-links/pages'
-import { useDeepLink } from '@/lib/deep-links/useDeepLink'
+import { defineAccessors } from '@/lib/deep-links/shared-view'
+import { useSharedView } from '@/lib/deep-links/useSharedView'
 import { useSettings } from '@/contexts/SettingsContext'
 import {
   engineVersionSupport,
@@ -560,43 +561,63 @@ export default function BenchmarkComparisonPage() {
     void resolve(next)
   }, [backendVersion, defaultModel, defaultSystem, gpuOptions, inferenceBackend, resolve, rootOptions, seeded])
 
+  // A link carries several selection fields, and comparing is one request:
+  // applying them one at a time would resolve against a half-applied
+  // selection. Each write stages its field, and `onApplied` publishes the
+  // merged selection once.
+  const stagedSelection = React.useRef<Partial<Selection>>({})
+  const stagedConfigurationKey = React.useRef<string | null>(null)
+  const stage = (patch: Partial<Selection>) => {
+    stagedSelection.current = { ...stagedSelection.current, ...patch }
+  }
+
   // A shared view applies once the dataset has seeded a selection and that
   // starting comparison has finished, so the seed cannot overwrite the link.
   // A model or GPU the dataset does not cover resolves to the page's normal
   // unavailable notice; it is never swapped for a different one.
-  const { warnings: linkWarnings } = useDeepLink(
-    validationCompareLink,
-    hydrated && !catalogLoading && seeded && rootOptions !== null && !isResolving,
-    (values) => {
+  const shared = useSharedView(validationCompareLink, {
+    fields: defineAccessors(validationCompareLink, {
+      model: { read: () => selection.model || undefined, write: (value) => stage({ model: value }) },
+      accelerator: {
+        read: () => selection.accelerator || undefined,
+        write: (value) => stage({ accelerator: value }),
+      },
+      isl: {
+        read: () => (selection.isl ? Number(selection.isl) : undefined),
+        write: (value) => stage({ isl: String(value) }),
+      },
+      osl: {
+        read: () => (selection.osl ? Number(selection.osl) : undefined),
+        write: (value) => stage({ osl: String(value) }),
+      },
+      tp: {
+        read: () => (selection.tp ? Number(selection.tp) : undefined),
+        write: (value) => stage({ tp: String(value) }),
+      },
+      configurationKey: {
+        read: () => configurationKey || undefined,
+        write: (value) => { stagedConfigurationKey.current = value },
+      },
+    }),
+    ready: hydrated && !catalogLoading && seeded && rootOptions !== null && !isResolving,
+    onApplied: () => {
       const next: Selection = {
-        model: values.model ?? selection.model,
-        accelerator: values.accelerator ?? selection.accelerator,
-        isl: values.isl !== undefined ? String(values.isl) : selection.isl,
-        osl: values.osl !== undefined ? String(values.osl) : selection.osl,
-        tp: values.tp !== undefined ? String(values.tp) : selection.tp,
+        model: stagedSelection.current.model ?? selection.model,
+        accelerator: stagedSelection.current.accelerator ?? selection.accelerator,
+        isl: stagedSelection.current.isl ?? selection.isl,
+        osl: stagedSelection.current.osl ?? selection.osl,
+        tp: stagedSelection.current.tp ?? selection.tp,
       }
-      requestedConfigurationKey.current = values.configurationKey ?? null
+      stagedSelection.current = {}
+      requestedConfigurationKey.current = stagedConfigurationKey.current
+      stagedConfigurationKey.current = null
       setSelection(next)
       clearResults()
       setNotice(null)
       void resolve(next)
     },
-  )
-
-  const buildShareUrl = (): string => {
-    const values: ValidationCompareLinkValues = {
-      model: selection.model || undefined,
-      accelerator: selection.accelerator || undefined,
-      isl: selection.isl ? Number(selection.isl) : undefined,
-      osl: selection.osl ? Number(selection.osl) : undefined,
-      tp: selection.tp ? Number(selection.tp) : undefined,
-      configurationKey: configurationKey || undefined,
-      simulator: simulator || undefined,
-      backend: inferenceBackend,
-      backendVersion: backendVersion || undefined,
-    }
-    return validationCompareLink.build(values)
-  }
+  })
+  const linkWarnings = shared.warnings
 
   // Settings owns the serving backend and version. A change there re-resolves
   // the same benchmark selection instead of resetting the page.
@@ -978,7 +999,7 @@ export default function BenchmarkComparisonPage() {
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <CopyLinkButton getUrl={buildShareUrl} />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
           {(source || inferencexSource) && (

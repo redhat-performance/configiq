@@ -34,7 +34,8 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton'
 import { TourButton } from '@/components/help/TourButton'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { hybridSavingsLink, type HybridSavingsLinkValues } from '@/lib/deep-links/pages'
-import { useDeepLink } from '@/lib/deep-links/useDeepLink'
+import { defineAccessors } from '@/lib/deep-links/shared-view'
+import { useSharedView } from '@/lib/deep-links/useSharedView'
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance'
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
@@ -97,6 +98,25 @@ const FixedDeploymentChart = dynamic(() => import('./FixedDeploymentChart'), {
     </div>
   ),
 })
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
+  monthlyInputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens,
+  monthlyOutputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens,
+  averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
+  averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
+  ttft: 1000,
+  tpot: 30,
+  concurrency: 1,
+  prefix: 0,
+  hours: 730,
+  peak: 1,
+  billingMode: 'scale-to-zero',
+  costLens: 'fully-loaded',
+}
 
 const formatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
 const tokenUsageFormatter = new Intl.NumberFormat('en-US', {
@@ -616,74 +636,59 @@ export default function HybridSavings() {
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
     (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
 
-  // A shared view applies after settings and the catalogs have settled, so the
-  // page's automatic starting model cannot replace the linked one. Nothing is
-  // persisted and no calculation is triggered.
-  const { warnings: linkWarnings, parsed: linkValues } = useDeepLink(
-    hybridSavingsLink,
-    hydrated && assumptionsHydrated && !catalogLoading,
-    (values) => {
-      if (values.model) setModel(values.model)
-      if (values.apiModel) setApiModel(values.apiModel)
-      if (values.monthlyInputTokens !== undefined) setMonthlyInputTokens(values.monthlyInputTokens)
-      if (values.monthlyOutputTokens !== undefined) setMonthlyOutputTokens(values.monthlyOutputTokens)
-      if (values.averageInputTokens !== undefined) setAverageInputTokens(values.averageInputTokens)
-      if (values.averageOutputTokens !== undefined) setAverageOutputTokens(values.averageOutputTokens)
-      if (values.ttft !== undefined) setTargetTtftMs(values.ttft)
-      if (values.tpot !== undefined) setTargetTpotMs(values.tpot)
-      if (values.concurrency !== undefined) setTargetConcurrency(values.concurrency)
-      if (values.prefix !== undefined) setPrefixTokens(values.prefix)
-      if (values.hours !== undefined) setActiveHoursPerMonth(values.hours)
-      if (values.peak !== undefined) setPeakToAverage(values.peak)
-      if (values.billingMode) setCloudBillingMode(values.billingMode)
-      if (values.costLens) setCostLens(values.costLens)
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the fields this page owns, so a new
+  // parameter fails to compile until it is bound here.
+  const shared = useSharedView(hybridSavingsLink, {
+    fields: defineAccessors(hybridSavingsLink, {
+      model: { read: () => model || undefined, write: setModel },
+      // An unchanged API model means "the same model as the hosted one".
+      apiModel: { read: () => (apiModel !== SAME_API_MODEL ? apiModel : undefined), write: setApiModel },
+      monthlyInputTokens: {
+        read: () => monthlyInputTokens,
+        write: (value) => setMonthlyInputTokens(value),
+      },
+      monthlyOutputTokens: {
+        read: () => monthlyOutputTokens,
+        write: (value) => setMonthlyOutputTokens(value),
+      },
+      averageInputTokens: {
+        read: () => averageInputTokens,
+        write: (value) => setAverageInputTokens(value),
+      },
+      averageOutputTokens: {
+        read: () => averageOutputTokens,
+        write: (value) => setAverageOutputTokens(value),
+      },
+      ttft: { read: () => targetTtftMs, write: (value) => setTargetTtftMs(value) },
+      tpot: { read: () => targetTpotMs, write: (value) => setTargetTpotMs(value) },
+      concurrency: { read: () => targetConcurrency, write: (value) => setTargetConcurrency(value) },
+      prefix: { read: () => prefixTokens, write: (value) => setPrefixTokens(value) },
+      hours: { read: () => activeHoursPerMonth, write: (value) => setActiveHoursPerMonth(value) },
+      peak: { read: () => peakToAverage, write: (value) => setPeakToAverage(value) },
+      billingMode: { read: () => cloudBillingMode, write: (value) => setCloudBillingMode(value) },
+      costLens: { read: () => costLens, write: (value) => setCostLens(value) },
+    }),
+    // A shared view applies after settings and the catalogs have settled, so
+    // the page's automatic starting model cannot replace the linked one.
+    // Nothing is persisted and no calculation is triggered.
+    ready: hydrated && assumptionsHydrated && !catalogLoading,
+    defaults: HYBRID_LINK_DEFAULTS,
+    provenance: {
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
     },
-  )
+  })
+  const linkWarnings = shared.warnings
 
   // A link generated with another simulator is never switched silently. The
   // reader's own simulator keeps producing the numbers until they accept the
   // shared one for this view; saved settings are never touched.
   const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
-    () => linkValues?.values ?? null,
+    () => shared.parsed?.values ?? null,
     hydrated && assumptionsHydrated && !catalogLoading,
   )
-
-  const buildShareUrl = (): string => {
-    const values: HybridSavingsLinkValues = {
-      model: model || undefined,
-      apiModel: apiModel !== SAME_API_MODEL ? apiModel : undefined,
-      monthlyInputTokens,
-      monthlyOutputTokens,
-      averageInputTokens,
-      averageOutputTokens,
-      ttft: targetTtftMs,
-      tpot: targetTpotMs,
-      concurrency: targetConcurrency,
-      prefix: prefixTokens,
-      hours: activeHoursPerMonth,
-      peak: peakToAverage,
-      billingMode: cloudBillingMode,
-      costLens,
-      simulator: simulator || undefined,
-      backend: inferenceBackend,
-      backendVersion: backendVersion || undefined,
-    };
-    const defaults: HybridSavingsLinkValues = {
-      monthlyInputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens,
-      monthlyOutputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens,
-      averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
-      averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
-      ttft: 1000,
-      tpot: 30,
-      concurrency: 1,
-      prefix: 0,
-      hours: 730,
-      peak: 1,
-      billingMode: 'scale-to-zero',
-      costLens: 'fully-loaded',
-    };
-    return hybridSavingsLink.build(hybridSavingsLink.omitDefaults(values, defaults));
-  }
 
   return (
     <div className={styles.page}>
@@ -696,7 +701,7 @@ export default function HybridSavings() {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
-            <CopyLinkButton getUrl={buildShareUrl} />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
         </div>

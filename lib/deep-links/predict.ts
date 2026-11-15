@@ -13,6 +13,7 @@ import {
   positiveInt,
   systemId,
   text,
+  withProvenance,
   type LinkValues,
   type ParsedLink,
 } from './common';
@@ -68,7 +69,7 @@ const FIELDS = {
   decodeBatch: positiveInt(1_000_000),
 } as const;
 
-export const predictLink = defineLink('/predict', FIELDS);
+export const predictLink = withProvenance(defineLink('/predict', FIELDS));
 
 export type PredictLinkField = keyof typeof FIELDS;
 

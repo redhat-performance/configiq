@@ -5,6 +5,7 @@ import {
   PROVENANCE_FIELDS,
   SERVING_MODES,
   defineLink,
+  withProvenance,
   modelPath,
   nonNegativeInt,
   positiveInt,
@@ -25,7 +26,7 @@ import {
  * - results are never encoded, and no link can trigger a calculation.
  */
 
-export const recommendLink = defineLink('/recommend', {
+export const recommendLink = withProvenance(defineLink('/recommend', {
   model: modelPath,
   system: systemId,
   goal: z.enum(['latency', 'demand', 'capacity']),
@@ -42,7 +43,7 @@ export const recommendLink = defineLink('/recommend', {
   decodeMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   fabric: text(MAX_ID_LENGTH),
   ...PROVENANCE_FIELDS,
-});
+}));
 
 /**
  * The KV cache calculator is AISimulate-only by contract, so its link carries
@@ -83,7 +84,7 @@ export const gpuExplorerLink = defineLink('/gpu-explorer', {
   y: z.enum(['vram', 'price', 'throughput-index', 'mem-bw']),
 });
 
-export const hybridSavingsLink = defineLink('/hybrid-savings', {
+export const hybridSavingsLink = withProvenance(defineLink('/hybrid-savings', {
   model: modelPath,
   apiModel: text(200),
   monthlyInputTokens: nonNegativeInt(1e15),
@@ -99,7 +100,7 @@ export const hybridSavingsLink = defineLink('/hybrid-savings', {
   billingMode: z.enum(['scale-to-zero', 'active-window', 'always-on']),
   costLens: z.enum(['fully-loaded', 'marginal']),
   ...PROVENANCE_FIELDS,
-});
+}));
 
 /**
  * Benchmark comparison selects an accelerator by the label the benchmark
@@ -107,7 +108,7 @@ export const hybridSavingsLink = defineLink('/hybrid-savings', {
  * is the source of that value, so a system id would not resolve for a measured
  * row whose GPU is missing from the catalog.
  */
-export const validationCompareLink = defineLink('/validation/compare', {
+export const validationCompareLink = withProvenance(defineLink('/validation/compare', {
   model: text(200),
   accelerator: text(MAX_ID_LENGTH),
   isl: positiveInt(MAX_SEQUENCE_LENGTH),
@@ -117,7 +118,7 @@ export const validationCompareLink = defineLink('/validation/compare', {
   // model/accelerator pair: precision and quantisation rows share both.
   configurationKey: text(MAX_ID_LENGTH),
   ...PROVENANCE_FIELDS,
-});
+}));
 
 export type RecommendLinkValues = LinkValues<typeof recommendLink.fields>;
 export type KvCacheLinkValues = LinkValues<typeof kvCacheLink.fields>;

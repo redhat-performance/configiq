@@ -55,14 +55,40 @@ import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
   buildPredictLink,
-  omitDefaults,
   parsePredictLink,
+  predictLink,
   type ParsedPredictLink,
   type PredictLinkValues,
 } from '@/lib/deep-links/predict';
+import { defineAccessors } from '@/lib/deep-links/shared-view';
+import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
+  isl: 2048,
+  osl: 128,
+  concurrency: 1,
+  servingMode: 'agg',
+  tp: 1,
+  pp: 1,
+  weightPrecision: 'FP16',
+  kvPrecision: 'FP16',
+  prefix: 0,
+  prefillTp: 1,
+  prefillPp: 1,
+  prefillWorkers: 1,
+  prefillBatch: 1,
+  decodeTp: 1,
+  decodePp: 1,
+  decodeWorkers: 1,
+  decodeBatch: 64,
+};
 
 function modelSuggestions(): string {
   return getAppConfig().suggestedModelNames.join(', ');
@@ -200,7 +226,6 @@ export default function Performance() {
   const searchParams = useSearchParams();
   const search = searchParams.toString();
   const deepLink = React.useRef<ParsedPredictLink | null>(null);
-  const appliedDeepLink = React.useRef(false);
   const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
   // A linked max_num_seqs enables the manual override, which the model/GPU
   // reset effect below clears. Applying it in the link pass would be undone on
@@ -224,7 +249,6 @@ export default function Performance() {
     if (linkedSystem) setGpu(linkedSystem);
     setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
-    appliedDeepLink.current = false;
     // A previous link's deferred values must not leak into this one.
     linkedMaxNumSeqs.current = null;
     pendingLinkedSystem.current = null;
@@ -546,51 +570,123 @@ export default function Performance() {
     markInputsDirty();
   };
 
-  // Apply a shared view's inputs once settings and the catalog have settled.
-  // URL values change page state only; they never overwrite saved settings.
-  React.useEffect(() => {
-    if (!hydrated || !gpuReady || appliedDeepLink.current) return;
-    appliedDeepLink.current = true;
-    const values = deepLink.current?.values;
-    if (!values) return;
-
-    if (values.isl !== undefined) handleIslChange(String(values.isl));
-    if (values.osl !== undefined) handleOslChange(String(values.osl));
-    if (values.concurrency !== undefined) handleConcurrentUsersChange(String(values.concurrency));
-    if (values.tp !== undefined) handleTpSizeChange(String(values.tp));
-    if (values.pp !== undefined) handlePpSizeChange(String(values.pp));
-    if (values.prefix !== undefined) handlePrefixChange(String(values.prefix));
-    if (values.moeTp !== undefined) handleMoeEtpSizeChange(String(values.moeTp));
-    if (values.moeEp !== undefined) handleMoeEpSizeChange(String(values.moeEp));
-    if (values.servingMode !== undefined) setServingMode(values.servingMode);
-    if (values.fabric !== undefined) setNetworkFabric(values.fabric);
-    if (values.weightPrecision !== undefined) setTestWeightPrecision(values.weightPrecision);
-    if (values.kvPrecision !== undefined) setTestKVCachePrecision(values.kvPrecision);
-    if (values.maxModelLen !== undefined) {
-      handleSequenceLengthChange(String(values.maxModelLen), setMaxSeqLenInput, setMaxSeqLen);
-    }
-    if (values.prefillMaxSeqLen !== undefined) {
-      handleSequenceLengthChange(String(values.prefillMaxSeqLen), setPrefillMaxSeqLenInput, setPrefillMaxSeqLen);
-    }
-    if (values.decodeMaxSeqLen !== undefined) {
-      handleSequenceLengthChange(String(values.decodeMaxSeqLen), setDecodeMaxSeqLenInput, setDecodeMaxSeqLen);
-    }
-    if (values.maxNumSeqs !== undefined) linkedMaxNumSeqs.current = values.maxNumSeqs;
-    if (values.gpuMemUtil !== undefined) setGpuMemoryUtilization(values.gpuMemUtil);
-    if (values.prefillTp !== undefined) setPrefillCfg(c => ({ ...c, tp: String(values.prefillTp) }));
-    if (values.prefillPp !== undefined) setPrefillCfg(c => ({ ...c, pp: String(values.prefillPp) }));
-    if (values.prefillWorkers !== undefined) setPrefillCfg(c => ({ ...c, workers: String(values.prefillWorkers) }));
-    if (values.prefillBatch !== undefined) setPrefillCfg(c => ({ ...c, batch: String(values.prefillBatch) }));
-    if (values.decodeTp !== undefined) setDecodeCfg(c => ({ ...c, tp: String(values.decodeTp) }));
-    if (values.decodePp !== undefined) setDecodeCfg(c => ({ ...c, pp: String(values.decodePp) }));
-    if (values.decodeWorkers !== undefined) setDecodeCfg(c => ({ ...c, workers: String(values.decodeWorkers) }));
-    if (values.decodeBatch !== undefined) setDecodeCfg(c => ({ ...c, batch: String(values.decodeBatch) }));
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the fields this page owns, so a new
+  // parameter fails to compile until it is bound here. The page's own early
+  // pass still handles the model and GPU prefill gates; this is the full set.
+  const shared = useSharedView(predictLink, {
+    fields: defineAccessors(predictLink, {
+      model: { read: () => model || undefined, write: setModel },
+      system: { read: () => gpu || undefined, write: setGpu },
+      isl: {
+        read: () => parseInt(islInput, 10) || undefined,
+        write: (value) => handleIslChange(String(value)),
+      },
+      osl: {
+        read: () => parseInt(oslInput, 10) || undefined,
+        write: (value) => handleOslChange(String(value)),
+      },
+      concurrency: {
+        read: () => parseInt(concurrentUsersInput, 10) || undefined,
+        write: (value) => handleConcurrentUsersChange(String(value)),
+      },
+      servingMode: { read: () => servingMode, write: setServingMode },
+      fabric: {
+        read: () => (servingMode === 'disagg' ? selectedNetworkFabric || undefined : undefined),
+        write: setNetworkFabric,
+      },
+      tp: {
+        read: () => parseInt(tpSizeInput, 10) || undefined,
+        write: (value) => handleTpSizeChange(String(value)),
+      },
+      pp: {
+        read: () => parseInt(ppSizeInput, 10) || undefined,
+        write: (value) => handlePpSizeChange(String(value)),
+      },
+      weightPrecision: { read: () => testWeightPrecision, write: setTestWeightPrecision },
+      kvPrecision: { read: () => testKVCachePrecision, write: setTestKVCachePrecision },
+      maxModelLen: {
+        read: () => parseInt(maxSeqLenInput, 10) || undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setMaxSeqLenInput, setMaxSeqLen),
+      },
+      prefillMaxSeqLen: {
+        read: () => parseInt(prefillMaxSeqLenInput, 10) || undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setPrefillMaxSeqLenInput, setPrefillMaxSeqLen),
+      },
+      decodeMaxSeqLen: {
+        read: () => parseInt(decodeMaxSeqLenInput, 10) || undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
+      },
+      prefix: {
+        read: () => parseInt(prefixInput, 10) || 0,
+        write: (value) => handlePrefixChange(String(value)),
+      },
+      // A linked max_num_seqs enables the manual override, which the model/GPU
+      // reset effect clears. Applying it here would be undone on the same
+      // commit, so the value is parked for that reset to carry out.
+      maxNumSeqs: {
+        read: () => vllmManualMaxNumSeqs ?? undefined,
+        write: (value) => { linkedMaxNumSeqs.current = value },
+      },
+      gpuMemUtil: { read: () => gpuMemoryUtilization ?? undefined, write: setGpuMemoryUtilization },
+      moeTp: {
+        read: () => parseInt(moeEtpSizeInput, 10) || undefined,
+        write: (value) => handleMoeEtpSizeChange(String(value)),
+      },
+      moeEp: {
+        read: () => parseInt(moeEpSizeInput, 10) || undefined,
+        write: (value) => handleMoeEpSizeChange(String(value)),
+      },
+      // Pool parallelism belongs to a disaggregated view. Carrying it in an
+      // aggregated link would describe controls the recipient cannot see.
+      prefillTp: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.tp, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, tp: String(value) })),
+      },
+      prefillPp: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.pp, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, pp: String(value) })),
+      },
+      prefillWorkers: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.workers, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, workers: String(value) })),
+      },
+      prefillBatch: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.batch, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, batch: String(value) })),
+      },
+      decodeTp: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.tp, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, tp: String(value) })),
+      },
+      decodePp: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.pp, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, pp: String(value) })),
+      },
+      decodeWorkers: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.workers, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, workers: String(value) })),
+      },
+      decodeBatch: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.batch, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, batch: String(value) })),
+      },
+    }),
+    // Apply a shared view's inputs once settings and the catalog have settled.
+    // URL values change page state only; they never overwrite saved settings.
+    ready: hydrated && gpuReady,
+    defaults: PREDICT_LINK_DEFAULTS,
+    provenance: {
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+      simulator: simulator || undefined,
+    },
     // A retained result no longer matches the form the link just described.
-    markInputsDirty();
-    // The setters above are stable state updates; this must run once per link,
-    // which `search` marks.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, gpuReady, search]);
+    onApplied: markInputsDirty,
+  });
 
   // Provenance is applied separately: a differing simulator is never switched
   // silently, it is offered through the banner below. Declared after the link
@@ -607,69 +703,6 @@ export default function Performance() {
     // replaces a system that simulator does not offer. Keep the linked system
     // to re-apply once it is selectable again.
     pendingLinkedSystem.current = values?.system ?? null;
-  };
-
-  const buildShareUrl = (): string => {
-    const values: PredictLinkValues = {
-      model: model || undefined,
-      system: gpu || undefined,
-      isl: parseInt(islInput, 10) || undefined,
-      osl: parseInt(oslInput, 10) || undefined,
-      concurrency: parseInt(concurrentUsersInput, 10) || undefined,
-      backend: inferenceBackend,
-      backendVersion: backendVersion || undefined,
-      simulator: simulator || undefined,
-      servingMode,
-      fabric: servingMode === 'disagg' ? selectedNetworkFabric || undefined : undefined,
-      tp: parseInt(tpSizeInput, 10) || undefined,
-      pp: parseInt(ppSizeInput, 10) || undefined,
-      weightPrecision: testWeightPrecision,
-      kvPrecision: testKVCachePrecision,
-      maxModelLen: parseInt(maxSeqLenInput, 10) || undefined,
-      prefillMaxSeqLen: parseInt(prefillMaxSeqLenInput, 10) || undefined,
-      decodeMaxSeqLen: parseInt(decodeMaxSeqLenInput, 10) || undefined,
-      prefix: parseInt(prefixInput, 10) || 0,
-      maxNumSeqs: vllmManualMaxNumSeqs ?? undefined,
-      gpuMemUtil: gpuMemoryUtilization ?? undefined,
-      moeTp: parseInt(moeEtpSizeInput, 10) || undefined,
-      moeEp: parseInt(moeEpSizeInput, 10) || undefined,
-      // Pool parallelism belongs to a disaggregated view. Carrying it in an
-      // aggregated link would describe controls the recipient cannot see.
-      ...(servingMode === 'disagg'
-        ? {
-            prefillTp: parseInt(prefillCfg.tp, 10) || undefined,
-            prefillPp: parseInt(prefillCfg.pp, 10) || undefined,
-            prefillWorkers: parseInt(prefillCfg.workers, 10) || undefined,
-            prefillBatch: parseInt(prefillCfg.batch, 10) || undefined,
-            decodeTp: parseInt(decodeCfg.tp, 10) || undefined,
-            decodePp: parseInt(decodeCfg.pp, 10) || undefined,
-            decodeWorkers: parseInt(decodeCfg.workers, 10) || undefined,
-            decodeBatch: parseInt(decodeCfg.batch, 10) || undefined,
-          }
-        : {}),
-    };
-    // The page's own defaults, so a link describes the view rather than
-    // restating every value that was never changed.
-    const defaults: PredictLinkValues = {
-      isl: 2048,
-      osl: 128,
-      concurrency: 1,
-      servingMode: 'agg',
-      tp: 1,
-      pp: 1,
-      weightPrecision: 'FP16',
-      kvPrecision: 'FP16',
-      prefix: 0,
-      prefillTp: 1,
-      prefillPp: 1,
-      prefillWorkers: 1,
-      prefillBatch: 1,
-      decodeTp: 1,
-      decodePp: 1,
-      decodeWorkers: 1,
-      decodeBatch: 64,
-    };
-    return buildPredictLink(omitDefaults(values, defaults));
   };
 
   // Fetch HF config when model changes
@@ -1662,7 +1695,7 @@ export default function Performance() {
         )}
 
         <div data-tour="calculate" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 16 }}>
-          <CopyLinkButton getUrl={buildShareUrl} />
+          <CopyLinkButton getUrl={shared.build} />
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
