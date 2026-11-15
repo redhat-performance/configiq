@@ -25,7 +25,7 @@ import { TourButton } from '@/components/help/TourButton'
 import { kvCacheLink, type KvCacheLinkValues } from '@/lib/deep-links/pages'
 import { defineAccessors } from '@/lib/deep-links/shared-view'
 import { useSharedView } from '@/lib/deep-links/useSharedView'
-import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
+import { buildKvCachePayload, type KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
 
 
@@ -410,23 +410,24 @@ export default function KvCacheCalc() {
       (validatedModelIds.includes(model) || catalogMatch || hfConfigModel === model),
   )
 
+  // The same builder the AISimulators client uses, so the proxied body and the
+  // shared-view contract are audited against one payload rather than two.
   function buildRequestBody(par: PhaseParallel): Record<string, unknown> {
-    const body: Record<string, unknown> = {
+    return buildKvCachePayload({
       model_path: model,
       system,
       backend,
+      backend_version: backendVersion.trim() || null,
       max_num_tokens: maxNumTokens,
       max_batch_size: maxBatchSize,
       tp_size: par.tp,
       pp_size: par.pp,
-      memory_fraction_kind: memFractionKind,
+      moe_tp_size: par.moeTp > 0 ? par.moeTp : null,
+      moe_ep_size: par.moeEp > 0 ? par.moeEp : null,
+      memory_fraction_kind: memFractionKind as 'of_total' | 'of_free',
       memory_fraction_value: memFractionValue,
-    }
-    if (backendVersion.trim()) body.backend_version = backendVersion.trim()
-    if (needsHfConfig(model, catalogModels) && hfConfig) body.model_config = hfConfig
-    if (par.moeTp > 0) body.moe_tp_size = par.moeTp
-    if (par.moeEp > 0) body.moe_ep_size = par.moeEp
-    return body
+      model_config: needsHfConfig(model, catalogModels) && hfConfig ? hfConfig : null,
+    })
   }
 
   async function handleCalculate() {

@@ -67,6 +67,7 @@ import ComparisonPreview, {
   type EstimatePoint,
   type PredictionSeries,
 } from './ComparisonPreview'
+import { SELECTION_KEYS, buildDataParams, buildResolveParams, mergeSelection, type Selection, type SelectionKey } from './benchmark-request'
 import styles from './validation-compare.module.css'
 
 type Notice = { variant: 'info' | 'warning' | 'success' | 'danger'; title: string; message: string }
@@ -74,10 +75,6 @@ type InferenceXSource = { url: string; retrievedAt: string; rowCount: number }
 type InferenceXRun = { url: string; date: string | null }
 type BenchmarkState = 'idle' | 'loaded' | 'empty' | 'unavailable'
 
-type SelectionKey = 'accelerator' | 'model' | 'isl' | 'osl' | 'tp'
-type Selection = Pick<BenchmarkFilters, SelectionKey>
-
-const SELECTION_KEYS: SelectionKey[] = ['accelerator', 'model', 'isl', 'osl', 'tp']
 const EMPTY_SELECTION: Selection = { accelerator: '', model: '', isl: '', osl: '', tp: '' }
 const EMPTY_OPTIONS: Record<BenchmarkFilterKey, string[]> = {
   accelerator: [], model: [], backend: [], backendVersion: [], isl: [], osl: [], tp: [],
@@ -453,12 +450,7 @@ export default function BenchmarkComparisonPage() {
     requestId.current = currentRequest
     setIsResolving(true)
     try {
-      const params = new URLSearchParams({ mode: 'resolve' })
-      for (const key of SELECTION_KEYS) {
-        if (next[key]) params.set(key, next[key])
-      }
-      if (inferenceBackend) params.set('backend', inferenceBackend)
-      if (backendVersion) params.set('backendVersion', backendVersion)
+      const params = buildResolveParams(next, inferenceBackend, backendVersion)
       const response = await fetch(`/api/validation/benchmark?${params.toString()}`, { cache: 'no-store' })
       const data = await response.json() as ResolutionResponse
       if (currentRequest !== requestId.current) return null
@@ -601,13 +593,7 @@ export default function BenchmarkComparisonPage() {
     }),
     ready: hydrated && !catalogLoading && seeded && rootOptions !== null && !isResolving,
     onApplied: () => {
-      const next: Selection = {
-        model: stagedSelection.current.model ?? selection.model,
-        accelerator: stagedSelection.current.accelerator ?? selection.accelerator,
-        isl: stagedSelection.current.isl ?? selection.isl,
-        osl: stagedSelection.current.osl ?? selection.osl,
-        tp: stagedSelection.current.tp ?? selection.tp,
-      }
+      const next = mergeSelection(selection, stagedSelection.current)
       stagedSelection.current = {}
       requestedConfigurationKey.current = stagedConfigurationKey.current
       stagedConfigurationKey.current = null
@@ -766,8 +752,7 @@ export default function BenchmarkComparisonPage() {
     let measuredLoaded = false
 
     try {
-      const params = new URLSearchParams({ mode: 'data', configuration: selectedConfiguration.key })
-      for (const key of BENCHMARK_FILTER_KEYS) params.set(key, resolvedFilters[key])
+      const params = buildDataParams(resolvedFilters, selectedConfiguration.key)
       const response = await fetch(`/api/validation/benchmark?${params.toString()}`, { cache: 'no-store' })
       const data = await response.json() as DataResponse
       if (stale()) return

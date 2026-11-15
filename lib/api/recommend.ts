@@ -285,7 +285,7 @@ function parsePhase(raw: RawWorkerConfig | null | undefined): PhaseConfig | null
  * Shared request mapping for the min_gpus and pareto paths. Both must send the
  * same workload shape; the objective only changes how the service searches it.
  */
-function baseRequestPayload(request: RecommendRequest): Record<string, unknown> {
+export function baseRequestPayload(request: RecommendRequest): Record<string, unknown> {
   const externalPayload: Record<string, unknown> = {
     model_path: request.model_path,
     system: request.system,
