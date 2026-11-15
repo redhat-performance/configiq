@@ -113,6 +113,45 @@ describe('predict deep links', () => {
     expect(parsed.warnings).toEqual([]);
   });
 
+  it('round-trips the manual vLLM override panel', () => {
+    // These are the values a reader pins by hand; a view that pins chunked
+    // prefill is a different view from one that leaves it to the backend.
+    const values: PredictLinkValues = {
+      model: 'Qwen/Qwen3-32B',
+      system: 'h100_sxm',
+      maxNumSeqs: 64,
+      chunkedPrefill: 'off',
+      gpuMemUtil: 0.87,
+    };
+
+    const parsed = parsePredictLink(
+      buildPredictLink(values).slice(buildPredictLink(values).indexOf('?')),
+    );
+
+    expect(parsed.values).toEqual(values);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it('round-trips a MoE weights quantisation choice', () => {
+    const values: PredictLinkValues = {
+      model: 'Qwen/Qwen3-235B-A22B',
+      moePrecision: 'w4a8_mxfp4_mxfp8',
+    };
+
+    const parsed = parsePredictLink(
+      buildPredictLink(values).slice(buildPredictLink(values).indexOf('?')),
+    );
+
+    expect(parsed.values).toEqual(values);
+  });
+
+  it('rejects a chunked-prefill choice it does not model', () => {
+    const parsed = parsePredictLink('?chunkedPrefill=maybe&isl=512');
+
+    expect(parsed.values).toEqual({ isl: 512 });
+    expect(parsed.warnings).toEqual(['Ignored "chunkedPrefill": the value was not valid.']);
+  });
+
   it('rejects a zero in a pool field instead of borrowing the other pool', () => {
     const parsed = parsePredictLink('?decodeWorkers=0&decodeBatch=16');
 

@@ -54,9 +54,11 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
+  DEFAULT_MOE_QUANT_MODE,
   buildPredictLink,
   parsePredictLink,
   predictLink,
+  type MoeQuantMode,
   type ParsedPredictLink,
   type PredictLinkValues,
 } from '@/lib/deep-links/predict';
@@ -227,10 +229,20 @@ export default function Performance() {
   const search = searchParams.toString();
   const deepLink = React.useRef<ParsedPredictLink | null>(null);
   const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
-  // A linked max_num_seqs enables the manual override, which the model/GPU
-  // reset effect below clears. Applying it in the link pass would be undone on
-  // the same commit, so it is parked here and applied after that reset.
-  const linkedMaxNumSeqs = React.useRef<number | null>(null);
+  // Values the manual vLLM override panel owns: a pinned max_num_seqs and a
+  // chunked-prefill choice. Both need the panel switched on as well, and the
+  // panel is cleared by the model/GPU reset below, so they are parked here and
+  // applied after that reset rather than in the link pass.
+  const parkedOverrides = React.useRef<{
+    maxNumSeqs?: number;
+    chunkedPrefill?: boolean;
+  } | null>(null);
+  const [parkedOverridesVersion, setParkedOverridesVersion] = React.useState(0);
+  const parkOverride = (patch: NonNullable<typeof parkedOverrides.current>) => {
+    parkedOverrides.current = { ...parkedOverrides.current, ...patch };
+    setParkedOverridesVersion(version => version + 1);
+  };
+
   // The linked system the shared simulator did not offer yet. It is re-applied
   // once the catalog for the accepted simulator arrives.
   const pendingLinkedSystem = React.useRef<string | null>(null);
@@ -250,7 +262,7 @@ export default function Performance() {
     setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
     // A previous link's deferred values must not leak into this one.
-    linkedMaxNumSeqs.current = null;
+    parkedOverrides.current = null;
     pendingLinkedSystem.current = null;
 
     // Rewrite the address bar to the canonical link: unknown and invalid
@@ -403,7 +415,7 @@ export default function Performance() {
   const [elapsed, setElapsed] = React.useState(0);
   const [testWeightPrecision, setTestWeightPrecision] = React.useState<'FP16' | 'FP8' | 'INT8' | 'INT4' | 'MXFP4' | 'NVFP4'>('FP16');
   const [testKVCachePrecision, setTestKVCachePrecision] = React.useState<'FP16' | 'FP8' | 'NVFP4'>('FP16');
-  const [testMoeQuantMode, setTestMoeQuantMode] = React.useState<'w4a16_mxfp4' | 'w4a8_mxfp4_mxfp8' | 'w4a16_mxfp4_cutlass' | 'w4a8_mxfp4_mxfp8_trtllm'>('w4a16_mxfp4');
+  const [testMoeQuantMode, setTestMoeQuantMode] = React.useState<MoeQuantMode>(DEFAULT_MOE_QUANT_MODE);
   const [testPpSize, setTestPpSize] = React.useState(1);
   const [testMoeEpSize, setTestMoeEpSize] = React.useState(1);
   const [testMoeEtpSize, setTestMoeEtpSize] = React.useState(1);
@@ -624,12 +636,18 @@ export default function Performance() {
         read: () => parseInt(prefixInput, 10) || 0,
         write: (value) => handlePrefixChange(String(value)),
       },
-      // A linked max_num_seqs enables the manual override, which the model/GPU
-      // reset effect clears. Applying it here would be undone on the same
-      // commit, so the value is parked for that reset to carry out.
+      // A pinned max_num_seqs, chunked-prefill choice, and memory fraction
+      // belong to an override panel the model/GPU reset clears, so they are
+      // parked for that reset to carry out rather than written in place.
       maxNumSeqs: {
         read: () => vllmManualMaxNumSeqs ?? undefined,
-        write: (value) => { linkedMaxNumSeqs.current = value },
+        write: (value) => { setVllmManualMaxNumSeqs(value); setVllmOverride(true) },
+      },
+      chunkedPrefill: {
+        read: () => (
+          vllmManualChunkedPrefill === null ? undefined : vllmManualChunkedPrefill ? 'on' : 'off'
+        ),
+        write: (value) => parkOverride({ chunkedPrefill: value === 'on' }),
       },
       gpuMemUtil: { read: () => gpuMemoryUtilization ?? undefined, write: setGpuMemoryUtilization },
       moeTp: {
@@ -639,6 +657,12 @@ export default function Performance() {
       moeEp: {
         read: () => parseInt(moeEpSizeInput, 10) || undefined,
         write: (value) => handleMoeEpSizeChange(String(value)),
+      },
+      // Only a MoE model sends this, and only when it is not the starting
+      // scheme, so a dense view's link stays silent about it.
+      moePrecision: {
+        read: () => (testMoeQuantMode === DEFAULT_MOE_QUANT_MODE ? undefined : testMoeQuantMode),
+        write: setTestMoeQuantMode,
       },
       // Pool parallelism belongs to a disaggregated view. Carrying it in an
       // aggregated link would describe controls the recipient cannot see.
@@ -925,16 +949,21 @@ export default function Performance() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, gpu]);
 
-  // Apply a linked max_num_seqs once the reset above has run. It has to live
-  // after that effect: the reset clears the override whenever the model or GPU
-  // changes, which is exactly what a link often does.
+  // Apply a linked override once the reset above has run. The reset clears
+  // these whenever the model or GPU changes, which is exactly what a link
+  // often does; the version also covers a link that changes neither, where
+  // that reset never fires at all.
   React.useEffect(() => {
-    if (!gpuReady || linkedMaxNumSeqs.current === null) return;
-    setVllmManualMaxNumSeqs(linkedMaxNumSeqs.current);
-    setVllmOverride(true);
-    linkedMaxNumSeqs.current = null;
-    // Deliberately also keyed on model and GPU: the reset above fires on either.
-  }, [gpuReady, model, gpu]);
+    const parked = parkedOverrides.current;
+    if (!gpuReady || !parked) return;
+    parkedOverrides.current = null;
+    if (parked.maxNumSeqs !== undefined) setVllmManualMaxNumSeqs(parked.maxNumSeqs);
+    if (parked.chunkedPrefill !== undefined) setVllmManualChunkedPrefill(parked.chunkedPrefill);
+    // The body only carries these while the override panel is on.
+    if (parked.maxNumSeqs !== undefined || parked.chunkedPrefill !== undefined) {
+      setVllmOverride(true);
+    }
+  }, [gpuReady, model, gpu, parkedOverridesVersion]);
 
   const toggleAcc = (id: string) => {
     setExpanded((e) => (e.includes(id) ? e.filter((x) => x !== id) : [...e, id]));

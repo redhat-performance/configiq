@@ -34,6 +34,23 @@ export {
   WEIGHT_PRECISIONS,
 };
 
+/**
+ * Weights quantisation schemes a MoE model can be run with, as the vLLM
+ * override panel offers them.
+ */
+const MOE_QUANT_MODES = [
+  'w4a16_mxfp4',
+  'w4a8_mxfp4_mxfp8',
+  'w4a16_mxfp4_cutlass',
+  'w4a8_mxfp4_mxfp8_trtllm',
+] as const;
+
+/** A MoE weights quantisation scheme the override panel can select. */
+export type MoeQuantMode = (typeof MOE_QUANT_MODES)[number];
+
+/** The scheme a model starts on; a link omits it rather than restating it. */
+export const DEFAULT_MOE_QUANT_MODE = MOE_QUANT_MODES[0];
+
 const FIELDS = {
   model: modelPath,
   system: systemId,
@@ -54,9 +71,16 @@ const FIELDS = {
   decodeMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
   maxNumSeqs: positiveInt(1_000_000),
+  // The manual vLLM override panel. A view that pins chunked prefill is a
+  // different view from one that leaves the backend to choose, so the choice
+  // travels with the link; absent means the backend decides.
+  chunkedPrefill: z.enum(['on', 'off']),
   gpuMemUtil: z.coerce.number().min(0.01).max(1),
   moeTp: positiveInt(1024),
   moeEp: positiveInt(1024),
+  // MoE weights quantisation: sent only for a MoE model, and only when it is
+  // not the starting scheme.
+  moePrecision: z.enum(MOE_QUANT_MODES),
   // Disaggregated runs configure each pool independently: a prefill pool and a
   // decode pool can differ in tensor/pipeline parallelism, workers, and batch.
   prefillTp: positiveInt(1024),

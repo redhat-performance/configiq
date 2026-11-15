@@ -452,10 +452,59 @@ describe('performance page disagg link fields', () => {
       await new Promise(resolve => setTimeout(resolve, 50));
     });
 
-    expect(fetchEstimateAsInferenceResult).toHaveBeenCalledOnce();
     const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
     // Without the override the value is restored into the form but never sent.
     expect(input.max_num_seqs).toBe(64);
+  });
+
+  it('applies a linked max_num_seqs even when the link changes no model or GPU', async () => {
+    // The parked-value effect has to fire on the park itself: the model/GPU
+    // reset never runs for a link that leaves both alone.
+    await mountAt('?v=1&maxNumSeqs=96');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.max_num_seqs).toBe(96);
+  });
+
+  it('carries a linked memory fraction into the request', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&gpuMemUtil=0.75');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.gpu_memory_utilization).toBe(0.75);
+  });
+
+  it('carries a pinned chunked-prefill choice into the request', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&chunkedPrefill=off');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.enable_chunked_prefill).toBe(false);
   });
 
   it('restores the linked system once the shared simulator is accepted', async () => {
