@@ -14,6 +14,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 const startSizing = vi.hoisted(() => vi.fn());
+const startPareto = vi.hoisted(() => vi.fn());
 const recommendState = vi.hoisted(() => ({ isLoading: false }));
 
 vi.mock('@/contexts/RecommendContext', () => ({
@@ -31,7 +32,7 @@ vi.mock('@/contexts/RecommendContext', () => ({
     debugDuration: null,
     frontier: { status: 'idle' },
     startSizing,
-    startPareto: vi.fn(),
+    startPareto,
     reset: vi.fn(),
   }),
 }));
@@ -63,6 +64,11 @@ vi.mock('@/contexts/SettingsContext', () => ({
   }),
 }));
 
+const versionSupport = vi.hoisted(() => ({
+  aisimulate: {} as Record<string, { disaggregated: boolean }>,
+  blis: {} as Record<string, { disaggregated: boolean }>,
+}));
+
 vi.mock('@/lib/hooks/useCatalog', () => {
   const backend = {
     id: 'vllm',
@@ -74,10 +80,11 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     runtimeField: 'gpu_memory_utilization',
     systems: {},
     systemDefaults: {},
-    versionSupport: {},
     disaggregationRequiresFabric: true,
     capacityOptions: { disaggregated: false },
   };
+  const aisimulateBackend = { ...backend, versionSupport: versionSupport.aisimulate };
+  const blisBackend = { ...backend, versionSupport: versionSupport.blis };
   const catalog = {
     modelOptions: ['Qwen/Qwen2.5-7B-Instruct'],
     gpuOptions: [
@@ -86,7 +93,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     ],
     modelSpecs: new Map(),
     networkOptions: ['ib-400g'],
-    backendOptions: [backend],
+    backendOptions: [aisimulateBackend],
     simulators: [
       { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
       { id: 'blis', label: 'BLIS', version: 'test-blis', default: false },
@@ -103,7 +110,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm'],
-        backends: [backend],
+        backends: [aisimulateBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
       // BLIS prices the linked system that AISimulate does not offer, so
@@ -119,7 +126,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm', 'h100_sxm'],
-        backends: [backend],
+        backends: [blisBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
     },
@@ -129,7 +136,10 @@ vi.mock('@/lib/hooks/useCatalog', () => {
   };
   return {
     useCatalog: () => catalog,
-    engineVersionSupport: () => null,
+    engineVersionSupport: (
+      engine: { versionSupport?: Record<string, { disaggregated: boolean }> } | null,
+      version: string | null,
+    ) => (engine && version ? engine.versionSupport?.[version] ?? null : null),
   };
 });
 
@@ -189,6 +199,10 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
   startSizing.mockClear();
+  startPareto.mockClear();
+  for (const support of [versionSupport.aisimulate, versionSupport.blis]) {
+    for (const version of Object.keys(support)) delete support[version];
+  }
   recommendState.isLoading = false;
   settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
@@ -230,6 +244,36 @@ async function calculate(): Promise<RecommendParams> {
   return calls[calls.length - 1][0] as RecommendParams;
 }
 
+async function pareto(): Promise<RecommendParams> {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find(candidate => candidate.textContent === 'Pareto frontier');
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.click();
+    await Promise.resolve();
+  });
+  expect(startPareto).toHaveBeenCalled();
+  const calls = startPareto.mock.calls;
+  return calls[calls.length - 1][0] as RecommendParams;
+}
+
+async function selectDisaggregated() {
+  await act(async () => {
+    Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Adjust?'))
+      ?.click();
+    await Promise.resolve();
+  });
+  const disaggregated = Array.from(container.querySelectorAll('button'))
+    .find(button => button.textContent === 'Disaggregated');
+  expect(disaggregated).toBeDefined();
+  expect(disaggregated?.hasAttribute('disabled')).toBe(false);
+  await act(async () => {
+    disaggregated?.click();
+    await Promise.resolve();
+  });
+}
+
 async function acceptSharedSimulator() {
   const button = Array.from(container.querySelectorAll('button'))
     .find(candidate => /Use BLIS for this view/.test(candidate.textContent ?? ''));
@@ -252,10 +296,38 @@ describe('recommend sizing shared views', () => {
     expect(sent.decode_max_seq_len).toBe(4096);
   });
 
-  it('forwards the named fabric', async () => {
+  it('restores disaggregated serving and its fabric from a shared link', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&fabric=ib-400g',
+    );
+
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
+  });
+
+  it('forwards the named fabric for disaggregated serving', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
 
-    expect((await calculate()).fabric).toBe('ib-400g');
+    await selectDisaggregated();
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
+  });
+
+  it('hides the fabric control while serving stays aggregated', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    const sizing = await calculate();
+    expect(sizing.fabric).toBeNull();
+    expect(sizing.mode).toBe('agg');
+    const sweep = await pareto();
+    expect(sweep.fabric).toBe('ib-400g');
+    expect(sweep.mode).toBeUndefined();
   });
 
   it('asks for aggregate-only candidates when the link says "no fabric"', async () => {
@@ -264,12 +336,47 @@ describe('recommend sizing shared views', () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
 
     expect((await calculate()).fabric).toBeNull();
+    expect((await pareto()).fabric).toBeNull();
   });
 
-  it('leaves the fabric to the simulator when the link omits it', async () => {
+  it('leaves the fabric to the simulator when a disaggregated link omits it', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
+    await selectDisaggregated();
     expect((await calculate()).fabric).toBe('ib-400g');
+  });
+
+  it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.blis['0.9.0'] = { disaggregated: true };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0&servingMode=disagg&fabric=ib-400g',
+    );
+
+    // The reader's simulator cannot model prefill/decode, so the link's mode
+    // stays held and the form stays aggregated until they accept.
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    expect((await calculate()).fabric).toBeNull();
+
+    await acceptSharedSimulator();
+
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    expect((await calculate()).fabric).toBe('ib-400g');
+  });
+
+  it('stays aggregated when the accepted simulator cannot model prefill/decode', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.blis['0.9.0'] = { disaggregated: false };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0&servingMode=disagg&fabric=ib-400g',
+    );
+
+    await acceptSharedSimulator();
+
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    expect((await calculate()).fabric).toBeNull();
   });
 
   it('offers the shared simulator instead of switching silently', async () => {

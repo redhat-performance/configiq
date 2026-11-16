@@ -56,6 +56,9 @@ export const RecommendRequestSchema = z.object({
   // Whether a simulator consumes a fabric is its own capability; the service
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
+  // Selected serving mode. `agg` asks the service to search aggregated
+  // candidates only. Omit it for the service's existing deployment search.
+  mode: z.enum(['agg', 'disagg']).optional(),
   /**
    * Internal client hint describing how this proxy should bound the request:
    * `single` also sends a `search_budget_seconds` for a simulator that owns one

@@ -309,6 +309,7 @@ export function baseRequestPayload(request: RecommendRequest): Record<string, un
   }
 
   if (request.fabric !== undefined) externalPayload.fabric = request.fabric
+  if (request.mode != null) externalPayload.mode = request.mode
   if (request.max_seq_len != null) externalPayload.max_seq_len = request.max_seq_len
   if (request.prefill_max_seq_len != null) externalPayload.prefill_max_seq_len = request.prefill_max_seq_len
   if (request.decode_max_seq_len != null) externalPayload.decode_max_seq_len = request.decode_max_seq_len

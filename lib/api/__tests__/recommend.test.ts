@@ -688,6 +688,16 @@ describe('callRecommend', () => {
     expect(sentBody.search_budget_seconds).toBe(40)
   })
 
+  it('forwards an aggregated serving mode', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await callRecommend({ ...VALID_REQUEST, mode: 'agg' })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody.mode).toBe('agg')
+  })
+
   it('preserves an explicit aggregate-only fabric opt-out', async () => {
     const mockFetch = mockFetchOk(BLIS_EXTERNAL_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)

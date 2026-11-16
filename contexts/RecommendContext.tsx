@@ -54,6 +54,11 @@ export interface RecommendParams {
   search_strategy?: 'windowed' | 'single';
   fabric?: string | null;
   /**
+   * Serving mode the user selected. `agg` asks the service to search aggregated
+   * candidates only. A Pareto sweep omits it and keeps both deployment modes.
+   */
+  mode?: 'agg' | 'disagg';
+  /**
    * True when this request was submitted by the Pareto action. The objective
    * stays the visible sizing goal so the dirty check can compare the same form
    * fields; the sweep request itself always uses `objective: 'pareto'`.
@@ -142,6 +147,7 @@ function requestBodyFor(p: RecommendParams): Record<string, unknown> {
   if (p.simulator) body.simulator = p.simulator;
   if (p.search_strategy) body.search_strategy = p.search_strategy;
   if (p.fabric !== undefined) body.fabric = p.fabric;
+  if (p.mode != null) body.mode = p.mode;
   return body;
 }
 

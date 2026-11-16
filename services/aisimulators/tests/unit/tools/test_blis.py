@@ -706,6 +706,49 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
     assert any(call.prefill_instances == 1 and call.decode_instances == 1 for call, _docs in calls)
 
 
+def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        return _result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+    result = blis_service.recommend(blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version=None,
+        isl=2048,
+        osl=128,
+        concurrency=8,
+        request_rate=None,
+        ttft=1000,
+        tpot=30,
+        request_latency=None,
+        prefix=0,
+        min_candidate_gpus=1,
+        max_candidate_gpus=8,
+        top_n=20,
+        search_budget_seconds=60,
+        fabric="ib-400g",
+        mode="agg",
+    ))
+
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert all(config["mode"] == "agg" for config in result.configs)
+    assert any(
+        "Aggregated serving was requested" in warning
+        for warning in result.configs[0]["warnings"]
+    )
+
+
 def test_run_command_uses_rate_and_omits_concurrency():
     runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
     command = build_run_command(runtime, RunRequest(

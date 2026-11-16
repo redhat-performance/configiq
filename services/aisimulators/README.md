@@ -187,10 +187,11 @@ default 7000-token ceiling is simulated instead of rejected.
 BLIS `/recommend` searches aggregate TP candidates
 for `min_gpus` and `throughput_demand`. It defaults to `roce-200g` when the
 `fabric` field is omitted and also searches bounded P/D TP and worker-count
-combinations, with one node per pool and DP=PP=1. Send `fabric: null` to request
-aggregate-only candidates; the response then warns that P/D candidates were not
-searched. `concurrency_capacity` is aggregate-only, and `pareto` enumerates both
-topology modes when a fabric is selected.
+combinations, with one node per pool and DP=PP=1. Send `fabric: null` or
+`mode=agg` to request aggregate-only candidates; the response then warns that
+P/D candidates were not searched. `concurrency_capacity` is aggregate-only.
+`pareto` ignores `mode` and enumerates both topology modes when a fabric is
+selected.
 
 BLIS recommendation sizes closed-loop concurrency by default. With
 `objective=throughput_demand` `sla_mode=none` it instead replays open-loop
@@ -251,7 +252,9 @@ weights in each pool.
 
 The first window is wide — `floor .. min(ceiling, max(16, floor × 2))` — so
 both aggregated and disaggregated shapes have room and the SDK's
-smallest-first ordering can find the true minimum. The ladder then:
+smallest-first ordering can find the true minimum. `mode=agg` limits that
+search to aggregated candidates. Omit `mode`, or send `disagg`, to keep both
+deployment modes. A Pareto sweep ignores `mode` and keeps both. The ladder then:
 
 - narrows to `floor .. candidate − 1` when a feasible candidate is above the
   floor;

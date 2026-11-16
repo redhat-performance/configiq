@@ -168,6 +168,9 @@ class RecommendInput:
     prefill_max_seq_len: int | None = None
     decode_max_seq_len: int | None = None
     fabric: str | None = None
+    # 'agg' searches aggregate candidates only. None and 'disagg' keep the
+    # fabric-gated search. Pareto does not read this field.
+    mode: str | None = None
     database_mode: str = "HYBRID"
     inclusive_tpot: bool = False
     model_config_provided: bool = False
@@ -1600,7 +1603,9 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
     # Demand runs replay open-loop traffic and are aggregate-only: the adapter
     # cannot attach a P/D transfer fabric to a rate-driven run it did not search.
-    include_disagg = bool(request.fabric) and not demand
+    # An aggregated serving mode asks for that same aggregate-only search even
+    # when a fabric is present. Pareto does not use this path.
+    include_disagg = bool(request.fabric) and not demand and request.mode != "agg"
     if include_disagg:
         _require_disaggregation(resolved)
     fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
@@ -1788,6 +1793,10 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             if demand:
                 common_config["warnings"].append(
                     "BLIS throughput-demand sizing is aggregate-only; P/D candidates were not searched."
+                )
+            elif request.mode == "agg":
+                common_config["warnings"].append(
+                    "Aggregated serving was requested; BLIS P/D candidates were not searched."
                 )
             elif not include_disagg:
                 common_config["warnings"].append(

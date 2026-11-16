@@ -262,6 +262,15 @@ class RecommendRequest(BaseModel):
         min_length=1,
         description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.",
     )
+    mode: Literal["agg", "disagg"] | None = Field(
+        default=None,
+        description=(
+            "Serving mode for a sizing search. 'agg' searches aggregated candidates only. "
+            "Omit it, or send 'disagg', to keep the simulator's existing deployment search, "
+            "including prefill/decode candidates when that search models them. "
+            "objective='pareto' ignores this field and keeps searching both deployment modes."
+        ),
+    )
     objective: Literal["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"] = Field(
         default="min_gpus",
         description=(
@@ -1278,7 +1287,10 @@ def _aisimulate_recommendation_config(
     is_pareto = req.objective == "pareto"
     is_demand = req.objective == "throughput_demand"
     narrow_window = window_max_gpus == 1
-    modes = ["aggregated"] if narrow_window else ["aggregated", "disaggregated"]
+    # An aggregated sizing request searches that deployment only. A Pareto sweep
+    # keeps both modes, and an omitted mode keeps the existing both-mode search.
+    aggregate_only = req.mode == "agg" and not is_pareto
+    modes = ["aggregated"] if narrow_window or aggregate_only else ["aggregated", "disaggregated"]
     max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
         req.objective,
         window_max_gpus,
@@ -4752,6 +4764,7 @@ def _blis_recommend(req: RecommendRequest):
         prefill_max_seq_len=req.prefill_max_seq_len,
         decode_max_seq_len=req.decode_max_seq_len,
         fabric=req.fabric,
+        mode=req.mode,
         database_mode=req.database_mode,
         inclusive_tpot=req.inclusive_tpot,
         model_config_provided=req.model_config_data is not None,

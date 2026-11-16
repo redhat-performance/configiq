@@ -251,6 +251,24 @@ class TestRecommend:
 
         assert config.optimization.constraints.max_candidate_gpus == 4096
 
+    def test_aggregated_mode_searches_only_aggregated_candidates(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
+
+        assert config.engine.mode.choices == ["aggregated"]
+        assert "prefill" not in config.engine.workers
+        assert "decode" not in config.engine.workers
+
+    def test_pareto_keeps_both_modes_when_the_request_names_aggregated(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_PARETO_BODY, "mode": "agg"}
+        )
+        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
+
+        assert config.engine.mode.choices == ["aggregated", "disaggregated"]
+
     def test_one_gpu_window_avoids_disaggregated_trials(self):
         body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1}
         request = app_module.RecommendRequest.model_validate(body)
