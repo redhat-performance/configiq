@@ -49,5 +49,9 @@ __pycache__/
 lib/docs/generated/
 public/help-index.json
 
+# Playwright output
+playwright-report/
+test-results/
+
 # Local-only dev scratch (container runner, logs)
 .local-dev/
