@@ -27,6 +27,12 @@ export interface AssistantLink {
   label: string;
   href: string;
   description?: string;
+  /**
+   * `proposal` marks a link built from a page's own link contract with the
+   * values the question named. It is inputs only — opening it still requires
+   * the user to press Calculate — and the panel says which fields it sets.
+   */
+  kind?: 'proposal';
 }
 
 export type AssistantErrorCode =
@@ -64,4 +70,8 @@ export interface AssistantRequest {
   simulator?: string;
   backend?: string;
   backendVersion?: string;
+  /** The model the page is currently set to, so a proposal can carry it. */
+  model?: string;
+  /** The GPU system the page is currently set to. */
+  system?: string;
 }

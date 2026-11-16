@@ -33,12 +33,17 @@ API.
 It does not read the model or GPU catalog, current pricing offers, or the
 results of a calculation. For a specific model, GPU, or configuration, open the
 page that shows it. It also never runs sizing: a sizing question ends with a
-link to the right tool, and the link carries the simulator and backend version
-the page was showing, not the values from your question. You enter those
-yourself and press **Calculate** (or **Compare**) so the result appears in the
-full page. The answer cites the documentation sections it used. If a number
-cannot be traced to a source, the panel shows the sources without the prose
-rather than presenting an unverified value.
+link to the right tool, carrying the values you named, so you press **Calculate**
+(or **Compare**) and the result appears in the full page. A value only travels
+when the page's link contract accepts it, and the link says which fields it sets
+and which named values it left out, with the reason: a value the contract
+refuses, a question that offers two alternatives, an input the destination page
+does not have, or an input the selected goal does not use. The model and GPU
+system come from your settings unless the question names its own, in which case
+the question wins. Anything else the question did not name keeps the value the
+page already had. The answer cites the documentation sections it used. If a
+number cannot be traced to a source or to your question, the panel shows the
+sources without the prose rather than presenting an unverified value.
 
 Ask is optional and can be switched off by the deployment. When it is off, the
 button, search, and tours still work.

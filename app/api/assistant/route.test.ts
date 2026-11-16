@@ -145,6 +145,54 @@ describe('assistant answer', () => {
     for (const link of docLinks) expect(link.href).not.toContain('?');
   });
 
+  it('accepts a number the user wrote in the question', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          // 4096 appears nowhere in the docs and nowhere in a tool result: it is
+          // only quotable because the user wrote it.
+          return completion({ content: 'The 4096 you named is the input length, also called ISL.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what does the input length 4096 mean?');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('answered');
+    expect(result.answer).toContain('4096');
+    // The question is evidence for the verifier, not a cited source.
+    expect(result.evidence.join(' ')).not.toContain('what does the input length');
+  });
+
+  it('lists every section the model was given, so no citation is cut off', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          return completion({ content: 'See the documentation for how sizing works.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how does sizing work');
+    const retrieval = events.find((event) => event.type === 'retrieval');
+    if (retrieval?.type !== 'retrieval') throw new Error('no retrieval event');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    const urls = new Set(retrieval.sections.map((section) => section.url));
+    // The answer may use any section it was given, so the list below it has to
+    // be the whole set rather than the first few.
+    expect(result.citations).toHaveLength(urls.size);
+  });
+
   it('suppresses prose that states a number the sources do not support', async () => {
     vi.stubGlobal(
       'fetch',
@@ -260,6 +308,68 @@ describe('assistant answer', () => {
     expect(recommendLink?.href).toContain('v=1');
     // A question asked on /predict should not link back to /predict.
     expect(result.links.some((link) => link.href.startsWith('/predict'))).toBe(false);
+  });
+
+  it('proposes the view the question describes, ahead of the documentation link', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          return completion({ content: 'Use Recommend sizing, then press Calculate.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask(
+      'how many GPUs for 4096 input tokens and 512 output tokens at 50 requests per second',
+      {
+        route: '/predict',
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+        system: 'nvidia-l40s',
+      },
+    );
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    const proposal = result.links[0];
+    expect(proposal.kind).toBe('proposal');
+    expect(proposal.href.startsWith('/recommend?v=1')).toBe(true);
+    expect(proposal.href).toContain('isl=4096');
+    expect(proposal.href).toContain('osl=512');
+    expect(proposal.href).toContain('demandRate=50');
+    expect(proposal.href).toContain('system=nvidia-l40s');
+    expect(proposal.href).toContain('simulator=blis');
+    expect(proposal.description).toContain('input length');
+    // The proposal supersedes the plain hint for the same page.
+    expect(result.links.filter((link) => link.href.startsWith('/recommend'))).toHaveLength(1);
+  });
+
+  it('keeps a proposal for the page the question was asked on', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          return completion({ content: 'Enter those values and press Calculate.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many GPUs for 4096 input tokens', {
+      route: '/recommend',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'nvidia-l40s',
+    });
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    // The plain self-link is suppressed, but the proposal carries values, so it
+    // is the one case where a link to the current page is useful.
+    expect(result.links[0].kind).toBe('proposal');
+    expect(result.links[0].href).toContain('isl=4096');
   });
 
   it('carries the backend and never a simulator on a KV cache link', async () => {

@@ -121,6 +121,21 @@
   gap: 4px;
 }
 
+.linkRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* What a proposal will set, in the smallest size the design system allows. */
+.linkHint {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--gc-text-2);
+  letter-spacing: 0.01em;
+}
+
 .primaryLink,
 .secondaryLink {
   display: inline-flex;
