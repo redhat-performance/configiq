@@ -189,6 +189,14 @@ describe('numeric verifier magnitude notation', () => {
     expect(result.ok).toBe(false);
     expect(result.unsupported).toEqual(['1000000000000001 bytes']);
   });
+
+  it('accumulates successive magnitude words', () => {
+    expect(verifyNumbers('The price is $2 million million.', ['The price is $2 trillion.']).ok).toBe(true);
+
+    const result = verifyNumbers('The price is $2 million million.', ['The price is $2 million.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['$2 million million']);
+  });
 });
 
 describe('numeric verifier rate units', () => {

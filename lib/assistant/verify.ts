@@ -129,16 +129,22 @@ function magnitudeSuffix(attached: string): number | undefined {
 }
 
 /**
- * Apply a power-of-ten magnitude to the literal instead of multiplying floats.
- * `1.001` million becomes exactly 1001000 because both sides parse the same
- * decimal string, and no digit of an exact quantity is rounded away, so
- * `1000000000000001` and `1000000000000002` stay distinct claims.
+ * Apply an accumulated power-of-ten exponent to the literal instead of
+ * multiplying floats. `1.001` with exponent 6 is exactly 1001000 because both
+ * sides parse the same decimal string, and no digit of an exact quantity is
+ * rounded away, so `1000000000000001` and `1000000000000002` stay distinct.
+ * Successive magnitudes add to the exponent rather than replacing it.
  */
-function applyMagnitude(literal: string, factor: number): number {
+function applyExponent(literal: string, exponent: number): number {
+  if (exponent === 0) return Number(literal);
   const parts = /^([+-]?[\d.]+)(?:[eE]([+-]?\d+))?$/.exec(literal);
-  if (!parts) return Number(literal) * factor;
-  const magnitude = Math.round(Math.log10(factor)) + Number(parts[2] ?? 0);
-  return Number(`${parts[1]}e${magnitude}`);
+  if (!parts) return Number(literal) * 10 ** exponent;
+  return Number(`${parts[1]}e${exponent + Number(parts[2] ?? 0)}`);
+}
+
+/** The power of ten a magnitude word or suffix stands for. */
+function magnitudeExponent(factor: number): number {
+  return Math.round(Math.log10(factor));
 }
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s)]+/gi;
@@ -194,6 +200,7 @@ function claimsIn(text: string): NumberClaim[] {
     const [token, prefix, attached] = match;
     const digits = token.match(NUMBER_VALUE)?.[0] ?? '';
     const literal = digits.replace(/,/g, '');
+    let exponent = 0;
     let value = Number(literal);
     if (!Number.isFinite(value)) continue;
 
@@ -201,7 +208,10 @@ function claimsIn(text: string): NumberClaim[] {
     // A magnitude suffix is therefore part of the value, and the unit, if any,
     // is the following word (`128k tokens`).
     const magnitude = attached ? magnitudeSuffix(attached.replace(/[.,;:!?]+$/, '')) : undefined;
-    if (magnitude !== undefined) value = applyMagnitude(literal, magnitude);
+    if (magnitude !== undefined) {
+      exponent += magnitudeExponent(magnitude);
+      value = applyExponent(literal, exponent);
+    }
 
     // A currency symbol or an attached unit is unambiguous and is the whole
     // claim. An attached magnitude suffix is not a unit.
@@ -221,7 +231,8 @@ function claimsIn(text: string): NumberClaim[] {
         const bare = word[1].replace(/[.,;:!?]+$/, '');
         const magnitudeWord = MAGNITUDE_WORDS[bare.toLowerCase()];
         if (magnitudeWord === undefined) break;
-        value = applyMagnitude(literal, magnitudeWord);
+        exponent += magnitudeExponent(magnitudeWord);
+        value = applyExponent(literal, exponent);
         raw += ` ${bare}`;
         cursor = word.index + word[0].length;
         pattern.lastIndex = cursor;
@@ -266,7 +277,8 @@ function claimsIn(text: string): NumberClaim[] {
 
       const magnitudeWord = MAGNITUDE_WORDS[word[1].replace(/[.,;:!?]+$/, '').toLowerCase()];
       if (magnitudeWord !== undefined) {
-        value = applyMagnitude(literal, magnitudeWord);
+        exponent += magnitudeExponent(magnitudeWord);
+        value = applyExponent(literal, exponent);
         if (/[.!?]$/.test(word[1])) break;
         continue;
       }
