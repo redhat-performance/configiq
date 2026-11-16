@@ -27,7 +27,10 @@
   max-width: 1920px;
   padding: 24px 32px 64px;
 }
-.header { margin-bottom: 20px; display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+/* The header row inside this block owns the alignment; making the header
+   itself a flex container shrank it to its content, leaving the shared-view
+   buttons short of the right edge. */
+.header { margin-bottom: 20px; }
 .pageTitle { font-family: var(--gc-font-display); font-size: 30px; font-weight: 700; letter-spacing: -0.01em; margin: 8px 0 4px; }
 .subtitle { color: var(--text-muted); margin: 0; font-size: 15px; }
 .page h2, .page h3 { color: var(--t); font-family: var(--gc-font-display); }
