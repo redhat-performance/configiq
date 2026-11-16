@@ -103,6 +103,31 @@ describe('ProductTour', () => {
     expect(onComplete).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps focus inside the dialog when a step removes the focused button', async () => {
+    addTarget('tour-target-model')
+    addTarget('tour-target-system')
+    await renderTour(
+      [tourStep('#tour-target-model', 'Model step'), tourStep('#tour-target-system', 'System step')],
+      vi.fn(),
+    )
+
+    const button = (label: string) =>
+      Array.from(dialog()!.querySelectorAll('button')).find(candidate => candidate.textContent === label)
+
+    await act(async () => button('Next')!.click())
+    expect(title()).toBe('System step')
+
+    // Back is the only way to reach the earlier step, and it disappears when
+    // that step has no predecessor. Removing a focused button returns focus to
+    // the viewport, outside the modal.
+    await act(async () => button('Back')!.focus())
+    expect(document.activeElement).toBe(button('Back'))
+
+    await act(async () => button('Back')!.click())
+    expect(title()).toBe('Model step')
+    expect(dialog()!.contains(document.activeElement)).toBe(true)
+  })
+
   it('keeps the tooltip inside the viewport when the target is near the edge', async () => {
     addTarget('tour-target-edge', { top: 900, left: 1200, width: 100, height: 50, right: 1300, bottom: 950 })
     await renderTour([tourStep('#tour-target-edge', 'Edge step', 'bottom')], vi.fn())
