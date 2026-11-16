@@ -129,19 +129,16 @@ function magnitudeSuffix(attached: string): number | undefined {
 }
 
 /**
- * Round a value to the precision claims are compared at. Exact keys can
- * otherwise disagree with themselves: `1.001 * 1e6` is 1000999.9999999999 in
- * floating point, and a long decimal literal carries its own representation
- * noise. Fifteen significant digits keeps every quantity in this domain exact
- * while making scaled and unscaled views of one number identical.
+ * Apply a power-of-ten magnitude to the literal instead of multiplying floats.
+ * `1.001` million becomes exactly 1001000 because both sides parse the same
+ * decimal string, and no digit of an exact quantity is rounded away, so
+ * `1000000000000001` and `1000000000000002` stay distinct claims.
  */
-function normalizeValue(value: number): number {
-  return Number(value.toPrecision(15));
-}
-
-/** Scale a value without binary noise, then normalise it for comparison. */
-function scale(value: number, factor: number): number {
-  return normalizeValue(value * factor);
+function applyMagnitude(literal: string, factor: number): number {
+  const parts = /^([+-]?[\d.]+)(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (!parts) return Number(literal) * factor;
+  const magnitude = Math.round(Math.log10(factor)) + Number(parts[2] ?? 0);
+  return Number(`${parts[1]}e${magnitude}`);
 }
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s)]+/gi;
@@ -196,14 +193,15 @@ function claimsIn(text: string): NumberClaim[] {
   while ((match = pattern.exec(text)) !== null) {
     const [token, prefix, attached] = match;
     const digits = token.match(NUMBER_VALUE)?.[0] ?? '';
-    let value = normalizeValue(Number(digits.replace(/,/g, '')));
+    const literal = digits.replace(/,/g, '');
+    let value = Number(literal);
     if (!Number.isFinite(value)) continue;
 
     // `128k`, `1.5M`, and `70B` mean a different number, not 128, 1.5, or 70.
     // A magnitude suffix is therefore part of the value, and the unit, if any,
     // is the following word (`128k tokens`).
     const magnitude = attached ? magnitudeSuffix(attached.replace(/[.,;:!?]+$/, '')) : undefined;
-    if (magnitude !== undefined) value = scale(value, magnitude);
+    if (magnitude !== undefined) value = applyMagnitude(literal, magnitude);
 
     // A currency symbol or an attached unit is unambiguous and is the whole
     // claim. An attached magnitude suffix is not a unit.
@@ -223,7 +221,7 @@ function claimsIn(text: string): NumberClaim[] {
         const bare = word[1].replace(/[.,;:!?]+$/, '');
         const magnitudeWord = MAGNITUDE_WORDS[bare.toLowerCase()];
         if (magnitudeWord === undefined) break;
-        value = scale(value, magnitudeWord);
+        value = applyMagnitude(literal, magnitudeWord);
         raw += ` ${bare}`;
         cursor = word.index + word[0].length;
         pattern.lastIndex = cursor;
@@ -268,7 +266,7 @@ function claimsIn(text: string): NumberClaim[] {
 
       const magnitudeWord = MAGNITUDE_WORDS[word[1].replace(/[.,;:!?]+$/, '').toLowerCase()];
       if (magnitudeWord !== undefined) {
-        value = scale(value, magnitudeWord);
+        value = applyMagnitude(literal, magnitudeWord);
         if (/[.!?]$/.test(word[1])) break;
         continue;
       }

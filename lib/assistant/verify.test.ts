@@ -180,6 +180,15 @@ describe('numeric verifier magnitude notation', () => {
       ['Throughput is 1234.567890123456 tokens/s.'],
     ).ok).toBe(true);
   });
+
+  it('keeps distinct large quantities apart', () => {
+    const result = verifyNumbers(
+      'Capacity is 1000000000000001 bytes.',
+      ['Capacity is 1000000000000002 bytes.'],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['1000000000000001 bytes']);
+  });
 });
 
 describe('numeric verifier rate units', () => {
