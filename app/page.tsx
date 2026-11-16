@@ -103,9 +103,6 @@ export default function HomePage() {
       </PageSection>
 
       <PageSection>
-        <Title headingLevel="h2" size="lg">
-          Which tool for which ask
-        </Title>
         <Content>
           <dl>
             <dt>
@@ -133,7 +130,7 @@ export default function HomePage() {
             </dd>
           </dl>
           <Content component="p">
-            A fuller comparison, including REST endpoints and MCP tools, is in{" "}
+            A complete comparison, including REST endpoints and MCP tools, is in{" "}
             <Link href="/docs/user-scenarios">User scenarios</Link>.
           </Content>
         </Content>
