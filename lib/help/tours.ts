@@ -154,7 +154,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="presets"]',
         title: 'Start from a preset',
         description:
-          'A preset picks a useful pair of axes. Cost efficiency appears only when hardware pricing is enabled and loaded.',
+          'A preset picks a useful pair of axes. Cost efficiency appears only when hardware pricing is loaded.',
         position: 'bottom',
       },
       {

@@ -32,19 +32,30 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
 
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: () => ({
-    costingsEnabled: false,
     preferredCloudProvider: null,
     pricingSource: 'merged',
   }),
 }));
 
+// Hardware costs are per-test state: the page now loads costings regardless of
+// the experimental toggle, so coverage is what decides whether cost controls
+// appear. The requested `enabled` flag is recorded so a setting-controlled call
+// cannot hide behind a mock that always returns costs.
+const costingsState = vi.hoisted(() => ({
+  hardwareCosts: new Map<string, { new_usd: number }>(),
+  enabled: null as boolean | null,
+}));
+
 vi.mock('@/lib/hooks/useCostings', () => ({
-  useCostings: () => ({
-    models: [],
-    gpuCloudRates: new Map(),
-    gpuHardwareCosts: new Map(),
-    isLoading: false,
-  }),
+  useCostings: (enabled: boolean) => {
+    costingsState.enabled = enabled;
+    return {
+      models: [],
+      gpuCloudRates: new Map(),
+      gpuHardwareCosts: costingsState.hardwareCosts,
+      isLoading: false,
+    };
+  },
 }));
 
 // The chart is the only consumer of the selected axes, so it stands in for the
@@ -64,6 +75,8 @@ let container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  costingsState.hardwareCosts.clear();
+  costingsState.enabled = null;
   clipboard.text = '';
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -166,12 +179,32 @@ describe('GPU explorer shared views', () => {
     expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
   });
 
-  it('replaces a price axis the link names while costings are off', async () => {
+  it('replaces a price axis the link names when no hardware costs are loaded', async () => {
     // Costings have already settled when the link applies, so the fallback has
     // to observe the axes themselves. Otherwise the chart keeps a price axis
     // whose control is hidden and plots every GPU at zero cost.
     await mountAt('?x=price&y=price');
 
     expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
+  });
+
+  it('offers the cost-efficiency preset when hardware costs are loaded', async () => {
+    // The explorer is not behind the experimental costings toggle: hardware
+    // cost coverage alone decides whether the cost controls are available.
+    costingsState.hardwareCosts.set('h200_sxm', { new_usd: 32000 });
+    await mountAt('?preset=cost-efficiency');
+
+    // The page must request pricing unconditionally; otherwise a real
+    // deployment with the experimental toggle off would never load costs even
+    // though this mock returns them.
+    expect(costingsState.enabled).toBe(true);
+    expect(axes()).toEqual({ x: 'Hardware Cost (USD)', y: 'Throughput Index' });
+    const preset = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Cost efficiency');
+    expect(preset).toBeDefined();
+    expect(preset?.hasAttribute('disabled')).toBe(false);
+
+    const url = await copyLink();
+    expect(url.searchParams.get('preset')).toBe('cost-efficiency');
   });
 });
