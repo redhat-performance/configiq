@@ -40,10 +40,13 @@ export function useLinkProvenance(
   readValues: () => LinkProvenanceValues | null,
   ready: boolean,
 ): LinkProvenanceState {
-  const { simulator, applyViewForSession } = useSettings();
+  const { simulator, inferenceBackend, backendVersion, applyViewForSession } = useSettings();
   const search = useSearchParams().toString();
   const [sharedSimulator, setSharedSimulator] = React.useState<string | null>(null);
   const appliedSearch = React.useRef<string | null>(null);
+  // The provenance the reader accepted. A later link that omits these fields
+  // must not replace the override wholesale and fall back to their saved profile.
+  const accepted = React.useRef<LinkProvenanceValues | null>(null);
   const readValuesRef = React.useRef(readValues);
   readValuesRef.current = readValues;
 
@@ -60,20 +63,30 @@ export function useLinkProvenance(
       return;
     }
     if (values.backend || values.backendVersion) {
-      applyViewForSession({ backend: values.backend, backendVersion: values.backendVersion });
+      applyViewForSession({
+        // Keep a simulator the reader already accepted for this view. The saved
+        // default is never pinned here, so changing it still takes effect.
+        ...(accepted.current?.simulator ? { simulator: accepted.current.simulator } : {}),
+        // Omitted fields keep their current effective values rather than being
+        // cleared by the replacement.
+        backend: values.backend ?? inferenceBackend,
+        backendVersion: values.backendVersion ?? backendVersion,
+      });
     }
-  }, [ready, search, simulator, applyViewForSession]);
+  }, [ready, search, simulator, inferenceBackend, backendVersion, applyViewForSession]);
 
   const acceptSharedSimulator = React.useCallback(() => {
     if (!sharedSimulator) return;
     const values = readValuesRef.current();
-    applyViewForSession({
+    const next: LinkProvenanceValues = {
       simulator: sharedSimulator,
-      backend: values?.backend,
-      backendVersion: values?.backendVersion,
-    });
+      backend: values?.backend ?? inferenceBackend,
+      backendVersion: values?.backendVersion ?? backendVersion,
+    };
+    accepted.current = next;
+    applyViewForSession(next);
     setSharedSimulator(null);
-  }, [applyViewForSession, sharedSimulator]);
+  }, [applyViewForSession, sharedSimulator, inferenceBackend, backendVersion]);
 
   return { sharedSimulator, acceptSharedSimulator };
 }
