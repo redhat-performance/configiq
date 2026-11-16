@@ -32,17 +32,23 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
 
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: () => ({
-    costingsEnabled: false,
     preferredCloudProvider: null,
     pricingSource: 'merged',
   }),
+}));
+
+// Hardware costs are per-test state: the page now loads costings regardless of
+// the experimental toggle, so coverage is what decides whether cost controls
+// appear.
+const costingsState = vi.hoisted(() => ({
+  hardwareCosts: new Map<string, { new_usd: number }>(),
 }));
 
 vi.mock('@/lib/hooks/useCostings', () => ({
   useCostings: () => ({
     models: [],
     gpuCloudRates: new Map(),
-    gpuHardwareCosts: new Map(),
+    gpuHardwareCosts: costingsState.hardwareCosts,
     isLoading: false,
   }),
 }));
@@ -64,6 +70,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  costingsState.hardwareCosts.clear();
   clipboard.text = '';
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -166,12 +173,28 @@ describe('GPU explorer shared views', () => {
     expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
   });
 
-  it('replaces a price axis the link names while costings are off', async () => {
+  it('replaces a price axis the link names when no hardware costs are loaded', async () => {
     // Costings have already settled when the link applies, so the fallback has
     // to observe the axes themselves. Otherwise the chart keeps a price axis
     // whose control is hidden and plots every GPU at zero cost.
     await mountAt('?x=price&y=price');
 
     expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
+  });
+
+  it('offers the cost-efficiency preset when hardware costs are loaded', async () => {
+    // The explorer is not behind the experimental costings toggle: hardware
+    // cost coverage alone decides whether the cost controls are available.
+    costingsState.hardwareCosts.set('h200_sxm', { new_usd: 32000 });
+    await mountAt('?preset=cost-efficiency');
+
+    expect(axes()).toEqual({ x: 'Hardware Cost (USD)', y: 'Throughput Index' });
+    const preset = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Cost efficiency');
+    expect(preset).toBeDefined();
+    expect(preset?.hasAttribute('disabled')).toBe(false);
+
+    const url = await copyLink();
+    expect(url.searchParams.get('preset')).toBe('cost-efficiency');
   });
 });

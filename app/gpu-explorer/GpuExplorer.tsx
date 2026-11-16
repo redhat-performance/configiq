@@ -1,8 +1,9 @@
 "use client";
 
 // Cost-related axes (hardware cost) and the cost-efficiency bubble-size metric are
-// driven by the costings API via useCostings, gated on the costingsEnabled setting.
-// Cloud pricing per provider is applied on the Sources page selection.
+// driven by the costings API via useCostings. They follow hardware-cost
+// availability rather than the experimental costings toggle, the same way Hybrid
+// Savings and Sources do. Pricing source is applied from the Sources page selection.
 
 import * as React from 'react';
 import {
@@ -63,8 +64,10 @@ export default function GpuExplorerPage() {
   const [yAxis, setYAxis] = React.useState<YAxis>('throughput-index');
   const [vendorFilter, setVendorFilter] = React.useState<'all' | 'nvidia' | 'amd'>('all');
   const { gpuOptions, isLoading } = useCatalog();
-  const { costingsEnabled, preferredCloudProvider, pricingSource } = useSettings();
-  const costings = useCostings(costingsEnabled, pricingSource);
+  const { pricingSource } = useSettings();
+  // Cost axes are regular explorer functionality, so live hardware costs load
+  // without the experimental costings toggle.
+  const costings = useCostings(true, pricingSource);
 
   React.useEffect(() => {
     setMounted(true);
@@ -121,13 +124,14 @@ export default function GpuExplorerPage() {
   const hasHardwareCosts = filteredGPUs.some(
     gpu => (costings.gpuHardwareCosts.get(gpu.systemId)?.new_usd ?? 0) > 0,
   );
-  const costMetricsReady = costingsEnabled && hasHardwareCosts;
+  const costMetricsReady = hasHardwareCosts;
 
-  // If cost metrics become unavailable (costings off, or the displayed GPUs have
-  // no hardware costs) while a price axis or the cost-efficiency preset is
-  // active, fall back to safe defaults so the chart never shows an empty axis.
-  // The axes are dependencies too: a shared link can select `price` after
-  // costings have already settled, and no other input would re-run this check.
+  // If cost metrics become unavailable (the costings API reports no hardware
+  // costs for the displayed GPUs) while a price axis or the cost-efficiency
+  // preset is active, fall back to safe defaults so the chart never shows an
+  // empty axis. The axes are dependencies too: a shared link can select `price`
+  // after costings have already settled, and no other input would re-run this
+  // check.
   React.useEffect(() => {
     if (!costMetricsReady) {
       if (preset === 'cost-efficiency') setPreset('balanced');
@@ -343,7 +347,7 @@ export default function GpuExplorerPage() {
                       💡 <strong>Top-right = high VRAM and throughput.</strong> These GPUs handle larger models and longer contexts.
                     </Text>
                     <Text component="p" style={{ display: 'block', marginBottom: '8px', color: '#3c3f42', fontSize: '13px', lineHeight: '1.6' }}>
-                      <strong>Bubble size</strong> represents {costingsEnabled && hasHardwareCosts
+                      <strong>Bubble size</strong> represents {hasHardwareCosts
                         ? 'throughput index per $1k of hardware cost (a relative cost-efficiency metric)'
                         : 'BF16 TFLOPs'}.
                     </Text>
@@ -355,9 +359,9 @@ export default function GpuExplorerPage() {
                       <strong>Inference performance</strong> depends on model architecture (GQA vs MHA), sequence length, batching, and inference backend (vLLM, TensorRT-LLM, etc.).
                     </Text>
                     <Text component="p" style={{ display: 'block', color: '#6a6e73', fontSize: '13px', lineHeight: '1.6' }}>
-                      {costingsEnabled
-                        ? <><strong>Hardware cost</strong> axes and cost efficiency use live data from the costings API. Enable a cloud provider on the Sources page for cloud rates.</>
-                        : <><strong>Hardware cost and cost efficiency</strong> axes appear when costings is enabled in Settings.</>}
+                      {hasHardwareCosts
+                        ? <><strong>Hardware cost</strong> axes and cost efficiency use live data from the costings API. Choose a pricing source on the Sources page.</>
+                        : <><strong>Hardware cost and cost efficiency</strong> axes appear when the costings API reports hardware costs for the GPUs shown.</>}
                     </Text>
                   </CardBody>
                 </Card>
