@@ -1,0 +1,7 @@
+/* The PatternFly definition list defaults its question column to 12ch, which
+   wraps every question onto two or three lines. Size the column to the longest
+   question so all three read on one line without hardcoding a width that goes
+   stale when the copy changes. */
+.questions {
+  --pf-v6-c-content--dl--GridTemplateColumns--dt: max-content;
+}

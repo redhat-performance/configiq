@@ -21,6 +21,7 @@ import {
 } from "@patternfly/react-icons";
 import Link from "next/link";
 import { useSettings } from "@/contexts/SettingsContext";
+import styles from "./page.module.css";
 
 const tools = [
   {
@@ -104,7 +105,7 @@ export default function HomePage() {
 
       <PageSection>
         <Content>
-          <dl>
+          <dl className={styles.questions}>
             <dt>
               <strong>What performance will I get?</strong>
             </dt>
