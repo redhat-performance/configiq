@@ -113,4 +113,47 @@ describe('numeric verifier units', () => {
   it('accepts a claim with no unit when the evidence attaches one', () => {
     expect(verifyNumbers('The page default is 2048.', EVIDENCE).ok).toBe(true);
   });
+
+  it('does not read a unit from the sentence after a count', () => {
+    expect(verifyNumbers('Use these 3 steps. GPUs are selected on Predict.', []).ok).toBe(true);
+  });
+});
+
+describe('numeric verifier magnitude notation', () => {
+  it('reads an attached magnitude suffix as part of the value', () => {
+    expect(verifyNumbers('The context is 128k tokens.', ['The context is 128,000 tokens.']).ok).toBe(true);
+
+    // A suffix is not a decoration: 128k means 128,000, not 128.
+    const result = verifyNumbers('The context is 128k tokens.', ['The context is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128k tokens']);
+  });
+
+  it('reads scientific notation as a complete value', () => {
+    expect(verifyNumbers('The context is 1e6 tokens.', ['The context is 1,000,000 tokens.']).ok).toBe(true);
+
+    const result = verifyNumbers('The context is 1e6 tokens.', ['The context is 1 token.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['1e6 tokens']);
+  });
+
+  it('reads a magnitude word as part of the value', () => {
+    expect(verifyNumbers('The corpus is 1.5 million tokens.', ['The corpus is 1,500,000 tokens.']).ok).toBe(true);
+  });
+});
+
+describe('numeric verifier rate units', () => {
+  it('accepts a rate written in words against one written with a slash', () => {
+    expect(verifyNumbers('Throughput is 128 tokens per second.', ['Throughput is 128 tokens/s.']).ok).toBe(true);
+  });
+
+  it('rejects a rate when the evidence states only the count', () => {
+    const result = verifyNumbers('Throughput is 128 tokens per second.', ['Throughput is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128 tokens per second']);
+  });
+
+  it('canonicalises a slash rate written with a full word', () => {
+    expect(supportedClaims(['Throughput is 128 tokens/sec.']).get(128)).toContain('token/s');
+  });
 });
