@@ -1,11 +1,11 @@
-# ADR: Defer Prisma and PostgreSQL to Phase 3
+# ADR: No Prisma or PostgreSQL
 
 **Date**: 2026-05-12
 **Status**: Accepted
 
 ## Decision
 
-Do not add a database in Phase 1 or Phase 2.
+The application does not use a database.
 
 ## Reasons
 
@@ -16,4 +16,4 @@ Do not add a database in Phase 1 or Phase 2.
 ## Consequences
 
 - All state is ephemeral (in-component or URL params)
-- PostgreSQL + Prisma added in Phase 3 once saved scenarios are scoped
+- No schema, migrations, or database to operate
