@@ -214,6 +214,34 @@ The correct split is:
   (`moe_tp` / `moe_ep`, or `prefill_config` / `decode_config`).
 - The UI renders the values it was told, instead of reconstructing the default.
 
+## Shared views (deep links)
+
+Every page with shareable inputs has a link contract in `lib/deep-links/`, and
+three checks keep it honest. Do not route around them.
+
+1. **Bind through the accessor table.** A page declares one row per contract
+   field with `defineAccessors` and derives both directions — export and apply —
+   from it with `useSharedView`. Adding a field to a contract is a compile error
+   until the page binds it. Pages that spread `PROVENANCE_FIELDS` wrap their
+   contract in `withProvenance`; `useLinkProvenance` owns that trio.
+2. **Census what the page submits.** A new API request key needs an entry in the
+   page's census in `lib/deep-links/request-census.test.ts`: either the link
+   fields it derives from, or a reason a shared view cannot carry it. The audit
+   reads the payload the page really sends.
+3. **Register the page.** A new route needs a `PAGE_REGISTRY` entry in
+   `lib/deep-links/registry.ts` — its contract and a golden-link snapshot, or a
+   reason it has nothing to share. The registry test reads `app/`, so a new page
+   cannot be added without answering the question.
+
+Adding a contract field is additive: do not bump `LINK_VERSION`. Renaming,
+removing, or reinterpreting one is a break: bump `LINK_VERSION`, keep reading
+the previous version, and update the golden fixtures in the same commit.
+
+Do not hand-write a page's builder or apply chain beside its accessor table:
+the two directions drift apart again the moment they are separate. See
+[docs/decisions/2026-11-16-shared-view-contracts.md](docs/decisions/2026-11-16-shared-view-contracts.md)
+for why the enforcement looks like this.
+
 ## Commands
 
 ```bash

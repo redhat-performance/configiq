@@ -303,6 +303,9 @@ Before marking a PR ready for review:
 - [ ] Documentation changes are registered in `docs/manifest.json` and
       `npm run docs:check` passes
 - [ ] New GPU math is in AISimulators, not in a component or `lib/gpu-math/`
+- [ ] Shared views are honest: new or changed inputs appear in the page's link
+      contract and its request census, and a new page is registered in
+      `lib/deep-links/registry.ts`
 - [ ] No new third-party UI libraries added to `package.json`
 - [ ] All UI text uses sentence case
 - [ ] No arbitrary hardcoded hex colors — use established `--gc-*`, `--rh-*`, or
