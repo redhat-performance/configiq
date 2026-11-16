@@ -40,7 +40,7 @@ function readEvent(line: string): AssistantEvent | null {
  * not trace a number, the panel shows the sources instead of the prose.
  */
 export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
-  const { simulator, inferenceBackend, backendVersion } = useSettings();
+  const { simulator, inferenceBackend, backendVersion, defaultModel, defaultSystem } = useSettings();
 
   const [question, setQuestion] = React.useState('');
   const [status, setStatus] = React.useState<AskStatus>('idle');
@@ -132,6 +132,10 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           simulator: simulator || undefined,
           backend: inferenceBackend || undefined,
           backendVersion: backendVersion || undefined,
+          // The page's current choices, so a sizing question that names no
+          // model still opens a complete view rather than an empty one.
+          model: defaultModel || undefined,
+          system: defaultSystem || undefined,
         }),
         signal: controller.signal,
       });
@@ -218,8 +222,8 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           {status === 'asking' ? 'Asking…' : 'Ask'}
         </Button>
         <span className={styles.hint}>
-          Explains the docs. It never runs sizing; links open the right tool so
-          you can calculate.
+          Explains the docs. It never runs sizing; a link opens the tool with the
+          values you named, so you can calculate.
         </span>
       </div>
 
@@ -276,15 +280,21 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           {links.length > 0 && (
             <div className={styles.links}>
               {links.map((link, index) => (
-                <Link
-                  key={link.href}
-                  className={index === 0 ? styles.primaryLink : styles.secondaryLink}
-                  href={link.href}
-                  prefetch={false}
-                  onClick={hide}
-                >
-                  {link.label}
-                </Link>
+                <div className={styles.linkRow} key={link.href}>
+                  <Link
+                    className={index === 0 ? styles.primaryLink : styles.secondaryLink}
+                    href={link.href}
+                    prefetch={false}
+                    onClick={hide}
+                  >
+                    {link.label}
+                  </Link>
+                  {/* A proposal changes inputs, so say which ones before the
+                      link is followed rather than after the page opens. */}
+                  {link.kind === 'proposal' && link.description && (
+                    <span className={styles.linkHint}>{link.description}</span>
+                  )}
+                </div>
               ))}
             </div>
           )}

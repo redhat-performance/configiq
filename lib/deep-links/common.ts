@@ -79,6 +79,14 @@ export type ProvenanceKey = keyof typeof PROVENANCE_FIELDS;
  */
 export type PageFieldKeys<F extends LinkFieldMap> = Exclude<keyof F, ProvenanceKey>;
 
+export interface ValidatedLink<F extends LinkFieldMap> {
+  /** The built URL, carrying only the values the contract accepted. */
+  href: string;
+  values: LinkValues<F>;
+  /** Candidates the contract rejected, with the raw input so a caller can report them. */
+  ignored: Array<{ key: string; value: unknown }>;
+}
+
 export interface PageLink<F extends LinkFieldMap, B extends keyof F = keyof F> {
   path: string;
   fields: F;
@@ -165,6 +173,35 @@ export function defineLink<F extends LinkFieldMap>(path: string, fields: F): Pag
   }
 
   return { path, fields, parse, build, omitDefaults };
+}
+
+/**
+ * Validate candidate values through a contract and build the URL.
+ *
+ * `build` serializes whatever it is handed, so a caller assembling values from
+ * free text must not call it directly: an out-of-range number would become a
+ * link the page then applies. Every candidate goes through the same schema the
+ * page parses with, and the rejected ones are returned instead of written.
+ */
+export function buildValidated<F extends LinkFieldMap>(
+  link: PageLink<F>,
+  candidates: Record<string, unknown>,
+): ValidatedLink<F> {
+  const values = {} as LinkValues<F>;
+  const ignored: Array<{ key: string; value: unknown }> = [];
+
+  for (const key of Object.keys(link.fields)) {
+    const candidate = candidates[key];
+    if (candidate === undefined || candidate === null || candidate === '') continue;
+    const parsed = link.fields[key].safeParse(candidate);
+    if (parsed.success) {
+      (values as Record<string, unknown>)[key] = parsed.data;
+    } else {
+      ignored.push({ key, value: candidate });
+    }
+  }
+
+  return { href: link.build(values), values, ignored };
 }
 
 /**

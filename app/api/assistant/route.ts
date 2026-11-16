@@ -3,6 +3,8 @@ import { z } from 'zod';
 import helpIndex from '@/lib/docs/generated/help-index.json';
 import { parseHelpIndex, routeLabel } from '@/lib/help/search';
 import { retrieve } from '@/lib/assistant/retrieve';
+import { pageHintFor } from '@/lib/assistant/intent';
+import { proposeView, type ProposedView } from '@/lib/assistant/propose';
 import { toolByName, toolSchemas, type ToolContext, type ToolResult } from '@/lib/assistant/tools';
 import { verifyNumbers } from '@/lib/assistant/verify';
 import { AssistantBusyError, assistantQueue } from '@/lib/assistant/queue';
@@ -37,6 +39,13 @@ const MAX_QUESTION_LENGTH = 500;
 const MAX_TOOL_ROUNDS = 2;
 const MAX_TOOL_CALLS_PER_ROUND = 2;
 const ANSWER_TOKEN_LIMIT = 320;
+/**
+ * Sections handed to the model, and therefore the most URLs that can be cited.
+ * The list under an answer is what the model read, so it has to cover every
+ * section the prompt allowed it to use; a shorter list would let a claim rest
+ * on a source the reader was never shown.
+ */
+const REFERENCE_SECTIONS = 6;
 const MODEL_TIMEOUT_MS = 25_000;
 const TOOL_TIMEOUT_MS = 8_000;
 
@@ -46,6 +55,11 @@ const requestSchema = z.object({
   simulator: z.string().trim().max(120).optional(),
   backend: z.string().trim().max(120).optional(),
   backendVersion: z.string().trim().max(120).optional(),
+  // The page's current choices, so a proposal can open a complete view when
+  // the question names neither. Settings live in the browser, so this is the
+  // only way the server learns them.
+  model: z.string().trim().max(200).optional(),
+  system: z.string().trim().max(120).optional(),
 });
 
 type AssistantRequestInput = z.infer<typeof requestSchema>;
@@ -206,17 +220,6 @@ async function chatCompletion(
   }
 }
 
-/** Pages a question is likely to continue on, with the provenance trio added. */
-const PAGE_HINTS: Array<{ pattern: RegExp; href: string; label: string }> = [
-  { pattern: /\brecommend|sizing goal|how many gpus|capacity|demand\b/i, href: '/recommend', label: 'Open Recommend sizing' },
-  { pattern: /\bpredict|ttft|tpot|latency|performance\b/i, href: '/predict', label: 'Open Predict performance' },
-  { pattern: /\bkv cache|kv-cache|vram|memory\b/i, href: '/kv-cache', label: 'Open KV cache calculator' },
-  { pattern: /\bhybrid|hosted|purchased|rented\b/i, href: '/hybrid-savings', label: 'Open Hybrid savings' },
-  { pattern: /\bbenchmark|validation|measured\b/i, href: '/validation/compare', label: 'Open Benchmark comparison' },
-  { pattern: /\bgpu explorer|bubble|tflops|bandwidth\b/i, href: '/gpu-explorer', label: 'Open GPU explorer' },
-  { pattern: /\bsettings|simulator|backend\b/i, href: '/settings', label: 'Open Settings' },
-];
-
 /** Pages whose link contract carries the backend/version half of provenance. */
 const PROVENANCE_ROUTES = new Set([
   '/predict',
@@ -264,31 +267,41 @@ function linksForAnswer(
   request: AssistantRequestInput,
   sections: RetrievedSection[],
   toolResults: ToolResult[],
+  proposal: ProposedView | null,
 ): AssistantLink[] {
   const links: AssistantLink[] = [];
   const seen = new Set<string>();
 
   const push = (link: AssistantLink) => {
-    const href = withProvenance(link.href, request);
+    // A proposal is already built from the page's contract, which put the
+    // version marker on it; adding provenance again would rewrite values the
+    // contract just validated.
+    const href = link.kind === 'proposal' ? link.href : withProvenance(link.href, request);
     if (seen.has(href)) return;
     seen.add(href);
     links.push({ ...link, href });
   };
 
+  // The view the question describes comes first: it is the answer's action,
+  // the rest are places to read more.
+  if (proposal) push(proposal.link);
+
   for (const result of toolResults) {
     if (result.link) push(result.link);
   }
 
-  for (const hint of PAGE_HINTS) {
-    if (hint.pattern.test(request.question)) {
-      push({ label: hint.label, href: hint.href });
-      break;
-    }
+  const hint = pageHintFor(request.question);
+  // A proposal supersedes the plain hint for the same page.
+  if (hint && !(proposal && proposal.link.href.startsWith(hint.href))) {
+    push({ label: hint.label, href: hint.href });
   }
 
-  // A question about a page the user is already on does not need a link to it.
+  // A question about a page the user is already on does not need a link to it,
+  // but a proposal for that page does carry values, so it is kept.
   if (request.route && routeLabel(request.route) !== request.route) {
-    const current = links.find((link) => link.href.startsWith(request.route ?? ''));
+    const current = links.find(
+      (link) => link.kind !== 'proposal' && link.href.startsWith(request.route ?? ''),
+    );
     if (current) links.splice(links.indexOf(current), 1);
   }
 
@@ -307,7 +320,7 @@ function citationsFor(sections: RetrievedSection[]): AssistantCitation[] {
     if (seen.has(section.url)) continue;
     seen.add(section.url);
     citations.push({ url: section.url, title: section.title, section: section.section });
-    if (citations.length === 3) break;
+    if (citations.length === REFERENCE_SECTIONS) break;
   }
   return citations;
 }
@@ -327,8 +340,20 @@ async function runAssistant(
   signal: AbortSignal,
 ): Promise<void> {
   const docs = retrievalDocs();
-  const sections = docs.length > 0 ? retrieve(request.question, docs, 6) : [];
+  const sections = docs.length > 0 ? retrieve(request.question, docs, REFERENCE_SECTIONS) : [];
   emit({ type: 'retrieval', sections });
+
+  // The view the question describes, built from the page's own contract. It
+  // needs no model, so it is ready before the model runs and the result can
+  // lead with it instead of the plain page hint.
+  const proposal = proposeView({
+    question: request.question,
+    model: request.model,
+    system: request.system,
+    simulator: request.simulator,
+    backend: request.backend,
+    backendVersion: request.backendVersion,
+  });
 
   const context = [
     referenceBlock(sections),
@@ -443,9 +468,13 @@ async function runAssistant(
     ...toolResults.flatMap((result) => result.evidence),
   ];
 
-  const verification = verifyNumbers(draft, evidence);
+  // A number the user wrote is quotable, so the question joins the verifier's
+  // evidence along with the normalised forms a proposal adds (`2 s` and
+  // `2000 ms`). Neither becomes one of the answer's sources.
+  const quotable = [request.question, ...(proposal?.evidence ?? [])];
+  const verification = verifyNumbers(draft, [...evidence, ...quotable]);
   const citations = citationsFor(sections);
-  const links = linksForAnswer(request, sections, toolResults);
+  const links = linksForAnswer(request, sections, toolResults, proposal);
 
   emit({
     type: 'result',
