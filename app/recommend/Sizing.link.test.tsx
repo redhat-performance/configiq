@@ -14,12 +14,13 @@ vi.mock('next/navigation', () => ({
 }));
 
 const startSizing = vi.hoisted(() => vi.fn());
+const recommendState = vi.hoisted(() => ({ isLoading: false }));
 
 vi.mock('@/contexts/RecommendContext', () => ({
   useRecommend: () => ({
     params: null,
     runMode: null,
-    isLoading: false,
+    isLoading: recommendState.isLoading,
     result: null,
     error: null,
     errorCode: null,
@@ -35,7 +36,14 @@ vi.mock('@/contexts/RecommendContext', () => ({
   }),
 }));
 
-const settings = vi.hoisted(() => ({ applyViewForSession: vi.fn() }));
+const settings = vi.hoisted(() => ({
+  simulator: 'aisimulate',
+  applyViewForSession: vi.fn((view: { simulator?: string }) => {
+    // Model the production replacement: an override without a simulator falls
+    // back to the saved profile.
+    settings.simulator = view.simulator ?? 'aisimulate';
+  }),
+}));
 
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: () => ({
@@ -45,7 +53,7 @@ vi.mock('@/contexts/SettingsContext', () => ({
     defaultSystem: 'h200_sxm',
     inferenceBackend: 'vllm',
     backendVersion: '0.9.0',
-    simulator: 'aisimulate',
+    simulator: settings.simulator,
     costingsEnabled: false,
     pricingSource: 'merged',
     preferredCloudProvider: null,
@@ -74,6 +82,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     modelOptions: ['Qwen/Qwen2.5-7B-Instruct'],
     gpuOptions: [
       { systemId: 'h200_sxm', label: 'NVIDIA H200', vendor: 'nvidia', vramGb: 141 },
+      { systemId: 'h100_sxm', label: 'NVIDIA H100', vendor: 'nvidia', vramGb: 80 },
     ],
     modelSpecs: new Map(),
     networkOptions: ['ib-400g'],
@@ -94,6 +103,22 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm'],
+        backends: [backend],
+        objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
+      },
+      // BLIS prices the linked system that AISimulate does not offer, so
+      // accepting the shared simulator makes it selectable again.
+      blis: {
+        id: 'blis',
+        label: 'BLIS',
+        version: 'test-blis',
+        recommendSearch: 'single',
+        modelsExhaustive: true,
+        modelSpecs: new Map(),
+        networks: ['ib-400g'],
+        defaultNetwork: 'ib-400g',
+        models: ['Qwen/Qwen2.5-7B-Instruct'],
+        systems: ['h200_sxm', 'h100_sxm'],
         backends: [backend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
@@ -145,6 +170,8 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
   startSizing.mockClear();
+  recommendState.isLoading = false;
+  settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
@@ -179,8 +206,19 @@ async function calculate(): Promise<RecommendParams> {
     button?.click();
     await Promise.resolve();
   });
-  expect(startSizing).toHaveBeenCalledTimes(1);
-  return startSizing.mock.calls[0][0] as RecommendParams;
+  expect(startSizing).toHaveBeenCalled();
+  const calls = startSizing.mock.calls;
+  return calls[calls.length - 1][0] as RecommendParams;
+}
+
+async function acceptSharedSimulator() {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find(candidate => /Use BLIS for this view/.test(candidate.textContent ?? ''));
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.click();
+    await Promise.resolve();
+  });
 }
 
 describe('recommend sizing shared views', () => {
@@ -237,6 +275,42 @@ describe('recommend sizing shared views', () => {
       backend: 'vllm',
       backendVersion: '0.9.0',
     });
+  });
+
+  it('restores the linked system once the reader accepts its simulator', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0',
+    );
+
+    // AISimulate does not price the linked system, so the form falls back while
+    // the banner offers the sender's simulator.
+    expect((await calculate()).system).toBe('h200_sxm');
+
+    await acceptSharedSimulator();
+
+    // BLIS prices it, so the next calculation must use the shared system rather
+    // than the fallback that was selected while the banner was up.
+    expect((await calculate()).system).toBe('h100_sxm');
+  });
+
+  it('marks output stale when the reader accepts another simulator', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0',
+    );
+    // Simulate output the reader can see (or a run in flight) while deciding.
+    recommendState.isLoading = true;
+    await act(async () => {
+      root.render(<Sizing />);
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain('Inputs have changed');
+
+    await acceptSharedSimulator();
+
+    // The visible result was produced by the previous simulator.
+    expect(container.textContent).toContain('Inputs have changed');
   });
 
   it('adopts the shared backend and version when the simulator already matches', async () => {

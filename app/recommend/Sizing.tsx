@@ -317,6 +317,9 @@ export default function Sizing() {
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState('');
   const [gpuReady, setGpuReady] = React.useState(false);
+  // The linked system the shared simulator did not offer yet. It is re-applied
+  // once the catalog for the accepted simulator arrives.
+  const pendingLinkedSystem = React.useRef<string | null>(null);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -580,6 +583,20 @@ export default function Sizing() {
     }
   }, [gpuReady, gpuSystem, selectableGpus]);
 
+  // Accepting a shared simulator narrows the catalog, and the effect above
+  // replaces a system that simulator does not offer. Put the linked system back
+  // once it is selectable; declare this after the replacement so it wins.
+  React.useEffect(() => {
+    const pending = pendingLinkedSystem.current;
+    if (!pending) return;
+    if (!selectableGpus.some(option => option.systemId === pending)) return;
+    pendingLinkedSystem.current = null;
+    setGpuSystem(pending);
+    markInputsDirty();
+    // The catalog narrowing is what matters here, not a keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableGpus]);
+
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
     if (!result || !params) return null;
     const phase = (value: PhaseConfig | null): ClassifierPhaseInput | null => value ? {
@@ -754,7 +771,12 @@ export default function Sizing() {
       backendVersion: backendVersion || undefined,
     },
     // A retained result no longer matches the form the link just described.
-    onApplied: markInputsDirty,
+    onApplied: () => {
+      // A new link supersedes any system still waiting on an accepted
+      // simulator; carrying it over would rewrite a different view.
+      pendingLinkedSystem.current = null;
+      markInputsDirty();
+    },
   });
   const linkWarnings = shared.warnings;
 
@@ -765,6 +787,16 @@ export default function Sizing() {
     () => shared.parsed?.values ?? null,
     hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
   );
+
+  const useSharedSimulator = () => {
+    // The catalog narrows to the shared simulator on the next render, which
+    // replaces a system that simulator does not offer. Keep the linked system
+    // to re-apply once it is selectable again, and mark any visible output
+    // stale because a different simulator will produce the next result.
+    pendingLinkedSystem.current = shared.parsed?.values.system ?? null;
+    markInputsDirty();
+    acceptSharedSimulator();
+  };
 
   // The recommend provider keeps the submitted request and its result across
   // navigation, but this page's form starts from scratch. Compare each restored
@@ -911,7 +943,7 @@ export default function Sizing() {
           sharedSimulator={sharedSimulator}
           currentSimulator={simulator}
           simulators={simulators}
-          onUseShared={acceptSharedSimulator}
+          onUseShared={useSharedSimulator}
         />
       )}
 
