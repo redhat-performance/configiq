@@ -27,6 +27,14 @@ import {
  * - results are never encoded, and no link can trigger a calculation.
  */
 
+/**
+ * A measured row's configuration key is the dataset's JSON identifier over
+ * every runtime field, not a short catalog id: real keys are several hundred
+ * characters. Keep a bound comfortably above the producer's output so a link
+ * names the measured run instead of being dropped as malformed.
+ */
+const MAX_CONFIGURATION_KEY_LENGTH = 4096;
+
 export const recommendLink = withProvenance(defineLink('/recommend', {
   model: modelPath,
   system: systemId,
@@ -128,7 +136,7 @@ export const validationCompareLink = withProvenance(defineLink('/validation/comp
   tp: positiveInt(1024),
   // A measured row is identified by its configuration key, not just by the
   // model/accelerator pair: precision and quantisation rows share both.
-  configurationKey: text(MAX_ID_LENGTH),
+  configurationKey: text(MAX_CONFIGURATION_KEY_LENGTH),
   ...PROVENANCE_FIELDS,
 }));
 
