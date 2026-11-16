@@ -982,11 +982,7 @@ export default function BenchmarkComparisonPage() {
             Compare benchmark observations with simulator predictions.
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <CopyLinkButton getUrl={shared.build} />
-            <TourButton />
-          </div>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {(source || inferencexSource) && (
             <div className={styles.sourceBadges}>
               {source && <div className={styles.sourceBadge}>
@@ -1001,6 +997,12 @@ export default function BenchmarkComparisonPage() {
               </div>}
             </div>
           )}
+          {/* Last child, so the actions sit against the page's right edge even
+              when the source badges claim most of the row. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <CopyLinkButton getUrl={shared.build} />
+            <TourButton />
+          </div>
         </div>
       </div>
 
