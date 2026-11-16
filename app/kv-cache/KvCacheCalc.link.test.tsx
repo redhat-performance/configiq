@@ -59,6 +59,25 @@ vi.mock('@/lib/huggingface/fetch-config', () => ({
 vi.mock('@/components/help/CopyLinkButton', () => ({ CopyLinkButton: () => null }));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
+vi.mock('@/lib/app-config', () => ({
+  getAppConfig: () => ({
+    defaultModel: 'Qwen/Qwen2.5-7B-Instruct',
+    defaultSystem: 'h200_sxm',
+    defaultOpenModel: 'Qwen/Qwen2.5-7B-Instruct',
+    defaultFrontierModel: 'claude-fable-5',
+    defaultBackend: 'vllm',
+    approvedModels: [],
+    huggingFaceModels: [],
+    suggestedModelNames: [],
+    modelRequestUrl: '',
+    workloadPresets: [
+      { key: 'rag', label: 'RAG / Search', isl: 16384, osl: 512 },
+      { key: 'voice', label: 'Voice / Real-time', isl: 512, osl: 128 },
+    ],
+    concurrencyPresets: [],
+  }),
+}));
+
 const { default: KvCacheCalc } = await import('./KvCacheCalc');
 
 let root: ReturnType<typeof createRoot>;
@@ -206,5 +225,14 @@ describe('KV cache calculator shared views', () => {
     expect(container.textContent).toContain('Ignored "memFractionKind"');
     expect(memoryBodies).toHaveLength(1);
     expect(memoryBodies[0].memory_fraction_kind).toBe('of_free');
+  });
+
+  it('selects the workload whose token total the link states', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&maxNumTokens=16896');
+
+    const pressed = Array.from(container.querySelectorAll('button[aria-pressed="true"]'))
+      .map(button => button.textContent);
+    expect(pressed).toContain('RAG / Search');
+    expect(pressed).not.toContain('Default');
   });
 });

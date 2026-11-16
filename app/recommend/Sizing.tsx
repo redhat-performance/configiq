@@ -30,7 +30,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
-import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import { DEFAULT_WORKLOAD, matchWorkloadPreset, workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets';
 import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import { ModelInput } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
@@ -477,7 +477,6 @@ export default function Sizing() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setIsl(n);
-    setActivePreset('');
     markInputsDirty();
   };
 
@@ -486,7 +485,6 @@ export default function Sizing() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setOsl(n);
-    setActivePreset('');
     markInputsDirty();
   };
 
@@ -656,7 +654,15 @@ export default function Sizing() {
   }, [inferenceBackend, params, result]);
   const { prediction: classifierPrediction, isLoading: classifierLoading } = useTestedClassifier(classifierInput);
 
-  const [activePreset, setActivePreset] = React.useState<string>('default');
+  // Selection follows the actual value, so clicking a preset, typing matching
+  // lengths, or opening a shared view all light the same chip. Keeping the
+  // choice in its own state let a link restore the lengths while the chip went
+  // on claiming "Default".
+  const activePreset = matchWorkloadPreset(
+    workloadPresetOptions(getAppConfig().workloadPresets),
+    isl,
+    osl,
+  )?.key ?? '';
   // Selection follows the actual value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);
@@ -665,7 +671,6 @@ export default function Sizing() {
     reset();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
-    setActivePreset(p.key);
     setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
@@ -1065,7 +1070,7 @@ export default function Sizing() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === DEFAULT_WORKLOAD.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === DEFAULT_WORKLOAD.key} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}

@@ -45,7 +45,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults';
 import { useCostings, resolveCloudRate } from '@/lib/hooks/useCostings';
 import { getAppConfig } from '@/lib/app-config';
-import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets';
+import { DEFAULT_WORKLOAD, matchWorkloadPreset, workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets';
 import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets';
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
@@ -494,7 +494,6 @@ export default function Performance() {
     setIslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestISL(n);
-    setActivePreset('');
     markInputsDirty();
   };
 
@@ -503,7 +502,6 @@ export default function Performance() {
     setOslInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setTestOSL(n);
-    setActivePreset('');
     markInputsDirty();
   };
 
@@ -575,14 +573,21 @@ export default function Performance() {
     markInputsDirty();
   };
 
-  const [activePreset, setActivePreset] = React.useState<string>('default');
+  // Selection follows the actual value, so clicking a preset, typing matching
+  // lengths, or opening a shared view all light the same chip. Keeping the
+  // choice in its own state let a link restore the lengths while the chip went
+  // on claiming "Default".
+  const activePreset = matchWorkloadPreset(
+    workloadPresetOptions(getAppConfig().workloadPresets),
+    testISL,
+    testOSL,
+  )?.key ?? '';
   const calcGenRef = React.useRef(0);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
-    setActivePreset(p.key);
     setTestResult(null);
     setTestClassifierInput(null)
     setIsCalculating(false);
@@ -1798,7 +1803,7 @@ export default function Performance() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === DEFAULT_WORKLOAD.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === DEFAULT_WORKLOAD.key} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}

@@ -10,7 +10,7 @@ import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { getAppConfig } from '@/lib/app-config'
-import { DEFAULT_WORKLOAD, type WorkloadPreset } from '@/lib/workload-presets'
+import { DEFAULT_WORKLOAD, matchWorkloadPresetByTokens, workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets'
 import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurrency-presets'
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
@@ -154,7 +154,14 @@ export default function KvCacheCalc() {
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
 
-  const [activePreset, setActivePreset] = React.useState<string>('default')
+  // This page models one context budget, so the chip selection follows the
+  // token total: clicking a preset writes that number and a shared view that
+  // restores it must light the same chip. Two shapes with the same total are
+  // indistinguishable here, which is why the matcher takes the first.
+  const activePreset = matchWorkloadPresetByTokens(
+    workloadPresetOptions(getAppConfig().workloadPresets),
+    maxNumTokens,
+  )?.key ?? ''
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     if (calcAbortRef.current) {
@@ -163,7 +170,6 @@ export default function KvCacheCalc() {
     }
     const tokens = p.isl + p.osl
     setMaxNumTokens(tokens); setMaxNumTokensInput(String(tokens))
-    setActivePreset(p.key)
     setResults([])
     setInputsDirty(false)
   }
@@ -192,7 +198,6 @@ export default function KvCacheCalc() {
       write: (value) => {
         setMaxNumTokens(value)
         setMaxNumTokensInput(String(value))
-        setActivePreset('custom')
       },
     },
     maxBatchSize: {
@@ -335,7 +340,6 @@ export default function KvCacheCalc() {
     setMaxNumTokensInput(digits);
     const n = parseInt(digits, 10);
     if (!isNaN(n) && n >= 1) setMaxNumTokens(n);
-    setActivePreset('');
     markInputsDirty();
   };
   
@@ -560,7 +564,7 @@ export default function KvCacheCalc() {
       {hydrated && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
-          <Button className="gc-preset-button" variant={activePreset === 'default' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === 'default'} onClick={resetToDefaults}>Default</Button>
+          <Button className="gc-preset-button" variant={activePreset === DEFAULT_WORKLOAD.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === DEFAULT_WORKLOAD.key} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
             <Button key={p.key} className="gc-preset-button" variant={activePreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === p.key} onClick={() => applyPreset(p)}>
               {p.label}
