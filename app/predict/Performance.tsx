@@ -237,6 +237,7 @@ export default function Performance() {
     maxNumSeqs?: number;
     chunkedPrefill?: boolean;
     gpuMemUtil?: number;
+    contextLimit?: number;
   } | null>(null);
   const [parkedOverridesVersion, setParkedOverridesVersion] = React.useState(0);
   const parkOverride = (patch: NonNullable<typeof parkedOverrides.current>) => {
@@ -247,6 +248,15 @@ export default function Performance() {
   // The linked system the shared simulator did not offer yet. It is re-applied
   // once the catalog for the accepted simulator arrives.
   const pendingLinkedSystem = React.useRef<string | null>(null);
+  // The overrides in force when the reader accepted a shared simulator.
+  // Restoring the linked system re-runs the model/GPU reset, which clears them;
+  // they are re-parked afterwards so the reader's view survives the switch.
+  const pendingLinkedOverrides = React.useRef<{
+    maxNumSeqs?: number;
+    chunkedPrefill?: boolean;
+    gpuMemUtil?: number;
+    contextLimit?: number;
+  } | null>(null);
 
   React.useEffect(() => {
     const parsed = parsePredictLink(search ? `?${search}` : '');
@@ -265,6 +275,7 @@ export default function Performance() {
     // A previous link's deferred values must not leak into this one.
     parkedOverrides.current = null;
     pendingLinkedSystem.current = null;
+    pendingLinkedOverrides.current = null;
 
     // Rewrite the address bar to the canonical link: unknown and invalid
     // parameters are dropped, and `v=1` marks what this build understood. A
@@ -318,6 +329,12 @@ export default function Performance() {
     if (!selectableGpus.some(option => option.systemId === pending)) return;
     pendingLinkedSystem.current = null;
     setGpu(pending);
+    // Restoring the system changes the model/GPU pair, so the reset below runs
+    // and clears the reader's overrides. Park them again for the reset to carry
+    // out, exactly as a link's own overrides are parked.
+    const overrides = pendingLinkedOverrides.current;
+    pendingLinkedOverrides.current = null;
+    if (overrides) parkOverride(overrides);
     markInputsDirty();
     // The narrowing is what matters here, not a keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -590,7 +607,17 @@ export default function Performance() {
   const shared = useSharedView(predictLink, {
     fields: defineAccessors(predictLink, {
       model: { read: () => model || undefined, write: setModel },
-      system: { read: () => gpu || undefined, write: setGpu },
+      system: {
+        read: () => gpu || undefined,
+        // A system this simulator cannot model is left to the recipient's
+        // fallback: writing it would bounce the picker through an unoffered
+        // value, and the model/GPU reset that follows would clear the link's
+        // other overrides. The banner still offers the sender's simulator,
+        // and accepting it restores this system.
+        write: (value) => {
+          if (selectableGpus.some(option => option.systemId === value)) setGpu(value);
+        },
+      },
       isl: {
         read: () => parseInt(islInput, 10) || undefined,
         write: (value) => handleIslChange(String(value)),
@@ -726,6 +753,16 @@ export default function Performance() {
 
   const handleUseSharedSimulator = () => {
     const values = deepLink.current?.values;
+    // Keep the reader's overrides across the switch: restoring the linked
+    // system runs the model/GPU reset, which would otherwise clear them.
+    pendingLinkedOverrides.current = {
+      ...(vllmOverride && vllmManualMaxNumSeqs != null ? { maxNumSeqs: vllmManualMaxNumSeqs } : {}),
+      ...(vllmOverride && vllmManualChunkedPrefill != null ? { chunkedPrefill: vllmManualChunkedPrefill } : {}),
+      ...(memoryOverride && gpuMemoryUtilization != null ? { gpuMemUtil: gpuMemoryUtilization } : {}),
+      ...(servingPolicyOverride && servingManualContextLimit != null
+        ? { contextLimit: servingManualContextLimit }
+        : {}),
+    };
     acceptSharedSimulator();
     // The catalog narrows to the shared simulator on the next render, which
     // replaces a system that simulator does not offer. Keep the linked system
@@ -974,6 +1011,12 @@ export default function Performance() {
     if (parked.gpuMemUtil !== undefined) {
       setGpuMemoryUtilization(parked.gpuMemUtil);
       setMemoryOverride(true);
+    }
+    // A serving-policy context limit behaves the same way: the reset clears the
+    // flag and the value together.
+    if (parked.contextLimit !== undefined) {
+      setServingManualContextLimit(parked.contextLimit);
+      setServingPolicyOverride(true);
     }
   }, [gpuReady, model, gpu, parkedOverridesVersion]);
 

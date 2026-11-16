@@ -599,6 +599,113 @@ describe('performance page disagg link fields', () => {
 
     expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
   });
+
+  it('keeps a linked override when an accepted simulator restores the system', async () => {
+    // Accepting the shared simulator restores a system the page had replaced,
+    // which runs the model/GPU override reset a second time. The parked
+    // max_num_seqs must survive that reset and still reach the request.
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&maxNumSeqs=64' +
+      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.system).toBe('h100_sxm');
+    expect(input.max_num_seqs).toBe(64);
+  });
+
+  it('keeps a serving-policy override through the accepted-system restoration', async () => {
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm' +
+      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    // A result gives the manual override a context limit to start from.
+    const calculate = async () => {
+      await act(async () => {
+        Array.from(container.querySelectorAll('button'))
+          .find(button => button.textContent === 'Calculate')
+          ?.click();
+      });
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      });
+    };
+    await calculate();
+
+    const servingToggle = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Serving policy'));
+    expect(servingToggle).toBeDefined();
+    await act(async () => {
+      servingToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // PatternFly links the toggle to the panel it opens, so the override
+    // button can be found without guessing which section is expanded.
+    // Search inside the accordion item the toggle belongs to: the always-open
+    // parallel section offers an override button of its own.
+    const servingItem = servingToggle?.closest('[class*="accordion__item"]');
+    const override = Array.from(servingItem?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent?.includes('Override'));
+    expect(override).toBeDefined();
+    await act(async () => {
+      override?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
+
+    await calculate();
+
+    // The second calculation is the one after acceptance.
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[1][0];
+    expect(input.system).toBe('h100_sxm');
+    expect(input.max_seq_len).toBe(4096);
+  });
 });
 
 describe('performance page remembered model', () => {
