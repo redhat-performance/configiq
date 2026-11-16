@@ -760,7 +760,7 @@ export default function HybridSavings() {
                 ))}
               </div>
               {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
-                <div className={styles.concurrencyPresets} role="group" aria-label="Concurrency">
+                <div className={styles.concurrencyPresets} role="group" aria-label="Concurrency" data-tour="concurrency-presets">
                   <span className={styles.workloadLabel}>Concurrency:</span>
                   {getAppConfig().concurrencyPresets.map(preset => (
                     <Button key={preset.key} type="button" className="gc-preset-button" variant={activeConcurrencyPreset === preset.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === preset.key} onClick={() => applyConcurrencyPreset(preset)}>

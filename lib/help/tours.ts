@@ -39,6 +39,20 @@ export const HELP_TOURS: HelpTour[] = [
         position: 'bottom',
       },
       {
+        target: '[data-tour="workload-presets"]',
+        title: 'Start from a workload',
+        description:
+          'A workload preset sets the input and output sequence lengths. The selected chip follows the values, so typing your own lengths clears it.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="concurrency-presets"]',
+        title: 'Set the concurrency',
+        description:
+          'A concurrency preset sets how many sequences run at once. As with workload, the chip reflects the current value rather than storing a choice.',
+        position: 'bottom',
+      },
+      {
         target: '[data-tour="warning"]',
         title: 'Check the assumptions',
         description:
@@ -88,6 +102,20 @@ export const HELP_TOURS: HelpTour[] = [
         position: 'bottom',
       },
       {
+        target: '[data-tour="workload-presets"]',
+        title: 'Start from a workload',
+        description:
+          'A workload preset sets the input and output sequence lengths. The selected chip follows the values, so typing your own lengths clears it.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="concurrency-presets"]',
+        title: 'Set the concurrency',
+        description:
+          'A concurrency preset sets how many sequences run at once. As with workload, the chip reflects the current value rather than storing a choice.',
+        position: 'bottom',
+      },
+      {
         target: '[data-tour="targets"]',
         title: 'Check the workload',
         description:
@@ -120,6 +148,20 @@ export const HELP_TOURS: HelpTour[] = [
         title: 'Pick the model and GPU',
         description:
           'Memory depends on both: the model sets per-token KV size, and the GPU sets capacity and how much of it the backend may use.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="workload-presets"]',
+        title: 'Start from a workload',
+        description:
+          'A workload preset sets the token total this estimate models. The chip follows the values, so a shared link that carries a matching total selects its preset.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="concurrency-presets"]',
+        title: 'Set the batch size',
+        description:
+          'A concurrency preset sets how many sequences share the cache. The chip reflects the current value rather than storing a choice.',
         position: 'bottom',
       },
       {
@@ -197,6 +239,13 @@ export const HELP_TOURS: HelpTour[] = [
         title: 'Describe the workload',
         description:
           'Choose a model and monthly token volumes, or start from a workload preset. Advanced workload holds the request shape and performance targets.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="concurrency-presets"]',
+        title: 'Set the concurrency',
+        description:
+          'A concurrency preset sets how many sequences run at once. The chip reflects the current value rather than storing a choice.',
         position: 'bottom',
       },
       {

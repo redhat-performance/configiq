@@ -562,7 +562,7 @@ export default function KvCacheCalc() {
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <div data-tour="workload-presets" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Workload:</span>
           <Button className="gc-preset-button" variant={activePreset === DEFAULT_WORKLOAD.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset === DEFAULT_WORKLOAD.key} onClick={resetToDefaults}>Default</Button>
           {getAppConfig().workloadPresets.map(p => (
@@ -575,7 +575,7 @@ export default function KvCacheCalc() {
 
       {/* ---------- concurrency presets ---------- */}
       {hydrated && getAppConfig().concurrencyPresets.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+        <div data-tour="concurrency-presets" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
           <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Concurrency:</span>
           {getAppConfig().concurrencyPresets.map(p => (
             <Button key={p.key} className="gc-preset-button" variant={activeConcurrencyPreset === p.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activeConcurrencyPreset === p.key} onClick={() => applyConcurrencyPreset(p)}>
