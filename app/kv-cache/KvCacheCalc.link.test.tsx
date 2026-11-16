@@ -37,7 +37,7 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
         id: 'vllm',
         // Deliberately not the page default: without the guard the backend
         // default would replace a fraction kind the link asked for.
-        memoryFractionKind: 'of_variant',
+        memoryFractionKind: 'of_free',
         versions: ['0.9.0'],
         defaultVersion: '0.9.0',
       },
@@ -145,7 +145,7 @@ describe('KV cache calculator shared views', () => {
     await calculate();
 
     expect(memoryBodies).toHaveLength(1);
-    expect(memoryBodies[0].memory_fraction_kind).toBe('of_variant');
+    expect(memoryBodies[0].memory_fraction_kind).toBe('of_free');
   });
 
   it('drops a fraction kind the form cannot display', async () => {
@@ -158,6 +158,6 @@ describe('KV cache calculator shared views', () => {
 
     expect(container.textContent).toContain('Ignored "memFractionKind"');
     expect(memoryBodies).toHaveLength(1);
-    expect(memoryBodies[0].memory_fraction_kind).toBe('of_variant');
+    expect(memoryBodies[0].memory_fraction_kind).toBe('of_free');
   });
 });
