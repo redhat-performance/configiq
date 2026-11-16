@@ -64,8 +64,9 @@ Two cases where an omitted field would be ambiguous are carried explicitly:
   none of them, so a link never describes controls the recipient cannot see.
 - **None** in the recommend page's fabric list is a choice, not a blank. It is
   written as `fabric=none`, which asks for aggregate candidates only. Omitting
-  `fabric` means something else: use whatever fabric the recipient's simulator
-  calls the default.
+  `fabric` means something else: the link says nothing about the fabric, so the
+  recipient keeps the fabric already selected in their form. On a fresh page
+  that is the simulator's default.
 
 ### Benchmark comparison
 
