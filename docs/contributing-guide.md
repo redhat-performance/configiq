@@ -313,20 +313,7 @@ Before marking a PR ready for review:
 
 ---
 
-## 8. What is intentionally not here yet
-
-Do not add these until there is a real requirement:
-
-- Database (Prisma, PostgreSQL, Supabase)
-- Authentication (NextAuth.js, Clerk)
-- Tailwind CSS
-- Monorepo tooling (Turborepo, Nx)
-
-These will be introduced in later phases.
-
----
-
-## 9. Getting help
+## 8. Getting help
 
 - **CLAUDE.md** and **AGENTS.md** — context files for coding agents; also useful background for any contributor
 - **docs/** — architecture decisions and tech stack rationale

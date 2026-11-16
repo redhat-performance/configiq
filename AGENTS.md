@@ -322,17 +322,6 @@ that must be preserved:
 See `design/preview.html` for the visual reference and `design/README.md` for
 complete interaction inventory.
 
-## What is deferred (do not add yet)
-
-- Database / Prisma / PostgreSQL
-- Authentication / NextAuth.js
-- Turborepo / Nx / JS monorepo tooling — the `services/` tree is a lightweight
-  polyglot layout (Next.js frontend + Python services), not a JS monorepo; no
-  workspace tool is warranted for it
-- Tailwind CSS
-
-These will be added in later phases when there is a real requirement for them.
-
 <!-- BEGIN:nextjs-agent-rules -->
 
 ## This is NOT the Next.js you know
