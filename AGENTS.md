@@ -257,6 +257,23 @@ Every commit must carry a `Signed-off-by:` trailer matching the committer
 identity. Use `git commit -s` (or `git commit --amend -s` to fix an existing
 commit).
 
+### Pull request descriptions
+
+The PR body must follow `.github/pull_request_template.md`. The
+`Pre-merge - check contracts, templates` workflow runs
+`scripts/check-pr-description.mjs`, which requires:
+
+- a `## What changed` section with a non-empty one- or two-sentence summary
+- a `## Checks` section containing every checklist item from the template,
+  ticked — `npm run type-check`, `defineAccessors`, `lib/deep-links/registry.ts`,
+  `LINK_VERSION`, and `Signed-off-by:`
+
+Items are matched by the first backticked token, so the surrounding prose can be
+reworded but the item must still be present and checked. Only add sections after
+`## Checks`; a repeated `## Checks` heading is ignored, so a second one cannot
+stand in for a defective first one. Run the check locally with
+`PR_BODY="$(gh pr view <n> --json body -q .body)" node scripts/check-pr-description.mjs`.
+
 ## Typography & color (legibility rules)
 
 Goal: high-contrast, readable text on white console surfaces. No faint gray
