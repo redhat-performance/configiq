@@ -154,14 +154,21 @@ export default function KvCacheCalc() {
   const [ppSizeInput, setPpSizeInput] = React.useState('1')
   const [memFractionValueInput, setMemFractionValueInput] = React.useState('1.0')
 
+  // A cleared or zero field keeps the last accepted number, so selection has
+  // to consult validity; otherwise the chip keeps claiming a preset the form
+  // no longer shows.
+  const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
+
   // This page models one context budget, so the chip selection follows the
   // token total: clicking a preset writes that number and a shared view that
   // restores it must light the same chip. Two shapes with the same total are
   // indistinguishable here, which is why the matcher takes the first.
-  const activePreset = matchWorkloadPresetByTokens(
-    workloadPresetOptions(getAppConfig().workloadPresets),
-    maxNumTokens,
-  )?.key ?? ''
+  const activePreset = invalidMaxNumTokens
+    ? ''
+    : (matchWorkloadPresetByTokens(
+        workloadPresetOptions(getAppConfig().workloadPresets),
+        maxNumTokens,
+      )?.key ?? '')
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
     if (calcAbortRef.current) {
@@ -320,7 +327,6 @@ export default function KvCacheCalc() {
     }
   }, [backend, backendOptions, catalogLoading, hydrated, system])
 
-  const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
   const invalidMaxBatchSize = maxBatchSizeInput === '' || parseInt(maxBatchSizeInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;

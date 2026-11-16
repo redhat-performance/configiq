@@ -573,12 +573,15 @@ export default function Performance() {
   // Selection follows the actual value, so clicking a preset, typing matching
   // lengths, or opening a shared view all light the same chip. Keeping the
   // choice in its own state let a link restore the lengths while the chip went
-  // on claiming "Default".
-  const activePreset = matchWorkloadPreset(
-    workloadPresetOptions(getAppConfig().workloadPresets),
-    testISL,
-    testOSL,
-  )?.key ?? '';
+  // on claiming "Default". A cleared field keeps its last accepted number, so
+  // invalid input must select nothing.
+  const activePreset = invalidISL || invalidOSL
+    ? ''
+    : (matchWorkloadPreset(
+        workloadPresetOptions(getAppConfig().workloadPresets),
+        testISL,
+        testOSL,
+      )?.key ?? '');
   const calcGenRef = React.useRef(0);
 
   const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {

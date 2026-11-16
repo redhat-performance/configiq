@@ -388,4 +388,35 @@ describe('recommend sizing shared views', () => {
     expect(pressed).toContain('RAG / Search');
     expect(pressed).not.toContain('Default');
   });
+
+  it('drops the workload selection when a sequence length is cleared', async () => {
+    // The numeric state keeps the last accepted length while the visible field
+    // is empty. Selecting from it would leave a preset pressed for a workload
+    // the form no longer states.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    const adjust = Array.from(container.querySelectorAll('button'))
+      .find(button => (button.textContent ?? '').startsWith('Adjust?'));
+    expect(adjust).toBeDefined();
+    await act(async () => {
+      adjust?.click();
+      await Promise.resolve();
+    });
+
+    const label = Array.from(container.querySelectorAll('label'))
+      .find(candidate => (candidate.textContent ?? '').includes('Avg input tokens (ISL)'));
+    const isl = label?.nextElementSibling as HTMLInputElement | null;
+    expect(isl).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(isl, '');
+      isl?.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const row = container.querySelector('[data-tour="workload-presets"]');
+    expect(row).not.toBeNull();
+    const pressed = Array.from(row?.querySelectorAll('button[aria-pressed="true"]') ?? []);
+    expect(pressed).toHaveLength(0);
+  });
 });

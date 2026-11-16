@@ -235,4 +235,33 @@ describe('KV cache calculator shared views', () => {
     expect(pressed).toContain('RAG / Search');
     expect(pressed).not.toContain('Default');
   });
+
+  it('drops the workload selection when the token field is cleared', async () => {
+    // The token field keeps its last accepted number while the visible input is
+    // empty. Selecting from that number would leave a preset pressed for a
+    // workload the form no longer states.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    const adjust = Array.from(container.querySelectorAll('button'))
+      .find(button => (button.textContent ?? '').startsWith('Adjust?'));
+    expect(adjust).toBeDefined();
+    await act(async () => {
+      adjust?.click();
+      await Promise.resolve();
+    });
+
+    const tokens = container.querySelector<HTMLInputElement>('#kv-tokens');
+    expect(tokens).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(tokens, '');
+      tokens?.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const row = container.querySelector('[data-tour="workload-presets"]');
+    expect(row).not.toBeNull();
+    const pressed = Array.from(row?.querySelectorAll('button[aria-pressed="true"]') ?? []);
+    expect(pressed).toHaveLength(0);
+  });
 });

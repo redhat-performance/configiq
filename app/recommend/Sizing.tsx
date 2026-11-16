@@ -657,12 +657,15 @@ export default function Sizing() {
   // Selection follows the actual value, so clicking a preset, typing matching
   // lengths, or opening a shared view all light the same chip. Keeping the
   // choice in its own state let a link restore the lengths while the chip went
-  // on claiming "Default".
-  const activePreset = matchWorkloadPreset(
-    workloadPresetOptions(getAppConfig().workloadPresets),
-    isl,
-    osl,
-  )?.key ?? '';
+  // on claiming "Default". A cleared field keeps its last accepted number, so
+  // invalid input must select nothing.
+  const activePreset = invalidISL || invalidOSL
+    ? ''
+    : (matchWorkloadPreset(
+        workloadPresetOptions(getAppConfig().workloadPresets),
+        isl,
+        osl,
+      )?.key ?? '');
   // Selection follows the actual value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);

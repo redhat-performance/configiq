@@ -340,6 +340,29 @@ describe('performance page widget handoff', () => {
     expect(header?.contains(copy!)).toBe(true);
   });
 
+  it('drops the workload selection when a sequence length is cleared', async () => {
+    // Clearing either field leaves its numeric state at the last accepted
+    // value. Selecting from that value would keep a preset pressed for a
+    // workload the form no longer states.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const isl = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Input sequence length (ISL)"]',
+    );
+    expect(isl).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(isl, '');
+      isl?.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const row = container.querySelector('[data-tour="workload-presets"]');
+    expect(row).not.toBeNull();
+    const pressed = Array.from(row?.querySelectorAll('button[aria-pressed="true"]') ?? []);
+    expect(pressed).toHaveLength(0);
+  });
+
   it('hydrates both destination controls without settings overwriting the model', async () => {
     const { model, gpu } = await mountAt(
       '?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm',
