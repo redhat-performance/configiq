@@ -56,6 +56,31 @@ export function generateKvRequestId(): string {
   return 'kv_' + crypto.randomUUID().replace(/-/g, '').slice(0, 12)
 }
 
+/**
+ * The `/memory` body for a KV cache request.
+ *
+ * Exported so the page's proxied request and the deep-link contract are audited
+ * against the payload that is really sent, rather than against a copy of it.
+ */
+export function buildKvCachePayload(request: KvCacheCalcRequest): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model_path: request.model_path,
+    backend: request.backend,
+    system: request.system,
+    max_num_tokens: request.max_num_tokens,
+    max_batch_size: request.max_batch_size,
+    tp_size: request.tp_size,
+    pp_size: request.pp_size,
+    memory_fraction_kind: request.memory_fraction_kind,
+    memory_fraction_value: request.memory_fraction_value,
+  }
+  if (request.backend_version) payload.backend_version = request.backend_version
+  if (request.moe_tp_size != null) payload.moe_tp_size = request.moe_tp_size
+  if (request.moe_ep_size != null) payload.moe_ep_size = request.moe_ep_size
+  if (request.model_config != null) payload.model_config = request.model_config
+  return payload
+}
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export async function callKvCacheCalc(
@@ -71,21 +96,7 @@ export async function callKvCacheCalc(
     return makeError(requestId, 'AISIM_NOT_CONFIGURED', 'AISimulators API URL is not configured')
   }
 
-  const externalPayload: Record<string, unknown> = {
-    model_path: request.model_path,
-    backend: request.backend,
-    system: request.system,
-    max_num_tokens: request.max_num_tokens,
-    max_batch_size: request.max_batch_size,
-    tp_size: request.tp_size,
-    pp_size: request.pp_size,
-    memory_fraction_kind: request.memory_fraction_kind,
-    memory_fraction_value: request.memory_fraction_value,
-  }
-  if (request.backend_version) externalPayload.backend_version = request.backend_version
-  if (request.moe_tp_size != null) externalPayload.moe_tp_size = request.moe_tp_size
-  if (request.moe_ep_size != null) externalPayload.moe_ep_size = request.moe_ep_size
-  if (request.model_config != null) externalPayload.model_config = request.model_config
+  const externalPayload = buildKvCachePayload(request)
 
   let response: Response
   try {

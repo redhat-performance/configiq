@@ -9,8 +9,22 @@ import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 // catalog reports, and a plausible pin here would look like a real one.
 const BLIS_FIXTURE_VERSION = vi.hoisted(() => 'test-blis-version');
 
+// The page reads its shared-view link through `useSearchParams`. Tests mount it
+// directly, so supply the current window search rather than the app router.
+const navigation = vi.hoisted(() => ({ search: '' }));
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}));
+
 vi.mock('@/contexts/SettingsContext', () => ({
   useSettings: vi.fn(),
+}));
+
+// The tour button needs the app shell's provider; these tests render the page
+// in isolation, so the button is not part of what they exercise.
+vi.mock('@/components/help/TourButton', () => ({
+  TourButton: () => null,
 }));
 
 vi.mock('@/lib/app-config', async (importOriginal) => {
@@ -57,7 +71,9 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         networks: ['ib-400g'],
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct', 'settings/default-model'],
-        systems: ['h200_sxm', 'h100_sxm'],
+        // BLIS deliberately lacks h100_sxm: it exercises a shared link whose
+        // system the recipient's current simulator does not offer.
+        systems: ['h200_sxm'],
         backends: [{
           id: 'vllm',
           aisimulateId: 'vllm',
@@ -177,6 +193,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
+const writeText = vi.fn(async (_url: string) => undefined);
 
 const makeSettings = (
   costingsEnabled: boolean,
@@ -201,6 +218,7 @@ const makeSettings = (
   setCostingsEnabled: vi.fn(),
   setPreferredCloudProvider: vi.fn(),
   setPricingSource: vi.fn(),
+  applyViewForSession: vi.fn(),
 });
 const estimateResult: InferenceConfigResult = {
   simulator: 'aisimulate',
@@ -257,6 +275,11 @@ beforeEach(() => {
   vi.mocked(useSettings).mockReturnValue(makeSettings(false));
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  });
+  writeText.mockClear();
   vi.stubGlobal('localStorage', {
     getItem: vi.fn((key: string) => {
       if (key.includes('saved-estimates')) return '[]';
@@ -292,6 +315,7 @@ afterEach(async () => {
 
 async function mountAt(search: string) {
   window.history.replaceState({}, '', `/predict${search}`);
+  navigation.search = window.location.search;
   await act(async () => {
     root.render(<Performance />);
     await Promise.resolve();
@@ -395,8 +419,297 @@ describe('performance page widget handoff', () => {
   });
 });
 
+
+describe('performance page disagg link fields', () => {
+  it('restores both pool configurations from a shared link', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&servingMode=disagg' +
+      '&prefillTp=2&prefillPp=1&prefillWorkers=3&prefillBatch=8' +
+      '&decodeTp=4&decodePp=2&decodeWorkers=5&decodeBatch=128',
+    );
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    expect(fetchEstimateAsInferenceResult).toHaveBeenCalledOnce();
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input).toMatchObject({
+      mode: 'disagg',
+      prefill: { tp: 2, pp: 1, workers: 3, batch: 8 },
+      decode: { tp: 4, pp: 2, workers: 5, batch: 128 },
+    });
+  });
+
+  it('enables the manual override for a linked max_num_seqs', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&maxNumSeqs=64');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    // Without the override the value is restored into the form but never sent.
+    expect(input.max_num_seqs).toBe(64);
+  });
+
+  it('applies a linked max_num_seqs even when the link changes no model or GPU', async () => {
+    // The parked-value effect has to fire on the park itself: the model/GPU
+    // reset never runs for a link that leaves both alone.
+    await mountAt('?v=1&maxNumSeqs=96');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.max_num_seqs).toBe(96);
+  });
+
+  it('carries a linked memory fraction into the request', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&gpuMemUtil=0.75');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.gpu_memory_utilization).toBe(0.75);
+  });
+
+  it('shows a linked memory fraction as a manual override', async () => {
+    // The value reaches the request either way, but without the flag the
+    // section labels it "Auto-computed" and leaves the control read-only.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&gpuMemUtil=0.75');
+
+    expect(container.textContent).toContain('Manual override');
+    expect(container.textContent).toContain('Reset to auto');
+    expect(container.querySelector('input[type="range"]')).not.toBeNull();
+  });
+
+  it('exports the serving-policy context limit the request uses', async () => {
+    // The override wins over the (empty) max-sequence field, so a link that
+    // read the inactive field would omit the context the sender actually used.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const toggle = container.querySelector<HTMLButtonElement>('#acc-serving');
+    expect(toggle).not.toBeNull();
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const item = toggle?.closest('.pf-v6-c-accordion__item') ?? toggle?.parentElement?.parentElement;
+    const override = Array.from(item?.querySelectorAll('button') ?? [])
+      .find(button => /Override/.test(button.textContent ?? ''));
+    expect(override).toBeDefined();
+    await act(async () => {
+      override?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const limit = item?.querySelector<HTMLInputElement>('input[aria-label="Serving context limit"]');
+    expect(limit).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(limit, '4096');
+      limit?.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Copy link')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const copied = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(new URL(copied).searchParams.get('maxModelLen')).toBe('4096');
+  });
+
+  it('carries a pinned chunked-prefill choice into the request', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&chunkedPrefill=off');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.enable_chunked_prefill).toBe(false);
+  });
+
+  it('restores the linked system once the shared simulator is accepted', async () => {
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    const { gpu } = await mountAt(
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+    // BLIS's catalog has no h100, so the page settles on the system it offers.
+    expect(gpu?.value).toBe('h200_sxm');
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      // The banner uses the display label, which shortens AISimulate.
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(blisSettings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'aisimulate',
+      backend: 'vllm',
+      backendVersion: BLIS_FIXTURE_VERSION,
+    });
+
+    // Accepting widens the catalog. The linked system must come back rather
+    // than staying on the fallback the previous simulator forced.
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
+  });
+
+  it('keeps a linked override when an accepted simulator restores the system', async () => {
+    // Accepting the shared simulator restores a system the page had replaced,
+    // which runs the model/GPU override reset a second time. The parked
+    // max_num_seqs must survive that reset and still reach the request.
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&maxNumSeqs=64' +
+      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
+    expect(input.system).toBe('h100_sxm');
+    expect(input.max_num_seqs).toBe(64);
+  });
+
+  it('keeps a serving-policy override through the accepted-system restoration', async () => {
+    const blisSettings = makeSettings(false, 'blis');
+    vi.mocked(useSettings).mockReturnValue(blisSettings);
+
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm' +
+      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    // A result gives the manual override a context limit to start from.
+    const calculate = async () => {
+      await act(async () => {
+        Array.from(container.querySelectorAll('button'))
+          .find(button => button.textContent === 'Calculate')
+          ?.click();
+      });
+      await act(async () => {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      });
+    };
+    await calculate();
+
+    const servingToggle = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Serving policy'));
+    expect(servingToggle).toBeDefined();
+    await act(async () => {
+      servingToggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    // PatternFly links the toggle to the panel it opens, so the override
+    // button can be found without guessing which section is expanded.
+    // Search inside the accordion item the toggle belongs to: the always-open
+    // parallel section offers an override button of its own.
+    const servingItem = servingToggle?.closest('[class*="accordion__item"]');
+    const override = Array.from(servingItem?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent?.includes('Override'));
+    expect(override).toBeDefined();
+    await act(async () => {
+      override?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const useShared = Array.from(container.querySelectorAll('button')).find(button =>
+      /Use AISim for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLSelectElement>('#predict-performance-gpu')?.value).toBe('h100_sxm');
+
+    await calculate();
+
+    // The second calculation is the one after acceptance.
+    const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[1][0];
+    expect(input.system).toBe('h100_sxm');
+    expect(input.max_seq_len).toBe(4096);
+  });
+});
+
 describe('performance page remembered model', () => {
-  it('waits for the new model config before replacing the saved default', async () => {
+  it('keeps the saved default through a shared link, then remembers an explicit pick', async () => {
     let resolveSecond:
       | ((result: Awaited<ReturnType<typeof fetchModelConfig>>) => void)
       | undefined;
@@ -418,7 +731,9 @@ describe('performance page remembered model', () => {
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 550));
     });
-    expect(setDefaultModel).toHaveBeenCalledWith('org/model-a');
+    // A shared link changes this view only; the recipient's remembered default
+    // must survive opening it.
+    expect(setDefaultModel).not.toHaveBeenCalledWith('org/model-a');
 
     const input = container.querySelector<HTMLInputElement>('#predict-performance-model')!;
     await act(async () => {
@@ -440,6 +755,60 @@ describe('performance page remembered model', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(setDefaultModel).toHaveBeenCalledWith('org/model-b');
+  });
+});
+
+describe('performance page link provenance', () => {
+  it('offers a shared simulator instead of switching to it silently', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt(
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=blis&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+    );
+
+    // Nothing is applied for the recipient until they choose it.
+    expect(settings.applyViewForSession).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('This view was shared using');
+    expect(container.textContent).toContain('BLIS');
+
+    const useShared = Array.from(container.querySelectorAll('button')).find((button) =>
+      /Use BLIS for this view/.test(button.textContent ?? ''),
+    );
+    expect(useShared).toBeDefined();
+
+    await act(async () => {
+      useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      simulator: 'blis',
+      backend: 'vllm',
+      backendVersion: BLIS_FIXTURE_VERSION,
+    });
+  });
+
+  it('applies a second shared link without remounting the page', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+    const second = await mountAt('?v=1&model=settings%2Fdefault-model&system=h200_sxm');
+
+    expect(second.model?.value).toBe('settings/default-model');
+    expect(second.gpu?.value).toBe('h200_sxm');
+  });
+
+  it('applies backend and version silently when the simulator matches', async () => {
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    const settings = vi.mocked(useSettings)();
+
+    await mountAt('?v=1&system=h100_sxm&simulator=aisimulate&backend=sglang&backendVersion=0.4.0');
+
+    expect(settings.applyViewForSession).toHaveBeenCalledWith({
+      backend: 'sglang',
+      backendVersion: '0.4.0',
+    });
+    expect(container.textContent).not.toContain('This view was shared using');
   });
 });
 

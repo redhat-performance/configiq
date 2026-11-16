@@ -607,78 +607,7 @@
 .termBtn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--t3); display: inline-flex; vertical-align: middle; }
 .termBtn:hover { color: var(--blue); }
 
-/* ---------- tour beacon ---------- */
-.tourBeacon {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  background: transparent;
-  pointer-events: none;
-}
-
-.tourBeacon::before {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #0066cc;
-  animation: beaconBlinkPeriodic 3s ease-in-out infinite;
-}
-
-.tourBeacon::after {
-  content: '';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 2px solid #0066cc;
-  animation: beaconBlinkPeriodic 3s ease-in-out infinite;
-}
-
-/* Periodic blinking: 3 quick blinks, then pause, repeat */
-@keyframes beaconBlinkPeriodic {
-  0% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  5% {
-    opacity: 0.15;
-    transform: translate(-50%, -50%) scale(0.8);
-  }
-  10% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  15% {
-    opacity: 0.15;
-    transform: translate(-50%, -50%) scale(0.8);
-  }
-  20% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-  25% {
-    opacity: 0.15;
-    transform: translate(-50%, -50%) scale(0.8);
-  }
-  30%, 100% {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-
-/* assumptions highlight animation */
+/* ---------- assumptions highlight ---------- */
 .assumptionsHighlight {
   animation: highlightPulse 2s ease-out;
 }
@@ -698,10 +627,6 @@
 /* reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .flipFace, .driverBarFill, .memSeg { transition: none; }
-  .tourBeacon {
-    animation: none;
-    transform: none;
-  }
   .assumptionsHighlight {
     animation: none;
   }

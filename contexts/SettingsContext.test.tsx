@@ -154,6 +154,58 @@ describe('Backend version persistence', () => {
   })
 })
 
+describe('Settings changed while a shared view is open', () => {
+  const BLIS_VERSION_KEY = `${VERSION_KEY}:blis`
+
+  function OverrideConsumer() {
+    const { simulator, backendVersion, applyViewForSession, setBackendVersion, setInferenceBackend } = useSettings()
+    return <>
+      <output>{JSON.stringify({ simulator, backendVersion })}</output>
+      <button onClick={() => applyViewForSession({ simulator: 'blis', backend: 'vllm', backendVersion: 'blis-pin' })}>
+        Open shared view
+      </button>
+      <button onClick={() => setBackendVersion('0.24.0')}>Set version</button>
+      <button onClick={() => setInferenceBackend('sglang')}>Set backend</button>
+    </>
+  }
+
+  async function renderOverride() {
+    await act(async () => root.render(<SettingsProvider><OverrideConsumer /></SettingsProvider>))
+  }
+
+  async function click(label: string) {
+    const button = Array.from(host.querySelectorAll('button'))
+      .find(candidate => candidate.textContent === label)
+    await act(async () => button?.click())
+  }
+
+  it('saves a version choice under the simulator the profile rests on', async () => {
+    // A shared view borrows another simulator for this session only. Changing
+    // the version ends that borrow, so the value has to be stored against the
+    // simulator the reader will actually be using.
+    await renderOverride()
+    await click('Open shared view')
+    expect(state()).toMatchObject({ simulator: 'blis', backendVersion: 'blis-pin' })
+
+    await click('Set version')
+
+    expect(state()).toMatchObject({ simulator: 'aisimulate', backendVersion: '0.24.0' })
+    expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('0.24.0')
+    expect(localStorage.getItem(BLIS_VERSION_KEY)).toBeNull()
+  })
+
+  it('clears the resting simulator version when the backend changes', async () => {
+    await renderOverride()
+    await click('Open shared view')
+
+    await click('Set backend')
+
+    expect(state()).toMatchObject({ simulator: 'aisimulate', backendVersion: '' })
+    expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('')
+    expect(localStorage.getItem(BLIS_VERSION_KEY)).toBeNull()
+  })
+})
+
 describe('Default system persistence', () => {
   it('uses the configured default when nothing is stored', async () => {
     await renderSystem()

@@ -192,8 +192,9 @@ paths:
   /estimate:
     post:
       operationId: estimate
+      deprecated: true
       tags: [sizing]
-      summary: Single-point performance estimate for a given parallelism configuration
+      summary: Deprecated alias for /predict
       description: |
         Given a model, GPU system, backend, and explicit parallelism settings
         (TP/PP/batch_size), returns predicted TTFT, TPOT, throughput, and memory.
@@ -216,6 +217,63 @@ paths:
         - `memory` — per-component memory breakdown
 
         Example: `POST /estimate?include=config,memory`
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: Comma-separated list of optional sections to include (config, memory).
+          schema:
+            type: string
+            example: "config,memory"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EstimateRequest'
+      responses:
+        '200':
+          description: Performance estimate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstimateResponse'
+        '422':
+          description: |
+            Unsupported model/backend/system combination, including a
+            `backend_version` whose performance data has no measurement for
+            the requested model or compute shape. The detail names the
+            versions the SDK ships for the system when another version may work.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /predict:
+    post:
+      operationId: predict
+      tags: [sizing]
+      summary: Single-point performance estimate for a given parallelism configuration
+      description: |
+        Canonical endpoint. The contract is the same as `/estimate`, which is
+        kept as a deprecated alias for clients that already call it.
+
+        Given a model, GPU system, backend, and explicit parallelism settings
+        (TP/PP/batch_size), returns predicted TTFT, TPOT, throughput, and
+        memory. Aggregated and prefill/decode disaggregated predictions are
+        supported; P/D requests require an explicit `fabric` from `GET
+        /networks`, matching GPU systems for both pools, and DP=1.
+
+        Use the `include` query parameter to enrich the result with optional
+        detail sections:
+        - `config` — serving configuration (vLLM/SGLang parameters)
+        - `memory` — per-component memory breakdown
       parameters:
         - name: include
           in: query

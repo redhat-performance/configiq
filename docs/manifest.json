@@ -1,0 +1,81 @@
+{
+  "sections": [
+    {
+      "slug": "overview",
+      "title": "Overview",
+      "file": "docs/overview.md",
+      "order": 10,
+      "description": "What ConfigIQ is, how the tools fit together, and where to start."
+    },
+    {
+      "slug": "help",
+      "title": "In-app help",
+      "file": "docs/help.md",
+      "order": 15,
+      "description": "Search, ask, and take a tour without leaving the page you are on."
+    },
+    {
+      "slug": "user-scenarios",
+      "title": "User scenarios",
+      "file": "docs/user-scenarios.md",
+      "order": 20,
+      "description": "Worked examples for sizing, predicting, costing, and comparing."
+    },
+    {
+      "slug": "api",
+      "title": "REST API",
+      "file": "docs/api.md",
+      "order": 30,
+      "description": "Endpoints, request defaults, response provenance, and examples."
+    },
+    {
+      "slug": "mcp-server",
+      "title": "MCP server",
+      "file": "docs/mcp-server.md",
+      "order": 40,
+      "description": "Use the sizing and pricing APIs from an MCP client."
+    },
+    {
+      "slug": "tested-models",
+      "title": "Tested models",
+      "file": "docs/tested-models.md",
+      "order": 50,
+      "description": "How measured model and GPU pairs are collected and classified."
+    },
+    {
+      "slug": "pareto",
+      "title": "Pareto validation",
+      "file": "docs/pareto-validation.md",
+      "order": 60,
+      "description": "How predicted configurations are checked against measured data."
+    },
+    {
+      "slug": "settings",
+      "title": "Settings and simulators",
+      "file": "docs/settings.md",
+      "order": 70,
+      "description": "Simulator, backend, and version choices, and how shared links behave."
+    },
+    {
+      "slug": "costs",
+      "title": "Costs",
+      "file": "docs/costs.md",
+      "order": 80,
+      "description": "Hosted, rented, and purchased cost assumptions and comparisons."
+    },
+    {
+      "slug": "caveats",
+      "title": "Model and GPU caveats",
+      "file": "docs/model-gpu-caveats.md",
+      "order": 90,
+      "description": "Known model and GPU limits, and when a result is an estimate."
+    },
+    {
+      "slug": "contributing",
+      "title": "Contributing",
+      "file": "docs/contributing-guide.md",
+      "order": 100,
+      "description": "Run the app, build the docs, and prepare a pull request."
+    }
+  ]
+}

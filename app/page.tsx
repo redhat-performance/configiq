@@ -103,6 +103,43 @@ export default function HomePage() {
       </PageSection>
 
       <PageSection>
+        <Title headingLevel="h2" size="lg">
+          Which tool for which ask
+        </Title>
+        <Content>
+          <dl>
+            <dt>
+              <strong>What performance will I get?</strong>
+            </dt>
+            <dd>
+              <Link href="/predict">Predict performance</Link> takes a model, GPU,
+              and parallelism you already have and estimates TTFT, TPOT, and
+              throughput.
+            </dd>
+            <dt>
+              <strong>What should I buy?</strong>
+            </dt>
+            <dd>
+              <Link href="/recommend">Recommend sizing</Link> starts from latency
+              and throughput targets and searches for GPU count, tensor and
+              pipeline parallelism, and replicas.
+            </dd>
+            <dt>
+              <strong>Will the model fit?</strong>
+            </dt>
+            <dd>
+              <Link href="/kv-cache">KV cache calculator</Link> estimates memory
+              and KV headroom for a model and workload shape.
+            </dd>
+          </dl>
+          <Content component="p">
+            A fuller comparison, including REST endpoints and MCP tools, is in{" "}
+            <Link href="/docs/user-scenarios">User scenarios</Link>.
+          </Content>
+        </Content>
+      </PageSection>
+
+      <PageSection>
         <Grid hasGutter md={6} xl={4}>
           {visibleTools.map((tool) => (
             <GridItem key={tool.href}>

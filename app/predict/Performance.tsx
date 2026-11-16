@@ -22,7 +22,7 @@ import EyeIcon from '@patternfly/react-icons/dist/esm/icons/eye-icon';
 import EyeSlashIcon from '@patternfly/react-icons/dist/esm/icons/eye-slash-icon';
 import styles from './Performance.module.css';
 import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
-import { ProductTour, type TourStep } from '@/components/ProductTour';
+import { TourButton } from '@/components/help/TourButton';
 import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
@@ -51,8 +51,46 @@ import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/infere
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
-import { parsePerformancePrefill } from './performance-prefill';
+import {
+  DEFAULT_MOE_QUANT_MODE,
+  buildPredictLink,
+  parsePredictLink,
+  predictLink,
+  type MoeQuantMode,
+  type ParsedPredictLink,
+  type PredictLinkValues,
+} from '@/lib/deep-links/predict';
+import { defineAccessors } from '@/lib/deep-links/shared-view';
+import { useSharedView } from '@/lib/deep-links/useSharedView';
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
+import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
+  isl: 2048,
+  osl: 128,
+  concurrency: 1,
+  servingMode: 'agg',
+  tp: 1,
+  pp: 1,
+  weightPrecision: 'FP16',
+  kvPrecision: 'FP16',
+  prefix: 0,
+  prefillTp: 1,
+  prefillPp: 1,
+  prefillWorkers: 1,
+  prefillBatch: 1,
+  decodeTp: 1,
+  decodePp: 1,
+  decodeWorkers: 1,
+  decodeBatch: 64,
+};
 
 function modelSuggestions(): string {
   return getAppConfig().suggestedModelNames.join(', ');
@@ -136,38 +174,11 @@ interface AccordionField {
   onChange?: (value: string | number) => void;
 }
 
-const QUICK_ESTIMATE_TOUR: TourStep[] = [
-  {
-    target: '[data-tour="model"]',
-    title: 'Start with a model',
-    description: 'Type any Hugging Face model ID or pick from popular models. We\'ll auto-detect the specs and fill in smart defaults.',
-    position: 'bottom'
-  },
-  {
-    target: '[data-tour="warning"]',
-    title: 'Default assumptions',
-    description: 'Predict performance starts with common defaults. Click "Adjust" to match your actual workload and traffic patterns.',
-    position: 'bottom'
-  },
-  {
-    target: '[data-tour="result-tile-gpus"]',
-    title: 'Your results at a glance',
-    description: 'These tiles show GPU count, memory requirements, and monthly cost. Click any tile to see the math behind it.',
-    position: 'right'
-  },
-  {
-    target: '[data-tour="assumptions"]',
-    title: 'Fine-tune your workload',
-    description: 'Expand these sections to adjust traffic patterns, sequence lengths, and hardware settings. Results update live as you edit.',
-    position: 'top'
-  }
-];
-
 export default function Performance() {
   console.log('Performance component mounting');
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, simulators, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
@@ -211,18 +222,71 @@ export default function Performance() {
   // replacements must not overwrite the cross-tool default.
   const modelTouched = React.useRef(false);
 
+  // Shared-view state: parsed from the URL after mount and as the URL changes,
+  // then applied after hydration. The search string is read through
+  // `useSearchParams` so a pasted link opened on this page applies too.
+  const searchParams = useSearchParams();
+  const search = searchParams.toString();
+  const deepLink = React.useRef<ParsedPredictLink | null>(null);
+  const [linkWarnings, setLinkWarnings] = React.useState<string[]>([]);
+  // Values the manual vLLM override panel owns: a pinned max_num_seqs and a
+  // chunked-prefill choice. Both need the panel switched on as well, and the
+  // panel is cleared by the model/GPU reset below, so they are parked here and
+  // applied after that reset rather than in the link pass.
+  const parkedOverrides = React.useRef<{
+    maxNumSeqs?: number;
+    chunkedPrefill?: boolean;
+    gpuMemUtil?: number;
+    contextLimit?: number;
+  } | null>(null);
+  const [parkedOverridesVersion, setParkedOverridesVersion] = React.useState(0);
+  const parkOverride = (patch: NonNullable<typeof parkedOverrides.current>) => {
+    parkedOverrides.current = { ...parkedOverrides.current, ...patch };
+    setParkedOverridesVersion(version => version + 1);
+  };
+
+  // The linked system the shared simulator did not offer yet. It is re-applied
+  // once the catalog for the accepted simulator arrives.
+  const pendingLinkedSystem = React.useRef<string | null>(null);
+  // The overrides in force when the reader accepted a shared simulator.
+  // Restoring the linked system re-runs the model/GPU reset, which clears them;
+  // they are re-parked afterwards so the reader's view survives the switch.
+  const pendingLinkedOverrides = React.useRef<{
+    maxNumSeqs?: number;
+    chunkedPrefill?: boolean;
+    gpuMemUtil?: number;
+    contextLimit?: number;
+  } | null>(null);
+
   React.useEffect(() => {
-    const prefill = parsePerformancePrefill(globalThis.location?.search || '');
-    modelWasPrefilled.current = Boolean(prefill.model);
-    gpuWasPrefilled.current = Boolean(prefill.system);
-    if (prefill.model) {
-      // A handoff from another tool is an explicit choice; keep remembering it.
-      modelTouched.current = true;
-      setModel(prefill.model);
+    const parsed = parsePredictLink(search ? `?${search}` : '');
+    deepLink.current = parsed;
+    const { model: linkedModel, system: linkedSystem } = parsed.values;
+    modelWasPrefilled.current = Boolean(linkedModel);
+    gpuWasPrefilled.current = Boolean(linkedSystem);
+    if (linkedModel) {
+      // A shared link changes this view only. Leaving the model "untouched"
+      // keeps the recipient's remembered default intact.
+      setModel(linkedModel);
     }
-    if (prefill.system) setGpu(prefill.system);
+    if (linkedSystem) setGpu(linkedSystem);
+    setLinkWarnings(parsed.warnings);
     setPrefillChecked(true);
-  }, []);
+    // A previous link's deferred values must not leak into this one.
+    parkedOverrides.current = null;
+    pendingLinkedSystem.current = null;
+    pendingLinkedOverrides.current = null;
+
+    // Rewrite the address bar to the canonical link: unknown and invalid
+    // parameters are dropped, and `v=1` marks what this build understood. A
+    // link from an unknown format version is left as written.
+    if (!parsed.unsupportedVersion) {
+      const canonical = buildPredictLink(parsed.values, window.location.pathname);
+      if (window.location.search !== canonical.slice(canonical.indexOf('?'))) {
+        window.history.replaceState(window.history.state, '', canonical);
+      }
+    }
+  }, [search]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps -- hydrated gates config.json readiness
   const modelItems: ComboBoxItem[] = React.useMemo(() => buildModelItems(catalogModels, modelSpecs, validatedModelIds), [catalogModels, modelSpecs, validatedModelIds, hydrated]);
@@ -256,10 +320,28 @@ export default function Performance() {
     }
   }, [gpuReady, gpu, selectableGpus]);
 
+  // Accepting a shared simulator narrows the catalog, and the effect above
+  // replaces a system that simulator does not offer. Put the linked system back
+  // once it is selectable; declare this after the replacement so it wins.
+  React.useEffect(() => {
+    const pending = pendingLinkedSystem.current;
+    if (!pending) return;
+    if (!selectableGpus.some(option => option.systemId === pending)) return;
+    pendingLinkedSystem.current = null;
+    setGpu(pending);
+    // Restoring the system changes the model/GPU pair, so the reset below runs
+    // and clears the reader's overrides. Park them again for the reset to carry
+    // out, exactly as a link's own overrides are parked.
+    const overrides = pendingLinkedOverrides.current;
+    pendingLinkedOverrides.current = null;
+    if (overrides) parkOverride(overrides);
+    markInputsDirty();
+    // The narrowing is what matters here, not a keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableGpus]);
+
   const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
-  const [showTour, setShowTour] = React.useState(false);
-  const [tourSeen, setTourSeen] = React.useState(false);
 
   // 🧪 TEST: Inference config engine integration
   const [testResult, setTestResult] = React.useState<InferenceConfigResult | null>(null);
@@ -351,7 +433,7 @@ export default function Performance() {
   const [elapsed, setElapsed] = React.useState(0);
   const [testWeightPrecision, setTestWeightPrecision] = React.useState<'FP16' | 'FP8' | 'INT8' | 'INT4' | 'MXFP4' | 'NVFP4'>('FP16');
   const [testKVCachePrecision, setTestKVCachePrecision] = React.useState<'FP16' | 'FP8' | 'NVFP4'>('FP16');
-  const [testMoeQuantMode, setTestMoeQuantMode] = React.useState<'w4a16_mxfp4' | 'w4a8_mxfp4_mxfp8' | 'w4a16_mxfp4_cutlass' | 'w4a8_mxfp4_mxfp8_trtllm'>('w4a16_mxfp4');
+  const [testMoeQuantMode, setTestMoeQuantMode] = React.useState<MoeQuantMode>(DEFAULT_MOE_QUANT_MODE);
   const [testPpSize, setTestPpSize] = React.useState(1);
   const [testMoeEpSize, setTestMoeEpSize] = React.useState(1);
   const [testMoeEtpSize, setTestMoeEtpSize] = React.useState(1);
@@ -516,6 +598,176 @@ export default function Performance() {
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     setTestConcurrentUsers(p.concurrency); setConcurrentUsersInput(String(p.concurrency));
     markInputsDirty();
+  };
+
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the fields this page owns, so a new
+  // parameter fails to compile until it is bound here. The page's own early
+  // pass still handles the model and GPU prefill gates; this is the full set.
+  const shared = useSharedView(predictLink, {
+    fields: defineAccessors(predictLink, {
+      model: { read: () => model || undefined, write: setModel },
+      system: {
+        read: () => gpu || undefined,
+        // A system this simulator cannot model is left to the recipient's
+        // fallback: writing it would bounce the picker through an unoffered
+        // value, and the model/GPU reset that follows would clear the link's
+        // other overrides. The banner still offers the sender's simulator,
+        // and accepting it restores this system.
+        write: (value) => {
+          if (selectableGpus.some(option => option.systemId === value)) setGpu(value);
+        },
+      },
+      isl: {
+        read: () => parseInt(islInput, 10) || undefined,
+        write: (value) => handleIslChange(String(value)),
+      },
+      osl: {
+        read: () => parseInt(oslInput, 10) || undefined,
+        write: (value) => handleOslChange(String(value)),
+      },
+      concurrency: {
+        read: () => parseInt(concurrentUsersInput, 10) || undefined,
+        write: (value) => handleConcurrentUsersChange(String(value)),
+      },
+      servingMode: { read: () => servingMode, write: setServingMode },
+      fabric: {
+        read: () => (servingMode === 'disagg' ? selectedNetworkFabric || undefined : undefined),
+        write: setNetworkFabric,
+      },
+      tp: {
+        read: () => parseInt(tpSizeInput, 10) || undefined,
+        write: (value) => handleTpSizeChange(String(value)),
+      },
+      pp: {
+        read: () => parseInt(ppSizeInput, 10) || undefined,
+        write: (value) => handlePpSizeChange(String(value)),
+      },
+      weightPrecision: { read: () => testWeightPrecision, write: setTestWeightPrecision },
+      kvPrecision: { read: () => testKVCachePrecision, write: setTestKVCachePrecision },
+      maxModelLen: {
+        // The request sends `effectiveContextLimit`, where the serving-policy
+        // override wins over the field. Export what the request used, not the
+        // inactive control, or a shared view would size a different context.
+        read: () => effectiveContextLimit ?? undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setMaxSeqLenInput, setMaxSeqLen),
+      },
+      prefillMaxSeqLen: {
+        read: () => parseInt(prefillMaxSeqLenInput, 10) || undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setPrefillMaxSeqLenInput, setPrefillMaxSeqLen),
+      },
+      decodeMaxSeqLen: {
+        read: () => parseInt(decodeMaxSeqLenInput, 10) || undefined,
+        write: (value) =>
+          handleSequenceLengthChange(String(value), setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
+      },
+      prefix: {
+        read: () => parseInt(prefixInput, 10) || 0,
+        write: (value) => handlePrefixChange(String(value)),
+      },
+      // A pinned max_num_seqs, chunked-prefill choice, and memory fraction
+      // belong to an override panel the model/GPU reset clears, so they are
+      // parked for that reset to carry out rather than written in place.
+      maxNumSeqs: {
+        read: () => vllmManualMaxNumSeqs ?? undefined,
+        write: (value) => { setVllmManualMaxNumSeqs(value); setVllmOverride(true) },
+      },
+      chunkedPrefill: {
+        read: () => (
+          vllmManualChunkedPrefill === null ? undefined : vllmManualChunkedPrefill ? 'on' : 'off'
+        ),
+        write: (value) => parkOverride({ chunkedPrefill: value === 'on' }),
+      },
+      gpuMemUtil: { read: () => gpuMemoryUtilization ?? undefined, write: (value) => parkOverride({ gpuMemUtil: value }) },
+      moeTp: {
+        read: () => parseInt(moeEtpSizeInput, 10) || undefined,
+        write: (value) => handleMoeEtpSizeChange(String(value)),
+      },
+      moeEp: {
+        read: () => parseInt(moeEpSizeInput, 10) || undefined,
+        write: (value) => handleMoeEpSizeChange(String(value)),
+      },
+      // Only a MoE model sends this, and only when it is not the starting
+      // scheme, so a dense view's link stays silent about it.
+      moePrecision: {
+        read: () => (testMoeQuantMode === DEFAULT_MOE_QUANT_MODE ? undefined : testMoeQuantMode),
+        write: setTestMoeQuantMode,
+      },
+      // Pool parallelism belongs to a disaggregated view. Carrying it in an
+      // aggregated link would describe controls the recipient cannot see.
+      prefillTp: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.tp, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, tp: String(value) })),
+      },
+      prefillPp: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.pp, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, pp: String(value) })),
+      },
+      prefillWorkers: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.workers, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, workers: String(value) })),
+      },
+      prefillBatch: {
+        read: () => (servingMode === 'disagg' ? parseInt(prefillCfg.batch, 10) || undefined : undefined),
+        write: (value) => setPrefillCfg(c => ({ ...c, batch: String(value) })),
+      },
+      decodeTp: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.tp, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, tp: String(value) })),
+      },
+      decodePp: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.pp, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, pp: String(value) })),
+      },
+      decodeWorkers: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.workers, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, workers: String(value) })),
+      },
+      decodeBatch: {
+        read: () => (servingMode === 'disagg' ? parseInt(decodeCfg.batch, 10) || undefined : undefined),
+        write: (value) => setDecodeCfg(c => ({ ...c, batch: String(value) })),
+      },
+    }),
+    // Apply a shared view's inputs once settings and the catalog have settled.
+    // URL values change page state only; they never overwrite saved settings.
+    ready: hydrated && gpuReady,
+    defaults: PREDICT_LINK_DEFAULTS,
+    provenance: {
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+      simulator: simulator || undefined,
+    },
+    // A retained result no longer matches the form the link just described.
+    onApplied: markInputsDirty,
+  });
+
+  // Provenance is applied separately: a differing simulator is never switched
+  // silently, it is offered through the banner below. Declared after the link
+  // effect above so the parsed values it reads already exist.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => deepLink.current?.values ?? null,
+    hydrated && gpuReady,
+  );
+
+  const handleUseSharedSimulator = () => {
+    const values = deepLink.current?.values;
+    // Keep the reader's overrides across the switch: restoring the linked
+    // system runs the model/GPU reset, which would otherwise clear them.
+    pendingLinkedOverrides.current = {
+      ...(vllmOverride && vllmManualMaxNumSeqs != null ? { maxNumSeqs: vllmManualMaxNumSeqs } : {}),
+      ...(vllmOverride && vllmManualChunkedPrefill != null ? { chunkedPrefill: vllmManualChunkedPrefill } : {}),
+      ...(memoryOverride && gpuMemoryUtilization != null ? { gpuMemUtil: gpuMemoryUtilization } : {}),
+      ...(servingPolicyOverride && servingManualContextLimit != null
+        ? { contextLimit: servingManualContextLimit }
+        : {}),
+    };
+    acceptSharedSimulator();
+    // The catalog narrows to the shared simulator on the next render, which
+    // replaces a system that simulator does not offer. Keep the linked system
+    // to re-apply once it is selectable again.
+    pendingLinkedSystem.current = values?.system ?? null;
   };
 
   // Fetch HF config when model changes
@@ -721,17 +973,8 @@ export default function Performance() {
   }, [calcTrigger]);
 
 
-  // Check if user has seen the tour before
-  React.useEffect(() => {
-    const hasSeenTour = localStorage.getItem('predict-performance-tour-seen');
-    if (hasSeenTour) {
-      setTourSeen(true);
-    } else {
-      // Show tour after a brief delay on first visit
-      const timer = setTimeout(() => setShowTour(true), 1000);
-      return () => clearTimeout(timer);
-    }
-  }, []);
+  // Tours are manual only: no first-visit auto-open and no persisted "seen"
+  // flag. The tour starts from the header button.
 
   // Reset overrides when major inputs change (model or GPU selection)
   React.useEffect(() => {
@@ -746,6 +989,36 @@ export default function Performance() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model, gpu]);
+
+  // Apply a linked override once the reset above has run. The reset clears
+  // these whenever the model or GPU changes, which is exactly what a link
+  // often does; the version also covers a link that changes neither, where
+  // that reset never fires at all.
+  React.useEffect(() => {
+    const parked = parkedOverrides.current;
+    if (!gpuReady || !parked) return;
+    parkedOverrides.current = null;
+    if (parked.maxNumSeqs !== undefined) setVllmManualMaxNumSeqs(parked.maxNumSeqs);
+    if (parked.chunkedPrefill !== undefined) setVllmManualChunkedPrefill(parked.chunkedPrefill);
+    // The body only carries these while the override panel is on.
+    if (parked.maxNumSeqs !== undefined || parked.chunkedPrefill !== undefined) {
+      setVllmOverride(true);
+    }
+    // A linked memory fraction is a manual choice: turn the override on with
+    // the value so the control stays editable and is not labelled
+    // "Auto-computed". The flag and the value are applied together here,
+    // after the model/GPU reset, because the reset clears both when it runs.
+    if (parked.gpuMemUtil !== undefined) {
+      setGpuMemoryUtilization(parked.gpuMemUtil);
+      setMemoryOverride(true);
+    }
+    // A serving-policy context limit behaves the same way: the reset clears the
+    // flag and the value together.
+    if (parked.contextLimit !== undefined) {
+      setServingManualContextLimit(parked.contextLimit);
+      setServingPolicyOverride(true);
+    }
+  }, [gpuReady, model, gpu, parkedOverridesVersion]);
 
   const toggleAcc = (id: string) => {
     setExpanded((e) => (e.includes(id) ? e.filter((x) => x !== id) : [...e, id]));
@@ -838,16 +1111,6 @@ export default function Performance() {
   const weight = useCountUp(realWeightGB);
   const kv = useCountUp(realKVPerReqMB);
   const cost = useCountUp(realMonthlyCostForDisplay);
-
-  const handleTourComplete = () => {
-    setShowTour(false);
-    setTourSeen(true);
-    localStorage.setItem('predict-performance-tour-seen', 'true');
-  };
-
-  const handleTakeTour = () => {
-    setShowTour(true);
-  };
 
   // Load saved count on mount
   React.useEffect(() => {
@@ -1450,13 +1713,6 @@ export default function Performance() {
 
   return (
     <div className={styles.page}>
-      {showTour && (
-        <ProductTour
-          steps={QUICK_ESTIMATE_TOUR}
-          tourId="qe"
-          onComplete={handleTourComplete}
-        />
-      )}
       {/* ---------- header ---------- */}
       <div className={styles.header}>
         <div className={styles.headRow}>
@@ -1464,17 +1720,8 @@ export default function Performance() {
             <h1 className={styles.pageTitle}>Predict performance</h1>
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <div style={{ position: 'relative' }}>
-              <Button
-                variant="link"
-                onClick={handleTakeTour}
-                style={{ fontSize: '14px' }}
-              >
-                Take a tour
-              </Button>
-              {!tourSeen && <div className={styles.tourBeacon} />}
-            </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <TourButton />
             <Button
               variant="plain"
               aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
@@ -1485,6 +1732,15 @@ export default function Performance() {
         </div>
       </div>
 
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={handleUseSharedSimulator}
+        />
+      )}
 
       {/* ---------- input row ---------- */}
       <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
@@ -1522,7 +1778,8 @@ export default function Performance() {
           </div>
         )}
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+        <div data-tour="calculate" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 16 }}>
+          <CopyLinkButton getUrl={shared.build} />
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
@@ -1535,6 +1792,7 @@ export default function Performance() {
       </div>
 
       {inputsDirty && <WarningPanel warnings={['Inputs have changed since the last submitted calculation. Click Calculate to update results.']} />}
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
 
       {/* ---------- workload presets ---------- */}
       {hydrated && (
@@ -1786,7 +2044,7 @@ export default function Performance() {
             front={
               <>
                 <span className={styles.tileLabel}><MemoryIcon /> Weight memory <Term k="weightMemory" /></span>
-                <span className={styles.tileValue}>{Math.round(weight)}<span className={styles.tileUnit}>GB</span></span>
+                <span className={styles.tileValue} data-testid="predict-weight-memory">{Math.round(weight)}<span className={styles.tileUnit}>GB</span></span>
                 <span className={styles.tileSub}>
                   {testResult ? (
                     <>{model.split('/')[1] || model} · {actualWeightPrecision}</>
@@ -1859,7 +2117,7 @@ export default function Performance() {
             front={
               <>
                 <span className={styles.tileLabel}><LayerGroupIcon /> KV cache / req <Term k="kvPerReq" /></span>
-                <span className={styles.tileValue}>{Math.round(kv)}<span className={styles.tileUnit}>MB</span></span>
+                <span className={styles.tileValue} data-testid="predict-kv-per-request">{Math.round(kv)}<span className={styles.tileUnit}>MB</span></span>
                 {testResult ? (
                   <span className={styles.tileSub}>
                     {testKVCachePrecision} · {testISL + testOSL} tokens/req · {testConcurrentUsers} users
@@ -2004,7 +2262,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>TTFT <Term k="ttft" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-ttft" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.ttft_ms.toFixed(1)} ms
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
@@ -2013,7 +2271,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>Throughput <Term k="throughput" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-throughput" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.throughput_tokens_per_sec.toFixed(1)} tok/s
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
@@ -2022,7 +2280,7 @@ export default function Performance() {
                     </div>
                     <div>
                       <div className={styles.fieldLabel}>TPOT <Term k="tpot" /></div>
-                      <div style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
+                      <div data-testid="predict-tpot" style={{ fontFamily: 'var(--mono)', fontSize: 20, fontWeight: 700 }}>
                         {testResult.performance.tpot_ms.toFixed(1)} ms
                       </div>
                       <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>

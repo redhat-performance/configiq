@@ -1,73 +1,71 @@
-/* Invisible click target to skip tour - no visual dimming here */
+/* Full-screen interaction shield. Deliberately inert: a click does not end the
+   tour, so a miss-click near the target cannot silently dismiss it. */
 .overlay {
   position: fixed;
   inset: 0;
   background: transparent;
   z-index: 9998;
-  cursor: pointer;
+  cursor: default;
 }
 
-/* Spotlight cutout that highlights the target element */
+/* Spotlight cutout that highlights the target element. */
 .spotlight {
   position: fixed;
   z-index: 9999;
   pointer-events: none;
   background: transparent;
   border-radius: 12px;
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.6),
-              0 0 0 6px rgba(255, 255, 255, 0.4),
-              0 0 20px 10px rgba(0, 102, 204, 0.3),
-              0 0 0 9999px rgba(8, 10, 14, 0.55);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--gc-link) 60%, transparent),
+    0 0 0 6px rgba(255, 255, 255, 0.4),
+    0 0 20px 10px color-mix(in srgb, var(--gc-link) 30%, transparent),
+    0 0 0 9999px rgba(8, 10, 14, 0.55);
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   animation: pulse 2s ease-in-out infinite;
 }
 
 @keyframes pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.6),
-                0 0 0 6px rgba(255, 255, 255, 0.4),
-                0 0 20px 10px rgba(0, 102, 204, 0.3),
-                0 0 0 9999px rgba(8, 10, 14, 0.55);
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--gc-link) 60%, transparent),
+      0 0 0 6px rgba(255, 255, 255, 0.4),
+      0 0 20px 10px color-mix(in srgb, var(--gc-link) 30%, transparent),
+      0 0 0 9999px rgba(8, 10, 14, 0.55);
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.8),
-                0 0 0 6px rgba(255, 255, 255, 0.6),
-                0 0 30px 15px rgba(0, 102, 204, 0.5),
-                0 0 0 9999px rgba(8, 10, 14, 0.55);
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--gc-link) 80%, transparent),
+      0 0 0 6px rgba(255, 255, 255, 0.6),
+      0 0 30px 15px color-mix(in srgb, var(--gc-link) 50%, transparent),
+      0 0 0 9999px rgba(8, 10, 14, 0.55);
   }
 }
 
-/* Tooltip with polished dark background */
+/* Tooltip with a dark surface chosen for contrast against the page. */
 .tooltip {
+  --tour-surface: #1b1d22;
+
   position: fixed;
   z-index: 10000;
-  background: #1b1d22;
+  box-sizing: border-box;
+  background: var(--tour-surface);
   color: #ffffff;
   border-radius: 12px;
   padding: 20px;
-  max-width: 360px;
-  border: 1px solid rgba(255, 255, 255, 0.10);
+  width: min(360px, calc(100vw - 24px));
+  border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  font-family: var(--font-display);
 }
 
-/* Position-based transforms to center tooltip */
-.tooltip-bottom,
-.tooltip-top {
-  transform: translateX(-50%);
+.tooltip:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 3px;
 }
 
-.tooltip-top {
-  transform: translateX(-50%) translateY(-100%);
-}
-
-.tooltip-left {
-  transform: translateX(-100%) translateY(-50%);
-}
-
-.tooltip-right {
-  transform: translateY(-50%);
-}
+/* Positioning is computed in JS so the tooltip can flip and clamp to the
+   viewport; no CSS transform offset is applied here. */
 
 /* Arrow pointers */
 .tooltip-bottom::before {
@@ -80,7 +78,7 @@
   height: 0;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
-  border-bottom: 8px solid #1b1d22;
+  border-bottom: 8px solid var(--tour-surface);
 }
 
 .tooltip-top::before {
@@ -93,7 +91,7 @@
   height: 0;
   border-left: 8px solid transparent;
   border-right: 8px solid transparent;
-  border-top: 8px solid #1b1d22;
+  border-top: 8px solid var(--tour-surface);
 }
 
 .tooltip-right::before {
@@ -106,7 +104,7 @@
   height: 0;
   border-top: 8px solid transparent;
   border-bottom: 8px solid transparent;
-  border-right: 8px solid #1b1d22;
+  border-right: 8px solid var(--tour-surface);
 }
 
 .tooltip-left::before {
@@ -119,17 +117,19 @@
   height: 0;
   border-top: 8px solid transparent;
   border-bottom: 8px solid transparent;
-  border-left: 8px solid #1b1d22;
+  border-left: 8px solid var(--tour-surface);
 }
 
 .tooltipHeader {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 12px;
   margin-bottom: 10px;
 }
 
 .tooltipTitle {
+  font-family: var(--font-display);
   font-size: 17px;
   font-weight: 600;
   margin: 0;
@@ -137,17 +137,19 @@
 }
 
 .tooltipProgress {
-  font-family: "JetBrains Mono", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.62);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  white-space: nowrap;
 }
 
 .tooltipDescription {
+  font-family: var(--font-display);
   font-size: 14px;
   line-height: 1.55;
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(255, 255, 255, 0.82);
   margin: 0 0 16px;
 }
 
@@ -158,24 +160,37 @@
   gap: 12px;
 }
 
+.secondaryActions {
+  display: flex;
+  gap: 10px;
+}
+
 .backButton,
 .skipButton {
   background: none;
   border: none;
-  color: rgba(255, 255, 255, 0.6);
-  font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.68);
+  font-family: var(--font-display);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  padding: 6px 12px;
+  padding: 6px 10px;
   border-radius: 4px;
-  transition: all 0.2s ease;
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .backButton:hover,
 .skipButton:hover {
   color: #ffffff;
   background: rgba(255, 255, 255, 0.1);
+}
+
+.backButton:focus-visible,
+.skipButton:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
 }
 
 .progressDots {
@@ -194,24 +209,21 @@
 }
 
 .dotActive {
-  background: #0066cc;
+  background: var(--gc-link);
   transform: scale(1.3);
 }
 
-/* Reduce motion for accessibility */
 @media (prefers-reduced-motion: reduce) {
   .dot {
     transition: none;
-    transform: none !important;
+    transform: none;
   }
-}
 
-/* Reduce motion for accessibility */
-@media (prefers-reduced-motion: reduce) {
   .spotlight {
     transition: none;
     animation: none;
   }
+
   .tooltip {
     transition: none;
   }

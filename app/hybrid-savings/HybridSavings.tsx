@@ -30,6 +30,14 @@ import { HybridCostCard } from './HybridCostCard'
 import { AppliedCostAssumptions } from './AppliedCostAssumptions'
 import { useHybridSizing } from './useHybridSizing'
 import { useSettings } from '@/contexts/SettingsContext'
+import { CopyLinkButton } from '@/components/help/CopyLinkButton'
+import { TourButton } from '@/components/help/TourButton'
+import { WarningPanel } from '@/components/ui/WarningPanel'
+import { hybridSavingsLink, type HybridSavingsLinkValues } from '@/lib/deep-links/pages'
+import { defineAccessors } from '@/lib/deep-links/shared-view'
+import { useSharedView } from '@/lib/deep-links/useSharedView'
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance'
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { simulatorDisplayLabel } from '@/lib/simulator-labels'
@@ -90,6 +98,25 @@ const FixedDeploymentChart = dynamic(() => import('./FixedDeploymentChart'), {
     </div>
   ),
 })
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
+  monthlyInputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens,
+  monthlyOutputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyOutputTokens,
+  averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
+  averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
+  ttft: 1000,
+  tpot: 30,
+  concurrency: 1,
+  prefix: 0,
+  hours: 730,
+  peak: 1,
+  billingMode: 'scale-to-zero',
+  costLens: 'fully-loaded',
+}
 
 const formatter = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
 const tokenUsageFormatter = new Intl.NumberFormat('en-US', {
@@ -248,6 +275,7 @@ export default function HybridSavings() {
     gpuOptions: allGpuOptions,
     modelOptions: allModelOptions,
     simulatorSupport,
+    simulators,
     backendOptions,
     modelSpecs,
     isLoading: catalogLoading,
@@ -608,16 +636,87 @@ export default function HybridSavings() {
     !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
     (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
 
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the fields this page owns, so a new
+  // parameter fails to compile until it is bound here.
+  const shared = useSharedView(hybridSavingsLink, {
+    fields: defineAccessors(hybridSavingsLink, {
+      model: { read: () => model || undefined, write: setModel },
+      // An unchanged API model means "the same model as the hosted one".
+      apiModel: { read: () => (apiModel !== SAME_API_MODEL ? apiModel : undefined), write: setApiModel },
+      monthlyInputTokens: {
+        read: () => monthlyInputTokens,
+        write: (value) => setMonthlyInputTokens(value),
+      },
+      monthlyOutputTokens: {
+        read: () => monthlyOutputTokens,
+        write: (value) => setMonthlyOutputTokens(value),
+      },
+      averageInputTokens: {
+        read: () => averageInputTokens,
+        write: (value) => setAverageInputTokens(value),
+      },
+      averageOutputTokens: {
+        read: () => averageOutputTokens,
+        write: (value) => setAverageOutputTokens(value),
+      },
+      ttft: { read: () => targetTtftMs, write: (value) => setTargetTtftMs(value) },
+      tpot: { read: () => targetTpotMs, write: (value) => setTargetTpotMs(value) },
+      concurrency: { read: () => targetConcurrency, write: (value) => setTargetConcurrency(value) },
+      prefix: { read: () => prefixTokens, write: (value) => setPrefixTokens(value) },
+      hours: { read: () => activeHoursPerMonth, write: (value) => setActiveHoursPerMonth(value) },
+      peak: { read: () => peakToAverage, write: (value) => setPeakToAverage(value) },
+      billingMode: { read: () => cloudBillingMode, write: (value) => setCloudBillingMode(value) },
+      costLens: { read: () => costLens, write: (value) => setCostLens(value) },
+    }),
+    // A shared view applies after settings and the catalogs have settled, so
+    // the page's automatic starting model cannot replace the linked one.
+    // Nothing is persisted and no calculation is triggered.
+    ready: hydrated && assumptionsHydrated && !catalogLoading,
+    defaults: HYBRID_LINK_DEFAULTS,
+    provenance: {
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    },
+  })
+  const linkWarnings = shared.warnings
+
+  // A link generated with another simulator is never switched silently. The
+  // reader's own simulator keeps producing the numbers until they accept the
+  // shared one for this view; saved settings are never touched.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => shared.parsed?.values ?? null,
+    hydrated && assumptionsHydrated && !catalogLoading,
+  )
+
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <div>
-          <h1 className={styles.pageTitle}>Hybrid savings</h1>
-          <p className={styles.subtitle}>
-            Compare hosted API, rented GPU and purchased hardware costs per million output tokens.
-          </p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>Hybrid savings</h1>
+            <p className={styles.subtitle}>
+              Compare hosted API, rented GPU and purchased hardware costs per million output tokens.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={shared.build} />
+            <TourButton />
+          </div>
         </div>
       </header>
+
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={acceptSharedSimulator}
+        />
+      )}
 
       {(catalogError || costings.error) && (
         <Alert title="Some shared data could not be loaded" variant="warning" isInline>
@@ -638,7 +737,7 @@ export default function HybridSavings() {
         Choose a catalog model or switch simulators in Settings.
       </Alert>}
 
-      <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }}>
+      <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }} data-tour="workload">
         <Card className={styles.inputCard}>
           <CardBody>
             <h2>Model and workload</h2>
@@ -670,7 +769,7 @@ export default function HybridSavings() {
                   ))}
                 </div>
               )}
-              <div className={styles.calculateAction}>
+              <div className={styles.calculateAction} data-tour="calculate">
                 <Button type="submit" variant="primary" isDisabled={!canCalculate}>Calculate</Button>
               </div>
             </div>
@@ -742,7 +841,7 @@ export default function HybridSavings() {
           </CardBody>
         </Card>
       </Form>
-      <InfoStrip>
+      <InfoStrip data-tour="assumptions">
         <span className={styles.workloadSummary}>
           <span><strong>Based on {activePreset?.label ?? 'Custom'}</strong> · {formatter.format(averageInputTokens)} input / {formatter.format(averageOutputTokens)} output tokens per request · {formatter.format(activeHoursPerMonth)} hours/month · {billingModeLabel(assumptions.cloudBillingMode)} · {compactNumber(facts.monthlyTokens)} total tokens/month</span>
           <InfoStripAction onClick={() => setWorkloadAdvancedOpen(true)}>Adjust</InfoStripAction>
@@ -765,7 +864,7 @@ export default function HybridSavings() {
 
 
       {comparison && (
-        <section className={styles.resultsSection} aria-label="Cost comparison">
+        <section className={styles.resultsSection} aria-label="Cost comparison" data-tour="results">
           <div className={styles.sectionHeading}>
             <h2>Cost comparison</h2>
             {resultSimulator && <SimulatorBadge simulator={resultSimulator} />}

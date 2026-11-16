@@ -20,7 +20,12 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
-import type { KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
+import { CopyLinkButton } from '@/components/help/CopyLinkButton'
+import { TourButton } from '@/components/help/TourButton'
+import { kvCacheLink, type KvCacheLinkValues, type MemoryFractionKind } from '@/lib/deep-links/pages'
+import { defineAccessors } from '@/lib/deep-links/shared-view'
+import { useSharedView } from '@/lib/deep-links/useSharedView'
+import { buildKvCachePayload, type KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
 
 
@@ -122,9 +127,12 @@ export default function KvCacheCalc() {
   const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg')
   const [prefillPar, setPrefillPar] = React.useState<PhaseParallelInput>({ tp: '1', pp: '1', moeTp: '', moeEp: '' })
   const [decodePar, setDecodePar] = React.useState<PhaseParallelInput>({ tp: '1', pp: '1', moeTp: '', moeEp: '' })
-  const [memFractionKind, setMemFractionKind] = React.useState('of_total')
+  const [memFractionKind, setMemFractionKind] = React.useState<MemoryFractionKind>('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
+  // A fraction kind chosen by the reader or carried by a link; the backend
+  // default only fills an unchanged control.
+  const memFractionKindUserEdited = React.useRef(false)
   const [expanded, setExpanded] = React.useState<string[]>([])
   const [loading, setLoading] = React.useState(false)
   const [results, setResults] = React.useState<PhaseResult[]>([])
@@ -171,6 +179,118 @@ export default function KvCacheCalc() {
     markInputsDirty()
   }
 
+  // One row per link field: what this view exports and what an incoming link
+  // applies. The table is total over the contract, so a new parameter fails to
+  // compile until it is bound here.
+  const linkFields = defineAccessors(kvCacheLink, {
+    model: { read: () => model || undefined, write: setModel },
+    system: { read: () => system || undefined, write: setSystem },
+    backend: { read: () => backend, write: setBackend },
+    backendVersion: { read: () => backendVersion || undefined, write: setBackendVersion },
+    maxNumTokens: {
+      read: () => maxNumTokens,
+      write: (value) => {
+        setMaxNumTokens(value)
+        setMaxNumTokensInput(String(value))
+        setActivePreset('custom')
+      },
+    },
+    maxBatchSize: {
+      read: () => maxBatchSize,
+      write: (value) => { setMaxBatchSize(value); setMaxBatchSizeInput(String(value)) },
+    },
+    tp: {
+      read: () => tpSize,
+      write: (value) => { setTpSize(value); setTpSizeInput(String(value)) },
+    },
+    pp: {
+      read: () => ppSize,
+      write: (value) => { setPpSize(value); setPpSizeInput(String(value)) },
+    },
+    moeTp: {
+      read: () => (moeTpSize ? parseInt(moeTpSize, 10) || undefined : undefined),
+      write: (value) => setMoeTpSize(String(value)),
+    },
+    moeEp: {
+      read: () => (moeEpSize ? parseInt(moeEpSize, 10) || undefined : undefined),
+      write: (value) => setMoeEpSize(String(value)),
+    },
+    servingMode: { read: () => servingMode, write: setServingMode },
+    // Pool parallelism belongs to a disaggregated view. Carrying it in an
+    // aggregated link would describe controls the recipient cannot see.
+    prefillTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.tp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, tp: String(value) })),
+    },
+    prefillPp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.pp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, pp: String(value) })),
+    },
+    prefillMoeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.moeTp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, moeTp: String(value) })),
+    },
+    prefillMoeEp: {
+      read: () => (servingMode === 'disagg' ? parseInt(prefillPar.moeEp, 10) || undefined : undefined),
+      write: (value) => setPrefillPar(c => ({ ...c, moeEp: String(value) })),
+    },
+    decodeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.tp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, tp: String(value) })),
+    },
+    decodePp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.pp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, pp: String(value) })),
+    },
+    decodeMoeTp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.moeTp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, moeTp: String(value) })),
+    },
+    decodeMoeEp: {
+      read: () => (servingMode === 'disagg' ? parseInt(decodePar.moeEp, 10) || undefined : undefined),
+      write: (value) => setDecodePar(c => ({ ...c, moeEp: String(value) })),
+    },
+    memFractionKind: {
+      read: () => memFractionKind,
+      write: (value) => {
+        // The linked kind is a choice; the backend default must not replace it.
+        memFractionKindUserEdited.current = true
+        setMemFractionKind(value)
+      },
+    },
+    memFractionValue: {
+      read: () => memFractionValue,
+      write: (value) => {
+        // Mark the fraction as chosen so the backend default does not replace it.
+        memFractionValueUserEdited.current = true
+        setMemFractionValue(value)
+        setMemFractionValueInput(String(value))
+      },
+    },
+  })
+
+  // A shared view is applied once settings and the catalog have settled, so a
+  // catalog default cannot overwrite a value the link asked for. URL values
+  // change this view only; remembered defaults are left alone.
+  const shared = useSharedView(kvCacheLink, {
+    fields: linkFields,
+    ready: hydrated && gpuReady && !catalogLoading,
+    defaults: {
+      maxNumTokens: defaultMaxNumTokens,
+      maxBatchSize: 128,
+      tp: 1,
+      pp: 1,
+      servingMode: 'agg',
+      prefillTp: 1,
+      prefillPp: 1,
+      decodeTp: 1,
+      decodePp: 1,
+    } satisfies KvCacheLinkValues,
+    // A retained result no longer matches the view the link just applied.
+    onApplied: markInputsDirty,
+  })
+  const linkWarnings = shared.warnings
+
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
   // The fraction is version-keyed, so prefer the selected system's own default;
@@ -190,7 +310,9 @@ export default function KvCacheCalc() {
       setMemFractionValue(1.0)
       setMemFractionValueInput('1.0')
     }
-    setMemFractionKind(selectedBackend.memoryFractionKind)
+    if (!memFractionKindUserEdited.current) {
+      setMemFractionKind(selectedBackend.memoryFractionKind)
+    }
   }, [backend, backendOptions, catalogLoading, hydrated, system])
 
   const invalidMaxNumTokens = maxNumTokensInput === '' || parseInt(maxNumTokensInput, 10) < 1;
@@ -290,23 +412,24 @@ export default function KvCacheCalc() {
       (validatedModelIds.includes(model) || catalogMatch || hfConfigModel === model),
   )
 
+  // The same builder the AISimulators client uses, so the proxied body and the
+  // shared-view contract are audited against one payload rather than two.
   function buildRequestBody(par: PhaseParallel): Record<string, unknown> {
-    const body: Record<string, unknown> = {
+    return buildKvCachePayload({
       model_path: model,
       system,
       backend,
+      backend_version: backendVersion.trim() || null,
       max_num_tokens: maxNumTokens,
       max_batch_size: maxBatchSize,
       tp_size: par.tp,
       pp_size: par.pp,
+      moe_tp_size: par.moeTp > 0 ? par.moeTp : null,
+      moe_ep_size: par.moeEp > 0 ? par.moeEp : null,
       memory_fraction_kind: memFractionKind,
       memory_fraction_value: memFractionValue,
-    }
-    if (backendVersion.trim()) body.backend_version = backendVersion.trim()
-    if (needsHfConfig(model, catalogModels) && hfConfig) body.model_config = hfConfig
-    if (par.moeTp > 0) body.moe_tp_size = par.moeTp
-    if (par.moeEp > 0) body.moe_ep_size = par.moeEp
-    return body
+      model_config: needsHfConfig(model, catalogModels) && hfConfig ? hfConfig : null,
+    })
   }
 
   async function handleCalculate() {
@@ -378,17 +501,27 @@ export default function KvCacheCalc() {
     <div className={styles.page}>
       {/* Header */}
       <div className={styles.header}>
-        <h1 className={styles.pageTitle}>KV cache calculator</h1>
-        <p className={styles.subtitle}>
-          Calculate KV cache memory requirements for any model on supported GPU systems
-        </p>
-        <div className={styles.helperText}>
-          Memory estimates use AISim, independent of the global Simulator setting.
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>KV cache calculator</h1>
+            <p className={styles.subtitle}>
+              Calculate KV cache memory requirements for any model on supported GPU systems
+            </p>
+            <div className={styles.helperText}>
+              Memory estimates use AISim, independent of the global Simulator setting.
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={shared.build} />
+            <TourButton />
+          </div>
         </div>
       </div>
 
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
       {/* Input card */}
-      <div className={`${styles.card} ${styles.inputCard}`}>
+      <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
         <div className={styles.inputRow}>
           <div className={styles.field}>
             <ComboBox
@@ -405,7 +538,7 @@ export default function KvCacheCalc() {
           <GpuSystemInput id="kv-gpu" value={system} onChange={(value) => { setSystem(value); markInputsDirty(); if (value) setDefaultSystem(value); }} gpuOptions={catalogGpus} />
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }} data-tour="calculate">
           <Button
             variant="primary"
             onClick={handleCalculate}
@@ -449,7 +582,7 @@ export default function KvCacheCalc() {
       )}
 
       {/* ---------- info strip ---------- */}
-      <InfoStrip>
+      <InfoStrip data-tour="workload">
         Based on your configuration — Maximum Number of Tokens (ISL + OSL): {maxNumTokens.toLocaleString()}, Batch Size: {maxBatchSize}. 
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
@@ -473,6 +606,8 @@ export default function KvCacheCalc() {
                     if (systemMemoryFraction(backendOptions.find(option => option.id === nextBackend), system) != null) {
                       memFractionValueUserEdited.current = false
                     }
+                    // A new backend brings its own default fraction kind.
+                    memFractionKindUserEdited.current = false
                     setBackend(nextBackend)
                     markInputsDirty()
                   }}
@@ -652,7 +787,7 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-mem-kind"
                   value={memFractionKind}
-                  onChange={e => { setMemFractionKind(e.target.value); markInputsDirty(); }}
+                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value as MemoryFractionKind); markInputsDirty(); }}
                   className={styles.gpuSelect}
                 >
                   <option value="of_total">of_total</option>
@@ -693,14 +828,14 @@ export default function KvCacheCalc() {
 
       {/* Results — one section per pool (agg = single unlabelled pool) */}
       {results.length > 0 && !loading && (
-        <>
+        <div data-tour="results">
           {results.map(({ label, result }) => {
             const currentGpu = catalogGpus.find(g => g.systemId === result.metadata.system)
             return (
               <PhaseResults key={label || 'agg'} label={label} result={result} gpuLabel={currentGpu?.label} />
             )
           })}
-        </>
+        </div>
       )}
 
       {/* Debug panel */}
@@ -822,7 +957,7 @@ interface TileCardProps {
   backContent: React.ReactNode
 }
 
-function TileCard({ dark, label, value, sub, flipped, onFlip, backContent }: TileCardProps) {
+function TileCard({ id, dark, label, value, sub, flipped, onFlip, backContent }: TileCardProps) {
   return (
     <div
       className={`${styles.tileCard} ${dark ? styles.tileDark : ''}`}
@@ -840,7 +975,7 @@ function TileCard({ dark, label, value, sub, flipped, onFlip, backContent }: Til
       {!flipped ? (
         <>
           <div className={styles.tileLabel}>{label}</div>
-          <div className={styles.tileValue}>{value}</div>
+          <div className={styles.tileValue} data-testid={`kv-${id}-value`}>{value}</div>
           <div className={styles.tileSub}>{sub}</div>
           <span className={styles.seeMath}>&#8635; details</span>
         </>

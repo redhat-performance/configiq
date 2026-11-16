@@ -18,6 +18,12 @@ import { CostAssumptionsProvider, COST_ASSUMPTIONS_STORAGE_KEY } from '@/context
 import CostAssumptionsEditor from '@/app/sources/CostAssumptionsEditor'
 
 vi.mock('@/contexts/SettingsContext', () => ({ useSettings: vi.fn() }))
+// The page reads its shared-view link through `useSearchParams`. Tests mount it
+// directly, so supply the current window search rather than the app router.
+const navigation = vi.hoisted(() => ({ search: '' }))
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(navigation.search),
+}))
 vi.mock('@/lib/hooks/useCostings', () => ({ useCostings: vi.fn() }))
 vi.mock('@/lib/hooks/useInfrastructureOffers', () => ({ useInfrastructureOffers: vi.fn() }))
 vi.mock('@/lib/api/recommend-stream', () => ({ readRecommendStream: vi.fn() }))
@@ -55,6 +61,17 @@ const sizing = {
   throughput: { tokensPerSecond: 1000 }, performance: { ttftLatencyMs: 100, tpotMs: 20 },
 } as RecommendResponse
 beforeEach(async () => {
+  window.history.replaceState({}, '', '/hybrid-savings')
+  navigation.search = window.location.search
+  // Node 26 does not provide localStorage; keep the real in-memory behaviour
+  // so tests that persist assumptions still exercise it.
+  const store = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, String(value)) },
+    removeItem: (key: string) => { store.delete(key) },
+    clear: () => { store.clear() },
+  })
   localStorage.clear()
   vi.mocked(useInfrastructureOffers).mockReturnValue({ ...TEST_OFFERS, isLoading: false, error: null, stale: false })
   vi.mocked(fetchModelConfig).mockReset()
@@ -73,6 +90,7 @@ beforeEach(async () => {
     setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
     setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
+    applyViewForSession: vi.fn(),
   })
   vi.mocked(useCostings).mockReturnValue({
     models, health: null, modelsUpdatedAt: null, modelsStale: false,
@@ -82,7 +100,7 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response()))
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.useRealTimers() })
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); window.history.replaceState({}, '', '/hybrid-savings'); vi.unstubAllGlobals(); vi.useRealTimers() })
 async function render() { await act(async () => root.render(<CostAssumptionsProvider><HybridSavings /></CostAssumptionsProvider>)) }
 async function click(text: string) {
   const button = [...host.querySelectorAll('button')].find(element => element.textContent === text)!
@@ -1233,5 +1251,23 @@ describe('Hybrid page composition', () => {
     await render()
     expect(host.textContent).toContain('Hosted comparison unavailable')
     expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Calculate')?.disabled).toBe(true)
+  })
+})
+
+describe('hybrid savings shared view', () => {
+  it('hydrates the view from a link and reports what it ignored', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/hybrid-savings?v=1&model=Qwen%2FQwen3-8B&monthlyInputTokens=5000000&monthlyOutputTokens=1000000&nope=1',
+    )
+    navigation.search = window.location.search
+    await render()
+
+    expect(host.querySelector<HTMLInputElement>('#hybrid-model')!.value).toBe('Qwen/Qwen3-8B')
+    expect(
+      host.querySelector<HTMLInputElement>('#hybrid-input-tokens')!.value.replace(/,/g, ''),
+    ).toBe('5000000')
+    expect(host.textContent).toContain('Ignored unknown parameter "nope"')
   })
 })

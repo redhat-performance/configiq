@@ -1,4 +1,5 @@
 # Dependencies
+node_modules
 node_modules/
 .pnp
 .pnp.js
@@ -43,6 +44,14 @@ next-env.d.ts
 # Generated tested-model datasets and manifests
 data/tested-models/
 __pycache__/
+
+# Generated docs (built by `npm run docs:build`)
+lib/docs/generated/
+public/help-index.json
+
+# Playwright output
+playwright-report/
+test-results/
 
 # Local-only dev scratch (container runner, logs)
 .local-dev/

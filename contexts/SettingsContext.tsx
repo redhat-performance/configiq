@@ -5,6 +5,16 @@ import { loadAppConfig } from '@/lib/app-config';
 import { useCatalog } from '@/lib/hooks/useCatalog';
 
 export type InferenceBackend = 'vllm' | 'tensorrt-llm' | 'sglang';
+
+/**
+ * Provenance carried by a shared link, applied for the current session only.
+ * Omitted fields keep the user's own settings.
+ */
+export interface SessionViewOverride {
+  simulator?: Simulator;
+  backend?: InferenceBackend;
+  backendVersion?: string;
+}
 /**
  * A simulator identifier discovered from GET /simulators. It is deliberately an
  * open string: the backend service owns the list, and a build of this app must
@@ -75,6 +85,11 @@ interface SettingsState {
   setInferenceBackend: (v: InferenceBackend) => void;
   setSimulator: (v: Simulator) => void;
   setBackendVersion: (v: string) => void;
+  /**
+   * Apply a shared view's provenance for this session only. Never written to
+   * localStorage: opening someone else's link must not change your defaults.
+   */
+  applyViewForSession: (view: SessionViewOverride) => void;
   setCostingsEnabled: (v: boolean) => void;
   setPreferredCloudProvider: (v: string | null) => void;
   setPricingSource: (v: PricingSource) => void;
@@ -97,6 +112,7 @@ const SettingsContext = React.createContext<SettingsState>({
   setInferenceBackend: () => {},
   setSimulator: () => {},
   setBackendVersion: () => {},
+  applyViewForSession: () => {},
   setCostingsEnabled: () => {},
   setPreferredCloudProvider: () => {},
   setPricingSource: () => {},
@@ -111,11 +127,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const [defaultModel, setDefaultModelState] = React.useState('');
   const [defaultSystem, setDefaultSystemState] = React.useState('');
   const [hfToken, setHfTokenState] = React.useState('');
-  const [inferenceBackend, setInferenceBackendState] = React.useState<InferenceBackend>('vllm');
+  const [inferenceBackendState, setInferenceBackendState] = React.useState<InferenceBackend>('vllm');
   // An explicit choice; empty means the catalog's default simulator applies.
   const [simulatorChoice, setSimulatorChoiceState] = React.useState<Simulator>(NO_SIMULATOR);
-  const simulator = simulatorChoice || defaultSimulator;
-  const [backendVersion, setBackendVersionState] = React.useState('');
+  const [sessionOverride, setSessionOverride] = React.useState<SessionViewOverride | null>(null);
+  const simulator = sessionOverride?.simulator ?? (simulatorChoice || defaultSimulator);
+  const [backendVersionState, setBackendVersionState] = React.useState('');
+  const backendVersion = sessionOverride?.backendVersion ?? backendVersionState;
+  const inferenceBackend = sessionOverride?.backend ?? inferenceBackendState;
   const [costingsEnabled, setCostingsEnabledState] = React.useState(false);
   const [preferredCloudProvider, setPreferredCloudProviderState] = React.useState<string | null>(null);
   const [pricingSource, setPricingSourceState] = React.useState<PricingSource>(DEFAULT_PRICING_SOURCE);
@@ -199,15 +218,24 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // The simulator whose settings a change is saved under. A shared view can
+  // override the simulator for this session only, and changing the backend or
+  // version ends that override: the value belongs to the simulator the profile
+  // will rest on, not to the one the link borrowed for a moment.
+  const restingSimulator = simulatorChoice || defaultSimulator;
+
   const setInferenceBackend = React.useCallback((v: InferenceBackend) => {
+    setSessionOverride(null);
     setInferenceBackendState(v);
     localStorage.setItem(STORAGE_KEYS.inferenceBackend, v);
     // Settings resolves the backend's default version from the live catalog.
     setBackendVersionState('');
-    localStorage.setItem(versionStorageKey(simulator), '');
-  }, [simulator]);
+    localStorage.setItem(versionStorageKey(restingSimulator), '');
+  }, [restingSimulator]);
 
   const setSimulator = React.useCallback((v: Simulator) => {
+    // An explicit choice ends any shared-view override.
+    setSessionOverride(null);
     setSimulatorChoiceState(v);
     localStorage.setItem(STORAGE_KEYS.simulator, v);
     // Load the version saved for the simulator being switched to. The two
@@ -216,9 +244,14 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setBackendVersion = React.useCallback((v: string) => {
+    setSessionOverride(null);
     setBackendVersionState(v);
-    localStorage.setItem(versionStorageKey(simulator), v);
-  }, [simulator]);
+    localStorage.setItem(versionStorageKey(restingSimulator), v);
+  }, [restingSimulator]);
+
+  const applyViewForSession = React.useCallback((view: SessionViewOverride) => {
+    setSessionOverride(view);
+  }, []);
 
   const setCostingsEnabled = React.useCallback((v: boolean) => {
     setCostingsEnabledState(v);
@@ -244,11 +277,13 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
       costingsEnabled, preferredCloudProvider, pricingSource,
       setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
+      applyViewForSession,
       setCostingsEnabled, setPreferredCloudProvider, setPricingSource,
     }),
     [hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
      costingsEnabled, preferredCloudProvider, pricingSource,
      setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
+     applyViewForSession,
      setCostingsEnabled, setPreferredCloudProvider, setPricingSource],
   );
 

@@ -16,6 +16,7 @@ import {
   NavItem,
 } from "@patternfly/react-core";
 import BarsIcon from "@patternfly/react-icons/dist/esm/icons/bars-icon";
+import BookOpenIcon from "@patternfly/react-icons/dist/esm/icons/book-open-icon";
 import GithubIcon from "@patternfly/react-icons/dist/esm/icons/github-icon";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -37,6 +38,8 @@ import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useCatalog } from "@/lib/hooks/useCatalog";
 import { simulatorDisplayLabel } from "@/lib/simulator-labels";
+import { PageTourProvider } from "@/components/help/PageTourProvider";
+import { HelpMenu } from "@/components/help/HelpMenu";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -91,9 +94,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </MastheadBrand>
       </MastheadMain>
       <MastheadContent>
-        <a href="https://github.com/redhat-performance/configiq" target="_blank" rel="noopener" aria-label="GitHub repository" style={{ color: 'rgba(255,255,255,0.7)', display: 'flex', padding: 8, marginLeft: 'auto' }}>
-          <GithubIcon style={{ width: 21, height: 21 }} />
-        </a>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
+          <HelpMenu />
+          <a href="https://github.com/redhat-performance/configiq" target="_blank" rel="noopener" aria-label="GitHub repository" style={{ color: 'rgba(255,255,255,0.7)', display: 'flex', padding: 8 }}>
+            <GithubIcon style={{ width: 21, height: 21 }} />
+          </a>
+        </div>
       </MastheadContent>
     </Masthead>
   );
@@ -104,7 +110,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     gap: '10px',
     fontSize: '14.5px',
     fontWeight: 500,
-    fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+    fontFamily: 'var(--font-display)',
     color: isActive ? '#ffffff' : 'rgba(255,255,255,0.85)',
     backgroundColor: isActive ? '#0066cc' : 'transparent',
     padding: '9px 16px',
@@ -144,7 +150,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     letterSpacing: '0.08em',
     textTransform: 'uppercase' as const,
     color: 'rgba(255,255,255,0.55)',
-    fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+    fontFamily: 'var(--font-display)',
   };
 
   const sidebar = (
@@ -257,6 +263,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/sources"
               isActive={pathname === "/sources"}
             />
+
+            <div style={groupLabelStyle}>HELP</div>
+
+            <NavItemWithIcon
+              icon={BookOpenIcon}
+              label="Documentation"
+              href="/docs"
+              isActive={pathname.startsWith("/docs")}
+            />
           </NavList>
         </Nav>
 
@@ -288,14 +303,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <Page
-      masthead={masthead}
-      sidebar={sidebar}
-      isManagedSidebar
-      defaultManagedSidebarIsOpen={true}
-      style={{ backgroundColor: "#f5f5f5" }}
-    >
-      {children}
-    </Page>
+    <PageTourProvider>
+      <Page
+        masthead={masthead}
+        sidebar={sidebar}
+        isManagedSidebar
+        defaultManagedSidebarIsOpen={true}
+        style={{ backgroundColor: "#f5f5f5" }}
+      >
+        {children}
+      </Page>
+    </PageTourProvider>
   );
 }

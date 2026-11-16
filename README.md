@@ -1,5 +1,7 @@
 # ConfigIQ
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/redhat-performance/configiq)
+
 LLM inference sizing, GPU comparison, and cost modeling for engineers and infrastructure teams.
 
 ## Live
@@ -8,6 +10,19 @@ LLM inference sizing, GPU comparison, and cost modeling for engineers and infras
 - [configiq.dev](https://configiq.dev) (latest commit)
 
 Built with Next.js + PatternFly, powered by the [AISimulators REST API](https://aisimulators.dev/docs) for multi-simulator sizing and estimation.
+
+## Documentation
+
+- [Documentation index](https://configiq.dev/docs): every guide in the app
+- [In-app help](docs/help.md): search, ask, and guided tours
+- [User scenarios](docs/user-scenarios.md): which tool to use for which ask
+- [REST API reference](docs/api.md): endpoints, defaults, and provenance
+- [Contributing](docs/contributing-guide.md): run the app and prepare a change
+- [DeepWiki](https://deepwiki.com/redhat-performance/configiq): AI-generated,
+  third-party overview of the codebase; not curated documentation
+
+Documentation pages are rendered from Markdown at build time and served at
+stable addresses such as `/docs/settings#sharing-a-view`.
 
 ## What it does
 

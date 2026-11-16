@@ -42,13 +42,35 @@ import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
 import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
-
+import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { TourButton } from '@/components/help/TourButton';
+import { FABRIC_NONE } from '@/lib/deep-links/common';
+import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
+import { defineAccessors } from '@/lib/deep-links/shared-view';
+import { useSharedView } from '@/lib/deep-links/useSharedView';
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
 import { Term } from '@/app/predict/performanceHelpers';
 import { AMORT_MONTHS_5YR, HOURS_PER_MONTH, formatLatencyBound } from '@/lib/utils/format';
 
 /** Offered rate a demand run starts from; the UI labels it as the default. */
 const DEFAULT_DEMAND_RATE = 10;
+
+/**
+ * The link's own starting points. A field left at one of these is omitted from
+ * a generated link, so the recipient falls back to the same value.
+ */
+const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
+  goal: 'demand',
+  isl: 2048,
+  osl: 128,
+  concurrency: 1,
+  ttft: 1000,
+  tpot: 30,
+  demandRate: DEFAULT_DEMAND_RATE,
+  prefix: 0,
+};
 
 /** Match a retained request back to the sizing goal that produced it. */
 function goalFromParams(params: RecommendParams | null): SizingGoal {
@@ -239,7 +261,7 @@ function friendlyErrorHint(code: string | null): string {
 export default function Sizing() {
   const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
-  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
+  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, simulators, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
   // the pickers; no override means the top-level catalog is its support.
   // An unavailable simulator has an explicit empty support entry, so its pages
@@ -295,6 +317,9 @@ export default function Sizing() {
   }, [hydrated, settingsDefaultModel]);
   const [gpuSystem, setGpuSystem] = React.useState('');
   const [gpuReady, setGpuReady] = React.useState(false);
+  // The linked system the shared simulator did not offer yet. It is re-applied
+  // once the catalog for the accepted simulator arrives.
+  const pendingLinkedSystem = React.useRef<string | null>(null);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -558,6 +583,20 @@ export default function Sizing() {
     }
   }, [gpuReady, gpuSystem, selectableGpus]);
 
+  // Accepting a shared simulator narrows the catalog, and the effect above
+  // replaces a system that simulator does not offer. Put the linked system back
+  // once it is selectable; declare this after the replacement so it wins.
+  React.useEffect(() => {
+    const pending = pendingLinkedSystem.current;
+    if (!pending) return;
+    if (!selectableGpus.some(option => option.systemId === pending)) return;
+    pendingLinkedSystem.current = null;
+    setGpuSystem(pending);
+    markInputsDirty();
+    // The catalog narrowing is what matters here, not a keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectableGpus]);
+
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
     if (!result || !params) return null;
     const phase = (value: PhaseConfig | null): ClassifierPhaseInput | null => value ? {
@@ -642,6 +681,121 @@ export default function Sizing() {
   const applyConcurrencyPreset = (p: ConcurrencyPreset) => {
     setTargetConcurrency(p.concurrency); setConcurrencyInput(String(p.concurrency));
     markInputsDirty();
+  };
+
+  // One row per link field: how this view exports it and how an incoming link
+  // applies it. The table is total over the fields this page owns, so a new
+  // contract field fails to compile until it is bound on both sides.
+  const linkFields = defineAccessors(recommendLink, {
+    model: {
+      read: () => model || undefined,
+      write: (value) => {
+        setModel(value);
+        // The link changed the form, not this reader's saved default.
+        modelTouched.current = false;
+      },
+    },
+    system: { read: () => gpuSystem || undefined, write: setGpuSystem },
+    goal: { read: () => goal, write: setGoal },
+    isl: {
+      read: () => isl,
+      write: (value) => { setIsl(value); setIslInput(String(value)); },
+    },
+    osl: {
+      read: () => osl,
+      write: (value) => { setOsl(value); setOslInput(String(value)); },
+    },
+    // Latency and capacity sizing both submit a target concurrency, so it
+    // belongs in every non-demand link; omitting it restored concurrency 1 on
+    // a fresh page.
+    concurrency: {
+      read: () => (isDemand ? undefined : targetConcurrency),
+      write: (value) => { setTargetConcurrency(value); setConcurrencyInput(String(value)); },
+    },
+    ttft: {
+      read: () => (goal === 'latency' && requestLatency === null ? ttft : undefined),
+      write: (value) => { setTtft(value); setTtftInput(String(value)); },
+    },
+    tpot: {
+      read: () => (goal === 'latency' && requestLatency === null ? tpot : undefined),
+      write: (value) => { setTpot(value); setTpotInput(String(value)); },
+    },
+    e2eLatency: {
+      read: () => (goal === 'latency' && requestLatency !== null ? requestLatency : undefined),
+      write: (value) => { setRequestLatency(value); setLatencyInput(String(value)); },
+    },
+    demandRate: {
+      read: () => (goal === 'demand' ? demandRate : undefined),
+      write: (value) => { setDemandRate(value); setDemandRateInput(String(value)); },
+    },
+    prefix: {
+      read: () => prefix,
+      write: (value) => { setPrefix(value); setPrefixInput(String(value)); },
+    },
+    maxSeqLen: {
+      read: () => maxSeqLen ?? undefined,
+      write: (value) => { setMaxSeqLen(value); setMaxSeqLenInput(String(value)); },
+    },
+    prefillMaxSeqLen: {
+      read: () => prefillMaxSeqLen ?? undefined,
+      write: (value) => { setPrefillMaxSeqLen(value); setPrefillMaxSeqLenInput(String(value)); },
+    },
+    decodeMaxSeqLen: {
+      read: () => decodeMaxSeqLen ?? undefined,
+      write: (value) => { setDecodeMaxSeqLen(value); setDecodeMaxSeqLenInput(String(value)); },
+    },
+    // An unset fabric means "use the simulator default", which is what the
+    // recipient gets if the field is absent. An explicit None is sentinel-
+    // encoded so it survives an empty-string build.
+    fabric: {
+      read: () => (
+        fabricRequired && !aggregateOnlyGoal
+          ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
+          : undefined
+      ),
+      write: (value) => setNetworkFabric(value === FABRIC_NONE ? '' : value),
+    },
+  });
+
+  // A shared view applies after settings, the catalog, and the starting model
+  // have settled. URL values change this form only; nothing is persisted, and
+  // opening a link never submits a request. The provenance trio is applied for
+  // the session by `useLinkProvenance` instead of by this form.
+  const shared = useSharedView(recommendLink, {
+    fields: linkFields,
+    ready: hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
+    defaults: RECOMMEND_LINK_DEFAULTS,
+    provenance: {
+      simulator: simulator || undefined,
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    },
+    // A retained result no longer matches the form the link just described.
+    onApplied: () => {
+      // A new link supersedes any system still waiting on an accepted
+      // simulator; carrying it over would rewrite a different view.
+      pendingLinkedSystem.current = null;
+      markInputsDirty();
+    },
+  });
+  const linkWarnings = shared.warnings;
+
+  // A link generated with another simulator is never switched silently: this
+  // page shows the shared values and offers the switch. A matching simulator
+  // applies the shared backend and version to this view only.
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
+    () => shared.parsed?.values ?? null,
+    hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
+  );
+
+  const useSharedSimulator = () => {
+    // The catalog narrows to the shared simulator on the next render, which
+    // replaces a system that simulator does not offer. Keep the linked system
+    // to re-apply once it is selectable again, and mark any visible output
+    // stale because a different simulator will produce the next result.
+    pendingLinkedSystem.current = shared.parsed?.values.system ?? null;
+    markInputsDirty();
+    acceptSharedSimulator();
   };
 
   // The recommend provider keeps the submitted request and its result across
@@ -768,14 +922,33 @@ export default function Sizing() {
     <div className={styles.page}>
       {/* ─── Header ─── */}
       <div className={styles.header}>
-        <h1 className={styles.pageTitle}>Recommend sizing</h1>
-        <p className={styles.subtitle}>
-          Start with just a model name — we fill the rest, then let you tune every assumption.
-        </p>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
+          <div>
+            <h1 className={styles.pageTitle}>Recommend sizing</h1>
+            <p className={styles.subtitle}>
+              Start with just a model name — we fill the rest, then let you tune every assumption.
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <CopyLinkButton getUrl={shared.build} />
+            <TourButton />
+          </div>
+        </div>
       </div>
 
+      {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={useSharedSimulator}
+        />
+      )}
+
       {/* ─── Input card ─── */}
-      <div className={`${styles.card} ${styles.inputCard}`}>
+      <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
         {/* Model + GPU row */}
         <div className={styles.inputGrid}>
           <div>
@@ -842,7 +1015,7 @@ export default function Sizing() {
         )}
 
         {/* Calculate and Pareto are alternative actions, not a chain. */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }} data-tour="calculate">
           <Button
             variant="secondary"
             onClick={handlePareto}
@@ -914,7 +1087,7 @@ export default function Sizing() {
       )}
 
       {/* ---------- sizing goal ---------- */}
-      <div className={styles.goalRow}>
+      <div className={styles.goalRow} data-tour="goal">
         <span className={styles.goalLabel}>Sizing goal:</span>
         <ToggleGroup aria-label="Sizing goal">
           <ToggleGroupItem
@@ -950,7 +1123,7 @@ export default function Sizing() {
         </span>
       </div>
 
-      <InfoStrip>
+      <InfoStrip data-tour="targets">
         {isCapacity ? (
           <>
             Based on your configuration — ISL: {isl}, OSL: {osl}, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'sequence' : 'sequences'} at {capacityContextTokens.toLocaleString()} tokens each, no latency target.
@@ -1264,7 +1437,7 @@ export default function Sizing() {
       {/* ─── Result tiles ─── */}
       {result && (
         <>
-          <div className={styles.tilesGrid}>
+          <div className={styles.tilesGrid} data-tour="results">
             {/* GPUs Required */}
             <FlipTile
               dark
@@ -1276,7 +1449,7 @@ export default function Sizing() {
                       {result.mode === 'disagg' ? 'disagg' : 'agg'}
                     </Label>
                   </span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-gpus">
                     {gpuCount}<span className={styles.tileUnit}>× {currentGpuOption.label}</span>
                   </span>
                   <span className={styles.tileSub}>
@@ -1474,7 +1647,7 @@ export default function Sizing() {
                 front={
                   <>
                     <span className={styles.tileLabel}><ClockIcon /> TTFT</span>
-                    <span className={styles.tileValue}>
+                    <span className={styles.tileValue} data-testid="recommend-ttft">
                       {ttftMs}<span className={styles.tileUnit}>ms</span>
                     </span>
                     <span className={styles.tileSub}>
@@ -1506,7 +1679,7 @@ export default function Sizing() {
               front={
                 <>
                   <span className={styles.tileLabel}><TachometerAltIcon /> Throughput</span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-throughput">
                     {tpsVal}<span className={styles.tileUnit}>tok/s</span>
                   </span>
                   <span className={styles.tileSub}>
@@ -1535,7 +1708,7 @@ export default function Sizing() {
               front={
                 <>
                   <span className={styles.tileLabel}><MemoryIcon /> Peak mem / GPU</span>
-                  <span className={styles.tileValue}>
+                  <span className={styles.tileValue} data-testid="recommend-peak-memory">
                     {memVal}<span className={styles.tileUnit}>GB</span>
                   </span>
                   <span className={styles.tileSub}>
