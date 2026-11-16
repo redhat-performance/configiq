@@ -60,13 +60,6 @@ export const HELP_TOURS: HelpTour[] = [
         position: 'bottom',
       },
       {
-        target: '[data-tour="calculate"]',
-        title: 'Calculate when you are ready',
-        description:
-          'Edit any input at any time. Results are not refreshed until you press Calculate, so what you see always matches the last submitted configuration.',
-        position: 'bottom',
-      },
-      {
         target: '[data-tour="result-tile-gpus"]',
         title: 'Your results at a glance',
         description:
@@ -79,6 +72,13 @@ export const HELP_TOURS: HelpTour[] = [
         description:
           'Expand a section to adjust traffic patterns, sequence lengths, and hardware settings. Press Calculate again after changing a value.',
         position: 'top',
+      },
+      {
+        target: '[data-tour="calculate"]',
+        title: 'Calculate when you are ready',
+        description:
+          'Edit any input at any time. Results are not refreshed until you press Calculate, so what you see always matches the last submitted configuration.',
+        position: 'bottom',
       },
     ],
   },
@@ -95,13 +95,6 @@ export const HELP_TOURS: HelpTour[] = [
         position: 'bottom',
       },
       {
-        target: '[data-tour="goal"]',
-        title: 'Choose a sizing goal',
-        description:
-          'Latency SLO meets TTFT/TPOT targets, throughput demand sustains an arrival rate, and concurrency capacity holds a number of resident sequences. They can return different GPU counts.',
-        position: 'bottom',
-      },
-      {
         target: '[data-tour="workload-presets"]',
         title: 'Start from a workload',
         description:
@@ -113,6 +106,13 @@ export const HELP_TOURS: HelpTour[] = [
         title: 'Set the concurrency',
         description:
           'A concurrency preset sets how many sequences run at once. As with workload, the chip reflects the current value rather than storing a choice.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="goal"]',
+        title: 'Choose a sizing goal',
+        description:
+          'Latency SLO meets TTFT/TPOT targets, throughput demand sustains an arrival rate, and concurrency capacity holds a number of resident sequences. They can return different GPU counts.',
         position: 'bottom',
       },
       {
@@ -239,6 +239,13 @@ export const HELP_TOURS: HelpTour[] = [
         title: 'Describe the workload',
         description:
           'Choose a model and monthly token volumes, or start from a workload preset. Advanced workload holds the request shape and performance targets.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="workload-presets"]',
+        title: 'Start from a workload',
+        description:
+          'A workload preset sets the average input and output request size. The chip follows the values, so typing your own sizes clears it.',
         position: 'bottom',
       },
       {

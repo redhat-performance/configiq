@@ -751,7 +751,7 @@ export default function HybridSavings() {
               <NumberField id="hybrid-output-tokens" label="Monthly output tokens" value={monthlyOutputTokens} max={HYBRID_PLANNING_HORIZON_TOKENS} step={1_000_000} formatWithCommas onChange={setMonthlyOutputTokens} />
             </div>
             <div className={styles.inputActions}>
-              <div className={styles.workloadPresets} role="group" aria-label="Workload type" id="hybrid-profile">
+              <div className={styles.workloadPresets} role="group" aria-label="Workload type" id="hybrid-profile" data-tour="workload-presets">
                 <span className={styles.workloadLabel}>Workload:</span>
                 {workloadPresets.map(profile => (
                   <Button key={profile.key} type="button" className="gc-preset-button" variant={activePreset?.key === profile.key ? 'secondary' : 'tertiary'} size="sm" aria-pressed={activePreset?.key === profile.key} onClick={() => applyProfile(profile)}>
