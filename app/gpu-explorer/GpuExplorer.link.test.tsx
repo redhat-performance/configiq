@@ -39,18 +39,23 @@ vi.mock('@/contexts/SettingsContext', () => ({
 
 // Hardware costs are per-test state: the page now loads costings regardless of
 // the experimental toggle, so coverage is what decides whether cost controls
-// appear.
+// appear. The requested `enabled` flag is recorded so a setting-controlled call
+// cannot hide behind a mock that always returns costs.
 const costingsState = vi.hoisted(() => ({
   hardwareCosts: new Map<string, { new_usd: number }>(),
+  enabled: null as boolean | null,
 }));
 
 vi.mock('@/lib/hooks/useCostings', () => ({
-  useCostings: () => ({
-    models: [],
-    gpuCloudRates: new Map(),
-    gpuHardwareCosts: costingsState.hardwareCosts,
-    isLoading: false,
-  }),
+  useCostings: (enabled: boolean) => {
+    costingsState.enabled = enabled;
+    return {
+      models: [],
+      gpuCloudRates: new Map(),
+      gpuHardwareCosts: costingsState.hardwareCosts,
+      isLoading: false,
+    };
+  },
 }));
 
 // The chart is the only consumer of the selected axes, so it stands in for the
@@ -71,6 +76,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
   costingsState.hardwareCosts.clear();
+  costingsState.enabled = null;
   clipboard.text = '';
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -188,6 +194,10 @@ describe('GPU explorer shared views', () => {
     costingsState.hardwareCosts.set('h200_sxm', { new_usd: 32000 });
     await mountAt('?preset=cost-efficiency');
 
+    // The page must request pricing unconditionally; otherwise a real
+    // deployment with the experimental toggle off would never load costs even
+    // though this mock returns them.
+    expect(costingsState.enabled).toBe(true);
     expect(axes()).toEqual({ x: 'Hardware Cost (USD)', y: 'Throughput Index' });
     const preset = Array.from(container.querySelectorAll('button'))
       .find(button => button.textContent === 'Cost efficiency');
