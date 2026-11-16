@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "pretest": "npm run docs:build",
+    "pretest:watch": "npm run docs:build",
     "test:watch": "vitest",
     "pretype-check": "npm run docs:build",
     "test:e2e:live": "playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
