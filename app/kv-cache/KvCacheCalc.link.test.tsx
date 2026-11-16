@@ -8,22 +8,82 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // directly, so supply the current window search rather than the app router.
 const navigation = vi.hoisted(() => ({ search: '' }));
 
+// A minimal stand-in for the settings context: the page reads the effective
+// backend and version, and a shared view applies them for this session only.
+// Saved settings and the session override are kept apart, as the real context
+// does, so a test can prove that opening a link does not rewrite the profile.
+const settingsStore = vi.hoisted(() => {
+  interface State { simulator: string; inferenceBackend: string; backendVersion: string }
+  const saved: State = { simulator: 'aisimulate', inferenceBackend: 'vllm', backendVersion: '0.9.0' };
+  let session: Partial<State> = {};
+  // `useSyncExternalStore` compares snapshots by identity, so the effective
+  // object is rebuilt only when the override changes.
+  let effective: State = { ...saved };
+  const listeners = new Set<() => void>();
+  const recompute = () => { effective = { ...saved, ...session }; };
+  const notify = () => {
+    for (const listener of listeners) listener();
+  };
+  return {
+    /** The effective values the page reads: saved settings under the override. */
+    get: (): State => effective,
+    /** The values that would persist; a shared view must never change these. */
+    saved: (): State => ({ ...saved }),
+    setSession: (next: Partial<State>) => {
+      session = { ...session, ...next };
+      recompute();
+      notify();
+    },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    reset: () => {
+      session = {};
+      recompute();
+      notify();
+    },
+  };
+});
+
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(navigation.search),
 }));
 
-vi.mock('@/contexts/SettingsContext', () => ({
-  useSettings: () => ({
-    hydrated: true,
-    hfToken: '',
-    defaultModel: 'Qwen/Qwen2.5-7B-Instruct',
-    defaultSystem: 'h200_sxm',
-    inferenceBackend: 'vllm',
-    backendVersion: '0.9.0',
-    setDefaultSystem: vi.fn(),
-    setDefaultModel: vi.fn(),
-  }),
-}));
+vi.mock('@/contexts/SettingsContext', async () => {
+  const React = await import('react');
+  return {
+    useSettings: () => {
+      const state = React.useSyncExternalStore(
+        settingsStore.subscribe,
+        settingsStore.get,
+        settingsStore.get,
+      );
+      return {
+        hydrated: true,
+        hfToken: '',
+        defaultModel: 'Qwen/Qwen2.5-7B-Instruct',
+        defaultSystem: 'h200_sxm',
+        simulator: state.simulator,
+        inferenceBackend: state.inferenceBackend,
+        backendVersion: state.backendVersion,
+        setDefaultSystem: vi.fn(),
+        setDefaultModel: vi.fn(),
+        applyViewForSession: (view: {
+          simulator?: string;
+          backend?: string;
+          backendVersion?: string;
+        }) => {
+          settingsStore.setSession({
+            ...(view.simulator ? { simulator: view.simulator } : {}),
+            ...(view.backend ? { inferenceBackend: view.backend } : {}),
+            ...(view.backendVersion !== undefined ? { backendVersion: view.backendVersion } : {}),
+          });
+        },
+      };
+    },
+  };
+});
 
 vi.mock('@/lib/hooks/useCatalog', () => ({
   useCatalog: () => ({
@@ -87,6 +147,9 @@ let memoryBodies: Array<Record<string, unknown>>;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  // Each test starts from the saved profile, with no session override left by
+  // the previous link.
+  settingsStore.reset();
   memoryBodies = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === '/api/memory' && init?.body) {
@@ -160,6 +223,16 @@ async function calculate() {
   });
 }
 
+async function openAdjust() {
+  const adjust = Array.from(container.querySelectorAll('button'))
+    .find(button => (button.textContent ?? '').startsWith('Adjust?'));
+  expect(adjust).toBeDefined();
+  await act(async () => {
+    adjust?.click();
+    await Promise.resolve();
+  });
+}
+
 describe('KV cache calculator shared views', () => {
   it('sends each disaggregated pool with its own parallelism', async () => {
     await mountAt(
@@ -225,6 +298,36 @@ describe('KV cache calculator shared views', () => {
     expect(container.textContent).toContain('Ignored "memFractionKind"');
     expect(memoryBodies).toHaveLength(1);
     expect(memoryBodies[0].memory_fraction_kind).toBe('of_free');
+  });
+
+  it('sends the backend and version a link names, for this session only', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&backend=sglang&backendVersion=0.5.0',
+    );
+    await calculate();
+
+    expect(memoryBodies).toHaveLength(1);
+    expect(memoryBodies[0]).toMatchObject({ backend: 'sglang', backend_version: '0.5.0' });
+    // The recipient's saved profile must still be theirs: a shared view is a
+    // session override, not a write-through into settings.
+    expect(settingsStore.saved()).toMatchObject({ inferenceBackend: 'vllm', backendVersion: '0.9.0' });
+  });
+
+  it('reports the settings backend instead of offering a second editor', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&backend=sglang&backendVersion=0.5.0',
+    );
+    await openAdjust();
+
+    // The backend pair is global in Settings. This page must not grow a second
+    // editor that would drift from it.
+    expect(container.querySelector('#kv-backend')).toBeNull();
+    expect(container.querySelector('#kv-backend-ver')).toBeNull();
+
+    expect(container.textContent).toContain('SGLang · 0.5.0');
+    const link = Array.from(container.querySelectorAll('a'))
+      .find(candidate => (candidate.textContent ?? '').includes('Change backend or version in Settings'));
+    expect(link?.getAttribute('href')).toBe('/settings#inference-backend');
   });
 
   it('selects the workload whose token total the link states', async () => {

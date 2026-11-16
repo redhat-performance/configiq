@@ -5,16 +5,11 @@ import { Button, Label, MenuToggle, Select, SelectList, SelectOption, Switch } f
 import { EyeIcon, EyeSlashIcon, CheckCircleIcon } from '@patternfly/react-icons';
 import { simulatorSupportsBackend, useSettings, type InferenceBackend, type Simulator } from '@/contexts/SettingsContext';
 import { getAppConfig } from '@/lib/app-config';
+import { backendDisplayLabel } from '@/lib/backend-labels';
 import { useCatalog } from '@/lib/hooks/useCatalog';
 import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import styles from './Settings.module.css';
-
-const BACKEND_LABELS: Record<string, string> = {
-  vllm: 'vLLM',
-  'tensorrt-llm': 'TensorRT-LLM',
-  sglang: 'SGLang',
-};
 
 export function Settings() {
   const {
@@ -235,7 +230,7 @@ export function Settings() {
         </div>
 
         {/* ── Inference backend ── */}
-        <div className={styles.section}>
+        <div className={styles.section} id="inference-backend">
           <div className={styles.sectionHead}>
             <div>
               <div className={styles.sectionTitle}>Inference backend</div>
@@ -263,7 +258,7 @@ export function Settings() {
                       value={b.id}
                       disabled={!simulatorSupportsBackend(simulator, b.id as InferenceBackend, support)}
                     >
-                      {BACKEND_LABELS[b.id] ?? b.id}
+                      {backendDisplayLabel(b.id)}
                     </option>
                   ))}
                 </select>

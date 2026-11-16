@@ -1,13 +1,13 @@
 'use client'
 
 import * as React from 'react'
-import { Alert, Button, Label, Spinner } from '@patternfly/react-core'
-import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon'
+import { Alert, Button, Spinner } from '@patternfly/react-core'
 import { formatBytes } from '@/lib/utils/format'
 import { useCountUp } from '@/app/predict/performanceHelpers'
 import { hasDefaultMemoryFractionForVersion, systemMemoryFraction, useCatalog } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
-import { useSettings, type InferenceBackend } from '@/contexts/SettingsContext'
+import { useSettings } from '@/contexts/SettingsContext'
+import { backendDisplayLabel } from '@/lib/backend-labels'
 import { useRememberDefaultModel } from '@/lib/hooks/useRememberedDefaults'
 import { getAppConfig } from '@/lib/app-config'
 import { DEFAULT_WORKLOAD, matchWorkloadPresetByTokens, workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets'
@@ -25,6 +25,7 @@ import { TourButton } from '@/components/help/TourButton'
 import { kvCacheLink, type KvCacheLinkValues, type MemoryFractionKind } from '@/lib/deep-links/pages'
 import { defineAccessors } from '@/lib/deep-links/shared-view'
 import { useSharedView } from '@/lib/deep-links/useSharedView'
+import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance'
 import { buildKvCachePayload, type KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
 import styles from './KvCacheCalc.module.css'
 
@@ -73,7 +74,9 @@ function invalidPhaseParallel(p: PhaseParallelInput): boolean {
 }
 
 export default function KvCacheCalc() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion: settingsBackendVersion, setDefaultSystem } = useSettings()
+  // The backend and version are global settings, not page inputs: this view
+  // estimates memory with whatever Settings resolves, and links it back there.
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, setDefaultSystem } = useSettings()
   const { modelOptions: catalogModels, gpuOptions: catalogGpus, modelSpecs, backendOptions, isLoading: catalogLoading } = useCatalog()
   const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
   const MODEL_OPTIONS = catalogModels
@@ -84,18 +87,14 @@ export default function KvCacheCalc() {
   const modelTouched = React.useRef(false)
   const [system, setSystem] = React.useState('')
   const [gpuReady, setGpuReady] = React.useState(false)
-  const [backend, setBackend] = React.useState(() => getAppConfig().defaultBackend)
-  const [backendVersion, setBackendVersion] = React.useState('')
 
-  // Initialise model, backend, and version from settings once context has loaded from localStorage
+  // Initialise the model from settings once context has loaded from localStorage.
   const fromSettings = React.useRef(false)
   React.useEffect(() => {
     if (!hydrated || fromSettings.current) return
     fromSettings.current = true
     setModel(settingsDefaultModel)
-    setBackend(inferenceBackend)
-    setBackendVersion(settingsBackendVersion)
-  }, [hydrated, settingsDefaultModel, inferenceBackend, settingsBackendVersion])
+  }, [hydrated, settingsDefaultModel])
 
   // Start from the system remembered across tools. A saved system the current
   // catalog cannot offer falls back to the first available one without
@@ -192,14 +191,13 @@ export default function KvCacheCalc() {
     markInputsDirty()
   }
 
-  // One row per link field: what this view exports and what an incoming link
-  // applies. The table is total over the contract, so a new parameter fails to
-  // compile until it is bound here.
+  // One row per link field this view owns: what it exports and what an incoming
+  // link applies. The table is total over the fields the page binds, so a new
+  // parameter fails to compile until it is bound here. The backend pair is
+  // provenance read from settings, handled by `useLinkProvenance` below.
   const linkFields = defineAccessors(kvCacheLink, {
     model: { read: () => model || undefined, write: setModel },
     system: { read: () => system || undefined, write: setSystem },
-    backend: { read: () => backend, write: setBackend },
-    backendVersion: { read: () => backendVersion || undefined, write: setBackendVersion },
     maxNumTokens: {
       read: () => maxNumTokens,
       write: (value) => {
@@ -298,10 +296,25 @@ export default function KvCacheCalc() {
       decodeTp: 1,
       decodePp: 1,
     } satisfies KvCacheLinkValues,
+    // The page always sends the backend and version Settings resolves, so a
+    // link records them even though no control here edits them.
+    provenance: {
+      backend: inferenceBackend,
+      backendVersion: backendVersion || undefined,
+    },
     // A retained result no longer matches the view the link just applied.
     onApplied: markInputsDirty,
   })
   const linkWarnings = shared.warnings
+
+  // The backend pair is provenance, not page state: apply a shared view's
+  // backend and version to this session only, exactly as the other tools do,
+  // so opening a link never rewrites saved settings. Declared after the shared
+  // view so the parsed values it reads already exist.
+  useLinkProvenance(
+    () => shared.parsed?.values ?? null,
+    hydrated && gpuReady && !catalogLoading,
+  )
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -309,7 +322,7 @@ export default function KvCacheCalc() {
   // the backend-level figure only describes the fleet's majority version.
   React.useEffect(() => {
     if (!hydrated || catalogLoading) return
-    const selectedBackend = backendOptions.find(option => option.id === backend)
+    const selectedBackend = backendOptions.find(option => option.id === inferenceBackend)
     if (!selectedBackend) return
 
     const fraction = systemMemoryFraction(selectedBackend, system)
@@ -325,12 +338,16 @@ export default function KvCacheCalc() {
     if (!memFractionKindUserEdited.current) {
       setMemFractionKind(selectedBackend.memoryFractionKind)
     }
-  }, [backend, backendOptions, catalogLoading, hydrated, system])
+  }, [inferenceBackend, backendOptions, catalogLoading, hydrated, system])
 
   const invalidMaxBatchSize = maxBatchSizeInput === '' || parseInt(maxBatchSizeInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
-  const selectedBackend = backendOptions.find(option => option.id === backend)
+  const selectedBackend = backendOptions.find(option => option.id === inferenceBackend)
+  const backendVersionLabel = backendVersion.trim()
+    || (selectedBackend?.defaultVersion
+      ? `simulator default (${selectedBackend.defaultVersion})`
+      : 'simulator default')
   const needsExplicitMemFraction = Boolean(
     backendVersion.trim() &&
     !memFractionValueUserEdited.current &&
@@ -428,7 +445,7 @@ export default function KvCacheCalc() {
     return buildKvCachePayload({
       model_path: model,
       system,
-      backend,
+      backend: inferenceBackend,
       backend_version: backendVersion.trim() || null,
       max_num_tokens: maxNumTokens,
       max_batch_size: maxBatchSize,
@@ -605,39 +622,43 @@ export default function KvCacheCalc() {
           <div className={styles.advancedBody} style={{ padding: 20 }}>
             {/* Serving config */}
             <div className={styles.advancedSectionLabel}>Serving config</div>
+            {/* The backend and version are edited in Settings; this view only
+                reports the pair it will send. */}
+            <div className={styles.servingBackendLine}>
+              Backend:{' '}
+              <span className={styles.servingBackendValue}>
+                {backendDisplayLabel(inferenceBackend)} · {backendVersionLabel}
+              </span>
+              {' · '}
+              <a href="/settings#inference-backend" className={styles.requestLink}>
+                Change backend or version in Settings →
+              </a>
+            </div>
             <div className={styles.advancedRow4}>
               <div className={styles.field}>
-                <label htmlFor="kv-backend" className={styles.fieldLabel}>Backend</label>
-                <select
-                  id="kv-backend"
-                  value={backend}
-                  onChange={e => {
-                    const nextBackend = e.target.value
-                    if (systemMemoryFraction(backendOptions.find(option => option.id === nextBackend), system) != null) {
-                      memFractionValueUserEdited.current = false
-                    }
-                    // A new backend brings its own default fraction kind.
-                    memFractionKindUserEdited.current = false
-                    setBackend(nextBackend)
-                    markInputsDirty()
-                  }}
-                  className={styles.gpuSelect}
-                >
-                  {backendOptions.map(option => (
-                    <option key={option.id} value={option.id}>{option.id}</option>
-                  ))}
-                </select>
+                <label htmlFor="kv-mem-val" className={styles.fieldLabel}>Memory fraction</label>
+                <input
+                  type="number"
+                  id="kv-mem-val"
+                  value={memFractionValueInput}
+                  onChange={e => handleMemFractionValueChange(e.target.value)}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  className={invalidMemFractionValue ? styles.paramInputInvalid : styles.numberInput}
+                />
               </div>
               <div className={styles.field}>
-                <label htmlFor="kv-backend-ver" className={styles.fieldLabel}>Backend version</label>
-                <input
-                  type="text"
-                  id="kv-backend-ver"
-                  value={backendVersion}
-                  onChange={e => { setBackendVersion(e.target.value); markInputsDirty(); }}
-                  placeholder={backendOptions.find(option => option.id === backend)?.defaultVersion ?? 'latest'}
-                  className={styles.numberInput}
-                />
+                <label htmlFor="kv-mem-kind" className={styles.fieldLabel}>Fraction kind</label>
+                <select
+                  id="kv-mem-kind"
+                  value={memFractionKind}
+                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value as MemoryFractionKind); markInputsDirty(); }}
+                  className={styles.gpuSelect}
+                >
+                  <option value="of_total">of_total</option>
+                  <option value="of_free">of_free</option>
+                </select>
               </div>
               <div className={styles.field}>
                 <label htmlFor="kv-tokens" className={styles.fieldLabel}>Max num tokens</label>
@@ -775,36 +796,6 @@ export default function KvCacheCalc() {
                 </div>
               </div>
             )}
-
-            {/* Memory */}
-            <div className={styles.advancedSectionLabel}>Memory</div>
-            <div className={styles.advancedRow2}>
-              <div className={styles.field}>
-                <label htmlFor="kv-mem-val" className={styles.fieldLabel}>Memory fraction</label>
-                <input
-                  type="number"
-                  id="kv-mem-val"
-                  value={memFractionValueInput}
-                  onChange={e => handleMemFractionValueChange(e.target.value)}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  className={invalidMemFractionValue ? styles.paramInputInvalid : styles.numberInput}
-                />
-              </div>
-              <div className={styles.field}>
-                <label htmlFor="kv-mem-kind" className={styles.fieldLabel}>Fraction kind</label>
-                <select
-                  id="kv-mem-kind"
-                  value={memFractionKind}
-                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value as MemoryFractionKind); markInputsDirty(); }}
-                  className={styles.gpuSelect}
-                >
-                  <option value="of_total">of_total</option>
-                  <option value="of_free">of_free</option>
-                </select>
-              </div>
-            </div>
           </div>
         </div>
       )}

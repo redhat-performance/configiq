@@ -39,6 +39,7 @@ import {
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
 import { simulatorDisplayLabel } from '@/lib/simulator-labels'
+import { backendDisplayLabel } from '@/lib/backend-labels'
 import {
   comparisonRequestsPerLoadUnit,
   measuredPoolTopology,
@@ -80,12 +81,6 @@ const EMPTY_OPTIONS: Record<BenchmarkFilterKey, string[]> = {
   accelerator: [], model: [], backend: [], backendVersion: [], isl: [], osl: [], tp: [],
 }
 const MAX_PREDICTION_LEVELS = 24
-
-const BACKEND_LABELS: Record<string, string> = {
-  vllm: 'vLLM',
-  'tensorrt-llm': 'TensorRT-LLM',
-  sglang: 'SGLang',
-}
 
 interface ResolutionResponse {
   status: 'ok' | 'failed'
@@ -159,7 +154,7 @@ const EMPTY_RESULTS: ComparisonResults = {
 function optionLabel(key: BenchmarkFilterKey, value: string): string {
   if (key === 'isl' || key === 'osl') return `${Number(value).toLocaleString('en-US')} tokens`
   if (key === 'tp') return `TP ${value}`
-  if (key === 'backend') return BACKEND_LABELS[value] ?? value
+  if (key === 'backend') return backendDisplayLabel(value)
   return value
 }
 
@@ -172,7 +167,7 @@ function optionLabel(key: BenchmarkFilterKey, value: string): string {
 function configurationSummary(option: ConfigurationOption): string {
   const { measurement_source, backend, backend_version, precision, kv_quantization } = option.values
   const engine = backend
-    ? [BACKEND_LABELS[backend] ?? backend, backend_version].filter(Boolean).join(' ')
+    ? [backendDisplayLabel(backend), backend_version].filter(Boolean).join(' ')
     : null
   const quantized = kv_quantization ? `KV ${kv_quantization}` : precision
   return [measurement_source, engine, quantized, `${option.rows} rows`].filter(Boolean).join(' · ')
@@ -350,7 +345,7 @@ function simulatorPlans({
       return plan('The catalog does not list this model for this simulator.')
     }
     const backend = support.backends.find(option => option.id === backendId) ?? null
-    if (!backend) return plan(`The catalog does not list ${BACKEND_LABELS[backendId] ?? backendId} for this simulator.`)
+    if (!backend) return plan(`The catalog does not list ${backendDisplayLabel(backendId)} for this simulator.`)
 
     const listedVersions = backendVersionsFor(backend, selectedSystem.systemId)
     const matchedVersion = measuredVersion
@@ -1139,7 +1134,7 @@ export default function BenchmarkComparisonPage() {
           <div>
             <span className={styles.settingsLabel}>Serving backend</span>
             <span className={styles.settingsValue}>
-              {BACKEND_LABELS[inferenceBackend] ?? inferenceBackend}
+              {backendDisplayLabel(inferenceBackend)}
               {' · '}
               {selectedVersionLabel}
               {measuredVersionDiffers

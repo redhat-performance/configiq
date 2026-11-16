@@ -134,14 +134,32 @@
   margin-bottom: 8px;
 }
 .advancedSectionLabel:first-child { margin-top: 4px; }
+
+/* The backend pair is read from Settings; this line reports it and links back. */
+.servingBackendLine {
+  font-size: 13px;
+  color: var(--t2);
+  margin-bottom: 12px;
+}
+.servingBackendValue {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--t2);
+}
+.requestLink {
+  color: var(--blue);
+}
+.requestLink:hover { text-decoration: underline; }
+
+.helperText {
+  font-size: 13px;
+  color: var(--t2);
+  margin-top: 4px;
+}
+
 .advancedRow4 {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 16px;
-}
-.advancedRow2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
 
@@ -161,8 +179,7 @@
   .advancedRow4 { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 600px) {
-  .advancedRow4,
-  .advancedRow2 { grid-template-columns: 1fr; }
+  .advancedRow4 { grid-template-columns: 1fr; }
 }
 .numberInput {
   width: 100%;

@@ -14,7 +14,8 @@ import type { LinkFieldMap, LinkValues, PageLink } from './common';
  * The table is total over the fields the page owns (`PageFieldKeys`): adding a
  * field to `defineLink` is a compile error until the page binds it. A page that
  * spreads `PROVENANCE_FIELDS` binds one fewer set, because `useLinkProvenance`
- * owns the trio.
+ * owns the trio. A page marked `withBackendProvenance` binds fewer by the
+ * backend pair, which it reads from settings instead of editing.
  */
 export interface LinkAccessor<T, V = unknown> {
   /** The value this view would put in a link, or undefined when it does not apply. */

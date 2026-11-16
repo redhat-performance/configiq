@@ -168,7 +168,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="workload"]',
         title: 'Check the workload',
         description:
-          'The strip shows the maximum tokens and batch size the estimate will use. Use Adjust to change backend, version, or parallelism.',
+          'The strip shows the maximum tokens and batch size the estimate will use. Use Adjust to change those, the memory fraction, or parallelism; the backend and version come from Settings.',
         position: 'bottom',
       },
       {

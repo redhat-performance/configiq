@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import {
+  INFERENCE_BACKENDS,
   MAX_ID_LENGTH,
   MAX_SEQUENCE_LENGTH,
   PROVENANCE_FIELDS,
   SERVING_MODES,
   defineLink,
+  withBackendProvenance,
   withProvenance,
   modelPath,
   nonNegativeInt,
@@ -68,14 +70,16 @@ export type MemoryFractionKind = (typeof MEMORY_FRACTION_KINDS)[number];
 /**
  * The KV cache calculator is AISimulate-only by contract, so its link carries
  * the backend but never a simulator: adding one would imply a choice the page
- * does not offer.
+ * does not offer. The backend pair is provenance read from settings and applied
+ * for the session, not a pair of controls the page edits.
  */
-export const kvCacheLink = defineLink('/kv-cache', {
+export const kvCacheLink = withBackendProvenance(defineLink('/kv-cache', {
   model: modelPath,
   system: systemId,
-  // The backend list comes from the catalog, so a link accepts any backend id
-  // rather than a fixed enum that would go stale as versions are added.
-  backend: text(MAX_ID_LENGTH),
+  // Provenance, applied for the session rather than edited here. The backend
+  // is the same closed set the other tools accept, so a link always names a
+  // value this build can hand to settings.
+  backend: z.enum(INFERENCE_BACKENDS),
   backendVersion: text(MAX_ID_LENGTH),
   maxNumTokens: positiveInt(MAX_SEQUENCE_LENGTH),
   maxBatchSize: positiveInt(1_000_000),
@@ -95,7 +99,7 @@ export const kvCacheLink = defineLink('/kv-cache', {
   decodeMoeEp: positiveInt(1024),
   memFractionKind: z.enum(MEMORY_FRACTION_KINDS),
   memFractionValue: z.coerce.number().min(0).max(1),
-});
+}));
 
 export const gpuExplorerLink = defineLink('/gpu-explorer', {
   preset: z.enum(['balanced', 'cost-efficiency', 'performance']),
