@@ -286,6 +286,8 @@ export default function KvCacheCalc() {
       decodeTp: 1,
       decodePp: 1,
     } satisfies KvCacheLinkValues,
+    // A retained result no longer matches the view the link just applied.
+    onApplied: markInputsDirty,
   })
   const linkWarnings = shared.warnings
 

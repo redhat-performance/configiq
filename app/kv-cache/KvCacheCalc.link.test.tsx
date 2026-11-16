@@ -73,12 +73,40 @@ beforeEach(() => {
     if (String(input) === '/api/memory' && init?.body) {
       memoryBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
     }
-    // A failure response stops the page before it renders results, which is all
-    // this test needs: the request body has already been captured.
+    // A completed result, in the shape the same-origin proxy returns, so tests
+    // can reach the rendered-result state as well as the request body.
     return {
       ok: true,
       status: 200,
-      json: async () => ({ status: 'failed', error: { message: 'test stop' } }),
+      json: async () => ({
+        requestId: 'test',
+        status: 'completed',
+        kvCache: { totalBytes: 1024, perTokenBytes: 16, totalTokens: 64 },
+        memoryBreakdown: {
+          weightsBytes: 512,
+          activationsBytes: 128,
+          runtimeOverheadBytes: 64,
+          commOverheadBytes: 0,
+        },
+        gpuCapacity: { totalBytes: 4096 },
+        metadata: {
+          simulator: 'aisimulate',
+          modelPath: 'Qwen/Qwen2.5-7B-Instruct',
+          backend: 'vllm',
+          backendVersion: '0.9.0',
+          system: 'h200_sxm',
+          maxNumTokens: 2048,
+          maxBatchSize: 128,
+          tpSize: 1,
+          ppSize: 1,
+          moeTpSize: null,
+          moeEpSize: null,
+          memoryFractionKind: 'of_free',
+          memoryFractionValue: 1,
+          source: 'test',
+          durationMs: 1,
+        },
+      }),
     } as unknown as Response;
   }));
   container = document.createElement('div');
@@ -138,6 +166,25 @@ describe('KV cache calculator shared views', () => {
       memory_fraction_kind: 'of_total',
       memory_fraction_value: 0.5,
     });
+  });
+
+  it('marks retained results stale when a second link changes the view', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&maxNumTokens=1024');
+    await calculate();
+    expect(container.textContent).not.toContain('Inputs have changed');
+
+    // Same tab, a new link: the visible results now describe the previous
+    // request, so the page must say they are stale rather than leaving them
+    // looking current.
+    const next = '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&maxNumTokens=2048';
+    window.history.replaceState({}, '', `/kv-cache${next}`);
+    navigation.search = next;
+    await act(async () => {
+      root.render(<KvCacheCalc />);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Inputs have changed');
   });
 
   it('takes the backend default when the link does not name a fraction', async () => {
