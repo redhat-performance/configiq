@@ -173,6 +173,13 @@ describe('numeric verifier magnitude notation', () => {
     expect(verifyNumbers('The price is $1.001M.', ['The price is $1,001,000.']).ok).toBe(true);
     expect(verifyNumbers('The corpus is 1.001 million tokens.', ['The corpus is 1,001,000 tokens.']).ok).toBe(true);
   });
+
+  it('compares scaled and unscaled values at the same precision', () => {
+    expect(verifyNumbers(
+      'Throughput is 1.234567890123456k tokens/s.',
+      ['Throughput is 1234.567890123456 tokens/s.'],
+    ).ok).toBe(true);
+  });
 });
 
 describe('numeric verifier rate units', () => {

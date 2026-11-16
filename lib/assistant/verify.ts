@@ -129,12 +129,19 @@ function magnitudeSuffix(attached: string): number | undefined {
 }
 
 /**
- * Scale a value without binary rounding noise. `1.001 * 1e6` is
- * 1000999.9999999999 in floating point, and values are looked up by exact
- * equality, so the answer would miss evidence that states `1,001,000`.
+ * Round a value to the precision claims are compared at. Exact keys can
+ * otherwise disagree with themselves: `1.001 * 1e6` is 1000999.9999999999 in
+ * floating point, and a long decimal literal carries its own representation
+ * noise. Fifteen significant digits keeps every quantity in this domain exact
+ * while making scaled and unscaled views of one number identical.
  */
+function normalizeValue(value: number): number {
+  return Number(value.toPrecision(15));
+}
+
+/** Scale a value without binary noise, then normalise it for comparison. */
 function scale(value: number, factor: number): number {
-  return Number((value * factor).toPrecision(15));
+  return normalizeValue(value * factor);
 }
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s)]+/gi;
@@ -189,7 +196,7 @@ function claimsIn(text: string): NumberClaim[] {
   while ((match = pattern.exec(text)) !== null) {
     const [token, prefix, attached] = match;
     const digits = token.match(NUMBER_VALUE)?.[0] ?? '';
-    let value = Number(digits.replace(/,/g, ''));
+    let value = normalizeValue(Number(digits.replace(/,/g, '')));
     if (!Number.isFinite(value)) continue;
 
     // `128k`, `1.5M`, and `70B` mean a different number, not 128, 1.5, or 70.
