@@ -9,8 +9,6 @@ import {
   Label,
   Accordion, AccordionItem, AccordionToggle, AccordionContent,
 } from '@patternfly/react-core';
-import StarIcon from '@patternfly/react-icons/dist/esm/icons/star-icon';
-import OutlinedStarIcon from '@patternfly/react-icons/dist/esm/icons/outlined-star-icon';
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
@@ -340,7 +338,6 @@ export default function Performance() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectableGpus]);
 
-  const [fav, setFav] = React.useState(false);
   const [expanded, setExpanded] = React.useState<string[]>(['perf']);
 
   // 🧪 TEST: Inference config engine integration
@@ -1726,13 +1723,8 @@ export default function Performance() {
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
-            <Button
-              variant="plain"
-              aria-label={fav ? 'Remove from favorites' : 'Add to favorites'}
-              onClick={() => setFav((f) => !f)}
-              icon={fav ? <StarIcon /> : <OutlinedStarIcon />}
-            />
           </div>
         </div>
       </div>
@@ -1784,7 +1776,6 @@ export default function Performance() {
         )}
 
         <div data-tour="calculate" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, marginTop: 16 }}>
-          <CopyLinkButton getUrl={shared.build} />
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}

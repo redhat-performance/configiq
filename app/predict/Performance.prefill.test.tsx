@@ -327,6 +327,19 @@ async function mountAt(search: string) {
 }
 
 describe('performance page widget handoff', () => {
+  it('offers the shared link in the header, not beside Calculate', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const copy = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Copy link');
+    expect(copy).toBeDefined();
+    // Every other tool page puts the link beside the tour button in the header.
+    // Beside Calculate it read as part of the request rather than the view.
+    expect(copy!.closest('[data-tour="calculate"]')).toBeNull();
+    const header = container.querySelector('h1')?.parentElement?.parentElement;
+    expect(header?.contains(copy!)).toBe(true);
+  });
+
   it('hydrates both destination controls without settings overwriting the model', async () => {
     const { model, gpu } = await mountAt(
       '?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm',
