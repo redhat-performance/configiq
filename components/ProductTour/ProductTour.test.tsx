@@ -17,6 +17,10 @@ const tourStep = (target: string, title: string, position?: TourStep['position']
 
 const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]')
 const title = () => document.querySelector('#product-tour-title')?.textContent ?? null
+/** The "N of M" counter, or null when the tooltip is not showing one. */
+const progress = () => (dialog()?.textContent ?? '').match(/\d+ of \d+/)?.[0] ?? null
+const action = (label: string) =>
+  Array.from(dialog()?.querySelectorAll('button') ?? []).find(candidate => candidate.textContent === label)
 
 function addTarget(id: string, rect: Partial<DOMRect> = {}): HTMLElement {
   const element = document.createElement('div')
@@ -138,5 +142,70 @@ describe('ProductTour', () => {
     expect(tooltip!.style.top).toBe('556px')
     expect(tooltip!.style.left).toBe('652px')
     expect(tooltip!.style.visibility).toBe('visible')
+  })
+
+  it('counts only the steps whose targets are on screen', async () => {
+    // The recommend tour ends on the result tiles, which do not exist before a
+    // calculation. Promising five steps and stopping at four reads as a broken
+    // tour rather than a skipped one.
+    addTarget('tour-target-model')
+    addTarget('tour-target-goal')
+    await renderTour(
+      [
+        tourStep('#tour-target-model', 'Model step'),
+        tourStep('#tour-target-goal', 'Goal step'),
+        tourStep('#tour-target-missing', 'Results step'),
+      ],
+      vi.fn(),
+    )
+
+    expect(title()).toBe('Model step')
+    expect(progress()).toBe('1 of 2')
+  })
+
+  it('marks the last step it shows as the last one', async () => {
+    addTarget('tour-target-model')
+    addTarget('tour-target-goal')
+    await renderTour(
+      [
+        tourStep('#tour-target-model', 'Model step'),
+        tourStep('#tour-target-goal', 'Goal step'),
+        tourStep('#tour-target-missing', 'Results step'),
+      ],
+      vi.fn(),
+    )
+
+    await act(async () => action('Next')!.click())
+
+    expect(title()).toBe('Goal step')
+    expect(progress()).toBe('2 of 2')
+    expect(action('Got it')).toBeDefined()
+  })
+
+  it('numbers a middle skip so the end matches the count', async () => {
+    // The predict tour points at result tiles between "Calculate" and the
+    // assumptions, so on a first visit the fourth of five steps has no target.
+    addTarget('tour-target-model')
+    addTarget('tour-target-goal')
+    addTarget('tour-target-calculate')
+    await renderTour(
+      [
+        tourStep('#tour-target-model', 'Model step'),
+        tourStep('#tour-target-goal', 'Goal step'),
+        tourStep('#tour-target-missing', 'Results step'),
+        tourStep('#tour-target-calculate', 'Calculate step'),
+      ],
+      vi.fn(),
+    )
+
+    expect(progress()).toBe('1 of 3')
+    await act(async () => action('Next')!.click())
+    expect(progress()).toBe('2 of 3')
+    expect(action('Next')).toBeDefined()
+    await act(async () => action('Next')!.click())
+
+    expect(title()).toBe('Calculate step')
+    expect(progress()).toBe('3 of 3')
+    expect(action('Got it')).toBeDefined()
   })
 })

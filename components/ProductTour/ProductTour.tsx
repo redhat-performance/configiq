@@ -347,6 +347,15 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
     .slice(0, currentStep)
     .some((earlier) => queryTarget(earlier.target) !== null);
   const isLastStep = nextAvailableStep(steps, currentStep + 1) === -1;
+  // The tour skips a step whose target is not in the DOM, so a page opened
+  // before its results exist offers fewer steps than the contract names.
+  // Number the steps that are on screen: "3 of 4" that ends at 3 reads as a
+  // broken tour, not a skipped step.
+  const shownSteps = steps
+    .map((candidate, index) => (queryTarget(candidate.target) ? index : -1))
+    .filter((index) => index >= 0);
+  const shownCount = shownSteps.length === 0 ? steps.length : shownSteps.length;
+  const progress = Math.max(shownSteps.indexOf(currentStep) + 1, 1);
 
   const tourContent = (
     <>
@@ -387,7 +396,7 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
             {step.title}
           </h3>
           <span className={styles.tooltipProgress}>
-            {currentStep + 1} of {steps.length}
+            {progress} of {shownCount}
           </span>
         </div>
         <p id={descriptionId} className={styles.tooltipDescription}>
@@ -395,8 +404,8 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
         </p>
 
         <div className={styles.progressDots} aria-hidden="true">
-          {steps.map((_, i) => (
-            <div key={i} className={`${styles.dot} ${i === currentStep ? styles.dotActive : ''}`} />
+          {shownSteps.map((index) => (
+            <div key={index} className={`${styles.dot} ${index === currentStep ? styles.dotActive : ''}`} />
           ))}
         </div>
 
