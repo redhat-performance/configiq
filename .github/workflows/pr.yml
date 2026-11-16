@@ -1,0 +1,44 @@
+name: CI
+
+# Checks on the pull request itself — its description today, more later — as
+# opposed to the code in it, which ci.yml covers. They live in one check named
+# "Pre-merge - check contracts, templates" so this is the place to add the next
+# one, as another step here, rather than another workflow in the checks list.
+#
+# A separate workflow from ci.yml because this has to run on `edited`: fixing a
+# description should turn the check green without another push, and the default
+# pull_request activity types do not include edits. Adding `edited` to ci.yml
+# would re-run the frontend build and three Python suites for a prose change.
+#
+# The template is only a starting point that GitHub renders into a new
+# description; nothing verifies the author kept it. CodeRabbit reviews the
+# description too, but as a row in its Walkthrough comment rather than a check
+# run, so an incomplete description left the checks list green. This check is
+# that verdict, in the place reviewers look for it.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pre-merge:
+    name: Pre-merge - check contracts, templates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+
+      # The body goes through the environment rather than a run: expression so
+      # markdown can never be read as shell.
+      - name: Description follows the template
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/check-pr-description.mjs
