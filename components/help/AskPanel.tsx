@@ -218,8 +218,8 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
           {status === 'asking' ? 'Asking…' : 'Ask'}
         </Button>
         <span className={styles.hint}>
-          Explains the docs and looks up read-only facts. It never runs sizing;
-          links open pre-filled so you can calculate.
+          Explains the docs. It never runs sizing; links open the right tool so
+          you can calculate.
         </span>
       </div>
 
@@ -227,7 +227,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
         <ul className={styles.progress} aria-live="polite">
           <li className={styles.progressRow}>
             <Spinner size="sm" aria-label="Reading documentation" />
-            <span>Reading documentation and catalog…</span>
+            <span>Reading documentation…</span>
           </li>
           {progress.map((line) => (
             <li key={line.id} className={styles.progressRow}>

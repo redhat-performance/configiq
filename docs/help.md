@@ -16,25 +16,29 @@ The controls on the page you are on are listed before you type, and a matching
 control is labelled as a page result rather than a documentation result.
 
 It does not index the model or GPU catalog. Those are live facts owned by the
-API, and copying them into a search index would let the answer go stale. Ask
-about a specific model or GPU in the question box instead, where the answer is
-read from the catalog at the time you ask.
+API, and copying them into a search index would let the answer go stale. Read
+them where they are shown: the GPU explorer for hardware, or the tool you are
+already using for the models and systems it offers.
 
 A control result opens the page it lives on. When that control has a
 documentation section, a **Docs** link beside it opens the explanation directly.
 
 ## Ask
 
-The question box explains the documentation. It can also read a small set of
-read-only facts: the GPU, model, backend, and network catalogs, current pricing
-offers, and a memory estimate for one model on one system.
+The question box explains the documentation: what a page is for, what a control
+changes, and what a term means. It reads the same sections as search, so it
+answers from the documentation this site ships with rather than from the live
+API.
 
-It never runs sizing. A sizing question ends in a link to the right tool with
-the values you named already filled in, so you press **Calculate** (or
-**Compare**) yourself and can see the result in the full page. The answer cites
-the documentation sections it used. If a number cannot be traced to a source,
-the panel shows the sources without the prose rather than presenting an
-unverified value.
+It does not read the model or GPU catalog, current pricing offers, or the
+results of a calculation. For a specific model, GPU, or configuration, open the
+page that shows it. It also never runs sizing: a sizing question ends with a
+link to the right tool, and the link carries the simulator and backend version
+the page was showing, not the values from your question. You enter those
+yourself and press **Calculate** (or **Compare**) so the result appears in the
+full page. The answer cites the documentation sections it used. If a number
+cannot be traced to a source, the panel shows the sources without the prose
+rather than presenting an unverified value.
 
 Ask is optional and can be switched off by the deployment. When it is off, the
 button, search, and tours still work.
@@ -70,3 +74,9 @@ Self-hosted deployments opt in to the question box with:
 
 Without all three the assistant reports that it is unavailable. Search, tours,
 and the documentation are build-time and local, so they need no configuration.
+
+The assistant also offers the model read-only catalog, pricing, and memory
+lookups as tools. An endpoint that does not support tool calling ignores them,
+and the answer then comes from the documentation alone; either way, a number in
+the answer is checked against a documentation section or a tool result before
+the prose is shown.
