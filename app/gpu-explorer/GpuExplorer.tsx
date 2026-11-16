@@ -3,7 +3,7 @@
 // Cost-related axes (hardware cost) and the cost-efficiency bubble-size metric are
 // driven by the costings API via useCostings. They follow hardware-cost
 // availability rather than the experimental costings toggle, the same way Hybrid
-// Savings and Sources do. Pricing source is applied from the Sources page selection.
+// Savings and Cost sources do. Pricing source is applied from the Cost sources page selection.
 
 import * as React from 'react';
 import {
@@ -360,7 +360,7 @@ export default function GpuExplorerPage() {
                     </Text>
                     <Text component="p" style={{ display: 'block', color: '#6a6e73', fontSize: '13px', lineHeight: '1.6' }}>
                       {hasHardwareCosts
-                        ? <><strong>Hardware cost</strong> axes and cost efficiency use live data from the costings API. Choose a pricing source on the Sources page.</>
+                        ? <><strong>Hardware cost</strong> axes and cost efficiency use live data from the costings API. Choose a pricing source on the Cost sources page.</>
                         : <><strong>Hardware cost and cost efficiency</strong> axes appear when the costings API reports hardware costs for the GPUs shown.</>}
                     </Text>
                   </CardBody>

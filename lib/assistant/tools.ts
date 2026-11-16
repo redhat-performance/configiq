@@ -318,7 +318,7 @@ const pricingOffers: ToolDefinition = {
         summary: 'No offer matched the filter',
         evidence: ['No pricing offer matched that filter. Prices are unavailable rather than zero.'],
         data: [],
-        link: { label: 'Open Sources', href: '/sources' },
+        link: { label: 'Open Cost sources', href: '/sources' },
       };
     }
 
@@ -332,7 +332,7 @@ const pricingOffers: ToolDefinition = {
           }.`,
       ),
       data: matched,
-      link: { label: 'Open Sources', href: '/sources' },
+      link: { label: 'Open Cost sources', href: '/sources' },
     };
   },
 };

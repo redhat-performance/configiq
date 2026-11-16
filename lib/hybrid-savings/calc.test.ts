@@ -157,7 +157,7 @@ describe('hybrid savings calculations', () => {
     expect(result.breakdown.every(item => Number.isFinite(item.monthlyCost))).toBe(true)
   })
 
-  it('uses the editable rented infrastructure allowance from Sources', () => {
+  it('uses the editable rented infrastructure allowance from Cost sources', () => {
     const priced = bestRentedAtVolume(
       workload,
       [candidate],

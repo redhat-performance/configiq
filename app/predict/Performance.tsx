@@ -2163,7 +2163,7 @@ export default function Performance() {
             fontSize: '13px', fontFamily: 'var(--font-mono)', color: '#54585c',
           }}>
             <DollarSignIcon /> Cloud rate unavailable for this GPU — pick a
-            provider on the Sources page or choose a GPU with published rates to
+            provider on the Cost sources page or choose a GPU with published rates to
             see the cost comparison.
           </div>
         )}

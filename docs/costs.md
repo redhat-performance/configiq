@@ -23,7 +23,7 @@ rounding created.
 
 ## Planning assumptions
 
-Assumptions are edited on the Sources page under cost assumptions. They are
+Assumptions are edited on the Cost sources page under cost assumptions. They are
 stored in this browser, not on the server, and they apply to this user's
 calculations only. Defaults are defined in `lib/costing-assumptions.ts`.
 
@@ -35,7 +35,7 @@ Changing them changes the comparison; they are not hidden constants.
 
 Hosted model prices and shared GPU prices come from the aicostings service,
 through selectable pricing feeds. The selected feed is named on the result, and
-the Sources page records where each figure came from.
+the Cost sources page records where each figure came from.
 
 Pricing is cost data. It never changes a sized GPU count: the topology comes
 from AISimulators, and the price is applied to it.

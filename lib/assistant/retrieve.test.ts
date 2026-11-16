@@ -13,7 +13,7 @@ const DOCS: RetrievalDoc[] = [
     id: 'docs/costs#planning-assumptions',
     title: 'Planning assumptions',
     section: 'Costs',
-    body: 'Hardware life, electricity price, and PUE change the purchased-hardware comparison. Edit them on the Sources page.',
+    body: 'Hardware life, electricity price, and PUE change the purchased-hardware comparison. Edit them on the Cost sources page.',
     url: '/docs/costs#planning-assumptions',
   },
   {

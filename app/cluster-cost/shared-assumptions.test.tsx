@@ -39,7 +39,7 @@ describe('Cluster Cost shared planning integration', () => {
     expect(inputFor('Staff loaded').value).toBe('200000')
     expect(inputFor('Depreciation').readOnly).toBe(false)
   })
-  it('uses saved Sources values with unit conversions and links back to their editor', async () => {
+  it('uses saved Cost sources values with unit conversions and links back to their editor', async () => {
     localStorage.setItem(COST_ASSUMPTIONS_STORAGE_KEY, JSON.stringify({
       hardwareLifeYears: 6, electricityPerKwh: 0.2, pue: 1.5,
       annualMaintenancePct: 5, loadedMonthlyCostPerFte: 10000,

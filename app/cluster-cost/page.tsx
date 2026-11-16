@@ -1270,7 +1270,7 @@ export default function ClusterCostPage() {
               ))}
               <div className={styles.rateGroup}>🖥 On-prem other costs</div>
               <p style={{ padding: '0 12px', fontSize: 13 }}>
-                Shared planning overrides are managed in <Link href="/sources#cost-assumptions">Sources</Link>.
+                Shared planning overrides are managed in <Link href="/sources#cost-assumptions">Cost sources</Link>.
               </p>
               {ONPREM_RATES.map(([k, lbl, unit]) => (
                 <div key={k} className={styles.rateRow}>
@@ -1280,11 +1280,11 @@ export default function ClusterCostPage() {
                     type="number"
                     value={(rates as any).onprem[k]}
                     readOnly={isSharedOverride(k)}
-                    title={isSharedOverride(k) ? 'Saved override — edit in Sources' : undefined}
+                    title={isSharedOverride(k) ? 'Saved override — edit in Cost sources' : undefined}
                     onChange={e => upRate('onprem', k, parseFloat(e.target.value) || 0)}
                   />
                   <span className={styles.rateU}>{unit}</span>
-                  {isSharedOverride(k) ? <Link className={styles.rateRst} href="/sources#cost-assumptions">Sources</Link> : isOv('onprem', k) && (
+                  {isSharedOverride(k) ? <Link className={styles.rateRst} href="/sources#cost-assumptions">Cost sources</Link> : isOv('onprem', k) && (
                     <button className={styles.rateRst} onClick={() => rstRate('onprem', k)}>
                       reset
                     </button>

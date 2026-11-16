@@ -259,7 +259,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             />
             <NavItemWithIcon
               icon={DatabaseIcon}
-              label="Sources"
+              label="Cost sources"
               href="/sources"
               isActive={pathname === "/sources"}
             />
