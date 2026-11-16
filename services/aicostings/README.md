@@ -201,7 +201,7 @@ frontend. An older service's HTTP 404 produces an actionable upgrade message,
 not a local-data fallback. Hosted pricing and other tools keep their existing
 API paths. Hybrid Savings fetches offers separately and reuses sizing results
 when only prices change. Its former effective $500/month rental supporting-
-infrastructure allowance is now an explicit editable Sources assumption;
+infrastructure allowance is now an explicit editable Cost sources assumption;
 it is not added to the cloud provider's list rate. Cluster Cost defaults and
 Routing Economics are unchanged.
 

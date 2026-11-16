@@ -46,7 +46,7 @@ export function AppliedCostAssumptions({ assumptions, workload, rented, owned }:
   const inputs = (keys: CostAssumptionKey[]) => keys.map(key => <Row key={key} inputKey={key}
     label={shortLabels[key] ?? fields.get(key)!.label.replace(/\s*\([^)]*\)/g, '')}>
     {inputValue(key, assumptions[key])}
-    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>Planning allowance from Sources; not a provider charge.</span>}
+    {key === 'rentedDirectInfrastructureMonthly' && <span className={styles.appliedValueNote}>Planning allowance from Cost sources; not a provider charge.</span>}
     {key === 'cloudRuntimeBufferPct' && effectiveMode !== 'scale-to-zero' && <span className={styles.appliedValueNote}>Not used in this billing mode.</span>}
   </Row>)
 

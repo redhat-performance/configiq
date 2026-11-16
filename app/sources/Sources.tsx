@@ -206,7 +206,7 @@ export default function Sources() {
   return (
     <div className={styles.page}>
       <div className={styles.header}>
-        <h1 className={styles.pageTitle}>Sources</h1>
+        <h1 className={styles.pageTitle}>Cost sources</h1>
         <p className={styles.subtitle}>
           Pricing data source status, cloud provider preference, and on-prem cost profiles.
         </p>

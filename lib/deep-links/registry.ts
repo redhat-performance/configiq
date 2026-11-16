@@ -105,7 +105,7 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
   },
   {
     path: '/sources',
-    name: 'Sources and assumptions',
+    name: 'Cost sources and assumptions',
     sharedView: {
       kind: 'none',
       reason: 'it edits the reader\'s own saved assumptions, and a link never carries those',

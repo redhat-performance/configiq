@@ -1805,7 +1805,7 @@ export default function Sizing() {
           {costingsEnabled && monthlyCost == null && (
             <div className={styles.card} style={{ marginBottom: 24, fontSize: '13px', color: '#54585c' }}>
               <DollarSignIcon /> Cloud rate and hardware cost unavailable for this GPU —
-              pick a provider on the Sources page or choose a GPU with published rates
+              pick a provider on the Cost sources page or choose a GPU with published rates
               to see the estimated monthly cost.
             </div>
           )}

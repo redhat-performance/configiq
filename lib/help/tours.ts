@@ -259,7 +259,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="assumptions"]',
         title: 'Check the planning assumptions',
         description:
-          'This strip summarises request size, processing hours, and billing mode. Cost assumptions such as hardware life and power are edited on the Sources page.',
+          'This strip summarises request size, processing hours, and billing mode. Cost assumptions such as hardware life and power are edited on the Cost sources page.',
         position: 'bottom',
       },
       {

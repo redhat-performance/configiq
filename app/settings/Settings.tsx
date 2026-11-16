@@ -337,7 +337,7 @@ export function Settings() {
                 </span>
               </div>
               <div className={styles.sectionDesc}>
-                Experimental cluster-cost and routing-economics models. Hybrid savings, GPU explorer cost axes, and Sources are always available.
+                Experimental cluster-cost and routing-economics models. Hybrid savings, GPU explorer cost axes, and Cost sources are always available.
               </div>
             </div>
             {costingsSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}

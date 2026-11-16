@@ -45,22 +45,22 @@ describe('Applied cost inputs', () => {
     expect([...host.querySelectorAll('h4')].map(heading => heading.textContent)).toEqual(['Hosted API', 'Rented infrastructure', 'Purchased hardware'])
     expect(host.querySelector('input, select, button')).toBeNull()
   })
-  it('shows the Sources allowance without repeating selected prices on the flip cards', async () => {
+  it('shows the Cost sources allowance without repeating selected prices on the flip cards', async () => {
     await render()
-    expect(value('Supporting infrastructure')).toContain('$500.00 / monthPlanning allowance from Sources')
+    expect(value('Supporting infrastructure')).toContain('$500.00 / monthPlanning allowance from Cost sources')
     expect(value('Supporting infrastructure')).not.toContain('1,800')
     expect(value('Compute rate')).toBeUndefined()
     expect(value('Complete server price')).toBeUndefined()
     expect(value('Catalogue installation / server')).toContain('$2,500.00')
     await render({ ...assumptions, rentedDirectInfrastructureMonthly: 0 })
-    expect(value('Supporting infrastructure')).toContain('$0.00 / monthPlanning allowance from Sources')
+    expect(value('Supporting infrastructure')).toContain('$0.00 / monthPlanning allowance from Cost sources')
   })
-  it('updates effective allowances and Sources inputs when selections change', async () => {
+  it('updates effective allowances and Cost sources inputs when selections change', async () => {
     await render({ ...assumptions, loadedMonthlyCostPerFte: 10000, ownedInstallationPerServer: 750 },
       { ...candidate, purchaseInstallationPerReplica: 4200 })
     expect(value('Staffing rate / FTE')).toBe('$10,000.00 / month')
     expect(value('Additional installation / server')).toBe('$750.00')
-    expect(value('Supporting infrastructure')).toContain('$500.00 / monthPlanning allowance from Sources; not a provider charge.')
+    expect(value('Supporting infrastructure')).toContain('$500.00 / monthPlanning allowance from Cost sources; not a provider charge.')
     expect(value('Catalogue installation / server')).toBe('$4,200.00')
   })
   it('distinguishes capacity-block billing and unused runtime buffer in marginal view', async () => {
@@ -73,7 +73,7 @@ describe('Applied cost inputs', () => {
     await render(assumptions, null)
     expect(value('Catalogue installation / server')).toBe('Available after sizing')
     expect(value('GPU power / GPU')).toBe('Available after sizing')
-    expect(value('Supporting infrastructure')).toContain('Planning allowance from Sources; not a provider charge.')
+    expect(value('Supporting infrastructure')).toContain('Planning allowance from Cost sources; not a provider charge.')
   })
   it('groups purchased inputs into hardware, power and facilities, then people and setup', async () => {
     await render()

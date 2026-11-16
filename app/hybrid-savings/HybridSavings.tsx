@@ -303,8 +303,8 @@ export default function HybridSavings() {
   const costingInputsStale = costings.modelsStale || staleCostingSources.length > 0 || infrastructure.stale ||
     infrastructureStates.some(source => source.state === 'stale') ||
     infrastructure.rented.some(offer => offer.stale) || infrastructure.purchased.some(offer => offer.stale)
-  const freshnessSummary = costingInputsStale ? 'Stale · check Sources'
-    : infrastructure.error || infrastructureStates.some(source => source.state === 'unavailable') ? 'Some sources unavailable · check Sources'
+  const freshnessSummary = costingInputsStale ? 'Stale · check Cost sources'
+    : infrastructure.error || infrastructureStates.some(source => source.state === 'unavailable') ? 'Some sources unavailable · check Cost sources'
       : infrastructureStates.some(source => source.state === 'unconfigured') ? 'Some collectors unconfigured · curated estimates may apply'
         : infrastructureStates.length === 0 ? 'Infrastructure source status unavailable' : 'No stale feed reported'
 
@@ -720,7 +720,7 @@ export default function HybridSavings() {
 
       {(catalogError || costings.error) && (
         <Alert title="Some shared data could not be loaded" variant="warning" isInline>
-          {catalogError ?? costings.error}. Refresh the page or check the Sources page before using the result.
+          {catalogError ?? costings.error}. Refresh the page or check the Cost sources page before using the result.
         </Alert>
       )}
       {(infrastructure.error || infrastructure.rejectedRecords > 0) && <Alert title="Infrastructure pricing needs attention" variant="warning" isInline>
@@ -976,7 +976,7 @@ export default function HybridSavings() {
             isExpanded={calculationDetailsOpen} onToggle={setCalculationDetailsOpen}
             toggleId="hybrid-calculation-details-toggle" contentId="hybrid-calculation-details"
           >Data and assumptions</ExpandableSectionToggle>
-          <Link className={styles.assumptionsLink} href="/sources#cost-assumptions">Edit cost assumptions in Sources</Link>
+          <Link className={styles.assumptionsLink} href="/sources#cost-assumptions">Edit cost assumptions in Cost sources</Link>
         </div>
         <ExpandableSection isDetached isExpanded={calculationDetailsOpen}
           toggleId="hybrid-calculation-details-toggle" contentId="hybrid-calculation-details">

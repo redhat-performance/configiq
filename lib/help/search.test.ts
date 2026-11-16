@@ -28,7 +28,7 @@ const docs: DocsSearchEntry[] = [
     id: 'docs/overview#cost-assumptions',
     title: 'Overview',
     section: 'Overview',
-    body: 'Cost assumptions are edited on the Sources page.',
+    body: 'Cost assumptions are edited on the Cost sources page.',
     url: '/docs/overview#cost-assumptions',
   },
 ];

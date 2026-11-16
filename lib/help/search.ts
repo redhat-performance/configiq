@@ -76,7 +76,7 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/cluster-cost': 'Cluster cost',
   '/routing': 'Routing economics',
   '/settings': 'Settings',
-  '/sources': 'Sources',
+  '/sources': 'Cost sources',
   '/docs': 'Documentation',
 };
 

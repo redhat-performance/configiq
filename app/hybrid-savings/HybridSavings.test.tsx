@@ -303,7 +303,7 @@ describe('Hybrid page composition', () => {
   })
 
   it.each([
-    ['stale', 'Stale · check Sources'], ['unavailable', 'Some sources unavailable'],
+    ['stale', 'Stale · check Cost sources'], ['unavailable', 'Some sources unavailable'],
     ['unconfigured', 'Some collectors unconfigured'],
   ] as const)('includes %s backend source state even when no individual offer is stale', async (state, message) => {
     vi.mocked(useInfrastructureOffers).mockReturnValue({ ...TEST_OFFERS, isLoading: false, error: null, stale: false,
@@ -767,7 +767,7 @@ describe('Hybrid page composition', () => {
     expect(host.textContent).not.toContain('AISimulators sizing is estimated')
     expect(host.textContent).toContain('Data and assumptions')
     expect(host.textContent).not.toContain('Advanced cost assumptions')
-    expect(host.querySelector('a[href="/sources#cost-assumptions"]')!.textContent).toBe('Edit cost assumptions in Sources')
+    expect(host.querySelector('a[href="/sources#cost-assumptions"]')!.textContent).toBe('Edit cost assumptions in Cost sources')
     expect(host.querySelector('#hardware-life')).toBeNull()
     await click('Calculate')
     for (const removedText of [
@@ -783,7 +783,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector('a[href="/sources#cost-assumptions"]')).not.toBeNull()
   })
 
-  it('uses Sources edits after navigation and updates all costs and chart data without a new sizing run', async () => {
+  it('uses Cost sources edits after navigation and updates all costs and chart data without a new sizing run', async () => {
     await act(async () => root.render(<CostAssumptionsProvider><CostAssumptionsEditor /></CostAssumptionsProvider>))
     await click('Shared planning inputs')
     await editNumber('cost-assumption-loadedMonthlyCostPerFte', '10000')
@@ -809,7 +809,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#cost-assumption-loadedMonthlyCostPerFte')!.value).toBe('20000')
   })
 
-  it('keeps the Sources link independent and visible beside the collapsed calculation details', async () => {
+  it('keeps the Cost sources link independent and visible beside the collapsed calculation details', async () => {
     await render()
     const sizingCalls = vi.mocked(readRecommendStream).mock.calls.length
     const toggle = host.querySelector<HTMLButtonElement>('#hybrid-calculation-details-toggle')!
@@ -860,7 +860,7 @@ describe('Hybrid page composition', () => {
     expect(sections[2].textContent).toContain('150M output tokens/month')
     expect(sections[5].textContent).toContain('2 models · 1 GPU systems')
     expect(sections[5].textContent).toContain('Validate the selected workload and commercial terms')
-    expect(sections[4].textContent).toContain('Planning allowance from Sources; not a provider charge.')
+    expect(sections[4].textContent).toContain('Planning allowance from Cost sources; not a provider charge.')
     expect(sections[4].textContent).not.toContain('Complete server price')
     expect(host.querySelectorAll('#hybrid-calculation-details button, #hybrid-calculation-details summary')).toHaveLength(0)
     expect([...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)).toEqual(costs)
