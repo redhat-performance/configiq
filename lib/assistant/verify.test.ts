@@ -82,6 +82,15 @@ describe('numeric verifier units', () => {
     expect(result.unsupported).toEqual(['$9.99']);
   });
 
+  it('keeps a cent amount a plain currency price', () => {
+    expect(verifyNumbers('The rate is 3 cents per hour.', ['The rate is 3 cents.']).ok).toBe(true);
+  });
+
+  it('does not scan past an attached unit that ends a sentence', () => {
+    expect(verifyNumbers('The GPU has 8GB. Million requests are processed.', ['The GPU has 8GB.']).ok).toBe(true);
+    expect(verifyNumbers('The GPU has 8GB. Per second, one request completes.', ['The GPU has 8GB.']).ok).toBe(true);
+  });
+
   it('rejects a claim whose unit contradicts the evidence', () => {
     const result = verifyNumbers('The default batch is 128 GPUs.', ['The default batch is 128 tokens.']);
     expect(result.ok).toBe(false);
@@ -112,5 +121,109 @@ describe('numeric verifier units', () => {
 
   it('accepts a claim with no unit when the evidence attaches one', () => {
     expect(verifyNumbers('The page default is 2048.', EVIDENCE).ok).toBe(true);
+  });
+
+  it('does not read a unit from the sentence after a count', () => {
+    expect(verifyNumbers('Use these 3 steps. GPUs are selected on Predict.', []).ok).toBe(true);
+  });
+});
+
+describe('numeric verifier magnitude notation', () => {
+  it('reads an attached magnitude suffix as part of the value', () => {
+    expect(verifyNumbers('The context is 128k tokens.', ['The context is 128,000 tokens.']).ok).toBe(true);
+
+    // A suffix is not a decoration: 128k means 128,000, not 128.
+    const result = verifyNumbers('The context is 128k tokens.', ['The context is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128k tokens']);
+  });
+
+  it('reads scientific notation as a complete value', () => {
+    expect(verifyNumbers('The context is 1e6 tokens.', ['The context is 1,000,000 tokens.']).ok).toBe(true);
+
+    const result = verifyNumbers('The context is 1e6 tokens.', ['The context is 1 token.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['1e6 tokens']);
+  });
+
+  it('reads a magnitude word as part of the value', () => {
+    expect(verifyNumbers('The corpus is 1.5 million tokens.', ['The corpus is 1,500,000 tokens.']).ok).toBe(true);
+  });
+
+  it('reads a magnitude suffix that ends a sentence', () => {
+    const result = verifyNumbers('The context is 128k.', ['The context is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128k.']);
+  });
+
+  it('applies a magnitude word after a currency symbol', () => {
+    expect(verifyNumbers('The price is $1 million.', ['The price is $1,000,000.']).ok).toBe(true);
+
+    const result = verifyNumbers('The price is $1 million.', ['The price is $1.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['$1 million']);
+  });
+
+  it('does not attach a unit from after a sentence-ending magnitude word', () => {
+    expect(supportedClaims(['3 million. GPUs are selected.']).get(3_000_000)).toEqual(new Set([null]));
+  });
+
+  it('scales a fractional magnitude without binary rounding noise', () => {
+    expect(verifyNumbers('The price is $1.001 million.', ['The price is $1,001,000.']).ok).toBe(true);
+    expect(verifyNumbers('The price is $1.001M.', ['The price is $1,001,000.']).ok).toBe(true);
+    expect(verifyNumbers('The corpus is 1.001 million tokens.', ['The corpus is 1,001,000 tokens.']).ok).toBe(true);
+  });
+
+  it('compares scaled and unscaled values at the same precision', () => {
+    expect(verifyNumbers(
+      'Throughput is 1.234567890123456k tokens/s.',
+      ['Throughput is 1234.567890123456 tokens/s.'],
+    ).ok).toBe(true);
+  });
+
+  it('keeps distinct large quantities apart', () => {
+    const result = verifyNumbers(
+      'Capacity is 1000000000000001 bytes.',
+      ['Capacity is 1000000000000002 bytes.'],
+    );
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['1000000000000001 bytes']);
+  });
+
+  it('accumulates successive magnitude words', () => {
+    expect(verifyNumbers('The price is $2 million million.', ['The price is $2 trillion.']).ok).toBe(true);
+
+    const result = verifyNumbers('The price is $2 million million.', ['The price is $2 million.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['$2 million million']);
+  });
+});
+
+describe('numeric verifier rate units', () => {
+  it('accepts a rate written in words against one written with a slash', () => {
+    expect(verifyNumbers('Throughput is 128 tokens per second.', ['Throughput is 128 tokens/s.']).ok).toBe(true);
+  });
+
+  it('rejects a rate when the evidence states only the count', () => {
+    const result = verifyNumbers('Throughput is 128 tokens per second.', ['Throughput is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128 tokens per second']);
+  });
+
+  it('canonicalises a slash rate written with a full word', () => {
+    expect(supportedClaims(['Throughput is 128 tokens/sec.']).get(128)).toContain('token/s');
+  });
+
+  it('reads a rate after an attached unit', () => {
+    expect(verifyNumbers('Bandwidth is 8GB per second.', ['Bandwidth is 8 GB/s.']).ok).toBe(true);
+
+    const result = verifyNumbers('Bandwidth is 8GB per second.', ['Capacity is 8 GB.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['8GB per second']);
+  });
+
+  it('does not read a rate phrase across a sentence boundary', () => {
+    const support = supportedClaims(['The batch is 128 tokens. Per second, one request completes.']);
+    expect(support.get(128)).toEqual(new Set(['token']));
   });
 });

@@ -76,17 +76,76 @@ const SUFFIX_SYMBOLS: Record<string, string> = {
 const SIGNIFICANT_DIGITS = 2;
 
 /**
+ * Magnitude suffixes attached to a number (`128k`, `1.5M`, `70B`). Lowercase
+ * `b` is deliberately absent: it is the byte unit matched through
+ * `UNIT_SYNONYMS`, while uppercase `B` is the colloquial billion in a model
+ * name such as `70B`.
+ */
+const MAGNITUDE_SUFFIXES: Record<string, number> = { k: 1e3, m: 1e6, t: 1e12 };
+
+/** Magnitude words written after a number (`1.5 million tokens`). */
+const MAGNITUDE_WORDS: Record<string, number> = {
+  thousand: 1e3,
+  million: 1e6,
+  billion: 1e9,
+  trillion: 1e12,
+};
+
+/**
  * A number with an optional currency symbol in front and an optional unit
- * attached to it (`8GB`, `5%`, `$3.50`, `2×`). A unit written as a following
- * word (`128 tokens`, `24 ms`) is looked for in `claimsIn`, because a single
- * regex capturing a repeated word group would only keep the last match.
+ * attached to it (`8GB`, `5%`, `$3.50`, `2×`, `1e6`). A unit written as a
+ * following word (`128 tokens`, `24 ms`) is looked for in `claimsIn`, because a
+ * single regex capturing a repeated word group would only keep the last match.
  */
 const NUMBER_PATTERN =
-  /([$€£¥])?-?\d+(?:,\d{3})*(?:\.\d+)?(%|×|[A-Za-z][A-Za-z0-9/·._-]*)?/g;
+  /([$€£¥])?-?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][+-]?\d+)?(%|×|[A-Za-z][A-Za-z0-9/·._-]*)?/g;
+
+/** The numeric part of a token, including a scientific exponent. */
+const NUMBER_VALUE = /-?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][+-]?\d+)?/;
 
 /** Words after the number that may name its unit. At most three are read. */
 const FOLLOWING_WORD = /\s+([A-Za-z][\w./%-]*)/y;
+/** A rate unit stated in words: `tokens per second`. */
+const PER_RATE = /\s+per\s+([A-Za-z][\w./%-]*)/iy;
 const MAX_FOLLOWING_WORDS = 3;
+
+/**
+ * Denominators that make a compound unit a rate (`tokens per second`). A
+ * currency is not one: `$3.00 per hour` is a price, and the currency alone is
+ * what the evidence and the answer share.
+ */
+const RATE_DENOMINATORS = new Set(['s', 'ms', 'us', 'min', 'h', 'd', 'mo', 'yr']);
+const CURRENCIES = new Set(['usd', 'eur', 'gbp', 'jpy', 'cent']);
+
+function isRateUnit(base: string, rate: string): boolean {
+  return RATE_DENOMINATORS.has(rate) && !CURRENCIES.has(base);
+}
+
+/** A single-letter magnitude suffix, or undefined when the token is a unit. */
+function magnitudeSuffix(attached: string): number | undefined {
+  if (attached === 'B') return 1e9;
+  if (attached.length !== 1) return undefined;
+  return MAGNITUDE_SUFFIXES[attached.toLowerCase()];
+}
+
+/**
+ * Apply an accumulated power-of-ten exponent to the literal instead of
+ * multiplying floats. `1.001` with exponent 6 is exactly 1001000 because both
+ * sides parse the same decimal string, and no digit of an exact quantity is
+ * rounded away, so `1000000000000001` and `1000000000000002` stay distinct.
+ * Successive magnitudes add to the exponent rather than replacing it.
+ */
+function applyExponent(literal: string, exponent: number): number {
+  if (exponent === 0) return Number(literal);
+  const parts = /^([+-]?[\d.]+)(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (!parts) return Number(literal) * 10 ** exponent;
+  return Number(`${parts[1]}e${exponent + Number(parts[2] ?? 0)}`);
+}
+
+/** The power of ten a magnitude word or suffix stands for. */
+function magnitudeExponent(factor: number): number {
+  return Math.round(Math.log10(factor));
+}
 
 const URL_PATTERN = /\bhttps?:\/\/[^\s)]+/gi;
 const MARKDOWN_LINK_PATTERN = /\[([^\]]*)\]\([^)]*\)/g;
@@ -109,13 +168,27 @@ function stripNonProse(text: string): string {
     .replace(LIST_MARKER_PATTERN, ' ');
 }
 
+function normalizeUnitWord(word: string): string | null {
+  const lowered = word.toLowerCase();
+  return UNIT_SYNONYMS[lowered] ?? UNIT_SYNONYMS[lowered.replace(/s$/, '')] ?? null;
+}
+
 function normalizeUnit(raw: string): string | null {
   const trimmed = raw.trim().replace(/[.,;:!?]+$/, '');
   if (!trimmed) return null;
   const symbol = PREFIX_UNITS[trimmed] ?? SUFFIX_SYMBOLS[trimmed];
   if (symbol) return symbol;
-  const lowered = trimmed.toLowerCase();
-  return UNIT_SYNONYMS[lowered] ?? UNIT_SYNONYMS[lowered.replace(/s$/, '')] ?? null;
+  const direct = normalizeUnitWord(trimmed);
+  if (direct) return direct;
+  // A rate such as `tokens/sec` or `GB/s`: normalise both halves so the same
+  // rate written with a symbol and with a word compares equal.
+  const slash = trimmed.indexOf('/');
+  if (slash > 0 && slash < trimmed.length - 1) {
+    const base = normalizeUnitWord(trimmed.slice(0, slash));
+    const rate = normalizeUnitWord(trimmed.slice(slash + 1));
+    if (base && rate && isRateUnit(base, rate)) return `${base}/${rate}`;
+  }
+  return null;
 }
 
 function claimsIn(text: string): NumberClaim[] {
@@ -125,36 +198,112 @@ function claimsIn(text: string): NumberClaim[] {
 
   while ((match = pattern.exec(text)) !== null) {
     const [token, prefix, attached] = match;
-    const digits = token.match(/-?\d+(?:,\d{3})*(?:\.\d+)?/)?.[0] ?? '';
-    const value = Number(digits.replace(/,/g, ''));
+    const digits = token.match(NUMBER_VALUE)?.[0] ?? '';
+    const literal = digits.replace(/,/g, '');
+    let exponent = 0;
+    let value = Number(literal);
     if (!Number.isFinite(value)) continue;
 
-    // A currency symbol, an attached unit, or an attached suffix symbol is
-    // unambiguous and is the whole claim.
-    const attachedUnit = normalizeUnit(prefix ?? '') ?? normalizeUnit(attached ?? '');
+    // `128k`, `1.5M`, and `70B` mean a different number, not 128, 1.5, or 70.
+    // A magnitude suffix is therefore part of the value, and the unit, if any,
+    // is the following word (`128k tokens`).
+    const magnitude = attached ? magnitudeSuffix(attached.replace(/[.,;:!?]+$/, '')) : undefined;
+    if (magnitude !== undefined) {
+      exponent += magnitudeExponent(magnitude);
+      value = applyExponent(literal, exponent);
+    }
+
+    // A currency symbol or an attached unit is unambiguous and is the whole
+    // claim. An attached magnitude suffix is not a unit.
+    let attachedUnit = normalizeUnit(prefix ?? '') ?? (magnitude === undefined ? normalizeUnit(attached ?? '') : null);
     if (attachedUnit) {
-      claims.push({ raw: token, value, unit: attachedUnit });
+      // A prefixed amount can carry a magnitude word (`$1 million`) or a rate
+      // phrase (`8GB per second`); both belong to this claim, not the next.
+      let raw = token;
+      let cursor = match.index + token.length;
+      // The attached token can end the sentence (`8GB. Million requests ...`).
+      let sentenceEnded = /[.!?]$/.test(attached ?? '');
+      for (let count = 0; count < MAX_FOLLOWING_WORDS; count += 1) {
+        if (sentenceEnded) break;
+        FOLLOWING_WORD.lastIndex = cursor;
+        const word = FOLLOWING_WORD.exec(text);
+        if (!word) break;
+        const bare = word[1].replace(/[.,;:!?]+$/, '');
+        const magnitudeWord = MAGNITUDE_WORDS[bare.toLowerCase()];
+        if (magnitudeWord === undefined) break;
+        exponent += magnitudeExponent(magnitudeWord);
+        value = applyExponent(literal, exponent);
+        raw += ` ${bare}`;
+        cursor = word.index + word[0].length;
+        pattern.lastIndex = cursor;
+        if (/[.!?]$/.test(word[1])) {
+          sentenceEnded = true;
+          break;
+        }
+      }
+      if (!sentenceEnded) {
+        PER_RATE.lastIndex = cursor;
+        const per = PER_RATE.exec(text);
+        if (per) {
+          const rate = normalizeUnit(per[1]);
+          if (rate && isRateUnit(attachedUnit, rate)) {
+            attachedUnit = `${attachedUnit}/${rate}`;
+            raw += ` per ${per[1].replace(/[.,;:!?]+$/, '')}`;
+            pattern.lastIndex = per.index + per[0].length;
+          }
+        }
+      }
+      claims.push({ raw, value, unit: attachedUnit });
       continue;
     }
 
     // Otherwise the unit, if any, is the first recognised word that follows.
     // Everything up to it stays in the claim text so `8 H100 GPUs` is reported
     // as one unsupported claim rather than three, and the words that were read
-    // are skipped so a model name inside them is not counted twice.
+    // are skipped so a model name inside them is not counted twice. A word
+    // that ends a sentence ends the scan: `3 steps. GPUs` is two thoughts.
     let cursor = match.index + token.length;
     const kept: string[] = [];
     let unit: string | null = null;
-    for (let count = 0; count < MAX_FOLLOWING_WORDS; count += 1) {
+    // An attached token that ends the sentence (`128k.`) has no following unit
+    // in this thought.
+    const attachedEndsSentence = /[.!?]$/.test(attached ?? '');
+    for (let count = 0; !attachedEndsSentence && count < MAX_FOLLOWING_WORDS; count += 1) {
       FOLLOWING_WORD.lastIndex = cursor;
       const word = FOLLOWING_WORD.exec(text);
       if (!word) break;
       kept.push(word[1].replace(/[.,;:!?]+$/, ''));
       cursor = word.index + word[0].length;
-      const candidate = normalizeUnit(word[1]);
-      if (candidate) {
-        unit = candidate;
-        break;
+
+      const magnitudeWord = MAGNITUDE_WORDS[word[1].replace(/[.,;:!?]+$/, '').toLowerCase()];
+      if (magnitudeWord !== undefined) {
+        exponent += magnitudeExponent(magnitudeWord);
+        value = applyExponent(literal, exponent);
+        if (/[.!?]$/.test(word[1])) break;
+        continue;
       }
+
+      const candidate = normalizeUnit(word[1]);
+      if (!candidate) {
+        if (/[.!?]$/.test(word[1])) break;
+        continue;
+      }
+
+      // `128 tokens per second` states the rate; `per second` is part of the
+      // unit, not the next claim's prose. A rate cannot cross a sentence.
+      unit = candidate;
+      if (/[.!?]$/.test(word[1])) break;
+      PER_RATE.lastIndex = cursor;
+      const per = PER_RATE.exec(text);
+      if (per) {
+        const rate = normalizeUnit(per[1]);
+        if (rate && isRateUnit(candidate, rate)) {
+          unit = `${candidate}/${rate}`;
+          kept.push('per', per[1].replace(/[.,;:!?]+$/, ''));
+          cursor = per.index + per[0].length;
+        }
+      }
+      break;
     }
     if (unit) pattern.lastIndex = cursor;
 

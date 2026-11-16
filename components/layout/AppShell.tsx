@@ -263,9 +263,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/sources"
               isActive={pathname === "/sources"}
             />
-
-            <div style={groupLabelStyle}>HELP</div>
-
             <NavItemWithIcon
               icon={BookOpenIcon}
               label="Documentation"

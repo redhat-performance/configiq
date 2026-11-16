@@ -271,11 +271,18 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
   // Focus the dialog once it is actually visible. The measurement effect sets
   // `layout` a frame after mount, and the dialog is `visibility: hidden` until
   // then, so focusing on mount targets an element that cannot take focus.
+  //
+  // A step change can remove the focused control (Back disappears on the first
+  // step), which returns focus to the viewport and outside the modal. Recheck
+  // after each step, but leave focus alone while it is still inside the dialog
+  // so pressing Next does not steal focus from the keyboard user.
   const visible = layout !== null;
   React.useEffect(() => {
     if (!mounted || !visible) return;
-    dialogRef.current?.focus();
-  }, [mounted, visible]);
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (!dialog.contains(document.activeElement)) dialog.focus();
+  }, [mounted, visible, currentStep]);
 
   // Esc closes the tour from anywhere on the page.
   React.useEffect(() => {
