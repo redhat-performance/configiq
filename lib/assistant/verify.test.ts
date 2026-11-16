@@ -86,6 +86,11 @@ describe('numeric verifier units', () => {
     expect(verifyNumbers('The rate is 3 cents per hour.', ['The rate is 3 cents.']).ok).toBe(true);
   });
 
+  it('does not scan past an attached unit that ends a sentence', () => {
+    expect(verifyNumbers('The GPU has 8GB. Million requests are processed.', ['The GPU has 8GB.']).ok).toBe(true);
+    expect(verifyNumbers('The GPU has 8GB. Per second, one request completes.', ['The GPU has 8GB.']).ok).toBe(true);
+  });
+
   it('rejects a claim whose unit contradicts the evidence', () => {
     const result = verifyNumbers('The default batch is 128 GPUs.', ['The default batch is 128 tokens.']);
     expect(result.ok).toBe(false);
@@ -161,6 +166,12 @@ describe('numeric verifier magnitude notation', () => {
 
   it('does not attach a unit from after a sentence-ending magnitude word', () => {
     expect(supportedClaims(['3 million. GPUs are selected.']).get(3_000_000)).toEqual(new Set([null]));
+  });
+
+  it('scales a fractional magnitude without binary rounding noise', () => {
+    expect(verifyNumbers('The price is $1.001 million.', ['The price is $1,001,000.']).ok).toBe(true);
+    expect(verifyNumbers('The price is $1.001M.', ['The price is $1,001,000.']).ok).toBe(true);
+    expect(verifyNumbers('The corpus is 1.001 million tokens.', ['The corpus is 1,001,000 tokens.']).ok).toBe(true);
   });
 });
 

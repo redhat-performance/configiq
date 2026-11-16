@@ -128,6 +128,15 @@ function magnitudeSuffix(attached: string): number | undefined {
   return MAGNITUDE_SUFFIXES[attached.toLowerCase()];
 }
 
+/**
+ * Scale a value without binary rounding noise. `1.001 * 1e6` is
+ * 1000999.9999999999 in floating point, and values are looked up by exact
+ * equality, so the answer would miss evidence that states `1,001,000`.
+ */
+function scale(value: number, factor: number): number {
+  return Number((value * factor).toPrecision(15));
+}
+
 const URL_PATTERN = /\bhttps?:\/\/[^\s)]+/gi;
 const MARKDOWN_LINK_PATTERN = /\[([^\]]*)\]\([^)]*\)/g;
 /** Ordered-list markers such as `1.` or `2)` are not claims. */
@@ -187,7 +196,7 @@ function claimsIn(text: string): NumberClaim[] {
     // A magnitude suffix is therefore part of the value, and the unit, if any,
     // is the following word (`128k tokens`).
     const magnitude = attached ? magnitudeSuffix(attached.replace(/[.,;:!?]+$/, '')) : undefined;
-    if (magnitude !== undefined) value *= magnitude;
+    if (magnitude !== undefined) value = scale(value, magnitude);
 
     // A currency symbol or an attached unit is unambiguous and is the whole
     // claim. An attached magnitude suffix is not a unit.
@@ -197,15 +206,17 @@ function claimsIn(text: string): NumberClaim[] {
       // phrase (`8GB per second`); both belong to this claim, not the next.
       let raw = token;
       let cursor = match.index + token.length;
-      let sentenceEnded = false;
+      // The attached token can end the sentence (`8GB. Million requests ...`).
+      let sentenceEnded = /[.!?]$/.test(attached ?? '');
       for (let count = 0; count < MAX_FOLLOWING_WORDS; count += 1) {
+        if (sentenceEnded) break;
         FOLLOWING_WORD.lastIndex = cursor;
         const word = FOLLOWING_WORD.exec(text);
         if (!word) break;
         const bare = word[1].replace(/[.,;:!?]+$/, '');
         const magnitudeWord = MAGNITUDE_WORDS[bare.toLowerCase()];
         if (magnitudeWord === undefined) break;
-        value *= magnitudeWord;
+        value = scale(value, magnitudeWord);
         raw += ` ${bare}`;
         cursor = word.index + word[0].length;
         pattern.lastIndex = cursor;
@@ -238,7 +249,10 @@ function claimsIn(text: string): NumberClaim[] {
     let cursor = match.index + token.length;
     const kept: string[] = [];
     let unit: string | null = null;
-    for (let count = 0; count < MAX_FOLLOWING_WORDS; count += 1) {
+    // An attached token that ends the sentence (`128k.`) has no following unit
+    // in this thought.
+    const attachedEndsSentence = /[.!?]$/.test(attached ?? '');
+    for (let count = 0; !attachedEndsSentence && count < MAX_FOLLOWING_WORDS; count += 1) {
       FOLLOWING_WORD.lastIndex = cursor;
       const word = FOLLOWING_WORD.exec(text);
       if (!word) break;
@@ -247,7 +261,7 @@ function claimsIn(text: string): NumberClaim[] {
 
       const magnitudeWord = MAGNITUDE_WORDS[word[1].replace(/[.,;:!?]+$/, '').toLowerCase()];
       if (magnitudeWord !== undefined) {
-        value *= magnitudeWord;
+        value = scale(value, magnitudeWord);
         if (/[.!?]$/.test(word[1])) break;
         continue;
       }
