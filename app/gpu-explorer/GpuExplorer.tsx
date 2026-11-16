@@ -70,6 +70,19 @@ export default function GpuExplorerPage() {
     setMounted(true);
   }, []);
 
+  // A field is omitted from a link when it matches the view's starting point.
+  // Axes start from the selected preset, not from the page's balanced default:
+  // otherwise Performance + X=VRAM would drop `x=vram` and reopen on Memory
+  // Bandwidth. The preset itself is still compared against the page default.
+  const linkDefaults = React.useMemo<GpuExplorerLinkValues>(
+    () => ({
+      ...GPU_EXPLORER_LINK_DEFAULTS,
+      x: PRESET_AXES[preset].x,
+      y: PRESET_AXES[preset].y,
+    }),
+    [preset],
+  );
+
   // A shared view applies its axes and filters once the catalog and pricing
   // have settled, so a link cannot be overwritten by a later catalog response.
   const shared = useSharedView(gpuExplorerLink, {
@@ -91,7 +104,7 @@ export default function GpuExplorerPage() {
       y: { read: () => yAxis, write: (value) => setYAxis(value) },
     }),
     ready: mounted && !isLoading && !costings.isLoading,
-    defaults: GPU_EXPLORER_LINK_DEFAULTS,
+    defaults: linkDefaults,
   });
   const warnings = shared.warnings;
 

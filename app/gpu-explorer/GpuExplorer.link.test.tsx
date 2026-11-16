@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The page reads its shared view through `useSearchParams`. Tests mount it
 // directly, so supply the current window search rather than the app router.
 const navigation = vi.hoisted(() => ({ search: '' }));
+const clipboard = vi.hoisted(() => ({ text: '' }));
 
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(navigation.search),
@@ -53,7 +54,6 @@ vi.mock('./GpuBubbleChart', () => ({
     React.createElement('div', { 'data-testid': 'chart', 'data-x': xLabel, 'data-y': yLabel }),
 }));
 
-vi.mock('@/components/help/CopyLinkButton', () => ({ CopyLinkButton: () => null }));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
 const { default: GpuExplorerPage } = await import('./GpuExplorer');
@@ -64,6 +64,11 @@ let container: HTMLDivElement;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  clipboard.text = '';
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn(async (text: string) => { clipboard.text = text; }) },
+  });
   container = document.createElement('div');
   document.body.append(container);
   root = createRoot(container);
@@ -89,6 +94,25 @@ function axes() {
   return { x: chart?.dataset.x ?? null, y: chart?.dataset.y ?? null };
 }
 
+async function copyLink(): Promise<URL> {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find(candidate => candidate.textContent?.includes('Copy link'));
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.click();
+    await Promise.resolve();
+  });
+  expect(clipboard.text).not.toBe('');
+  return new URL(clipboard.text);
+}
+
+/** Reopen the copied link as a fresh page, the way a recipient would. */
+async function remountAt(search: string) {
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await mountAt(search);
+}
+
 describe('GPU explorer shared views', () => {
   it('plots the axes a preset implies', async () => {
     await mountAt('?preset=performance');
@@ -97,6 +121,21 @@ describe('GPU explorer shared views', () => {
       x: 'Memory Bandwidth (GB/s)',
       y: 'Throughput Index',
     });
+  });
+
+  it('round-trips an axis customised on top of a preset', async () => {
+    // The sender picked Performance and then changed X to VRAM. VRAM is the
+    // balanced page's starting axis, not this preset's, so a link that omits it
+    // would reopen on Memory Bandwidth instead of the view that was shared.
+    await mountAt('?preset=performance&x=vram&y=vram');
+    expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'VRAM (GB)' });
+
+    const url = await copyLink();
+    expect(url.searchParams.get('preset')).toBe('performance');
+    expect(url.searchParams.get('x')).toBe('vram');
+
+    await remountAt(url.search);
+    expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'VRAM (GB)' });
   });
 
   it('keeps explicit axes from the link rather than the preset defaults', async () => {
