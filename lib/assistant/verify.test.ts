@@ -82,6 +82,10 @@ describe('numeric verifier units', () => {
     expect(result.unsupported).toEqual(['$9.99']);
   });
 
+  it('keeps a cent amount a plain currency price', () => {
+    expect(verifyNumbers('The rate is 3 cents per hour.', ['The rate is 3 cents.']).ok).toBe(true);
+  });
+
   it('rejects a claim whose unit contradicts the evidence', () => {
     const result = verifyNumbers('The default batch is 128 GPUs.', ['The default batch is 128 tokens.']);
     expect(result.ok).toBe(false);
@@ -140,6 +144,24 @@ describe('numeric verifier magnitude notation', () => {
   it('reads a magnitude word as part of the value', () => {
     expect(verifyNumbers('The corpus is 1.5 million tokens.', ['The corpus is 1,500,000 tokens.']).ok).toBe(true);
   });
+
+  it('reads a magnitude suffix that ends a sentence', () => {
+    const result = verifyNumbers('The context is 128k.', ['The context is 128 tokens.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['128k.']);
+  });
+
+  it('applies a magnitude word after a currency symbol', () => {
+    expect(verifyNumbers('The price is $1 million.', ['The price is $1,000,000.']).ok).toBe(true);
+
+    const result = verifyNumbers('The price is $1 million.', ['The price is $1.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['$1 million']);
+  });
+
+  it('does not attach a unit from after a sentence-ending magnitude word', () => {
+    expect(supportedClaims(['3 million. GPUs are selected.']).get(3_000_000)).toEqual(new Set([null]));
+  });
 });
 
 describe('numeric verifier rate units', () => {
@@ -155,5 +177,18 @@ describe('numeric verifier rate units', () => {
 
   it('canonicalises a slash rate written with a full word', () => {
     expect(supportedClaims(['Throughput is 128 tokens/sec.']).get(128)).toContain('token/s');
+  });
+
+  it('reads a rate after an attached unit', () => {
+    expect(verifyNumbers('Bandwidth is 8GB per second.', ['Bandwidth is 8 GB/s.']).ok).toBe(true);
+
+    const result = verifyNumbers('Bandwidth is 8GB per second.', ['Capacity is 8 GB.']);
+    expect(result.ok).toBe(false);
+    expect(result.unsupported).toEqual(['8GB per second']);
+  });
+
+  it('does not read a rate phrase across a sentence boundary', () => {
+    const support = supportedClaims(['The batch is 128 tokens. Per second, one request completes.']);
+    expect(support.get(128)).toEqual(new Set(['token']));
   });
 });

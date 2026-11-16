@@ -115,7 +115,7 @@ const MAX_FOLLOWING_WORDS = 3;
  * what the evidence and the answer share.
  */
 const RATE_DENOMINATORS = new Set(['s', 'ms', 'us', 'min', 'h', 'd', 'mo', 'yr']);
-const CURRENCIES = new Set(['usd', 'eur', 'gbp', 'jpy']);
+const CURRENCIES = new Set(['usd', 'eur', 'gbp', 'jpy', 'cent']);
 
 function isRateUnit(base: string, rate: string): boolean {
   return RATE_DENOMINATORS.has(rate) && !CURRENCIES.has(base);
@@ -186,14 +186,47 @@ function claimsIn(text: string): NumberClaim[] {
     // `128k`, `1.5M`, and `70B` mean a different number, not 128, 1.5, or 70.
     // A magnitude suffix is therefore part of the value, and the unit, if any,
     // is the following word (`128k tokens`).
-    const magnitude = attached ? magnitudeSuffix(attached) : undefined;
+    const magnitude = attached ? magnitudeSuffix(attached.replace(/[.,;:!?]+$/, '')) : undefined;
     if (magnitude !== undefined) value *= magnitude;
 
     // A currency symbol or an attached unit is unambiguous and is the whole
     // claim. An attached magnitude suffix is not a unit.
-    const attachedUnit = normalizeUnit(prefix ?? '') ?? (magnitude === undefined ? normalizeUnit(attached ?? '') : null);
+    let attachedUnit = normalizeUnit(prefix ?? '') ?? (magnitude === undefined ? normalizeUnit(attached ?? '') : null);
     if (attachedUnit) {
-      claims.push({ raw: token, value, unit: attachedUnit });
+      // A prefixed amount can carry a magnitude word (`$1 million`) or a rate
+      // phrase (`8GB per second`); both belong to this claim, not the next.
+      let raw = token;
+      let cursor = match.index + token.length;
+      let sentenceEnded = false;
+      for (let count = 0; count < MAX_FOLLOWING_WORDS; count += 1) {
+        FOLLOWING_WORD.lastIndex = cursor;
+        const word = FOLLOWING_WORD.exec(text);
+        if (!word) break;
+        const bare = word[1].replace(/[.,;:!?]+$/, '');
+        const magnitudeWord = MAGNITUDE_WORDS[bare.toLowerCase()];
+        if (magnitudeWord === undefined) break;
+        value *= magnitudeWord;
+        raw += ` ${bare}`;
+        cursor = word.index + word[0].length;
+        pattern.lastIndex = cursor;
+        if (/[.!?]$/.test(word[1])) {
+          sentenceEnded = true;
+          break;
+        }
+      }
+      if (!sentenceEnded) {
+        PER_RATE.lastIndex = cursor;
+        const per = PER_RATE.exec(text);
+        if (per) {
+          const rate = normalizeUnit(per[1]);
+          if (rate && isRateUnit(attachedUnit, rate)) {
+            attachedUnit = `${attachedUnit}/${rate}`;
+            raw += ` per ${per[1].replace(/[.,;:!?]+$/, '')}`;
+            pattern.lastIndex = per.index + per[0].length;
+          }
+        }
+      }
+      claims.push({ raw, value, unit: attachedUnit });
       continue;
     }
 
@@ -215,6 +248,7 @@ function claimsIn(text: string): NumberClaim[] {
       const magnitudeWord = MAGNITUDE_WORDS[word[1].replace(/[.,;:!?]+$/, '').toLowerCase()];
       if (magnitudeWord !== undefined) {
         value *= magnitudeWord;
+        if (/[.!?]$/.test(word[1])) break;
         continue;
       }
 
@@ -225,8 +259,9 @@ function claimsIn(text: string): NumberClaim[] {
       }
 
       // `128 tokens per second` states the rate; `per second` is part of the
-      // unit, not the next claim's prose.
+      // unit, not the next claim's prose. A rate cannot cross a sentence.
       unit = candidate;
+      if (/[.!?]$/.test(word[1])) break;
       PER_RATE.lastIndex = cursor;
       const per = PER_RATE.exec(text);
       if (per) {
