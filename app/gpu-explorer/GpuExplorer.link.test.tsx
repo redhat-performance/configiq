@@ -126,4 +126,13 @@ describe('GPU explorer shared views', () => {
 
     expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
   });
+
+  it('replaces a price axis the link names while costings are off', async () => {
+    // Costings have already settled when the link applies, so the fallback has
+    // to observe the axes themselves. Otherwise the chart keeps a price axis
+    // whose control is hidden and plots every GPU at zero cost.
+    await mountAt('?x=price&y=price');
+
+    expect(axes()).toEqual({ x: 'VRAM (GB)', y: 'Throughput Index' });
+  });
 });

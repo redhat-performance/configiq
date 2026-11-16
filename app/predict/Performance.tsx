@@ -236,6 +236,7 @@ export default function Performance() {
   const parkedOverrides = React.useRef<{
     maxNumSeqs?: number;
     chunkedPrefill?: boolean;
+    gpuMemUtil?: number;
   } | null>(null);
   const [parkedOverridesVersion, setParkedOverridesVersion] = React.useState(0);
   const parkOverride = (patch: NonNullable<typeof parkedOverrides.current>) => {
@@ -618,7 +619,10 @@ export default function Performance() {
       weightPrecision: { read: () => testWeightPrecision, write: setTestWeightPrecision },
       kvPrecision: { read: () => testKVCachePrecision, write: setTestKVCachePrecision },
       maxModelLen: {
-        read: () => parseInt(maxSeqLenInput, 10) || undefined,
+        // The request sends `effectiveContextLimit`, where the serving-policy
+        // override wins over the field. Export what the request used, not the
+        // inactive control, or a shared view would size a different context.
+        read: () => effectiveContextLimit ?? undefined,
         write: (value) =>
           handleSequenceLengthChange(String(value), setMaxSeqLenInput, setMaxSeqLen),
       },
@@ -649,7 +653,7 @@ export default function Performance() {
         ),
         write: (value) => parkOverride({ chunkedPrefill: value === 'on' }),
       },
-      gpuMemUtil: { read: () => gpuMemoryUtilization ?? undefined, write: setGpuMemoryUtilization },
+      gpuMemUtil: { read: () => gpuMemoryUtilization ?? undefined, write: (value) => parkOverride({ gpuMemUtil: value }) },
       moeTp: {
         read: () => parseInt(moeEtpSizeInput, 10) || undefined,
         write: (value) => handleMoeEtpSizeChange(String(value)),
@@ -962,6 +966,14 @@ export default function Performance() {
     // The body only carries these while the override panel is on.
     if (parked.maxNumSeqs !== undefined || parked.chunkedPrefill !== undefined) {
       setVllmOverride(true);
+    }
+    // A linked memory fraction is a manual choice: turn the override on with
+    // the value so the control stays editable and is not labelled
+    // "Auto-computed". The flag and the value are applied together here,
+    // after the model/GPU reset, because the reset clears both when it runs.
+    if (parked.gpuMemUtil !== undefined) {
+      setGpuMemoryUtilization(parked.gpuMemUtil);
+      setMemoryOverride(true);
     }
   }, [gpuReady, model, gpu, parkedOverridesVersion]);
 

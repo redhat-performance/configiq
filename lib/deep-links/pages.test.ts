@@ -145,6 +145,29 @@ describe('page link contracts', () => {
     expect(recommendLink.parse(query(built)).values).toEqual({ fabric: FABRIC_NONE });
   });
 
+  it('accepts a fractional latency target the form can produce', () => {
+    // The TTFT and E2E latency inputs accept decimals and the request contract
+    // takes floats; an integer-only link field would reject the sender's view.
+    const values: RecommendLinkValues = {
+      goal: 'latency',
+      ttft: 1.4,
+      e2eLatency: 12.5,
+    };
+
+    expect(recommendLink.parse(query(recommendLink.build(values)))).toEqual({
+      values,
+      warnings: [],
+    });
+    expect(hybridSavingsLink.parse('?ttft=0.5').values).toEqual({ ttft: 0.5 });
+  });
+
+  it('drops a fraction kind the request contract does not accept', () => {
+    const parsed = kvCacheLink.parse('?memFractionKind=bogus&memFractionValue=0.5');
+
+    expect(parsed.values).toEqual({ memFractionValue: 0.5 });
+    expect(parsed.warnings).toEqual(['Ignored "memFractionKind": the value was not valid.']);
+  });
+
   it('round-trips both pool parallelism sets for the KV cache calculator', () => {
     const values: KvCacheLinkValues = {
       model: 'Qwen/Qwen3-32B',

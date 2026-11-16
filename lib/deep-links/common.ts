@@ -26,6 +26,7 @@ export const text = (max: number) => z.string().trim().min(1).max(max);
 export const modelPath = text(MAX_MODEL_LENGTH).regex(SAFE_ID, 'invalid model id');
 export const systemId = text(MAX_ID_LENGTH).regex(SAFE_ID, 'invalid system id');
 export const positiveInt = (max: number) => z.coerce.number().int().min(1).max(max);
+export const positiveNumber = (max: number) => z.coerce.number().positive().max(max);
 export const nonNegativeInt = (max: number) => z.coerce.number().int().min(0).max(max);
 
 export const SERVING_MODES = ['agg', 'disagg'] as const;

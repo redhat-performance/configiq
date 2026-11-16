@@ -193,6 +193,7 @@ import { useSettings } from '@/contexts/SettingsContext';
 
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
+const writeText = vi.fn(async (_url: string) => undefined);
 
 const makeSettings = (
   costingsEnabled: boolean,
@@ -274,6 +275,11 @@ beforeEach(() => {
   vi.mocked(useSettings).mockReturnValue(makeSettings(false));
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  });
+  writeText.mockClear();
   vi.stubGlobal('localStorage', {
     getItem: vi.fn((key: string) => {
       if (key.includes('saved-estimates')) return '[]';
@@ -489,6 +495,57 @@ describe('performance page disagg link fields', () => {
 
     const input = vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0];
     expect(input.gpu_memory_utilization).toBe(0.75);
+  });
+
+  it('shows a linked memory fraction as a manual override', async () => {
+    // The value reaches the request either way, but without the flag the
+    // section labels it "Auto-computed" and leaves the control read-only.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&gpuMemUtil=0.75');
+
+    expect(container.textContent).toContain('Manual override');
+    expect(container.textContent).toContain('Reset to auto');
+    expect(container.querySelector('input[type="range"]')).not.toBeNull();
+  });
+
+  it('exports the serving-policy context limit the request uses', async () => {
+    // The override wins over the (empty) max-sequence field, so a link that
+    // read the inactive field would omit the context the sender actually used.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    const toggle = container.querySelector<HTMLButtonElement>('#acc-serving');
+    expect(toggle).not.toBeNull();
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const item = toggle?.closest('.pf-v6-c-accordion__item') ?? toggle?.parentElement?.parentElement;
+    const override = Array.from(item?.querySelectorAll('button') ?? [])
+      .find(button => /Override/.test(button.textContent ?? ''));
+    expect(override).toBeDefined();
+    await act(async () => {
+      override?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const limit = item?.querySelector<HTMLInputElement>('input[aria-label="Serving context limit"]');
+    expect(limit).not.toBeNull();
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(limit, '4096');
+      limit?.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Copy link')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const copied = String(writeText.mock.calls[0]?.[0] ?? '');
+    expect(new URL(copied).searchParams.get('maxModelLen')).toBe('4096');
   });
 
   it('carries a pinned chunked-prefill choice into the request', async () => {

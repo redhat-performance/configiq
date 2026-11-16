@@ -147,4 +147,17 @@ describe('KV cache calculator shared views', () => {
     expect(memoryBodies).toHaveLength(1);
     expect(memoryBodies[0].memory_fraction_kind).toBe('of_variant');
   });
+
+  it('drops a fraction kind the form cannot display', async () => {
+    // A malformed kind would otherwise be written to the control, mark it as
+    // user-edited, and reach the request outside the documented enum.
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&memFractionKind=bogus',
+    );
+    await calculate();
+
+    expect(container.textContent).toContain('Ignored "memFractionKind"');
+    expect(memoryBodies).toHaveLength(1);
+    expect(memoryBodies[0].memory_fraction_kind).toBe('of_variant');
+  });
 });

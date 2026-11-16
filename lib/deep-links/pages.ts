@@ -9,6 +9,7 @@ import {
   modelPath,
   nonNegativeInt,
   positiveInt,
+  positiveNumber,
   systemId,
   text,
   type LinkValues,
@@ -33,9 +34,11 @@ export const recommendLink = withProvenance(defineLink('/recommend', {
   isl: positiveInt(MAX_SEQUENCE_LENGTH),
   osl: positiveInt(MAX_SEQUENCE_LENGTH),
   concurrency: positiveInt(1_000_000),
-  ttft: positiveInt(600_000),
+  // The form and the request contract both accept a fractional latency target,
+  // so the link must too: `ttft=1.4` is a real view, not a malformed one.
+  ttft: positiveNumber(600_000),
   tpot: z.coerce.number().min(0.001).max(600_000),
-  e2eLatency: positiveInt(3_600_000),
+  e2eLatency: positiveNumber(3_600_000),
   demandRate: z.coerce.number().min(0.0001).max(1_000_000),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
   maxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
@@ -44,6 +47,15 @@ export const recommendLink = withProvenance(defineLink('/recommend', {
   fabric: text(MAX_ID_LENGTH),
   ...PROVENANCE_FIELDS,
 }));
+
+/**
+ * The fraction kinds the memory request accepts. The link and the page state
+ * share this list so a link cannot carry a value the form cannot display and
+ * the request would send outside its documented enum.
+ */
+export const MEMORY_FRACTION_KINDS = ['of_total', 'of_free'] as const;
+
+export type MemoryFractionKind = (typeof MEMORY_FRACTION_KINDS)[number];
 
 /**
  * The KV cache calculator is AISimulate-only by contract, so its link carries
@@ -73,7 +85,7 @@ export const kvCacheLink = defineLink('/kv-cache', {
   decodePp: positiveInt(1024),
   decodeMoeTp: positiveInt(1024),
   decodeMoeEp: positiveInt(1024),
-  memFractionKind: text(64),
+  memFractionKind: z.enum(MEMORY_FRACTION_KINDS),
   memFractionValue: z.coerce.number().min(0).max(1),
 });
 
@@ -91,7 +103,7 @@ export const hybridSavingsLink = withProvenance(defineLink('/hybrid-savings', {
   monthlyOutputTokens: nonNegativeInt(1e15),
   averageInputTokens: positiveInt(MAX_SEQUENCE_LENGTH),
   averageOutputTokens: positiveInt(MAX_SEQUENCE_LENGTH),
-  ttft: positiveInt(600_000),
+  ttft: positiveNumber(600_000),
   tpot: z.coerce.number().min(0.001).max(600_000),
   concurrency: positiveInt(1_000_000),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),

@@ -113,13 +113,15 @@ export default function GpuExplorerPage() {
   // If cost metrics become unavailable (costings off, or the displayed GPUs have
   // no hardware costs) while a price axis or the cost-efficiency preset is
   // active, fall back to safe defaults so the chart never shows an empty axis.
+  // The axes are dependencies too: a shared link can select `price` after
+  // costings have already settled, and no other input would re-run this check.
   React.useEffect(() => {
     if (!costMetricsReady) {
       if (preset === 'cost-efficiency') setPreset('balanced');
       setXAxis(prev => (prev === 'price' ? 'vram' : prev));
       setYAxis(prev => (prev === 'price' ? 'throughput-index' : prev));
     }
-  }, [costMetricsReady, preset]);
+  }, [costMetricsReady, preset, xAxis, yAxis]);
 
   const calculateThroughputIndex = (gpu: GpuOption) => {
     const multiplier = ARCH_MULTIPLIER[gpu.architecture ?? ''] ?? 1.0;

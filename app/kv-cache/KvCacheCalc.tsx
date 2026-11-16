@@ -22,7 +22,7 @@ import { WarningPanel } from '@/components/ui/WarningPanel'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import { CopyLinkButton } from '@/components/help/CopyLinkButton'
 import { TourButton } from '@/components/help/TourButton'
-import { kvCacheLink, type KvCacheLinkValues } from '@/lib/deep-links/pages'
+import { kvCacheLink, type KvCacheLinkValues, type MemoryFractionKind } from '@/lib/deep-links/pages'
 import { defineAccessors } from '@/lib/deep-links/shared-view'
 import { useSharedView } from '@/lib/deep-links/useSharedView'
 import { buildKvCachePayload, type KvCacheCalcResult } from '@/lib/api/kv-cache-calc'
@@ -127,7 +127,7 @@ export default function KvCacheCalc() {
   const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg')
   const [prefillPar, setPrefillPar] = React.useState<PhaseParallelInput>({ tp: '1', pp: '1', moeTp: '', moeEp: '' })
   const [decodePar, setDecodePar] = React.useState<PhaseParallelInput>({ tp: '1', pp: '1', moeTp: '', moeEp: '' })
-  const [memFractionKind, setMemFractionKind] = React.useState('of_total')
+  const [memFractionKind, setMemFractionKind] = React.useState<MemoryFractionKind>('of_total')
   const [memFractionValue, setMemFractionValue] = React.useState(1.0)
   const memFractionValueUserEdited = React.useRef(false)
   // A fraction kind chosen by the reader or carried by a link; the backend
@@ -424,7 +424,7 @@ export default function KvCacheCalc() {
       pp_size: par.pp,
       moe_tp_size: par.moeTp > 0 ? par.moeTp : null,
       moe_ep_size: par.moeEp > 0 ? par.moeEp : null,
-      memory_fraction_kind: memFractionKind as 'of_total' | 'of_free',
+      memory_fraction_kind: memFractionKind,
       memory_fraction_value: memFractionValue,
       model_config: needsHfConfig(model, catalogModels) && hfConfig ? hfConfig : null,
     })
@@ -785,7 +785,7 @@ export default function KvCacheCalc() {
                 <select
                   id="kv-mem-kind"
                   value={memFractionKind}
-                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value); markInputsDirty(); }}
+                  onChange={e => { memFractionKindUserEdited.current = true; setMemFractionKind(e.target.value as MemoryFractionKind); markInputsDirty(); }}
                   className={styles.gpuSelect}
                 >
                   <option value="of_total">of_total</option>

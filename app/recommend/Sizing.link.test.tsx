@@ -275,4 +275,15 @@ describe('recommend sizing shared views', () => {
     expect(sent.target_concurrency).toBe(32);
     expect(sent.target_request_rate).toBeUndefined();
   });
+
+  it('keeps a fractional TTFT the form accepts', async () => {
+    // The TTFT input takes decimals and the API takes a float. An
+    // integer-only link field would drop the sender's target and keep the
+    // recipient's instead.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&ttft=1.4');
+
+    const sent = await calculate();
+    expect(sent.ttft).toBe(1.4);
+    expect(container.textContent).not.toContain('Ignored "ttft"');
+  });
 });
