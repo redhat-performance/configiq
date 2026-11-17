@@ -8,7 +8,7 @@
 
 FROM nvcr.io/nvidia/tritonserver:26.09-py3
 
-ARG VLLM_VERSION=0.30.0
+ARG VLLM_VERSION=0.33.0
 
 LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
 LABEL org.opencontainers.image.title=configiq-tritonserver
@@ -17,7 +17,7 @@ LABEL ai.configiq.vllm.version=${VLLM_VERSION}
 USER 0
 
 # The standard Triton image already contains FIL. Install vLLM into an isolated
-# target directory because vLLM 0.30 and Triton use incompatible pydantic/numpy
+# target directory because vLLM 0.33 and Triton use incompatible pydantic/numpy
 # requirements. The assistant's container runs it through /opt/vllm-site/bin.
 RUN rm -rf /opt/vllm-site \
     && mkdir -p /opt/vllm-site \

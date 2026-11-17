@@ -61,7 +61,7 @@ When the four images are released together, they carry the same tag set:
 
 The Triton image workflow is path-filtered for `services/tritonserver/**`. The
 image starts from the standard `nvcr.io/nvidia/tritonserver:26.09-py3` image so
-the FIL backend remains available, then installs vLLM `0.30.0` into an isolated
+the FIL backend remains available, then installs vLLM `0.33.0` into an isolated
 site directory. That vLLM is what the assistant's model server runs; Triton
 itself serves FIL only. Build validation checks FIL, vLLM, and native K2
 architecture support.
