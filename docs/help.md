@@ -75,10 +75,19 @@ Self-hosted deployments opt in to the question box with:
 |---|---|
 | `ASSISTANT_ENABLED` | Set to `true` to show the question box |
 | `ASSISTANT_MODEL` | Model id served by the inference endpoint |
-| `TRITON_INFERENCE_URL` | OpenAI-compatible inference endpoint the assistant calls |
+| `ASSISTANT_INFERENCE_URL` | OpenAI-compatible endpoint that answers questions |
+| `TRITON_INFERENCE_URL` | FIL classifier endpoint; a legacy fallback for the above |
 
-Without all three the assistant reports that it is unavailable. Search, tours,
-and the documentation are build-time and local, so they need no configuration.
+Without `ASSISTANT_ENABLED`, `ASSISTANT_MODEL`, and an inference endpoint the
+assistant reports that it is unavailable. Search, tours, and the documentation
+are build-time and local, so they need no configuration.
+
+The assistant and the FIL classifiers are separate services. The FIL endpoint
+serves `/v2/models/<name>/infer` and cannot answer a chat question, so
+`ASSISTANT_INFERENCE_URL` points at the assistant's own server.
+`TRITON_INFERENCE_URL` is only read when the assistant endpoint is unset, which
+keeps a deployment that predates the split working as it did before; setting
+both always prefers the assistant endpoint.
 
 The assistant also offers the model read-only catalog, pricing, and memory
 lookups as tools. An endpoint that does not support tool calling ignores them,

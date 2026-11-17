@@ -55,6 +55,7 @@ const realFetch = globalThis.fetch;
 beforeEach(() => {
   vi.stubEnv('ASSISTANT_ENABLED', 'true');
   vi.stubEnv('ASSISTANT_MODEL', 'test/assistant-model');
+  vi.stubEnv('ASSISTANT_INFERENCE_URL', 'http://assistant.test:8001');
   vi.stubEnv('TRITON_INFERENCE_URL', 'http://triton.test:8000');
   vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'http://gateway.test');
 });
@@ -74,10 +75,30 @@ describe('assistant availability', () => {
     expect(body.reason).toMatch(/not enabled/i);
   });
 
-  it('reports the model when it is enabled', async () => {
+  it('reports the model and the endpoint it resolved when enabled', async () => {
     const response = await GET();
-    const body = (await response.json()) as { enabled: boolean; model: string | null };
-    expect(body).toEqual({ enabled: true, model: 'test/assistant-model', reason: null });
+    const body = (await response.json()) as {
+      enabled: boolean;
+      model: string | null;
+      endpoint: string | null;
+      reason: string | null;
+    };
+    expect(body).toEqual({
+      enabled: true,
+      model: 'test/assistant-model',
+      endpoint: 'http://assistant.test:8001',
+      reason: null,
+    });
+  });
+
+  it('reports the Triton URL only when no assistant endpoint is set', async () => {
+    // Older deployments set one inference URL. The assistant then points at the
+    // FIL classifier, which cannot answer; reporting it is what lets a deploy
+    // notice instead of the first question.
+    vi.stubEnv('ASSISTANT_INFERENCE_URL', '');
+    const body = (await (await GET()).json()) as { enabled: boolean; endpoint: string | null };
+    expect(body.enabled).toBe(true);
+    expect(body.endpoint).toBe('http://triton.test:8000');
   });
 
   it('refuses a question when disabled instead of answering without a model', async () => {
@@ -107,6 +128,22 @@ describe('assistant availability', () => {
 });
 
 describe('assistant answer', () => {
+  it('calls the assistant endpoint rather than the FIL classifier', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        urls.push(String(input));
+        return completion({ content: 'Search and documentation still work.' });
+      }),
+    );
+
+    await ask('what does the costs page compare');
+
+    expect(urls.some((url) => url.startsWith('http://assistant.test:8001/v1/chat/completions'))).toBe(true);
+    expect(urls.some((url) => url.startsWith('http://triton.test:8000'))).toBe(false);
+  });
+
   it('answers from retrieved documentation and cites it', async () => {
     vi.stubGlobal(
       'fetch',
