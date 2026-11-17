@@ -64,13 +64,22 @@ const requestSchema = z.object({
 
 type AssistantRequestInput = z.infer<typeof requestSchema>;
 
-/** Availability probe for the help popover. No secret ever leaves the server. */
+/**
+ * Availability probe for the help popover. No secret ever leaves the server.
+ *
+ * `endpoint` is the resolved base URL the assistant would call. It is an
+ * internal container name, not a credential, and it is reported because a
+ * deployment that sets ASSISTANT_ENABLED against an image that still reads the
+ * FIL classifier URL would otherwise look healthy here and fail on the first
+ * question. `deploy.sh` compares this value with the assistant it deployed.
+ */
 export async function GET() {
   const config = assistantConfig();
   return NextResponse.json(
     {
       enabled: config.enabled,
       model: config.model,
+      endpoint: config.endpoint,
       reason: config.reason,
     },
     { headers: { 'Cache-Control': 'no-store' } },
@@ -174,7 +183,7 @@ function toWireToolCall(call: ToolCall): ChatToolCall {
 }
 
 async function chatCompletion(
-  tritonUrl: string,
+  endpoint: string,
   model: string,
   messages: ChatMessage[],
   withTools: boolean,
@@ -182,7 +191,7 @@ async function chatCompletion(
 ): Promise<ChatReply | null> {
   let response: Response;
   try {
-    response = await fetch(`${tritonUrl}/v1/chat/completions`, {
+    response = await fetch(`${endpoint}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
@@ -384,7 +393,7 @@ async function runAssistant(
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     const allowTools = round < MAX_TOOL_ROUNDS;
-    reply = await chatCompletion(config.tritonUrl!, config.model!, messages, allowTools, signal);
+    reply = await chatCompletion(config.endpoint!, config.model!, messages, allowTools, signal);
     if (!reply) {
       // A cancelled question is not a failure: the user closed the popover.
       if (signal.aborted) return;
