@@ -17,6 +17,8 @@ process, separate from the horizontally-scaled AISimulators REST service.
 - `backends`, `models`, `systems`
 - `pricing_sources`, `pricing_models`, `pricing_systems`
 
-The old `aisimulators.dev` and `aicostings.dev` MCP paths are routed to this
-gateway by the deployment repository during migration. Their REST endpoints
-remain owned by their original services.
+The canonical gateway URL is `https://aisimulators.configiq.dev/mcp` for the
+commit-tracking environment and `https://aisimulators.configiq.io/mcp` for the
+release. The retired top-level API hosts (`aisimulators.dev`, `aicostings.dev`,
+and the `.xyz` names) answer with a 308 redirect to the apex subdomains; their
+REST endpoints remain owned by their original services.

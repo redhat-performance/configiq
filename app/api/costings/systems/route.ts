@@ -4,7 +4,7 @@
 // { systems }.
 //
 // The browser must call this route rather than aicostings directly, so the
-// per-host gateway is resolved server-side. Keeps the .dev/.xyz two-host split
+// per-host gateway is resolved server-side. Keeps the .dev/.io two-host split
 // correct client-side (no build-time NEXT_PUBLIC_AICOSTINGS_API_URL).
 
 import { NextRequest, NextResponse } from 'next/server'

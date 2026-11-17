@@ -259,12 +259,12 @@ unmet. `demand.window_seconds` reports that same arrival window.
 A sweep is the only request in flight for the Pareto action, so it must fit the
 gateway timeout on its own. The auto window keeps the search near the model's
 fit floor, which materially reduces sparse curves and timeout noise compared
-with a one-GPU-to-ceiling sweep. Measured wall times against `aisimulators.dev`
-for 0.6B/8B/32B sweeps over 1–16 GPUs were 20–29 seconds with 20/20 feasible
-candidates; a Qwen3-235B-A22B sweep from its 4-GPU floor over 4–16 GPUs took
-21 seconds with 10 aggregated and 10 disaggregated candidates. The frontend
-shows elapsed time and the gateway limit while the sweep runs, and a timeout
-degrades only the frontier panel.
+with a one-GPU-to-ceiling sweep. Measured wall times against the deployed
+service (then at `aisimulators.dev`) for 0.6B/8B/32B sweeps over 1–16 GPUs were
+20–29 seconds with 20/20 feasible candidates; a Qwen3-235B-A22B sweep from its
+4-GPU floor over 4–16 GPUs took 21 seconds with 10 aggregated and 10
+disaggregated candidates. The frontend shows elapsed time and the gateway limit
+while the sweep runs, and a timeout degrades only the frontier panel.
 
 ## Conclusion
 

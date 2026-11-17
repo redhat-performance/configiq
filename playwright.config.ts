@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'https://configiq.xyz'
+const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'https://configiq.io'
 
 export default defineConfig({
   testDir: './e2e',

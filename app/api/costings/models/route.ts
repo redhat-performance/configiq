@@ -8,7 +8,7 @@
 // proxy change. The source is URL-encoded before interpolation.
 //
 // The browser must call this route rather than aicostings directly, so the
-// per-host gateway is resolved server-side. That keeps the .dev/.xyz two-host
+// per-host gateway is resolved server-side. That keeps the .dev/.io two-host
 // split correct client-side and removes the need for a build-time
 // NEXT_PUBLIC_AICOSTINGS_API_URL.
 

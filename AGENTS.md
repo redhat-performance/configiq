@@ -6,10 +6,11 @@ Read this before making any changes.
 ## What this project is
 
 ConfigIQ is a web application for LLM inference sizing, GPU comparison, and
-cost modeling. It is deployed at configiq.dev and uses the AISimulators
+cost modeling. It runs as two environments: `configiq.dev` tracks the latest
+commit and `configiq.io` tracks the latest release. Both use the AISimulators
 REST API (server URL set via `AISIMULATORS_GATEWAY_URL`, e.g.
-`https://aisimulators.dev`) for simulator-backed recommendations, performance
-predictions, memory estimates, and capability catalogs.
+`https://aisimulators.configiq.dev`) for simulator-backed recommendations,
+performance predictions, memory estimates, and capability catalogs.
 
 ## Tech stack
 
