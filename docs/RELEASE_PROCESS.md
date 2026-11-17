@@ -59,11 +59,12 @@ When the four images are released together, they carry the same tag set:
 - **`dev`** - Latest commit from `main` (commit-tracking; the `.dev` host follows this)
 - **`X.Y.Z`** - Specific version tags
 
-The Triton image workflow is path-filtered for `services/tritonserver/**` and
-`v0.30.0` is installed in an isolated image site directory. The image starts
-from the standard `nvcr.io/nvidia/tritonserver:26.09-py3` image so the FIL
-backend remains available, then adds the pinned Triton vLLM backend and vLLM
-`0.30.0`. Build validation checks FIL, vLLM, and native K2 architecture support.
+The Triton image workflow is path-filtered for `services/tritonserver/**`. The
+image starts from the standard `nvcr.io/nvidia/tritonserver:26.09-py3` image so
+the FIL backend remains available, then installs vLLM `0.30.0` into an isolated
+site directory. That vLLM is what the assistant's model server runs; Triton
+itself serves FIL only. Build validation checks FIL, vLLM, and native K2
+architecture support.
 
 The two-host tag model (`.dev` → `:dev`, `.xyz` → `:latest`) is implemented in
 the `configiq-deploy` repo; `podman auto-update` on each host polls whatever tag
