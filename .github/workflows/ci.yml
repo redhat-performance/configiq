@@ -17,7 +17,7 @@ permissions:
 # the Python under the tests.
 jobs:
   check:
-    name: Frontend — test, type-check, lint, and build
+    name: Frontend — UI and unit tests, type-check, lint, and build
     runs-on: ubuntu-latest
 
     steps:
@@ -42,6 +42,23 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run UI smoke tests
+        run: npm run test:e2e:smoke
+
+      - name: Upload Playwright smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-smoke-${{ github.run_id }}
+          path: |
+            test-results/smoke/
+            playwright-report/smoke/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Build
         run: npm run build
