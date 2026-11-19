@@ -826,6 +826,12 @@ components:
             models P/D only through a named fabric also rejects `mode=disagg`
             when the request resolves to no fabric, and advertises that in
             `disaggregation_requires_fabric` on GET /backends.
+
+            `mode=disagg` is accepted with `objective=throughput_demand`:
+            AISimulate searches P/D for that goal, while BLIS demand sizing
+            replays open-loop traffic without a P/D transfer fabric and stays
+            aggregated. The response reports what was searched in
+            `sweep.modes_searched` rather than echoing this field.
           default: null
 
     RecommendResponse:

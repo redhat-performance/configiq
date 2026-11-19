@@ -1329,12 +1329,19 @@ def _pareto_slots() -> threading.BoundedSemaphore:
 
 
 #: Deployment modes as the public contract names them. The SDK spells them
-#: "aggregated"/"disaggregated"; those names never reach the API payload.
-_DEPLOYMENT_MODES = ("agg", "disagg")
-_SDK_DEPLOYMENT_MODES = {"agg": "aggregated", "disagg": "disaggregated"}
+#: "aggregated"/"disaggregated"; those names never reach the API payload. The
+#: literal tuple is what makes the accumulators type-check against `SweepMeta`.
+_DEPLOYMENT_MODES: tuple[Literal["agg"], Literal["disagg"]] = ("agg", "disagg")
+_SDK_DEPLOYMENT_MODES: dict[Literal["agg", "disagg"], str] = {
+    "agg": "aggregated",
+    "disagg": "disaggregated",
+}
 
 
-def _aisimulate_search_modes(req: RecommendRequest, window: tuple[int, int]) -> list[str]:
+def _aisimulate_search_modes(
+    req: RecommendRequest,
+    window: tuple[int, int],
+) -> list[Literal["agg", "disagg"]]:
     """Deployment modes one AISimulate GPU window searches.
 
     A one-GPU total window cannot contain a disaggregated deployment: it needs
@@ -1348,12 +1355,15 @@ def _aisimulate_search_modes(req: RecommendRequest, window: tuple[int, int]) -> 
     return ["agg"] if window_max_gpus == 1 or aggregate_only else ["agg", "disagg"]
 
 
-def _merge_search_modes(covered: list[str], window: list[str]) -> list[str]:
+def _merge_search_modes(
+    covered: list[Literal["agg", "disagg"]],
+    window: list[Literal["agg", "disagg"]],
+) -> list[Literal["agg", "disagg"]]:
     """Union of modes searched, in contract order, across a window ladder."""
     return [mode for mode in _DEPLOYMENT_MODES if mode in covered or mode in window]
 
 
-def _reported_search_modes(reported: Any) -> list[str] | None:
+def _reported_search_modes(reported: Any) -> list[Literal["agg", "disagg"]] | None:
     """Normalise a simulator's own search-mode report into contract values.
 
     A simulator that reports an unknown spelling gets no field rather than a
@@ -2148,16 +2158,13 @@ def _run_demand_windows(
     timed_out = 0
     budget_exhausted = False
     run_id: str | None = None
-    modes_searched: list[str] = []
+    modes_searched: list[Literal["agg", "disagg"]] = []
     for lower, upper in windows:
         remaining = deadline - time.monotonic()
         if attempted and remaining < _DEMAND_MIN_WINDOW_S:
             budget_exhausted = True
             break
         attempted.append((lower, upper))
-        modes_searched = _merge_search_modes(
-            modes_searched, _aisimulate_search_modes(req, (lower, upper))
-        )
         window_max_trials, window_parallelism, candidate_timeout = (
             _recommendation_trial_budget(req.objective, upper)
         )
@@ -2189,6 +2196,12 @@ def _run_demand_windows(
                 continue
             raise
         searched = True
+        # A window that returned a result is the smallest unit of evidence: a
+        # skipped window below the model's fit evaluated no candidate, so it
+        # must not report a deployment mode the simulator never searched.
+        modes_searched = _merge_search_modes(
+            modes_searched, _aisimulate_search_modes(req, (lower, upper))
+        )
         counts = getattr(result, "counts", None)
         window_evaluated = getattr(counts, "evaluated", None)
         if not isinstance(window_evaluated, int):
@@ -2271,7 +2284,7 @@ def _run_min_gpus_windows(
     run_id: str | None = None
     result: Any | None = None
     best_gpus: int | None = None
-    modes_searched: list[str] = []
+    modes_searched: list[Literal["agg", "disagg"]] = []
 
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
@@ -2282,9 +2295,6 @@ def _run_min_gpus_windows(
             _recommendation_trial_budget(req.objective, upper)
         )
         attempted.append((lower, upper))
-        modes_searched = _merge_search_modes(
-            modes_searched, _aisimulate_search_modes(req, (lower, upper))
-        )
         # Honour this window's own trial budget when time allows. The per-wave
         # timeout absorbs the remaining time rather than shrinking the sample
         # count, so a wide window is not under-sampled by a pessimistic
@@ -2322,6 +2332,11 @@ def _run_min_gpus_windows(
 
         if window_result is not None:
             searched = True
+            # Only a window that returned a result searched its modes; a window
+            # below the model's fit evaluated nothing, so it contributes none.
+            modes_searched = _merge_search_modes(
+                modes_searched, _aisimulate_search_modes(req, (lower, upper))
+            )
             counts = getattr(window_result, "counts", None)
             window_evaluated = getattr(counts, "evaluated", None)
             if not isinstance(window_evaluated, int):
@@ -3695,9 +3710,14 @@ def _run_capacity_recommendation(
             window_max_gpus=upper_gpus,
             configured_max_gpus=_max_candidate_gpus(),
             effective_max_gpus=upper_gpus,
-            # Capacity enumerates aggregated shapes and reports disaggregated
-            # comparison options separately, so it searches one mode.
-            modes_searched=["agg"],
+            # Capacity enumerates aggregated shapes, then simulates the
+            # aggregated minimum and any disaggregated comparison options. It
+            # covered prefill/decode exactly when one of those options exists.
+            modes_searched=(
+                ["agg", "disagg"]
+                if any(option.role == "disaggregated" for option in options)
+                else ["agg"]
+            ),
         )
         return primary.config, primary.capacity, sweep, options
 

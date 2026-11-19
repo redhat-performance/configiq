@@ -770,6 +770,19 @@ def _recommend_disagg_scenario(
     )
 
 
+def _searched_modes(evaluated: list[_RecommendCandidate]) -> list[str] | None:
+    """Deployment modes the enumerated grid actually ran, in contract order.
+
+    Derived from the candidates that were evaluated rather than from the grid
+    the request asked for, so a budget that stopped the run before the P/D
+    half reports what really ran. None when nothing was evaluated, which lets a
+    client tell "no search happened" from "one mode was searched".
+    """
+    covered = {candidate.mode for candidate in evaluated}
+    modes = [mode for mode in ("agg", "disagg") if mode in covered]
+    return modes or None
+
+
 def _search_summary(
     request: RecommendInput,
     candidates: list[_RecommendCandidate],
@@ -782,7 +795,8 @@ def _search_summary(
 ) -> dict[str, Any]:
     return {
         "strategy": "aggregate_tp_and_pd_grid" if include_disagg else "tensor_parallel_only",
-        "modes_searched": ["agg", "disagg"] if include_disagg else ["agg"],
+        # What the ledger covered, not what the grid intended to cover.
+        "modes_searched": _searched_modes(evaluated),
         "candidate_gpus": sorted({candidate.total_gpus for candidate in candidates}),
         "evaluated_gpus": sorted({candidate.total_gpus for candidate in evaluated}),
         "max_candidates": len(candidates),

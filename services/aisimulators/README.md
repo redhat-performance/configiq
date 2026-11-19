@@ -211,6 +211,13 @@ only through a fabric (`disaggregation_requires_fabric` on `/backends`, true
 for BLIS) also rejects `mode=disagg` when the request resolves to no fabric.
 Validation reads that capability flag, never the simulator ID.
 
+`mode=disagg` is accepted with `objective=throughput_demand` because AISimulate
+searches P/D for that goal. BLIS demand sizing replays open-loop traffic and
+attaches no P/D transfer fabric, so its search stays aggregated; the response
+says so in `sweep.modes_searched` (`["agg"]`) rather than echoing the request.
+A client should read that field instead of assuming the requested mode was
+searched.
+
 Both simulators report what the search covered in `sweep.modes_searched`
 (contract values `agg`/`disagg`; null when the simulator reported no search
 facts). `chosen_mode` describes the recommendation, which can be aggregated

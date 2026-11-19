@@ -1300,6 +1300,22 @@ class TestRunDemandWindows:
 
         assert sweep.modes_searched == ["agg"]
 
+    def test_a_ladder_that_search_nothing_reports_no_modes(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        def no_fit(request, **kwargs):
+            raise RuntimeError("No configuration meets the specified requirements.")
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", no_fit)
+        # `_is_no_viable_config` only skips a window; every window failing means
+        # the ladder searched no deployment mode at all.
+        monkeypatch.setattr(app_module, "_is_no_viable_config", lambda exc: True)
+
+        records, sweep = app_module._run_demand_windows(self._request())
+
+        assert records == []
+        assert sweep.modes_searched is None
+
     def test_stops_at_the_first_window_that_sustains_the_rate(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         windows: list[tuple[int, int]] = []
@@ -2440,16 +2456,40 @@ class TestRunCapacityRecommendation:
         assert options[0].role == "minimum"
         assert options[0].config is config
 
-    def test_capacity_reports_the_single_mode_it_enumerated(self, monkeypatch):
+    def test_capacity_reports_one_mode_without_a_pd_option(self, monkeypatch):
         _config, _capacity, sweep, _options = self._run(
             monkeypatch,
             [_capacity_shape(tp=1, per_rank_tokens=100_000)],
             prediction=self._available_prediction(),
             max_candidate_gpus=8,
         )
-        # Capacity enumerates aggregated shapes and returns P/D comparison
-        # options separately, so its search covered one deployment mode.
+        # Nothing disaggregated was simulated, so the search covered one mode.
         assert sweep.modes_searched == ["agg"]
+
+    def test_capacity_reports_both_modes_when_it_simulated_a_pd_option(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+        )
+        # A returned P/D comparison option is evidence that a disaggregated
+        # deployment was simulated, so the search covered both modes.
+        assert any(option.role == "disaggregated" for option in options)
+        assert sweep.modes_searched == ["agg", "disagg"]
 
     def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
         _config, capacity, _sweep, options = self._run(

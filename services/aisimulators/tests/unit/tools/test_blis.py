@@ -114,6 +114,20 @@ def _write_catalog(root: Path) -> Path:
     return root
 
 
+def test_search_modes_follow_the_evaluated_ledger():
+    def candidate(mode: str) -> blis_service._RecommendCandidate:
+        return blis_service._RecommendCandidate(mode=mode, total_gpus=4)
+
+    # Only what ran counts, in contract order, and "nothing ran" is reported as
+    # None rather than as an empty search of one mode.
+    assert blis_service._searched_modes([]) is None
+    assert blis_service._searched_modes([candidate("agg")]) == ["agg"]
+    assert blis_service._searched_modes([candidate("disagg")]) == ["disagg"]
+    assert blis_service._searched_modes(
+        [candidate("disagg"), candidate("agg")]
+    ) == ["agg", "disagg"]
+
+
 def test_catalog_reads_hugging_face_ids_and_skips_unpriceable_models(tmp_path: Path):
     catalog = load_catalog(str(_write_catalog(tmp_path)))
 
