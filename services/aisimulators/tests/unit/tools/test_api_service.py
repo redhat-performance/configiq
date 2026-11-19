@@ -1531,6 +1531,29 @@ class TestRunMinGpusWindows:
         assert sweep.run_id == "run-min"
         assert sweep.evaluated == 2
 
+    def test_the_reported_modes_are_the_search_the_sdk_was_given(self, monkeypatch):
+        # The report and the SDK config share one rule, so this pins them
+        # together: if the config stops asking for P/D while the sweep still
+        # reports it, the two disagree about what was searched.
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        configs = []
+
+        def fake(request, *, window=None, **kwargs):
+            configs.append(
+                app_module._aisimulate_recommendation_config(request, window=window)
+            )
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert configs
+        assert configs[0].engine.mode.choices == ["aggregated", "disaggregated"]
+        assert "prefill" in configs[0].engine.workers
+        assert sweep.modes_searched == ["agg", "disagg"]
+
     def test_reports_both_modes_for_the_wide_ladder(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
         monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)

@@ -771,12 +771,14 @@ def _recommend_disagg_scenario(
 
 
 def _searched_modes(evaluated: list[_RecommendCandidate]) -> list[str] | None:
-    """Deployment modes the enumerated grid actually ran, in contract order.
+    """Deployment modes the enumerated grid reached, in contract order.
 
-    Derived from the candidates that were evaluated rather than from the grid
-    the request asked for, so a budget that stopped the run before the P/D
-    half reports what really ran. None when nothing was evaluated, which lets a
-    client tell "no search happened" from "one mode was searched".
+    Derived from the candidates the grid evaluated rather than from the grid
+    the request asked for, so a budget that stopped before the P/D half reports
+    what it reached. A candidate that ran and failed still counts: the grid
+    reached that deployment, and its failure is reported per candidate. None
+    when nothing was evaluated, which lets a client tell "no search happened"
+    from "one mode was searched".
     """
     covered = {candidate.mode for candidate in evaluated}
     modes = [mode for mode in ("agg", "disagg") if mode in covered]

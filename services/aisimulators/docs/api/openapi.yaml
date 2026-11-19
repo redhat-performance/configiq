@@ -1189,9 +1189,10 @@ components:
             An aggregated winner can come from a search that also evaluated
             prefill/decode, so `chosen_mode` describes the recommendation, not
             the search space. AISimulate reports the union over the GPU windows
-            its ladder attempted; BLIS reports the modes its candidate grid
-            enumerated, and also lists them in `search_summary.modes_searched`.
-            Null when the simulator reported no search-mode facts.
+            that returned a result; BLIS reports the modes its candidate grid
+            reached, where a candidate that ran and failed still counts, and
+            also lists them in `search_summary.modes_searched`. Null when the
+            simulator reported no search-mode facts.
           items: { type: string, enum: [agg, disagg] }
 
     CandidateResponse:

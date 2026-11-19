@@ -222,8 +222,9 @@ Both simulators report what the search covered in `sweep.modes_searched`
 (contract values `agg`/`disagg`; null when the simulator reported no search
 facts). `chosen_mode` describes the recommendation, which can be aggregated
 even when P/D candidates were evaluated. AISimulate reports the union over the
-GPU windows its ladder attempted, so a one-GPU window contributes `agg` only;
-BLIS reports the modes its candidate grid enumerated and also lists them in
+GPU windows that returned a result, so a one-GPU window contributes `agg` only;
+BLIS reports the modes its candidate grid reached, where a candidate that ran
+and failed still counts, and also lists them in
 `search_summary.modes_searched`.
 
 BLIS recommendation sizes closed-loop concurrency by default. With
