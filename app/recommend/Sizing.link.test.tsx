@@ -350,26 +350,23 @@ describe('recommend sizing shared views', () => {
     expect(sizing.mode).toBe('agg');
   });
 
-  it('searches both deployments by default for a demand link', async () => {
+  it('does not offer a serving mode for a demand link', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
 
-    const sent = await calculate();
-    // Demand sizing honours the serving mode, and its default keeps the
-    // pre-existing search that includes P/D candidates, so the fabric the
-    // simulator models with is part of the request.
-    expect(sent.mode).toBe('disagg');
-    expect(sent.fabric).toBe('ib-400g');
-  });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Adjust?'))
+        ?.click();
+      await Promise.resolve();
+    });
 
-  it('asks for an aggregated demand search when the link names it', async () => {
-    await mountAt(
-      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand' +
-      '&servingMode=agg',
-    );
-
+    // The simulator reports the deployment that sustains the rate, so the page
+    // must not claim one, and the request must not narrow the search.
+    expect(Array.from(container.querySelectorAll('button'))
+      .some(button => button.textContent === 'Disaggregated')).toBe(false);
     const sent = await calculate();
-    expect(sent.mode).toBe('agg');
-    expect(sent.fabric).toBeNull();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
   });
 
   it('restores the pre-mode topology a legacy link describes', async () => {

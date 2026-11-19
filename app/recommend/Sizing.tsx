@@ -370,22 +370,23 @@ export default function Sizing() {
   const availableObjectives = support?.objectives ?? catalogObjectives;
   const capacitySupported = availableObjectives.includes('concurrency_capacity');
   const paretoSupported = availableObjectives.includes('pareto');
-  // Both of these goals report load without an SLA. Only capacity ignores the
-  // serving mode: it reports aggregated and disaggregated options together. A
-  // demand search honours the mode like any other sizing run.
-  const slaFreeGoal = isDemand || isCapacity;
-  const capacityGoal = isCapacity;
+  // Demand and capacity both report a GPU count without a latency SLA, and
+  // neither searches a topology the page can choose: demand's answer is the
+  // deployment that sustains the rate, and capacity reports aggregated
+  // configurations plus disaggregated comparison options. The page therefore
+  // leaves the topology to the service for both goals.
+  const aggregateOnlyGoal = isDemand || isCapacity;
   // The mode the user or a shared link chose, or null while nothing has chosen
   // one. A null choice derives from capability so this page keeps the
   // deployment search it made before this control existed: aggregated only when
-  // the simulator cannot model prefill/decode or the goal ignores the mode.
+  // the simulator cannot model prefill/decode or the goal has no mode to choose.
   const [servingModeChoice, setServingModeChoice] = React.useState<'agg' | 'disagg' | null>(null);
   // Whether the simulator can search a prefill/decode topology at all: it must
-  // model one, the goal must not ignore the mode, and a P/D search needs a
-  // fabric, so a catalog that offers none leaves nothing to search. Both inputs
-  // are capability, never a simulator ID.
+  // model one, the goal must offer the choice, and a P/D search needs a fabric,
+  // so a catalog that offers none leaves nothing to search. Both inputs are
+  // capability, never a simulator ID.
   const disaggCapable = disaggSupported
-    && !capacityGoal
+    && !aggregateOnlyGoal
     && (!fabricRequired || availableNetworks.length > 0);
   // The explicit "None" fabric is an aggregate-only request, so it leaves no P/D
   // topology either.
@@ -797,7 +798,7 @@ export default function Sizing() {
     // encoded so it survives an empty-string build.
     fabric: {
       read: () => (
-        fabricRequired && !capacityGoal
+        fabricRequired && !aggregateOnlyGoal
           ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
           : undefined
       ),
@@ -887,13 +888,13 @@ export default function Sizing() {
       effectiveFabric: params.pareto
         ? resolveParetoFabric(
             fabricRequired,
-            capacityGoal,
+            aggregateOnlyGoal,
             disaggSupported,
             selectedNetworkFabric,
           )
         : resolveEffectiveFabric(
             fabricRequired,
-            capacityGoal,
+            aggregateOnlyGoal,
             disaggSupported,
             selectedNetworkFabric,
             servingMode,
@@ -901,7 +902,7 @@ export default function Sizing() {
       servingMode,
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, capacityGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const sizingObjective: RecommendObjective = isCapacity
     ? 'concurrency_capacity'
@@ -914,7 +915,7 @@ export default function Sizing() {
     system: gpuSystem,
     isl,
     osl,
-    sla_mode: slaFreeGoal ? 'none' : 'enforce',
+    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
     objective: sizingObjective,
     ...(isCapacity
       ? { target_concurrency: targetConcurrency }
@@ -943,13 +944,13 @@ export default function Sizing() {
     // A release without P/D modelling can only search aggregated candidates,
     // so do not send a fabric that asks for a disaggregated topology. Capacity
     // sizing reports both topologies itself and rejects a fabric.
-    ...(fabricRequired && !capacityGoal
+    ...(fabricRequired && !aggregateOnlyGoal
       ? { fabric: servingMode === 'disagg' && disaggSupported ? selectedNetworkFabric || null : null }
       : {}),
-    // The selected serving mode, for a goal that can act on it. Capacity sizing
-    // reports aggregated and disaggregated options regardless of mode, so
-    // sending one would state a narrowing the response does not honour.
-    ...(capacityGoal ? {} : { mode: servingMode }),
+    // The selected serving mode, for a goal that can act on it. Demand and
+    // capacity report the deployment they sized, so a mode here would state a
+    // narrowing the response does not honour.
+    ...(aggregateOnlyGoal ? {} : { mode: servingMode }),
   });
 
   const handleCalculate = () => {
@@ -965,7 +966,7 @@ export default function Sizing() {
     const { mode: _mode, ...sizing } = buildRecommendParams();
     const fabric = resolveParetoFabric(
       fabricRequired,
-      capacityGoal,
+      aggregateOnlyGoal,
       disaggSupported,
       selectedNetworkFabric,
     );
@@ -1235,41 +1236,50 @@ export default function Sizing() {
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12, fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'var(--t)' }}>
               Serving mode
-              <Button
-                className="gc-preset-button"
-                variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
-                size="sm"
-                aria-pressed={servingMode === 'agg'}
-                onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
-              >
-                Aggregated
-              </Button>
-              <Button
-                className="gc-preset-button"
-                variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
-                size="sm"
-                aria-pressed={servingMode === 'disagg'}
-                isDisabled={!disaggSelectable}
-                onClick={() => {
-                  if (!disaggSelectable) return;
-                  setServingModeChoice('disagg');
-                  markInputsDirty();
-                }}
-              >
-                Disaggregated
-              </Button>
-              {servingMode === 'disagg' && (
+              {!aggregateOnlyGoal && (
+                <>
+                  <Button
+                    className="gc-preset-button"
+                    variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
+                    size="sm"
+                    aria-pressed={servingMode === 'agg'}
+                    onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
+                  >
+                    Aggregated
+                  </Button>
+                  <Button
+                    className="gc-preset-button"
+                    variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+                    size="sm"
+                    aria-pressed={servingMode === 'disagg'}
+                    isDisabled={!disaggSelectable}
+                    onClick={() => {
+                      if (!disaggSelectable) return;
+                      setServingModeChoice('disagg');
+                      markInputsDirty();
+                    }}
+                  >
+                    Disaggregated
+                  </Button>
+                </>
+              )}
+              {!aggregateOnlyGoal && servingMode === 'disagg' && (
                 <span style={{ fontSize: 12, fontWeight: 400, color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
               )}
-              {!disaggSelectable && (
+              {!aggregateOnlyGoal && !disaggSelectable && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
-                  {capacityGoal
+                  {!disaggSupported
+                    ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}.`
+                    : availableNetworks.length === 0
+                      ? 'No network fabric is available to model a prefill/decode search.'
+                      : 'Choose a network fabric to search prefill/decode deployments.'}
+                </span>
+              )}
+              {aggregateOnlyGoal && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  {isCapacity
                     ? 'Capacity sizing reports aggregated and disaggregated options; it does not search one serving mode.'
-                    : !disaggSupported
-                      ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}.`
-                      : availableNetworks.length === 0
-                        ? 'No network fabric is available to model a prefill/decode search.'
-                        : 'Choose a network fabric to search prefill/decode deployments.'}
+                    : 'Demand sizing reports the deployment that sustains the arrival rate; it does not take a serving mode.'}
                 </span>
               )}
             </div>

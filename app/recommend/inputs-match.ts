@@ -51,21 +51,22 @@ export interface CurrentRecommendInputs {
 }
 
 /**
- * Mirror `handleCalculate`'s fabric decision. Capacity sizing reports both
- * deployment topologies itself and rejects a fabric, so it omits the field even
- * when the selected backend normally requires one; the dirty check must use
- * `undefined` for that case rather than a resolved fabric name. An aggregated
- * serving mode submits an explicit null, the same as a backend that cannot model
- * prefill/decode disaggregation.
+ * Mirror `handleCalculate`'s fabric decision. An aggregate-only goal omits the
+ * fabric even when the selected backend normally requires one, so the dirty
+ * check must use `undefined` for that case rather than a resolved fabric name.
+ * Demand and capacity report the deployment they sized, so the page makes no
+ * topology claim for them; capacity also rejects an explicit fabric. An
+ * aggregated serving mode submits an explicit null, the same as a backend that
+ * cannot model prefill/decode disaggregation.
  */
 export function resolveEffectiveFabric(
   fabricRequired: boolean,
-  capacityGoal: boolean,
+  aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
   servingMode: 'agg' | 'disagg',
 ): string | null | undefined {
-  if (!fabricRequired || capacityGoal) return undefined
+  if (!fabricRequired || aggregateOnlyGoal) return undefined
   if (servingMode !== 'disagg' || !disaggSupported) return null
   return selectedFabric || null
 }
@@ -78,11 +79,11 @@ export function resolveEffectiveFabric(
  */
 export function resolveParetoFabric(
   fabricRequired: boolean,
-  capacityGoal: boolean,
+  aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
 ): string | null | undefined {
-  if (!fabricRequired || capacityGoal) return undefined
+  if (!fabricRequired || aggregateOnlyGoal) return undefined
   if (!disaggSupported) return null
   return selectedFabric || null
 }

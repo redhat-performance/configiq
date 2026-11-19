@@ -171,15 +171,10 @@ describe('submittedInputsMatch', () => {
     expect(submittedInputsMatch(baseParams, { ...baseInputs, objective: 'throughput_demand' })).toBe(false)
   })
 
-  it('matches a capacity request that omitted the fabric', () => {
-    const params: SubmittedRecommendParams = {
-      ...baseParams,
-      objective: 'concurrency_capacity',
-      fabric: undefined,
-    }
+  it('matches an aggregate-only request that omitted the fabric', () => {
+    const params: SubmittedRecommendParams = { ...baseParams, fabric: undefined }
     const inputs: CurrentRecommendInputs = {
       ...baseInputs,
-      objective: 'concurrency_capacity',
       effectiveFabric: resolveEffectiveFabric(true, true, true, 'roce-200g', 'disagg'),
     }
     expect(inputs.effectiveFabric).toBeUndefined()
@@ -289,7 +284,7 @@ describe('resolveEffectiveFabric', () => {
     expect(resolveEffectiveFabric(false, false, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
-  it('omits the fabric for capacity sizing', () => {
+  it('omits the fabric for aggregate-only goals', () => {
     expect(resolveEffectiveFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
@@ -319,7 +314,7 @@ describe('resolveParetoFabric', () => {
     expect(resolveParetoFabric(true, false, true, '')).toBeNull()
   })
 
-  it('omits the fabric when the backend does not require one or the goal reports both topologies', () => {
+  it('omits the fabric when the backend does not require one or the goal is aggregate-only', () => {
     expect(resolveParetoFabric(false, false, true, 'roce-200g')).toBeUndefined()
     expect(resolveParetoFabric(true, true, true, 'roce-200g')).toBeUndefined()
   })
