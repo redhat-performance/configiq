@@ -521,7 +521,8 @@ const SYSTEM_IDS = [
  * and pinning either would name a machine the question did not.
  */
 const SYSTEM_ALIASES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
-  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*(?:nvl|pcie))/i },
+  // The qualifier may be wrapped: `H200 NVL`, `H200 (NVL)`, `H200 (PCIe)`.
+  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*[(\[]?\s*(?:nvl|pcie))/i },
 ];
 
 /**

@@ -468,7 +468,7 @@ describe('proposeView', () => {
   });
 
   it('does not resolve an H200 variant to the SXM part', () => {
-    for (const variant of ['H200 NVL', 'H200 PCIe']) {
+    for (const variant of ['H200 NVL', 'H200 PCIe', 'H200 (NVL)', 'H200 (PCIe)']) {
       const proposal = proposeView({
         question: `Recommend a size for TTFT 1 s on an ${variant} at 4096 input tokens.`,
         model: 'meta-llama/Llama-3.1-8B-Instruct',
