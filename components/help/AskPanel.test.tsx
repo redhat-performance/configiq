@@ -107,6 +107,41 @@ describe('AskPanel', () => {
     expect(document.body.textContent).toContain('test/model');
   });
 
+  it('brings a new answer into view inside the scrollable panel', async () => {
+    // The panel is bounded to the viewport, so a result below the fold has to
+    // be scrolled to rather than waiting off-screen.
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          streamResponse([
+            { type: 'retrieval', sections: [] },
+            {
+              type: 'result',
+              status: 'answered',
+              answer: 'Set concurrency in the workload section.',
+              citations: [],
+              links: [],
+              evidence: [],
+              unsupportedNumbers: [],
+              model: 'test/model',
+            },
+          ])),
+      );
+
+      await render();
+      await ask('Where do I set concurrency?');
+
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it('replaces unverified prose with the sources instead of showing the numbers', async () => {
     vi.stubGlobal(
       'fetch',

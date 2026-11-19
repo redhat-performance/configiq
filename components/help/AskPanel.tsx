@@ -58,6 +58,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
   const [answeredBy, setAnsweredBy] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
+  const answerRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(
     () => () => {
@@ -65,6 +66,13 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
     },
     [],
   );
+
+  React.useEffect(() => {
+    if (status !== 'done') return;
+    // The help panel is the scroll container. Bring a new answer into view so a
+    // long one starts at its first line; `nearest` leaves a short answer alone.
+    answerRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [status]);
 
   const reset = () => {
     setProgress([]);
@@ -260,7 +268,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       )}
 
       {status === 'done' && (
-        <div className={styles.answerBlock} aria-live="polite">
+        <div className={styles.answerBlock} aria-live="polite" ref={answerRef}>
           {answer ? (
             <p className={styles.answer}>{answer}</p>
           ) : resultStatus === 'incomplete' ? (

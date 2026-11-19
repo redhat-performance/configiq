@@ -14,6 +14,15 @@
   width: 100%;
   font-family: var(--font-display);
   text-align: left;
+  /*
+   * A long answer must scroll inside the popover instead of growing past the
+   * bottom of the window. PatternFly sizes the popover to its content, so the
+   * bound belongs here, on the element that holds the search box and answer.
+   * The 9rem leaves room for the masthead and the popover's own padding.
+   */
+  max-height: calc(100vh - 9rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .group {
