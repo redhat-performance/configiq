@@ -285,7 +285,10 @@ async function acceptSharedSimulator() {
 }
 
 describe('recommend sizing shared views', () => {
-  it('forwards the per-pool context limits the link carries', async () => {
+  it('forwards the per-pool context limits a legacy link carries', async () => {
+    // A link written before the serving mode existed names pool lengths only.
+    // The page keeps the pre-mode search, so those lengths apply to a
+    // disaggregated request even though the link never says so.
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
@@ -294,6 +297,7 @@ describe('recommend sizing shared views', () => {
     const sent = await calculate();
     expect(sent.prefill_max_seq_len).toBe(8192);
     expect(sent.decode_max_seq_len).toBe(4096);
+    expect(sent.mode).toBe('disagg');
   });
 
   it('restores disaggregated serving and its fabric from a shared link', async () => {
@@ -318,16 +322,64 @@ describe('recommend sizing shared views', () => {
     expect(sent.mode).toBe('disagg');
   });
 
-  it('hides the fabric control while serving stays aggregated', async () => {
+  it('searches prefill/decode by default for a latency link that names a fabric', async () => {
+    // The link predates the serving-mode field. Its named fabric described the
+    // P/D search the page made before the control existed, so the default must
+    // keep searching that topology instead of silently narrowing to aggregated.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
 
-    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
     const sizing = await calculate();
-    expect(sizing.fabric).toBeNull();
-    expect(sizing.mode).toBe('agg');
+    expect(sizing.fabric).toBe('ib-400g');
+    expect(sizing.mode).toBe('disagg');
     const sweep = await pareto();
     expect(sweep.fabric).toBe('ib-400g');
     expect(sweep.mode).toBeUndefined();
+  });
+
+  it('honours an explicitly aggregated link even when it names a fabric', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+
+    const sizing = await calculate();
+    // Aggregated is an explicit null fabric, not an omission the simulator
+    // would fill with its default.
+    expect(sizing.fabric).toBeNull();
+    expect(sizing.mode).toBe('agg');
+  });
+
+  it('searches both deployments by default for a demand link', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
+
+    const sent = await calculate();
+    // Demand sizing honours the serving mode, and its default keeps the
+    // pre-existing search that includes P/D candidates, so the fabric the
+    // simulator models with is part of the request.
+    expect(sent.mode).toBe('disagg');
+    expect(sent.fabric).toBe('ib-400g');
+  });
+
+  it('asks for an aggregated demand search when the link names it', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand' +
+      '&servingMode=agg',
+    );
+
+    const sent = await calculate();
+    expect(sent.mode).toBe('agg');
+    expect(sent.fabric).toBeNull();
+  });
+
+  it('omits the serving mode for capacity, which reports both topologies', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
+
+    const sent = await calculate();
+    // Capacity sizing enumerates aggregated shapes and returns disaggregated
+    // comparison options separately, so it ignores mode and rejects a fabric.
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
   });
 
   it('asks for aggregate-only candidates when the link says "no fabric"', async () => {
@@ -335,15 +387,19 @@ describe('recommend sizing shared views', () => {
     // explicit null rather than falling back to the simulator's default fabric.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
 
-    expect((await calculate()).fabric).toBeNull();
+    const sizing = await calculate();
+    expect(sizing.fabric).toBeNull();
+    expect(sizing.mode).toBe('agg');
     expect((await pareto()).fabric).toBeNull();
   });
 
-  it('leaves the fabric to the simulator when a disaggregated link omits it', async () => {
+  it('leaves the fabric to the simulator when the request omits one', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     await selectDisaggregated();
-    expect((await calculate()).fabric).toBe('ib-400g');
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
   });
 
   it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {

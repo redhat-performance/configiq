@@ -320,9 +320,6 @@ export default function Sizing() {
   // The linked system the shared simulator did not offer yet. It is re-applied
   // once the catalog for the accepted simulator arrives.
   const pendingLinkedSystem = React.useRef<string | null>(null);
-  // A linked disaggregated mode the current simulator cannot model. It is
-  // applied once the accepted simulator can run a prefill/decode search.
-  const pendingLinkedServingMode = React.useRef<'disagg' | null>(null);
   const testedSystemsForModel = React.useMemo(
     () => new Set(testedPairs.filter(pair => pair.modelId === model).map(pair => pair.systemId)),
     [testedPairs, model],
@@ -373,15 +370,30 @@ export default function Sizing() {
   const availableObjectives = support?.objectives ?? catalogObjectives;
   const capacitySupported = availableObjectives.includes('concurrency_capacity');
   const paretoSupported = availableObjectives.includes('pareto');
-  const aggregateOnlyGoal = isDemand || isCapacity;
-  const [servingMode, setServingMode] = React.useState<'agg' | 'disagg'>('agg');
-  const disaggSelectable = disaggSupported && !aggregateOnlyGoal;
-  // Demand and capacity searches, and a backend without P/D modelling, stay
-  // aggregated. Drop a disaggregated selection rather than submit pool lengths
-  // the search will not use.
-  React.useEffect(() => {
-    if (servingMode === 'disagg' && !disaggSelectable) setServingMode('agg');
-  }, [servingMode, disaggSelectable]);
+  // Both of these goals report load without an SLA. Only capacity ignores the
+  // serving mode: it reports aggregated and disaggregated options together. A
+  // demand search honours the mode like any other sizing run.
+  const slaFreeGoal = isDemand || isCapacity;
+  const capacityGoal = isCapacity;
+  // The mode the user or a shared link chose, or null while nothing has chosen
+  // one. A null choice derives from capability so this page keeps the
+  // deployment search it made before this control existed: aggregated only when
+  // the simulator cannot model prefill/decode or the goal ignores the mode.
+  const [servingModeChoice, setServingModeChoice] = React.useState<'agg' | 'disagg' | null>(null);
+  // Whether the simulator can search a prefill/decode topology at all: it must
+  // model one, the goal must not ignore the mode, and a P/D search needs a
+  // fabric, so a catalog that offers none leaves nothing to search. Both inputs
+  // are capability, never a simulator ID.
+  const disaggCapable = disaggSupported
+    && !capacityGoal
+    && (!fabricRequired || availableNetworks.length > 0);
+  // The explicit "None" fabric is an aggregate-only request, so it leaves no P/D
+  // topology either.
+  const disaggSelectable = disaggCapable && (!fabricRequired || selectedNetworkFabric !== '');
+  // Clamp display and submission; never overwrite the choice. An explicit mode
+  // therefore survives a goal or simulator change and applies again as soon as
+  // the form can honour it.
+  const servingMode: 'agg' | 'disagg' = disaggSelectable ? servingModeChoice ?? 'disagg' : 'agg';
   // A Pareto sweep always searches both aggregated and disaggregated
   // deployments. It is not a sizing goal, so it is unavailable only when the
   // simulator cannot compute one or the workload has no throughput trade-off.
@@ -606,20 +618,6 @@ export default function Sizing() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectableGpus]);
 
-  // Accepting a shared simulator can enable prefill/decode. Apply a linked
-  // disaggregated mode once that simulator can model it. A simulator that
-  // cannot leaves the form aggregated, and the held mode is dropped so a later
-  // capability change does not select it on its own.
-  React.useEffect(() => {
-    if (pendingLinkedServingMode.current !== 'disagg') return;
-    pendingLinkedServingMode.current = null;
-    if (!disaggSelectable) return;
-    setServingMode('disagg');
-    markInputsDirty();
-    // The accepted simulator's capability is what matters here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simulator, disaggSelectable]);
-
   const classifierInput = React.useMemo<CanonicalClassifierInput | null>(() => {
     if (!result || !params) return null;
     const phase = (value: PhaseConfig | null): ClassifierPhaseInput | null => value ? {
@@ -771,24 +769,22 @@ export default function Sizing() {
     },
     servingMode: {
       read: () => servingMode,
-      write: (value) => setServingMode(value),
+      // A link names the topology the author was viewing, so applying it is an
+      // explicit choice even while the current simulator cannot honour it.
+      write: (value) => setServingModeChoice(value),
     },
     prefillMaxSeqLen: {
       read: () => (servingMode === 'disagg' ? prefillMaxSeqLen ?? undefined : undefined),
-      write: (value, values) => {
+      write: (value) => {
         setPrefillMaxSeqLen(value);
         setPrefillMaxSeqLenInput(String(value));
-        // Older links carried pool lengths without a mode. A link that names
-        // the mode has already been applied, so those lengths must not override it.
-        if (values.servingMode == null) setServingMode('disagg');
       },
     },
     decodeMaxSeqLen: {
       read: () => (servingMode === 'disagg' ? decodeMaxSeqLen ?? undefined : undefined),
-      write: (value, values) => {
+      write: (value) => {
         setDecodeMaxSeqLen(value);
         setDecodeMaxSeqLenInput(String(value));
-        if (values.servingMode == null) setServingMode('disagg');
       },
     },
     // An unset fabric means "use the simulator default", which is what the
@@ -796,7 +792,7 @@ export default function Sizing() {
     // encoded so it survives an empty-string build.
     fabric: {
       read: () => (
-        fabricRequired && !aggregateOnlyGoal
+        fabricRequired && !capacityGoal
           ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
           : undefined
       ),
@@ -822,7 +818,6 @@ export default function Sizing() {
       // A new link supersedes any system still waiting on an accepted
       // simulator; carrying it over would rewrite a different view.
       pendingLinkedSystem.current = null;
-      pendingLinkedServingMode.current = null;
       markInputsDirty();
     },
   });
@@ -841,13 +836,7 @@ export default function Sizing() {
     // replaces a system that simulator does not offer. Keep the linked system
     // to re-apply once it is selectable again, and mark any visible output
     // stale because a different simulator will produce the next result.
-    const linked = shared.parsed?.values;
-    pendingLinkedSystem.current = linked?.system ?? null;
-    // Pool lengths on an older link name a disaggregated view when the mode
-    // itself is absent. Hold that choice until the accepted simulator can model it.
-    const linkedDisagg = linked?.servingMode === 'disagg'
-      || (linked?.servingMode == null && (linked?.prefillMaxSeqLen != null || linked?.decodeMaxSeqLen != null));
-    pendingLinkedServingMode.current = linkedDisagg ? 'disagg' : null;
+    pendingLinkedSystem.current = shared.parsed?.values?.system ?? null;
     markInputsDirty();
     acceptSharedSimulator();
   };
@@ -885,13 +874,13 @@ export default function Sizing() {
       effectiveFabric: params.pareto
         ? resolveParetoFabric(
             fabricRequired,
-            aggregateOnlyGoal,
+            capacityGoal,
             disaggSupported,
             selectedNetworkFabric,
           )
         : resolveEffectiveFabric(
             fabricRequired,
-            aggregateOnlyGoal,
+            capacityGoal,
             disaggSupported,
             selectedNetworkFabric,
             servingMode,
@@ -899,7 +888,7 @@ export default function Sizing() {
       servingMode,
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, capacityGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const sizingObjective: RecommendObjective = isCapacity
     ? 'concurrency_capacity'
@@ -912,7 +901,7 @@ export default function Sizing() {
     system: gpuSystem,
     isl,
     osl,
-    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
+    sla_mode: slaFreeGoal ? 'none' : 'enforce',
     objective: sizingObjective,
     ...(isCapacity
       ? { target_concurrency: targetConcurrency }
@@ -939,15 +928,15 @@ export default function Sizing() {
     // GPU windows. This is a proxy hint and is never forwarded upstream.
     search_strategy: support?.recommendSearch ?? 'windowed',
     // A release without P/D modelling can only search aggregated candidates,
-    // so do not send a fabric that asks for a disaggregated topology. Demand
-    // and capacity sizing are aggregate-only regardless of the selected fabric.
-    ...(fabricRequired && !aggregateOnlyGoal
+    // so do not send a fabric that asks for a disaggregated topology. Capacity
+    // sizing reports both topologies itself and rejects a fabric.
+    ...(fabricRequired && !capacityGoal
       ? { fabric: servingMode === 'disagg' && disaggSupported ? selectedNetworkFabric || null : null }
       : {}),
-    // The selected serving mode. Aggregated asks the service to search that
-    // deployment only. Disaggregated keeps the simulator's existing search,
-    // which includes prefill/decode candidates when it models them.
-    mode: servingMode,
+    // The selected serving mode, for a goal that can act on it. Capacity sizing
+    // reports aggregated and disaggregated options regardless of mode, so
+    // sending one would state a narrowing the response does not honour.
+    ...(capacityGoal ? {} : { mode: servingMode }),
   });
 
   const handleCalculate = () => {
@@ -963,7 +952,7 @@ export default function Sizing() {
     const { mode: _mode, ...sizing } = buildRecommendParams();
     const fabric = resolveParetoFabric(
       fabricRequired,
-      aggregateOnlyGoal,
+      capacityGoal,
       disaggSupported,
       selectedNetworkFabric,
     );
@@ -1058,7 +1047,7 @@ export default function Sizing() {
           </div>
         )}
 
-        {fabricRequired && servingMode === 'disagg' && (
+        {fabricRequired && disaggCapable && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
             <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
             <FormSelect
@@ -1066,7 +1055,14 @@ export default function Sizing() {
               value={selectedNetworkFabric}
               aria-label="Inter-node fabric"
               isDisabled={availableNetworks.length === 0}
-              onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
+              onChange={(_, value) => {
+                setNetworkFabric(value);
+                // A named fabric is a prefill/decode topology; "None" is the
+                // aggregate-only request. Record the explicit choice so a later
+                // capability change does not silently reverse it.
+                setServingModeChoice(value === '' ? 'agg' : 'disagg');
+                markInputsDirty();
+              }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
               {availableNetworks.map(network => (
@@ -1074,13 +1070,11 @@ export default function Sizing() {
               ))}
             </FormSelect>
             <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-              {availableNetworks.length === 0
-                ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
-                : networkFabric === null && defaultNetworkFabric
+              {servingMode === 'disagg'
+                ? networkFabric === null && defaultNetworkFabric
                   ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
-                  : selectedNetworkFabric
-                    ? 'The simulator searches aggregate and P/D candidates using this fabric.'
-                    : 'No fabric selected; the simulator searches aggregate candidates only.'}
+                  : 'The simulator searches aggregate and P/D candidates using this fabric.'
+                : 'The selected serving mode is aggregated; choose a fabric to search P/D candidates.'}
             </div>
           </div>
         )}
@@ -1233,7 +1227,7 @@ export default function Sizing() {
                 variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                 size="sm"
                 aria-pressed={servingMode === 'agg'}
-                onClick={() => { setServingMode('agg'); markInputsDirty(); }}
+                onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
               >
                 Aggregated
               </Button>
@@ -1245,7 +1239,7 @@ export default function Sizing() {
                 isDisabled={!disaggSelectable}
                 onClick={() => {
                   if (!disaggSelectable) return;
-                  setServingMode('disagg');
+                  setServingModeChoice('disagg');
                   markInputsDirty();
                 }}
               >
@@ -1256,9 +1250,13 @@ export default function Sizing() {
               )}
               {!disaggSelectable && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
-                  {aggregateOnlyGoal
-                    ? 'This sizing goal searches aggregated deployments.'
-                    : `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}.`}
+                  {capacityGoal
+                    ? 'Capacity sizing reports aggregated and disaggregated options; it does not search one serving mode.'
+                    : !disaggSupported
+                      ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}.`
+                      : availableNetworks.length === 0
+                        ? 'No network fabric is available to model a prefill/decode search.'
+                        : 'Choose a network fabric to search prefill/decode deployments.'}
                 </span>
               )}
             </div>
