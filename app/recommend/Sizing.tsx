@@ -282,6 +282,12 @@ export default function Sizing() {
   // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
   // search takes none, so the fabric control stays hidden there.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
+  // Name the release in the "cannot disaggregate" explanation without ever
+  // rendering an empty version.
+  const modeledBackendLabel = [
+    inferenceBackend === 'vllm' ? 'vLLM' : inferenceBackend,
+    backendVersion || engineBackend?.defaultVersion,
+  ].filter(Boolean).join(' ');
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
@@ -1222,6 +1228,11 @@ export default function Sizing() {
             {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
           </>
         )}
+        {!aggregateOnlyGoal && (
+          <>
+            {' '}Serving: {servingMode === 'disagg' ? 'disaggregated (separate prefill and decode pools)' : 'aggregated'}.
+          </>
+        )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
@@ -1261,12 +1272,12 @@ export default function Sizing() {
                 </>
               )}
               {!aggregateOnlyGoal && servingMode === 'disagg' && (
-                <span style={{ fontSize: 12, fontWeight: 400, color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode run on separate GPU pools.</span>
               )}
               {!aggregateOnlyGoal && !disaggSelectable && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
                   {!disaggSupported
-                    ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}.`
+                    ? `The selected simulator does not model prefill/decode disaggregation for ${modeledBackendLabel || 'the selected backend'}.`
                     : availableNetworks.length === 0
                       ? 'No network fabric is available to model a prefill/decode search.'
                       : 'Choose a network fabric to search prefill/decode deployments.'}

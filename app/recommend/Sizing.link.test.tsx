@@ -356,6 +356,23 @@ describe('recommend sizing shared views', () => {
     expect(sweep.mode).toBeUndefined();
   });
 
+  it('reads the serving mode in the collapsed summary', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg',
+    );
+
+    // The summary is the read-only view of the form; a mode the user cannot
+    // see without expanding the panel is not a choice they made.
+    expect(container.textContent).toContain('Serving: aggregated.');
+  });
+
+  it('omits the serving mode from a summary for a goal without one', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
+
+    expect(container.textContent).not.toContain('Serving:');
+  });
+
   it('does not offer a serving mode for a demand link', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
 
