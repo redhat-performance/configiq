@@ -214,6 +214,8 @@ class BlisCapacityOutcome:
 
     target_concurrency: int
     context_per_sequence_tokens: int
+    #: Prefix tokens charged once per replica. Zero means no credit was applied.
+    shared_prefix_tokens: int
     capacity_tokens: int
     capacity_sequences: int
     fits: bool
@@ -1070,6 +1072,16 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
     # Resolve each shape's replicas inside the GPU window exactly like the
     # AISimulate capacity search: the smallest deployment that holds the target,
     # and the largest deployment of each shape as the best-effort fallback.
+    #
+    # A shared prefix is cached once per engine. Credit it only when it is
+    # shorter than the peak context; a longer one cannot reduce the space an
+    # additional sequence needs.
+    prefix_tokens = (
+        int(request.prefix)
+        if 0 < request.prefix < context_tokens
+        else 0
+    )
+    suffix_tokens = context_tokens - prefix_tokens
     fitting: list[dict[str, Any]] = []
     best_effort: list[dict[str, Any]] = []
     minimum_gpus: int | None = None
@@ -1086,7 +1098,9 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
         # another replica. Count whole sequences per replica, then scale by the
         # replicas the target needs. A shape that cannot hold one sequence (or
         # whose smallest window deployment cannot) is not a capacity candidate.
-        per_replica_sequences = capacity_tokens // context_tokens
+        # The prefix is stored once, so only the suffix is charged per
+        # additional sequence.
+        per_replica_sequences = max(0, capacity_tokens - prefix_tokens) // suffix_tokens
         if per_replica_sequences < 1:
             continue
         feasible_shapes += 1
@@ -1146,15 +1160,21 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
     capacity = BlisCapacityOutcome(
         target_concurrency=target,
         context_per_sequence_tokens=context_tokens,
+        shared_prefix_tokens=prefix_tokens,
         capacity_tokens=winner["capacity_tokens"],
         capacity_sequences=winner["capacity_sequences"],
         fits=fits,
         shortfall_sequences=None if fits else max(0, target - winner["capacity_sequences"]),
-        # Tokens belonging to the sequences that do not fit. The aggregate pool
-        # can be larger than `target * context_tokens` while still not holding
-        # whole sequences, because unused KV in one replica cannot serve a
-        # sequence on another.
-        shortfall_tokens=None if fits else max(0, target - winner["capacity_sequences"]) * context_tokens,
+        # Tokens belonging to the sequences that do not fit. With a shared
+        # prefix, each missing sequence needs only its suffix. The aggregate
+        # pool can be larger than `target * context_tokens` while still not
+        # holding whole sequences, because unused KV in one replica cannot
+        # serve a sequence on another.
+        shortfall_tokens=(
+            None
+            if fits
+            else max(0, target - winner["capacity_sequences"]) * suffix_tokens
+        ),
         minimum_gpus=minimum_gpus,
         # With attention DP=1 the aggregate pool BLIS reports is the replica's
         # whole KV capacity, so the per-rank figure equals the per-replica one.

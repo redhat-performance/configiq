@@ -730,7 +730,15 @@ components:
           default: null
         prefix:
           type: integer
-          description: Prefix cache length (tokens).
+          minimum: 0
+          description: |
+            Cached prefix tokens shared by every request. A prefix is a subset
+            of `isl`, not additional input: `prefix=1000, isl=4000` means 3000
+            uncached input tokens. A value greater than `isl` is rejected with
+            422. With `objective=concurrency_capacity` the prefix is cached once
+            per replica, so additional resident sequences need only their
+            suffix; the applied credit is reported as
+            `capacity.shared_prefix_tokens`.
           default: 0
         database_mode:
           type: string
@@ -988,6 +996,7 @@ components:
       required:
         - target_concurrency
         - context_per_sequence_tokens
+        - shared_prefix_tokens
         - capacity_tokens
         - capacity_sequences
         - fits
@@ -1005,7 +1014,14 @@ components:
           type: integer
           description: |
             Peak tokens one resident sequence can occupy: `max_seq_len` when
-            set, otherwise `isl + osl`. No prefix-cache credit is applied.
+            set, otherwise `isl + osl`. A shared prefix does not shorten this
+            peak; holding one sequence still needs the full context.
+        shared_prefix_tokens:
+          type: integer
+          description: |
+            Prefix tokens cached once per replica and omitted from the cost of
+            each additional resident sequence. Zero when no prefix was
+            requested, or when the prefix is not shorter than the peak context.
         capacity_tokens:
           type: integer
           description: |
@@ -1015,10 +1031,11 @@ components:
         capacity_sequences:
           type: integer
           description: |
-            Whole sequences of context_per_sequence_tokens the deployment
-            holds. Sequences cannot span replicas, so this is whole sequences
-            per replica multiplied by the replica count, not the pooled token
-            total divided by the context length.
+            Whole sequences the deployment holds. Sequences cannot span
+            replicas, so this is whole sequences per replica multiplied by the
+            replica count, not the pooled token total divided by the context
+            length. A shared prefix is stored once, so each additional sequence
+            is charged `context_per_sequence_tokens - shared_prefix_tokens`.
         fits:
           type: boolean
           description: True when capacity_sequences >= target_concurrency.
@@ -1030,9 +1047,9 @@ components:
           type: integer
           nullable: true
           description: |
-            KV tokens for the sequences that do not fit when fits=false
-            (`shortfall_sequences × context_per_sequence_tokens`); null when
-            the target fits.
+            KV tokens for the sequences that do not fit when fits=false:
+            `shortfall_sequences × (context_per_sequence_tokens −
+            shared_prefix_tokens)`; null when the target fits.
         minimum_gpus:
           type: integer
           nullable: true
@@ -1545,6 +1562,17 @@ components:
           type: integer
           description: Output sequence length (tokens).
           default: 1000
+        prefix:
+          type: integer
+          minimum: 0
+          description: |
+            Cached prefix tokens shared by every request. A prefix is a subset
+            of `isl`, not additional input: `prefix=1000, isl=4000` means 3000
+            uncached input tokens. A value greater than `isl` is rejected with
+            422. Requests reuse the shared prefix when
+            `requests_per_load_unit` asks for more than one request per
+            concurrency slot.
+          default: 0
         tp_size:
           type: integer
           description: Tensor parallel size.

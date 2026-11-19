@@ -372,9 +372,17 @@ must be a positive whole number. `sla_mode` must be `none`, and `target_request_
 `ttft`, `tpot`, and `request_latency` are rejected rather than reinterpreted.
 
 The per-sequence context is the peak a resident sequence can occupy:
-`max_seq_len` when supplied, otherwise `isl + osl`. Prefix caching is not
-credited, because a shorter average prompt does not bound how large a resident
-sequence can grow.
+`max_seq_len` when supplied, otherwise `isl + osl`. A shared prefix does not
+shorten that peak: holding one sequence still needs the full context. It does
+change what an *additional* resident sequence needs. Prefix caching stores the
+shared prefix once per replica, so the deployment holds one prefix plus whole
+suffixes per replica, and an additional sequence costs only
+`context - prefix` tokens. Credit is applied only when the prefix is shorter
+than the peak context; with no prefix, or a prefix at least as long as the
+context, the space an additional sequence needs is unchanged. The credit is
+reported as `capacity.shared_prefix_tokens` so a client can show the assumption
+instead of inferring it. `prefix` must not exceed `isl`; the service returns
+422 rather than forwarding a prefix that is not part of the input.
 
 For **AISimulate**, selection enumerates the parallel search space (the same
 backend filters, wideEP heuristic, and KV-feasibility rule as `min_gpus`) and
@@ -435,14 +443,18 @@ A capacity result carries a `capacity` block:
 
 - `target_concurrency` — sequences requested.
 - `context_per_sequence_tokens` — `max_seq_len` or `isl + osl`.
+- `shared_prefix_tokens` — prefix tokens charged once per replica. Zero when no
+  prefix was requested, or when the prefix is not shorter than the peak context.
 - `capacity_tokens` — `per_rank_tokens × attention_dp × replicas`; the
   aggregate pool. Unused tokens in one replica cannot serve another.
 - `capacity_sequences` — whole sequences per replica multiplied by replicas.
   Sequences cannot span replica engines, so this is not the pooled token total
-  divided by the context length.
+  divided by the context length. A shared prefix is stored once, so each extra
+  sequence is charged `context_per_sequence_tokens - shared_prefix_tokens`.
 - `fits` — `capacity_sequences >= target_concurrency`.
 - `shortfall_sequences` / `shortfall_tokens` — missing sequences and the KV
-  tokens for those sequences when `fits` is false.
+  tokens for those sequences when `fits` is false. With a shared prefix the
+  token shortfall is measured in suffix tokens.
 - `minimum_gpus` — fewest GPUs in the requested window that hold one sequence.
 - `per_rank_tokens`, `replicas`, `attention_dp` — resolved capacity inputs. For
   a disaggregated option these describe the decode pool, which holds resident

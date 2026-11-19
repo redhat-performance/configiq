@@ -198,6 +198,25 @@ def _validate_simulator(simulator: str) -> str:
     return _simulator_entry(simulator)["id"]
 
 
+def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
+    """Reject a cached prefix longer than the prompt it is part of.
+
+    A prefix is a subset of ``isl``, not additional input. A longer prefix
+    would charge KV and prefill time for tokens the request never contains, so
+    it is refused with a message that names the two inputs instead of leaking
+    the simulator's internal wording.
+    """
+    if req.prefix > req.isl:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"prefix must not exceed isl: got prefix={req.prefix} and "
+                f"isl={req.isl}. A cached prefix is part of the input, not "
+                "additional to it."
+            ),
+        )
+
+
 # ─── Pydantic models ────────────────────────────────────────────────────────
 
 
@@ -245,7 +264,17 @@ class RecommendRequest(BaseModel):
     ttft: float | None = Field(default=None, description="TTFT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
     tpot: float | None = Field(default=None, description="TPOT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
     request_latency: float | None = Field(default=None, description="E2E latency target (ms).")
-    prefix: int = Field(default=0, description="Prefix cache length.")
+    prefix: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cached prefix tokens shared by every request. A prefix is a subset "
+            "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
+            "uncached input tokens. With objective='concurrency_capacity' the "
+            "prefix is cached once per replica, so additional resident sequences "
+            "need only their suffix."
+        ),
+    )
     database_mode: str = Field(default="HYBRID", description="Perf database mode.")
     top_n: int = Field(default=5, ge=1, le=20, examples=[2], description="Number of configs to return.")
     search_budget_seconds: int = Field(
@@ -477,7 +506,15 @@ class EstimateRequest(BaseModel):
     max_seq_len: int | None = Field(default=None, gt=0, description="Maximum sequence length for KV cache allocation.")
     prefill_max_seq_len: int | None = Field(default=None, gt=0, description="Prefill worker sequence-length override.")
     decode_max_seq_len: int | None = Field(default=None, gt=0, description="Decode worker sequence-length override.")
-    prefix: int = Field(default=0, ge=0, description="Cached prefix tokens.")
+    prefix: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cached prefix tokens shared by every request. A prefix is a subset "
+            "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
+            "uncached input tokens."
+        ),
+    )
     gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1, description="GPU memory fraction for KV-cache capacity.")
     prefill_gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
     decode_gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
@@ -665,13 +702,19 @@ class CapacityOutcome(BaseModel):
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
-    holds. Sequences cannot span replicas, so the value is whole sequences per
-    replica multiplied by the replica count, not the pooled token total divided
-    by the context length. When the target does not fit, the response is still
-    200 and reports the best achievable configuration plus the shortfall.
+    holds. A shared prefix is cached once per replica, so an additional
+    sequence needs only its suffix: ``shared_prefix_tokens`` is the credit that
+    was applied, and it is 0 when no prefix was requested or the prefix is not
+    shorter than the peak context. Sequences cannot span replicas, so the value
+    is whole sequences per replica multiplied by the replica count, not the
+    pooled token total divided by the context length. When the target does not
+    fit, the response is still 200 and reports the best achievable
+    configuration plus the shortfall.
     """
     target_concurrency: int
     context_per_sequence_tokens: int
+    #: Prefix tokens charged once per replica. Zero means no credit was applied.
+    shared_prefix_tokens: int
     capacity_tokens: int
     capacity_sequences: int
     fits: bool
@@ -2464,11 +2507,26 @@ def _run_min_gpus_windows(
 def _capacity_context_tokens(req: RecommendRequest) -> int:
     """Peak context one sequence occupies: ``max_seq_len`` or ``ISL + OSL``.
 
-    Capacity is a residency question, so this is the full sequence length with
-    no prefix-cache credit. A shorter average prompt does not reduce the KV a
-    resident sequence can grow to.
+    Capacity is a residency question, so this stays the full sequence length: a
+    shorter average prompt does not reduce the KV one sequence can grow to.
+    A shared prefix does not shorten this peak either. It is credited once per
+    replica, so an *additional* resident sequence needs only its own suffix;
+    see :func:`_capacity_prefix_credit` and ``_CapacityCandidate``.
     """
     return int(req.max_seq_len or (req.isl + req.osl))
+
+
+def _capacity_prefix_credit(req: RecommendRequest, context_tokens: int) -> int:
+    """Prefix tokens a replica stores once for every resident sequence.
+
+    A shared prefix is cached once per engine, and each resident sequence then
+    needs only the suffix after it. Credit nothing when no prefix is requested,
+    or when the prefix is not shorter than the peak context: such a prefix
+    cannot reduce the space an additional sequence needs.
+    """
+    if req.prefix <= 0 or req.prefix >= context_tokens:
+        return 0
+    return int(req.prefix)
 
 
 def _gpu_window_label(lower: int, upper: int) -> str:
@@ -2517,6 +2575,8 @@ class _CapacityCandidate:
     shape: _CapacityShape
     replicas: int
     context_tokens: int
+    #: Shared prefix tokens the engine caches once for all resident sequences.
+    prefix_tokens: int = 0
 
     @property
     def total_gpus(self) -> int:
@@ -2527,11 +2587,22 @@ class _CapacityCandidate:
         return self.shape.tokens_per_replica * self.replicas
 
     @property
+    def suffix_tokens(self) -> int:
+        """KV an additional resident sequence needs after the shared prefix."""
+        return self.context_tokens - self.prefix_tokens
+
+    @property
     def capacity_sequences(self) -> int:
         # A replica is a separate engine: a sequence cannot use KV space from
         # another replica. Count whole sequences per replica, then scale by the
         # replica count instead of dividing the pooled token total.
-        return (self.shape.tokens_per_replica // self.context_tokens) * self.replicas
+        #
+        # Prefix caching stores the shared prefix once, so only the suffix is
+        # charged per additional sequence: (tokens - prefix) // (context -
+        # prefix). Holding one sequence still costs the full context, because
+        # the prefix alone is not a whole resident sequence.
+        available = max(0, self.shape.tokens_per_replica - self.prefix_tokens)
+        return (available // self.suffix_tokens) * self.replicas
 
 
 @dataclass(frozen=True)
@@ -2556,6 +2627,16 @@ class _DisaggCapacityCandidate:
     @property
     def capacity_sequences(self) -> int:
         return self.decode.capacity_sequences
+
+    @property
+    def prefix_tokens(self) -> int:
+        """Shared prefix tokens the decode pool caches once for its sequences."""
+        return self.decode.prefix_tokens
+
+    @property
+    def suffix_tokens(self) -> int:
+        """KV an additional resident decode sequence needs after the prefix."""
+        return self.decode.suffix_tokens
 
 
 def _capacity_shapes(
@@ -2746,6 +2827,7 @@ def _capacity_aggregate_candidates(
     context_tokens: int,
     lower_gpus: int,
     upper_gpus: int,
+    prefix_tokens: int = 0,
 ) -> tuple[list[_CapacityCandidate], list[_CapacityCandidate], int | None]:
     """Enumerate aggregate deployments around the minimum for each shape.
 
@@ -2767,8 +2849,11 @@ def _capacity_aggregate_candidates(
         if per_worker * min_replicas > upper_gpus:
             continue
         # Sequences cannot span replicas, so only whole per-replica sequences
-        # count. A shape that cannot hold one sequence is not a candidate.
-        per_replica_sequences = shape.tokens_per_replica // context_tokens
+        # count. A shape that cannot hold one sequence is not a candidate. The
+        # probe applies the shared-prefix credit exactly as the candidates do.
+        per_replica_sequences = _CapacityCandidate(
+            shape, 1, context_tokens, prefix_tokens
+        ).capacity_sequences
         if per_replica_sequences < 1:
             continue
         single_gpus = per_worker * min_replicas
@@ -2784,9 +2869,13 @@ def _capacity_aggregate_candidates(
             # single shape is feasible.
             for replicas in sorted({first_fitting, first_fitting + 1, first_fitting + 2, max_replicas}):
                 if first_fitting <= replicas <= max_replicas:
-                    fitting.append(_CapacityCandidate(shape, replicas, context_tokens))
+                    fitting.append(
+                        _CapacityCandidate(shape, replicas, context_tokens, prefix_tokens)
+                    )
         if max_replicas >= min_replicas:
-            best_effort.append(_CapacityCandidate(shape, max_replicas, context_tokens))
+            best_effort.append(
+                _CapacityCandidate(shape, max_replicas, context_tokens, prefix_tokens)
+            )
 
     # Collapse duplicate shape/replica pairs while preserving deterministic order.
     fitting = list(dict.fromkeys(fitting))
@@ -2869,7 +2958,12 @@ def _capacity_disagg_candidates(
     if not prefill_tokens or not decode_tokens:
         return []
 
-    def candidate_for(worker: Any, tokens: dict[Any, int]) -> _CapacityCandidate:
+    def candidate_for(
+        worker: Any,
+        tokens: dict[Any, int],
+        *,
+        prefix_tokens: int = 0,
+    ) -> _CapacityCandidate:
         shape = worker.shape
         return _CapacityCandidate(
             shape=_CapacityShape(
@@ -2881,15 +2975,19 @@ def _capacity_disagg_candidates(
             ),
             replicas=worker.replicas,
             context_tokens=context_tokens,
+            prefix_tokens=prefix_tokens,
         )
 
+    # The decode pool holds the resident sequences, so it is the side that
+    # credits the shared prefix. Prefill only holds one sequence transiently.
+    prefix_tokens = _capacity_prefix_credit(req, context_tokens)
     candidates: list[_DisaggCapacityCandidate] = []
     seen: set[tuple[int, int, int, int, int, int]] = set()
     for pair in pairs:
         if pair.prefill.shape not in prefill_tokens or pair.decode.shape not in decode_tokens:
             continue
         prefill = candidate_for(pair.prefill, prefill_tokens)
-        decode = candidate_for(pair.decode, decode_tokens)
+        decode = candidate_for(pair.decode, decode_tokens, prefix_tokens=prefix_tokens)
         if decode.capacity_sequences < target_concurrency:
             continue
         total = prefill.total_gpus + decode.total_gpus
@@ -3139,6 +3237,7 @@ def _capacity_prediction(
             backend_version=backend_version,
             isl=req.isl,
             osl=req.osl,
+            prefix=req.prefix,
             max_seq_len=req.max_seq_len,
             max_num_seqs=max(1, math.ceil(target_concurrency / decode.replicas)),
             mode="disagg",
@@ -3171,6 +3270,7 @@ def _capacity_prediction(
             backend_version=backend_version,
             isl=req.isl,
             osl=req.osl,
+            prefix=req.prefix,
             max_seq_len=req.max_seq_len,
             max_num_seqs=per_replica,
             tp_size=candidate.shape.tp,
@@ -3371,21 +3471,23 @@ def _capacity_option_outcome(
     unavailable_reason: str | None,
 ) -> CapacityOutcome:
     fits = candidate.capacity_sequences >= target_concurrency
+    short_by = max(0, target_concurrency - candidate.capacity_sequences)
     common = {
         "target_concurrency": target_concurrency,
         "context_per_sequence_tokens": context_tokens,
+        # The credit actually applied. Zero when no prefix was requested or it
+        # was not shorter than the peak context.
+        "shared_prefix_tokens": candidate.prefix_tokens,
         "capacity_tokens": candidate.capacity_tokens,
         "capacity_sequences": candidate.capacity_sequences,
         "fits": fits,
-        "shortfall_sequences": (
-            None if fits else max(0, target_concurrency - candidate.capacity_sequences)
-        ),
-        # Tokens belonging to the sequences that do not fit. The aggregate pool
-        # can exceed `target * context_tokens` while still not holding whole
-        # sequences, because unused KV in one replica cannot serve another.
-        "shortfall_tokens": (
-            None if fits else max(0, target_concurrency - candidate.capacity_sequences) * context_tokens
-        ),
+        "shortfall_sequences": None if fits else short_by,
+        # Tokens belonging to the sequences that do not fit. With a shared
+        # prefix, each missing sequence needs only its suffix, so the shortfall
+        # is measured in suffix tokens. The aggregate pool can exceed
+        # `target * context_tokens` while still not holding whole sequences,
+        # because unused KV in one replica cannot serve another.
+        "shortfall_tokens": None if fits else short_by * candidate.suffix_tokens,
         "minimum_gpus": minimum_gpus,
         "evaluated_shapes": evaluated_shapes,
         "feasible_shapes": feasible_shapes,
@@ -3625,6 +3727,7 @@ def _run_capacity_recommendation(
             context_tokens=context_tokens,
             lower_gpus=lower_gpus,
             upper_gpus=upper_gpus,
+            prefix_tokens=_capacity_prefix_credit(req, context_tokens),
         )
         if minimum_gpus is None:
             raise HTTPException(
@@ -4521,6 +4624,7 @@ def post_recommend(
     # Validate against the deployment's simulator registry so an unknown value
     # is an explicit 422, never a silent fall-through to another simulator.
     req.simulator = _validate_simulator(req.simulator)
+    _validate_prefix(req)
     if req.simulator == "blis":
         pareto_slots = _pareto_slots() if req.objective == "pareto" else None
         if pareto_slots is not None and not pareto_slots.acquire(blocking=False):
@@ -4969,6 +5073,7 @@ def post_predict(
     # Validate against the simulator registry so an unknown value is an
     # explicit 422 instead of falling through to another simulator's branch.
     req.simulator = _validate_simulator(req.simulator)
+    _validate_prefix(req)
     is_disagg = req.mode == "disagg"
 
     # Resolve per-role parallelism, falling back to the top-level agg fields.

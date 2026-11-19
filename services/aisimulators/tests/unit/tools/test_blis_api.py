@@ -407,6 +407,7 @@ def test_blis_recommend_capacity_returns_the_capacity_block():
         capacity=SimpleNamespace(
             target_concurrency=8,
             context_per_sequence_tokens=2176,
+            shared_prefix_tokens=0,
             capacity_tokens=20_000,
             capacity_sequences=8,
             fits=True,
