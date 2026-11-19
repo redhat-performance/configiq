@@ -4,7 +4,6 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecommendParams } from '@/contexts/RecommendContext';
-import { DEFAULT_WORKLOAD } from '@/lib/workload-presets';
 
 // The page reads its shared view through `useSearchParams`. Tests mount it
 // directly, so supply the current window search rather than the app router.
@@ -757,7 +756,7 @@ describe('recommend sizing shared views', () => {
   it('sends the default system-prompt prefix', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
 
-    expect((await calculate()).prefix).toBe(DEFAULT_WORKLOAD.prefix);
+    expect((await calculate()).prefix).toBe(200);
   });
 
   it('blocks sizing when the default prefix cannot fit the input length', async () => {

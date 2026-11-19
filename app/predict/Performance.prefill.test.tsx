@@ -4,7 +4,6 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
-import { DEFAULT_WORKLOAD } from '@/lib/workload-presets';
 
 // Deliberately not a SemVer release: the UI renders whatever version the
 // catalog reports, and a plausible pin here would look like a real one.
@@ -941,7 +940,7 @@ describe('performance page parameter defaults', () => {
     });
 
     expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
-      .toMatchObject({ prefix: DEFAULT_WORKLOAD.prefix });
+      .toMatchObject({ prefix: 200 });
   });
 
   it('blocks sizing when the shared prefix exceeds the input length', async () => {
