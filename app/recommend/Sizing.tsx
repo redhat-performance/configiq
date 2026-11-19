@@ -799,15 +799,23 @@ export default function Sizing() {
         if (values.servingMode == null) setServingModeChoice('disagg');
       },
     },
-    // An unset fabric means "use the simulator default", which is what the
-    // recipient gets if the field is absent. An explicit None is sentinel-
-    // encoded so it survives an empty-string build.
+    // The field has three meanings and the link must carry the one the page
+    // submits: omitted for a goal or backend that makes no topology claim, the
+    // name for a P/D search, and sentinel-encoded "none" for an explicit
+    // aggregate-only request. Reading the raw selection instead would export a
+    // remembered fabric name for a request that sends null.
     fabric: {
-      read: () => (
-        fabricRequired && !aggregateOnlyGoal
-          ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
-          : undefined
-      ),
+      read: () => {
+        const submitted = resolveSearchFabric(
+          fabricRequired,
+          aggregateOnlyGoal,
+          disaggSupported,
+          selectedNetworkFabric,
+          servingMode,
+        );
+        if (submitted === undefined) return undefined;
+        return submitted === null || submitted === '' ? FABRIC_NONE : submitted;
+      },
       write: (value, values) => {
         setNetworkFabric(value === FABRIC_NONE ? '' : value);
         // A named fabric is the topology a pre-mode link described, and "None"
@@ -1069,7 +1077,11 @@ export default function Sizing() {
             <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
             <FormSelect
               id="recommend-network-fabric"
-              value={selectedNetworkFabric}
+              // Show what the request will submit. An aggregated view sends an
+              // explicit null even when a fabric name is still remembered, so
+              // displaying the remembered name would claim a topology the
+              // request does not use.
+              value={servingMode === 'disagg' ? selectedNetworkFabric : ''}
               aria-label="Inter-node fabric"
               isDisabled={availableNetworks.length === 0}
               onChange={(_, value) => {
@@ -1091,7 +1103,7 @@ export default function Sizing() {
                 ? networkFabric === null && defaultNetworkFabric
                   ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
                   : 'The simulator searches aggregate and P/D candidates using this fabric.'
-                : 'The selected serving mode is aggregated; choose a fabric to search P/D candidates.'}
+                : `Aggregated sizing sends no fabric. A Pareto frontier still compares both deployments with ${selectedNetworkFabric || 'no fabric'}.`}
             </div>
           </div>
         )}
@@ -1230,7 +1242,7 @@ export default function Sizing() {
         )}
         {!aggregateOnlyGoal && (
           <>
-            {' '}Serving: {servingMode === 'disagg' ? 'disaggregated (separate prefill and decode pools)' : 'aggregated'}.
+            {' '}Deployment view: {servingMode === 'disagg' ? 'disaggregated' : 'aggregated'}.
           </>
         )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
@@ -1243,7 +1255,7 @@ export default function Sizing() {
         <div className={`${styles.card}`} style={{ marginBottom: 16 }}>
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12, fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'var(--t)' }}>
-              Serving mode
+              Deployment view
               {!aggregateOnlyGoal && (
                 <>
                   <Button
@@ -1272,7 +1284,7 @@ export default function Sizing() {
                 </>
               )}
               {!aggregateOnlyGoal && servingMode === 'disagg' && (
-                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode run on separate GPU pools.</span>
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode have separate inputs in this view.</span>
               )}
               {!aggregateOnlyGoal && !disaggSelectable && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
@@ -1280,7 +1292,7 @@ export default function Sizing() {
                     ? `The selected simulator does not model prefill/decode disaggregation for ${modeledBackendLabel || 'the selected backend'}.`
                     : availableNetworks.length === 0
                       ? 'No network fabric is available to model a prefill/decode search.'
-                      : 'Choose a network fabric to search prefill/decode deployments.'}
+                      : 'Choose a network fabric to view prefill/decode inputs.'}
                 </span>
               )}
               {aggregateOnlyGoal && (

@@ -69,7 +69,13 @@ const versionSupport = vi.hoisted(() => ({
   blis: {} as Record<string, { disaggregated: boolean }>,
 }));
 
+// Real AISimulate models prefill/decode without an inter-node fabric; BLIS
+// needs one. The default fixture keeps the fabric-requiring shape so the other
+// tests can exercise the control, and a test flips this to cover AISimulate.
+const catalogFlags = vi.hoisted(() => ({ aisimulateRequiresFabric: true }));
+
 vi.mock('@/lib/hooks/useCatalog', () => {
+  const buildCatalog = () => {
   const backend = {
     id: 'vllm',
     aisimulateId: 'vllm',
@@ -83,7 +89,11 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     disaggregationRequiresFabric: true,
     capacityOptions: { disaggregated: false },
   };
-  const aisimulateBackend = { ...backend, versionSupport: versionSupport.aisimulate };
+  const aisimulateBackend = {
+    ...backend,
+    disaggregationRequiresFabric: catalogFlags.aisimulateRequiresFabric,
+    versionSupport: versionSupport.aisimulate,
+  };
   const blisBackend = { ...backend, versionSupport: versionSupport.blis };
   const catalog = {
     modelOptions: ['Qwen/Qwen2.5-7B-Instruct'],
@@ -134,8 +144,10 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     timeoutSeconds: 60,
     isLoading: false,
   };
+  return catalog;
+  };
   return {
-    useCatalog: () => catalog,
+    useCatalog: () => buildCatalog(),
     engineVersionSupport: (
       engine: { versionSupport?: Record<string, { disaggregated: boolean }> } | null,
       version: string | null,
@@ -187,7 +199,16 @@ vi.mock('@/lib/app-config', () => ({
   }),
 }));
 
-vi.mock('@/components/help/CopyLinkButton', () => ({ CopyLinkButton: () => null }));
+// Capture the link builder so a test can read the URL the page would copy.
+const shareUrl = vi.hoisted(() => ({
+  getUrl: null as null | (() => string | null),
+}));
+vi.mock('@/components/help/CopyLinkButton', () => ({
+  CopyLinkButton: (props: { getUrl: () => string | null }) => {
+    shareUrl.getUrl = props.getUrl;
+    return null;
+  },
+}));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
 const { default: Sizing } = await import('./Sizing');
@@ -204,6 +225,7 @@ beforeEach(() => {
     for (const version of Object.keys(support)) delete support[version];
   }
   recommendState.isLoading = false;
+  catalogFlags.aisimulateRequiresFabric = true;
   settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -356,6 +378,21 @@ describe('recommend sizing shared views', () => {
     expect(sweep.mode).toBeUndefined();
   });
 
+  it('shares the fabric the request submits, not one it merely remembers', async () => {
+    // The remembered fabric name stays selected when the view is aggregated,
+    // but the request sends an explicit null. A link that exported the name
+    // would describe a P/D topology the recipient would inherit.
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+
+    const url = shareUrl.getUrl?.() ?? '';
+    expect(url).toContain('servingMode=agg');
+    expect(url).toContain('fabric=none');
+    expect(url).not.toContain('fabric=ib-400g');
+  });
+
   it('reads the serving mode in the collapsed summary', async () => {
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
@@ -364,13 +401,13 @@ describe('recommend sizing shared views', () => {
 
     // The summary is the read-only view of the form; a mode the user cannot
     // see without expanding the panel is not a choice they made.
-    expect(container.textContent).toContain('Serving: aggregated.');
+    expect(container.textContent).toContain('Deployment view: aggregated.');
   });
 
   it('omits the serving mode from a summary for a goal without one', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
 
-    expect(container.textContent).not.toContain('Serving:');
+    expect(container.textContent).not.toContain('Deployment view:');
   });
 
   it('does not offer a serving mode for a demand link', async () => {
@@ -434,6 +471,24 @@ describe('recommend sizing shared views', () => {
     const sent = await calculate();
     expect(sent.fabric).toBe('ib-400g');
     expect(sent.mode).toBe('disagg');
+  });
+
+  it('sends no fabric when the simulator models P/D without one', async () => {
+    // AISimulate sizes prefill/decode without an inter-node fabric, so the
+    // control stays hidden and the request must not claim a topology it has no
+    // way to model.
+    catalogFlags.aisimulateRequiresFabric = false;
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
+    );
+
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBeUndefined();
+    expect(sent.mode).toBe('disagg');
+    expect(sent.prefill_max_seq_len).toBe(8192);
+    expect(sent.decode_max_seq_len).toBe(4096);
   });
 
   it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
