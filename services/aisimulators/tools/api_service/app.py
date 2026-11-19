@@ -1376,6 +1376,41 @@ def _reported_search_modes(reported: Any) -> list[Literal["agg", "disagg"]] | No
     return modes or None
 
 
+#: Candidate topologies name a deployment mode the way the SDK configures it.
+_MODE_FROM_TOPOLOGY: dict[str, Literal["agg", "disagg"]] = {
+    "agg": "agg",
+    "disagg": "disagg",
+    "aggregated": "agg",
+    "disaggregated": "disagg",
+}
+
+
+def _evaluated_search_modes(
+    result: Any,
+    configured: list[Literal["agg", "disagg"]],
+) -> list[Literal["agg", "disagg"]]:
+    """Deployment modes the SDK's candidate ledger shows it evaluated.
+
+    A window can be configured for both modes and still run one: the SDK skips
+    a deployment mode with no viable configuration and evaluates the other.
+    Every candidate records the mode it was built for in
+    ``provenance.topology``, so the ledger is the evidence of coverage. A ledger
+    with no topology reports nothing about modes, so the configured list is the
+    only statement available in that case.
+    """
+    evaluated: set[str] = set()
+    for record in getattr(result, "candidates", None) or []:
+        topology = getattr(getattr(record, "provenance", None), "topology", None)
+        if not isinstance(topology, dict):
+            continue
+        mode = _MODE_FROM_TOPOLOGY.get(str(topology.get("deployment_mode")))
+        if mode is not None:
+            evaluated.add(mode)
+    if not evaluated:
+        return list(configured)
+    return [mode for mode in _DEPLOYMENT_MODES if mode in evaluated]
+
+
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
@@ -2127,7 +2162,11 @@ def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) 
         # The sweep started at the fit floor, so the ceiling it was allowed to
         # reach follows the same policy the resolver used.
         effective_max_gpus=_effective_search_ceiling(configured_max_gpus, window_min_gpus),
-        modes_searched=_aisimulate_search_modes(req, window),
+        # The configured modes are a request; the ledger says which ones the
+        # SDK actually evaluated.
+        modes_searched=_evaluated_search_modes(
+            result, _aisimulate_search_modes(req, window)
+        ),
     )
 
 
@@ -2199,9 +2238,11 @@ def _run_demand_windows(
         searched = True
         # A window that returned a result is the smallest unit of evidence: a
         # skipped window below the model's fit evaluated no candidate, so it
-        # must not report a deployment mode the simulator never searched.
+        # must not report a deployment mode the simulator never searched. The
+        # ledger then narrows the configured modes to the ones it evaluated.
         modes_searched = _merge_search_modes(
-            modes_searched, _aisimulate_search_modes(req, (lower, upper))
+            modes_searched,
+            _evaluated_search_modes(result, _aisimulate_search_modes(req, (lower, upper))),
         )
         counts = getattr(result, "counts", None)
         window_evaluated = getattr(counts, "evaluated", None)
@@ -2335,8 +2376,12 @@ def _run_min_gpus_windows(
             searched = True
             # Only a window that returned a result searched its modes; a window
             # below the model's fit evaluated nothing, so it contributes none.
+            # The ledger then narrows the configured modes to the ones evaluated.
             modes_searched = _merge_search_modes(
-                modes_searched, _aisimulate_search_modes(req, (lower, upper))
+                modes_searched,
+                _evaluated_search_modes(
+                    window_result, _aisimulate_search_modes(req, (lower, upper))
+                ),
             )
             counts = getattr(window_result, "counts", None)
             window_evaluated = getattr(counts, "evaluated", None)
@@ -3711,14 +3756,12 @@ def _run_capacity_recommendation(
             window_max_gpus=upper_gpus,
             configured_max_gpus=_max_candidate_gpus(),
             effective_max_gpus=upper_gpus,
-            # Capacity enumerates aggregated shapes, then simulates the
-            # aggregated minimum and any disaggregated comparison options. It
-            # covered prefill/decode exactly when one of those options exists.
-            modes_searched=(
-                ["agg", "disagg"]
-                if any(option.role == "disaggregated" for option in options)
-                else ["agg"]
-            ),
+            # Capacity enumerates aggregated shapes, then the disaggregated
+            # comparison set. Coverage follows the enumeration that ran, not
+            # the options a top-N cut keeps: truncation can hide a P/D option
+            # that was still searched. Performance-simulation availability is
+            # reported separately on each option.
+            modes_searched=(["agg", "disagg"] if disagg_candidates else ["agg"]),
         )
         return primary.config, primary.capacity, sweep, options
 

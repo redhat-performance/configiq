@@ -829,6 +829,26 @@ class TestParetoAutoWindow:
         assert sweep.configured_max_gpus == 1024
         assert sweep.effective_max_gpus == 1024
 
+    def test_report_follows_the_modes_the_sweep_evaluated(self):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        result = types.SimpleNamespace(
+            counts=types.SimpleNamespace(evaluated=4, feasible=2, timed_out=0),
+            provenance=types.SimpleNamespace(run_id="run-1"),
+            candidates=[
+                types.SimpleNamespace(
+                    provenance=types.SimpleNamespace(
+                        topology={"deployment_mode": "agg", "tp": 2}
+                    )
+                )
+            ],
+        )
+
+        sweep = app_module._sweep_meta(result, request, window=(4, 16))
+
+        # Both modes were configured, but the ledger shows the sweep only
+        # evaluated aggregate candidates.
+        assert sweep.modes_searched == ["agg"]
+
     def test_window_searches_both_deployment_modes(self):
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
@@ -1258,21 +1278,38 @@ class TestRunDemandWindows:
             {**VALID_DEMAND_BODY, **overrides}
         )
 
-    def test_reports_the_modes_the_ladder_searched(self, monkeypatch):
+    def _ledger(self, *modes: str):
+        """A window result whose ledger shows one candidate per evaluated mode."""
+        return MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(
+                    candidate_id=f"fits-{mode}",
+                    used_gpus=8,
+                    metrics=_demand_metrics(12.0),
+                    provenance=MockLedgerProvenance(
+                        topology={
+                            "deployment_mode": mode,
+                            "tp": 2,
+                            "pp": 1,
+                            "attention_dp": 1,
+                            "replicas": 1,
+                        }
+                    ),
+                )
+                for mode in modes
+            ],
+            counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+            provenance=MockRecommendationProvenance(run_id="run-demand"),
+        )
+
+    def test_reports_the_modes_the_ladder_evaluated(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
 
-        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
-            return MockLedgerRecommendationResult(
-                candidates=[
-                    MockLedgerCandidate(
-                        candidate_id="fits", used_gpus=8, metrics=_demand_metrics(12.0)
-                    )
-                ],
-                counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
-                provenance=MockRecommendationProvenance(run_id="run-demand"),
-            )
-
-        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg", "disagg"),
+        )
 
         _records, sweep = app_module._run_demand_windows(self._request())
 
@@ -1280,21 +1317,30 @@ class TestRunDemandWindows:
         # so the response says which deployments were explored.
         assert sweep.modes_searched == ["agg", "disagg"]
 
+    def test_does_not_report_a_mode_the_ledger_never_evaluated(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        # The window is configured for both modes, but the SDK skipped P/D here
+        # and evaluated aggregated candidates only, so the response must not
+        # claim the P/D half ran.
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg"),
+        )
+
+        _records, sweep = app_module._run_demand_windows(self._request())
+
+        assert sweep.modes_searched == ["agg"]
+
     def test_an_aggregated_demand_search_reports_one_mode(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
 
-        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
-            return MockLedgerRecommendationResult(
-                candidates=[
-                    MockLedgerCandidate(
-                        candidate_id="fits", used_gpus=8, metrics=_demand_metrics(12.0)
-                    )
-                ],
-                counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
-                provenance=MockRecommendationProvenance(run_id="run-demand"),
-            )
-
-        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg"),
+        )
 
         _records, sweep = app_module._run_demand_windows(self._request(mode="agg"))
 
@@ -1498,10 +1544,23 @@ class TestRunMinGpusWindows:
     def _request(self):
         return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
 
-    def _result(self, used_gpus: int, *, evaluated: int = 2):
+    def _result(self, used_gpus: int, *, evaluated: int = 2, modes: tuple[str, ...] = ("agg",)):
         return MockLedgerRecommendationResult(
             candidates=[
-                MockLedgerCandidate(candidate_id=f"g{used_gpus}", used_gpus=used_gpus)
+                MockLedgerCandidate(
+                    candidate_id=f"g{used_gpus}-{mode}",
+                    used_gpus=used_gpus,
+                    provenance=MockLedgerProvenance(
+                        topology={
+                            "deployment_mode": mode,
+                            "tp": 2,
+                            "pp": 1,
+                            "attention_dp": 1,
+                            "replicas": 1,
+                        }
+                    ),
+                )
+                for mode in modes
             ],
             counts=MockRecommendationCounts(
                 evaluated=evaluated, feasible=1, timed_out=0
@@ -1531,8 +1590,8 @@ class TestRunMinGpusWindows:
         assert sweep.run_id == "run-min"
         assert sweep.evaluated == 2
 
-    def test_the_reported_modes_are_the_search_the_sdk_was_given(self, monkeypatch):
-        # The report and the SDK config share one rule, so this pins them
+    def test_the_configured_search_is_the_one_the_ledger_reports(self, monkeypatch):
+        # The configured modes and the report share one rule, so this pins them
         # together: if the config stops asking for P/D while the sweep still
         # reports it, the two disagree about what was searched.
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -1543,7 +1602,7 @@ class TestRunMinGpusWindows:
             configs.append(
                 app_module._aisimulate_recommendation_config(request, window=window)
             )
-            return self._result(8)
+            return self._result(8, modes=("agg", "disagg"))
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
@@ -1565,12 +1624,27 @@ class TestRunMinGpusWindows:
         monkeypatch.setattr(
             app_module,
             "_run_aisimulate_recommendation",
-            lambda request, **kwargs: self._result(8),
+            lambda request, **kwargs: self._result(8, modes=("agg", "disagg")),
         )
 
         _result, sweep = app_module._run_min_gpus_windows(self._request())
 
         assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_does_not_report_a_mode_the_ledger_never_evaluated(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        # The window is configured for both modes, but the SDK skipped P/D for
+        # it, so only the evaluated mode is reported.
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8, modes=("agg",)),
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.modes_searched == ["agg"]
 
     def test_reports_one_mode_for_an_aggregated_request(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -2517,6 +2591,33 @@ class TestRunCapacityRecommendation:
         # A returned P/D comparison option is evidence that a disaggregated
         # deployment was simulated, so the search covered both modes.
         assert any(option.role == "disaggregated" for option in options)
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_capacity_reports_pd_coverage_when_truncation_hides_the_option(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+            top_n=1,
+        )
+        # The top-N cut keeps only the aggregate minimum, but the disaggregated
+        # enumeration still ran, so the search covered both modes.
+        assert options
+        assert all(option.role != "disaggregated" for option in options)
         assert sweep.modes_searched == ["agg", "disagg"]
 
     def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
