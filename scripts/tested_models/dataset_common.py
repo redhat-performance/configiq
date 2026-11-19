@@ -71,11 +71,10 @@ def _runtime_value(text: str, *names: str) -> str | None:
 
 
 def _env_flags(text: str) -> dict[str, str | None]:
-    """Expose only explicit, non-sensitive vLLM performance switches."""
+    """Expose only explicit, non-sensitive vLLM ROCm kernel settings."""
     names = {
         "VLLM_ROCM_USE_AITER": "vllm_rocm_use_aiter",
         "VLLM_ROCM_USE_AITER_MOE": "vllm_rocm_use_aiter_moe",
-        "VLLM_ROCM_USE_AITER_MOE_SITUV2": "vllm_rocm_use_aiter_moe_situv2",
     }
     try:
         source = json.loads(text or "{}")
@@ -94,6 +93,16 @@ def _env_flags(text: str) -> dict[str, str | None]:
             result[public_name] = "0"
         else:
             raise ValueError(f"unsupported value for {source_name}")
+    situv2 = source.get("VLLM_ROCM_USE_AITER_MOE_SITUV2")
+    if situv2 is None:
+        result["vllm_rocm_use_aiter_moe_situv2"] = None
+    else:
+        mode = str(situv2).strip().lower()
+        if mode in ("true", "false"):
+            mode = "1" if mode == "true" else "0"
+        if mode not in {"0", "1", "auto", "a4w4", "a8w4", "a16w4"}:
+            raise ValueError("unsupported value for VLLM_ROCM_USE_AITER_MOE_SITUV2")
+        result["vllm_rocm_use_aiter_moe_situv2"] = mode
     return result
 
 

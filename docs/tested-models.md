@@ -96,8 +96,9 @@ configuration fields, concurrency, and turn index form the row identity.
 Compare and classifier training consume only summary rows. Missing
 effective vLLM settings are not inferred from blank CSV fields, so this
 identity is limited to settings recorded by the source. The importer publishes
-only `0`/`1` values for three explicit ROCm AITER switches in `env_vars`; raw
-environment values and paths remain private. Configuration backfill from the
+explicit `0`/`1` values for the ROCm AITER and AITER MoE switches, and the
+explicit SiTUv2 mode (`0`, `1`, `auto`, `a4w4`, `a8w4`, or `a16w4`) when present
+in `env_vars`; raw environment values and paths remain private. Configuration backfill from the
 matching run logs remains separate.
 When recorded in the aggregate or its explicit runtime arguments, pipeline and
 data parallel sizes, separate prefill/decode TP sizes, MoE TP/EP sizes, and the

@@ -98,6 +98,15 @@ def test_normalize_rows_exposes_only_whitelisted_vllm_env_flags() -> None:
     assert "env_vars" not in frame and "FLASHINFER_CUBIN_DIR" not in frame
 
 
+def test_normalize_rows_preserves_explicit_situv2_mode() -> None:
+    frame = normalize_rows([{
+        "model": "org/model", "version": "vLLM-0.31.0",
+        "env_vars": json.dumps({"VLLM_ROCM_USE_AITER_MOE_SITUV2": "a8w4"}),
+    }], "org/model", "MI355X")
+
+    assert frame.loc[0, "vllm_rocm_use_aiter_moe_situv2"] == "a8w4"
+
+
 @pytest.mark.parametrize(
     "value",
     ["https://example.com/token", "person@example.com", "worker.cluster"],

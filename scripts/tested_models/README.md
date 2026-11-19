@@ -41,8 +41,8 @@ workload and serving setup match. Published configuration fields, concurrency,
 and `turn_index` distinguish rows. Compare and classifier training consume
 summary rows only. Where private source variants have the same published
 settings and concurrency, only the newest run is kept. These fields do not
-establish equality of unrecorded effective vLLM settings. Three explicit ROCm
-AITER switches are extracted from `env_vars`; raw environment values and paths
+establish equality of unrecorded effective vLLM settings. Two explicit ROCm
+AITER switches and the SiTUv2 MoE mode are extracted from `env_vars`; raw environment values and paths
 are not published. Run IDs, UUIDs, MLflow IDs, timestamps, raw runtime
 arguments, and other administrative fields are dropped before parquet is written.
 Additional serving fields (`pp`, `dp`, `tp_prefill`, `tp_decode`,
