@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import appConfig from '../public/config.json'
 import {
   DEFAULT_WORKLOAD,
   matchWorkloadPreset,
@@ -35,5 +36,12 @@ describe('workload presets', () => {
   it('still matches the combined token budget for a page with no prefix control', () => {
     expect(matchWorkloadPresetByTokens(presets, 4300)).toBe(presets[0])
     expect(matchWorkloadPresetByTokens(presets, 16896)).toBe(presets[1])
+  })
+
+  it('keeps every shipped prefix inside its input length', () => {
+    for (const preset of [DEFAULT_WORKLOAD, ...appConfig.workloadPresets]) {
+      expect(preset.prefix ?? 0).toBeGreaterThanOrEqual(0)
+      expect(preset.prefix ?? 0).toBeLessThanOrEqual(preset.isl)
+    }
   })
 })

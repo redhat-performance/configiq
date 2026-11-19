@@ -68,12 +68,13 @@ export interface RecommendDemandOutcome {
 export interface RecommendCapacityOutcome {
   targetConcurrency: number
   contextPerSequenceTokens: number
-  /** Prefix tokens cached once per replica; 0 when no credit was applied. */
+  /** Prefix tokens each attention-DP rank caches; 0 when no credit applied. */
   sharedPrefixTokens: number
   capacityTokens: number
   capacitySequences: number
   fits: boolean
   shortfallSequences: number | null
+  /** Missing KV in suffix tokens when a prefix was credited; else full context. */
   shortfallTokens: number | null
   /** Fewest GPUs in the requested window that hold one sequence. */
   minimumGpus: number | null

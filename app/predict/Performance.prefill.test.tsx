@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config';
+import { DEFAULT_WORKLOAD } from '@/lib/workload-presets';
 
 // Deliberately not a SemVer release: the UI renders whatever version the
 // catalog reports, and a plausible pin here would look like a real one.
@@ -925,6 +926,30 @@ describe('performance page parameter defaults', () => {
 
     expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
       .not.toHaveProperty('requests_per_load_unit');
+  });
+
+  it('sends the default system-prompt prefix', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ prefix: DEFAULT_WORKLOAD.prefix });
+  });
+
+  it('blocks sizing when the shared prefix exceeds the input length', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128');
+
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(true);
   });
 
   it('forwards an explicit per-user request count', async () => {

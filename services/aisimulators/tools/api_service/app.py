@@ -204,7 +204,8 @@ def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
     A prefix is a subset of ``isl``, not additional input. A longer prefix
     would charge KV and prefill time for tokens the request never contains, so
     it is refused with a message that names the two inputs instead of leaking
-    the simulator's internal wording.
+    the simulator's internal wording. The same applies when the caller states a
+    smaller peak context: a prefix cannot fit in a sequence it does not fit.
     """
     if req.prefix > req.isl:
         raise HTTPException(
@@ -213,6 +214,15 @@ def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
                 f"prefix must not exceed isl: got prefix={req.prefix} and "
                 f"isl={req.isl}. A cached prefix is part of the input, not "
                 "additional to it."
+            ),
+        )
+    if req.max_seq_len is not None and req.prefix > req.max_seq_len:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"prefix must not exceed max_seq_len: got prefix={req.prefix} "
+                f"and max_seq_len={req.max_seq_len}. A cached prefix has to fit "
+                "in the context it is cached for."
             ),
         )
 
@@ -702,18 +712,18 @@ class CapacityOutcome(BaseModel):
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
-    holds. A shared prefix is cached once per replica, so an additional
-    sequence needs only its suffix: ``shared_prefix_tokens`` is the credit that
-    was applied, and it is 0 when no prefix was requested or the prefix is not
-    shorter than the peak context. Sequences cannot span replicas, so the value
-    is whole sequences per replica multiplied by the replica count, not the
-    pooled token total divided by the context length. When the target does not
-    fit, the response is still 200 and reports the best achievable
-    configuration plus the shortfall.
+    holds. A shared prefix is cached once per attention-DP rank, so an
+    additional sequence needs only its suffix: ``shared_prefix_tokens`` is the
+    credit that was applied, and it is 0 when no prefix was requested or the
+    prefix is not shorter than the peak context. Sequences cannot span ranks or
+    replicas, so the value is whole sequences per rank multiplied by attention
+    DP and the replica count, not the pooled token total divided by the context
+    length. When the target does not fit, the response is still 200 and reports
+    the best achievable configuration plus the shortfall.
     """
     target_concurrency: int
     context_per_sequence_tokens: int
-    #: Prefix tokens charged once per replica. Zero means no credit was applied.
+    #: Prefix tokens each attention-DP rank caches. Zero means no credit.
     shared_prefix_tokens: int
     capacity_tokens: int
     capacity_sequences: int
@@ -2510,19 +2520,20 @@ def _capacity_context_tokens(req: RecommendRequest) -> int:
     Capacity is a residency question, so this stays the full sequence length: a
     shorter average prompt does not reduce the KV one sequence can grow to.
     A shared prefix does not shorten this peak either. It is credited once per
-    replica, so an *additional* resident sequence needs only its own suffix;
-    see :func:`_capacity_prefix_credit` and ``_CapacityCandidate``.
+    attention-DP rank, so an *additional* resident sequence needs only its own
+    suffix; see :func:`_capacity_prefix_credit` and ``_CapacityCandidate``.
     """
     return int(req.max_seq_len or (req.isl + req.osl))
 
 
 def _capacity_prefix_credit(req: RecommendRequest, context_tokens: int) -> int:
-    """Prefix tokens a replica stores once for every resident sequence.
+    """Prefix tokens each attention-DP rank caches for its resident sequences.
 
-    A shared prefix is cached once per engine, and each resident sequence then
-    needs only the suffix after it. Credit nothing when no prefix is requested,
-    or when the prefix is not shorter than the peak context: such a prefix
-    cannot reduce the space an additional sequence needs.
+    A rank has its own KV budget and caches the shared prefix once for all the
+    sequences it holds, so each resident sequence then needs only the suffix
+    after it. Credit nothing when no prefix is requested, or when the prefix is
+    not shorter than the peak context: such a prefix cannot reduce the space an
+    additional sequence needs.
     """
     if req.prefix <= 0 or req.prefix >= context_tokens:
         return 0
@@ -2575,7 +2586,7 @@ class _CapacityCandidate:
     shape: _CapacityShape
     replicas: int
     context_tokens: int
-    #: Shared prefix tokens the engine caches once for all resident sequences.
+    #: Shared prefix tokens each engine rank caches once for its sequences.
     prefix_tokens: int = 0
 
     @property
@@ -2593,16 +2604,18 @@ class _CapacityCandidate:
 
     @property
     def capacity_sequences(self) -> int:
-        # A replica is a separate engine: a sequence cannot use KV space from
-        # another replica. Count whole sequences per replica, then scale by the
-        # replica count instead of dividing the pooled token total.
+        # Each attention-DP rank has its own KV budget, and a sequence cannot
+        # use KV space from another rank or replica. Count whole sequences per
+        # rank, then scale by attention DP and the replica count instead of
+        # dividing the pooled token total.
         #
-        # Prefix caching stores the shared prefix once, so only the suffix is
-        # charged per additional sequence: (tokens - prefix) // (context -
-        # prefix). Holding one sequence still costs the full context, because
-        # the prefix alone is not a whole resident sequence.
-        available = max(0, self.shape.tokens_per_replica - self.prefix_tokens)
-        return (available // self.suffix_tokens) * self.replicas
+        # Prefix caching stores the shared prefix once on each rank, so only
+        # the suffix is charged per additional sequence:
+        # (per-rank tokens - prefix) // (context - prefix). Holding one
+        # sequence still costs the full context, because the prefix alone is
+        # not a whole resident sequence.
+        available = max(0, self.shape.per_rank_tokens - self.prefix_tokens)
+        return (available // self.suffix_tokens) * self.shape.dp * self.replicas
 
 
 @dataclass(frozen=True)
@@ -2630,7 +2643,7 @@ class _DisaggCapacityCandidate:
 
     @property
     def prefix_tokens(self) -> int:
-        """Shared prefix tokens the decode pool caches once for its sequences."""
+        """Shared prefix tokens each decode rank caches for its sequences."""
         return self.decode.prefix_tokens
 
     @property
@@ -3475,8 +3488,8 @@ def _capacity_option_outcome(
     common = {
         "target_concurrency": target_concurrency,
         "context_per_sequence_tokens": context_tokens,
-        # The credit actually applied. Zero when no prefix was requested or it
-        # was not shorter than the peak context.
+        # The credit actually applied per rank. Zero when no prefix was
+        # requested or it was not shorter than the peak context.
         "shared_prefix_tokens": candidate.prefix_tokens,
         "capacity_tokens": candidate.capacity_tokens,
         "capacity_sequences": candidate.capacity_sequences,

@@ -2246,6 +2246,19 @@ class TestCapacityCandidatePrefixCredit:
         )
         assert candidate.capacity_sequences == 138
 
+    def test_attention_dp_charges_the_prefix_on_every_rank(self):
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, dp=4, per_rank_tokens=10_000),
+            replicas=1,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        # Each of the four ranks caches the 800-token prefix against its own
+        # 10,000-token budget: (10,000 - 800) // 200 = 46 per rank, 184 total.
+        # Charging the prefix once against the pooled 40,000 tokens would
+        # wrongly claim 196.
+        assert candidate.capacity_sequences == 184
+
 
 class TestPrefixValidation:
     def test_capacity_rejects_a_prefix_longer_than_isl(self):
@@ -2259,6 +2272,17 @@ class TestPrefixValidation:
             "A cached prefix is part of the input, not additional to it."
         )
 
+    def test_capacity_rejects_a_prefix_longer_than_the_context(self):
+        response = client.post(
+            "/recommend",
+            json={**VALID_CAPACITY_BODY, "prefix": 1024, "max_seq_len": 512},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed max_seq_len"
+        )
+
     def test_predict_rejects_a_prefix_longer_than_isl(self):
         response = client.post(
             "/predict", json={**VALID_ESTIMATE_BODY, "prefix": 5000}
@@ -2266,6 +2290,17 @@ class TestPrefixValidation:
 
         assert response.status_code == 422
         assert response.json()["detail"].startswith("prefix must not exceed isl")
+
+    def test_predict_rejects_a_prefix_longer_than_the_context(self):
+        response = client.post(
+            "/predict",
+            json={**VALID_ESTIMATE_BODY, "prefix": 1024, "max_seq_len": 512},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed max_seq_len"
+        )
 
 
 class TestSelectCapacity:
@@ -2880,6 +2915,69 @@ class TestRunCapacityRecommendation:
         assert excinfo.value.status_code == 422
         assert "holds even one" in excinfo.value.detail
         assert "1-4 GPUs" in excinfo.value.detail
+
+
+class TestCapacityPredictionPrefix:
+    def test_aggregate_replay_forwards_the_requested_prefix(self, monkeypatch):
+        seen: list[app_module.EstimateRequest] = []
+        monkeypatch.setattr(
+            app_module, "_backend_memory_fraction", lambda *_args, **_kwargs: 0.9
+        )
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, _include: seen.append(req) or MagicMock(),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "prefix": 1024}
+        )
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=1, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+            prefix_tokens=1024,
+        )
+
+        _prediction, reason = app_module._capacity_prediction(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidate=candidate,
+            target_concurrency=32,
+        )
+
+        assert reason is None
+        assert seen[0].prefix == 1024
+
+    def test_disaggregated_replay_forwards_the_requested_prefix(self, monkeypatch):
+        seen: list[app_module.EstimateRequest] = []
+        monkeypatch.setattr(
+            app_module, "_backend_memory_fraction", lambda *_args, **_kwargs: 0.9
+        )
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, _include: seen.append(req) or MagicMock(),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "prefix": 1024}
+        )
+        shape = _capacity_shape(tp=2, per_rank_tokens=100_000)
+        candidate = app_module._DisaggCapacityCandidate(
+            prefill=app_module._CapacityCandidate(shape, 1, 2176),
+            decode=app_module._CapacityCandidate(shape, 2, 2176, 1024),
+        )
+
+        _prediction, reason = app_module._capacity_prediction(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidate=candidate,
+            target_concurrency=32,
+        )
+
+        assert reason is None
+        assert seen[0].prefix == 1024
 
 
 class TestCapacitySimulationBudget:

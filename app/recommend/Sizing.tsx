@@ -487,6 +487,9 @@ export default function Sizing() {
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
+  // A shared prefix is part of the input, so it cannot outgrow either the
+  // prompt or a stated context limit. The service rejects both combinations.
+  const invalidPrefix = prefix > isl || (maxSeqLen != null && prefix > maxSeqLen);
   const invalidTTFT = ttftInput === '' || !Number.isFinite(Number(ttftInput)) || Number(ttftInput) <= 0;
   const invalidTpot = tpotInput === '' || !Number.isFinite(Number(tpotInput)) || Number(tpotInput) <= 0;
   const invalidConcurrency = concurrencyInput === '' || parseInt(concurrencyInput, 10) < 1;
@@ -1170,6 +1173,7 @@ export default function Sizing() {
               !model.includes('/') ||
               invalidISL ||
               invalidOSL ||
+              invalidPrefix ||
               invalidMaxSeqLen ||
               (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) ||
               catalogLoading ||
@@ -1181,7 +1185,7 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidPrefix || invalidMaxSeqLen || (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -1449,11 +1453,17 @@ export default function Sizing() {
                 <label className={styles.fieldLabel}>Shared prefix tokens <Term k="prefix" /></label>
                 <input
                   type="number"
-                  className={styles.paramInput}
+                  className={invalidPrefix ? styles.paramInputInvalid : styles.paramInput}
                   value={prefixInput}
                   onChange={e => handlePrefixChange(e.target.value)}
+                  aria-invalid={invalidPrefix}
                   min={0}
                 />
+                {invalidPrefix && (
+                  <div className={styles.helperText} style={{ color: '#c9190b' }}>
+                    Shared prefix cannot exceed the input length or context limit.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1467,7 +1477,7 @@ export default function Sizing() {
                   <div className={styles.helperText}>
                     {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL peak'}
                     {prefix > 0
-                      ? ` · shared prefix ${prefix.toLocaleString()} tokens`
+                      ? ` · requested shared prefix ${prefix.toLocaleString()} tokens`
                       : ' · no shared prefix'}
                   </div>
                 </div>
@@ -1778,10 +1788,10 @@ export default function Sizing() {
                       </span><br />
                       fits: <span className={styles.em}>{result.capacity?.capacitySequences ?? '—'} sequences</span><br />
                       {result.capacity != null && result.capacity.sharedPrefixTokens > 0 && (
-                        <>shared prefix credited once per replica: <span className={styles.em}>{result.capacity.sharedPrefixTokens.toLocaleString()} tokens</span><br /></>
+                        <>shared prefix cached once per attention-DP rank: <span className={styles.em}>{result.capacity.sharedPrefixTokens.toLocaleString()} tokens</span><br /></>
                       )}
                       {result.capacity?.shortfallTokens != null && (
-                        <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} tokens</span><br /></>
+                        <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} {result.capacity.sharedPrefixTokens > 0 ? 'suffix ' : ''}tokens</span><br /></>
                       )}
                       {result.capacity?.minimumGpus != null && (
                         <>fewest GPUs for one sequence: <span className={styles.em}>{result.capacity.minimumGpus}</span><br /></>

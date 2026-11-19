@@ -471,6 +471,9 @@ export default function Performance() {
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
+  // A shared prefix is part of the input, so it cannot outgrow either the
+  // prompt or a stated context limit. The service rejects both combinations.
+  const invalidPrefix = testPrefix > testISL || (maxSeqLen != null && testPrefix > maxSeqLen);
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
   const invalidRequestsPerLoadUnit = requestsPerLoadUnitInput !== '' && requestsPerLoadUnit === null;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
@@ -1445,7 +1448,8 @@ export default function Performance() {
           value: prefixInput,
           term: 'prefix',
           type: 'number' as const,
-          invalid: false,
+          invalid: invalidPrefix,
+          help: 'A cached system prompt shared by every request. It is part of the input length and cannot exceed it.',
           onChange: (val: string) => handlePrefixChange(val)
         },
         {
@@ -1828,7 +1832,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidRequestsPerLoadUnit || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
+            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidPrefix || invalidUsers || invalidRequestsPerLoadUnit || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>

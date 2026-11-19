@@ -214,7 +214,7 @@ class BlisCapacityOutcome:
 
     target_concurrency: int
     context_per_sequence_tokens: int
-    #: Prefix tokens charged once per replica. Zero means no credit was applied.
+    #: Prefix tokens each replica caches. Zero means no credit was applied.
     shared_prefix_tokens: int
     capacity_tokens: int
     capacity_sequences: int
@@ -1098,7 +1098,7 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
         # another replica. Count whole sequences per replica, then scale by the
         # replicas the target needs. A shape that cannot hold one sequence (or
         # whose smallest window deployment cannot) is not a capacity candidate.
-        # The prefix is stored once, so only the suffix is charged per
+        # The prefix is cached once, so only the suffix is charged per
         # additional sequence.
         per_replica_sequences = max(0, capacity_tokens - prefix_tokens) // suffix_tokens
         if per_replica_sequences < 1:
