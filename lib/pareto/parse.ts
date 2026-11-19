@@ -110,6 +110,11 @@ export function parseSweep(value: unknown): FrontierSweep | null {
     seed: number(value.seed),
     windowMinGpus: number(value.window_min_gpus),
     windowMaxGpus: number(value.window_max_gpus),
+    modesSearched: Array.isArray(value.modes_searched)
+      ? value.modes_searched.filter(
+          (mode): mode is 'agg' | 'disagg' => mode === 'agg' || mode === 'disagg',
+        )
+      : null,
   }
 }
 

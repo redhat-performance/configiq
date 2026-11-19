@@ -24,7 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
-import { describeSweepCoverage } from '@/lib/pareto/sweep-caption';
+import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
 
@@ -445,6 +445,9 @@ export function FrontierPanel({
   );
   const views = state.status === 'ready' ? state.views : null;
   const sweep = state.status === 'ready' ? state.sweep : null;
+  // `sweep` is null until the run reports one, and the helper describes the
+  // workload rather than promising deployments it cannot confirm.
+  const subtitle = describeFrontierDeployments(sweep);
 
   const feasible = React.useMemo(() => candidates.filter(isFeasible), [candidates]);
   const failed = React.useMemo(() => candidates.filter(candidate => !isFeasible(candidate)), [candidates]);
@@ -511,7 +514,7 @@ export function FrontierPanel({
         <CardTitle>
           <div className={styles.titleRow}>
             <h2 id="frontier-heading" className={styles.title}>Pareto frontier</h2>
-            <span className={styles.subtitle}>Efficiency trade-off across aggregated and disaggregated deployments</span>
+            <span className={styles.subtitle}>{subtitle}</span>
           </div>
         </CardTitle>
         <CardBody>
@@ -521,7 +524,7 @@ export function FrontierPanel({
               <div>
                 <div className={styles.loadingTitle}>Evaluating the efficiency frontier…</div>
                 <div className={styles.loadingHint}>
-                  Testing a range of GPU counts across aggregated and disaggregated deployments.
+                  Testing a range of GPU counts for this workload.
                   {elapsed > 0 && <> <span className={styles.elapsed}>{elapsed}s elapsed.</span></>}
                   {timeoutSeconds != null && <> The gateway limit is {timeoutSeconds}s.</>}
                 </div>

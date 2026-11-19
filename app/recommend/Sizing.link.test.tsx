@@ -14,6 +14,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 const startSizing = vi.hoisted(() => vi.fn());
+const startPareto = vi.hoisted(() => vi.fn());
 const recommendState = vi.hoisted(() => ({ isLoading: false }));
 
 vi.mock('@/contexts/RecommendContext', () => ({
@@ -31,7 +32,7 @@ vi.mock('@/contexts/RecommendContext', () => ({
     debugDuration: null,
     frontier: { status: 'idle' },
     startSizing,
-    startPareto: vi.fn(),
+    startPareto,
     reset: vi.fn(),
   }),
 }));
@@ -63,7 +64,25 @@ vi.mock('@/contexts/SettingsContext', () => ({
   }),
 }));
 
+const versionSupport = vi.hoisted(() => ({
+  aisimulate: {} as Record<string, { disaggregated: boolean }>,
+  blis: {} as Record<string, { disaggregated: boolean }>,
+}));
+
+// A simulator's fabric capability is catalog data, so the fixture keeps it in
+// one place: the default shape claims no fabric, and the fabric-specific tests
+// opt into the capability they exercise.
+const aisimulateFabric = vi.hoisted(() => ({
+  required: false,
+  networks: [] as string[],
+  defaultNetwork: null as string | null,
+}));
+
+// Which comparison options a capacity run can return, as the catalog reports it.
+const capacityCapability = vi.hoisted(() => ({ disaggregated: false }));
+
 vi.mock('@/lib/hooks/useCatalog', () => {
+  const buildCatalog = () => {
   const backend = {
     id: 'vllm',
     aisimulateId: 'vllm',
@@ -74,10 +93,15 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     runtimeField: 'gpu_memory_utilization',
     systems: {},
     systemDefaults: {},
-    versionSupport: {},
     disaggregationRequiresFabric: true,
-    capacityOptions: { disaggregated: false },
+    capacityOptions: { disaggregated: capacityCapability.disaggregated },
   };
+  const aisimulateBackend = {
+    ...backend,
+    disaggregationRequiresFabric: aisimulateFabric.required,
+    versionSupport: versionSupport.aisimulate,
+  };
+  const blisBackend = { ...backend, versionSupport: versionSupport.blis };
   const catalog = {
     modelOptions: ['Qwen/Qwen2.5-7B-Instruct'],
     gpuOptions: [
@@ -86,7 +110,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     ],
     modelSpecs: new Map(),
     networkOptions: ['ib-400g'],
-    backendOptions: [backend],
+    backendOptions: [aisimulateBackend],
     simulators: [
       { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
       { id: 'blis', label: 'BLIS', version: 'test-blis', default: false },
@@ -99,15 +123,15 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         recommendSearch: 'single',
         modelsExhaustive: true,
         modelSpecs: new Map(),
-        networks: ['ib-400g'],
-        defaultNetwork: 'ib-400g',
+        networks: aisimulateFabric.networks,
+        defaultNetwork: aisimulateFabric.defaultNetwork,
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm'],
-        backends: [backend],
+        backends: [aisimulateBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
-      // BLIS prices the linked system that AISimulate does not offer, so
-      // accepting the shared simulator makes it selectable again.
+      // The second catalog prices the linked system that the default one does
+      // not offer, so accepting the shared simulator makes it selectable again.
       blis: {
         id: 'blis',
         label: 'BLIS',
@@ -119,7 +143,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm', 'h100_sxm'],
-        backends: [backend],
+        backends: [blisBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
     },
@@ -127,9 +151,14 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     timeoutSeconds: 60,
     isLoading: false,
   };
+  return catalog;
+  };
   return {
-    useCatalog: () => catalog,
-    engineVersionSupport: () => null,
+    useCatalog: () => buildCatalog(),
+    engineVersionSupport: (
+      engine: { versionSupport?: Record<string, { disaggregated: boolean }> } | null,
+      version: string | null,
+    ) => (engine && version ? engine.versionSupport?.[version] ?? null : null),
   };
 });
 
@@ -177,7 +206,16 @@ vi.mock('@/lib/app-config', () => ({
   }),
 }));
 
-vi.mock('@/components/help/CopyLinkButton', () => ({ CopyLinkButton: () => null }));
+// Capture the link builder so a test can read the URL the page would copy.
+const shareUrl = vi.hoisted(() => ({
+  getUrl: null as null | (() => string | null),
+}));
+vi.mock('@/components/help/CopyLinkButton', () => ({
+  CopyLinkButton: (props: { getUrl: () => string | null }) => {
+    shareUrl.getUrl = props.getUrl;
+    return null;
+  },
+}));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
 const { default: Sizing } = await import('./Sizing');
@@ -189,7 +227,15 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
   startSizing.mockClear();
+  startPareto.mockClear();
+  for (const support of [versionSupport.aisimulate, versionSupport.blis]) {
+    for (const version of Object.keys(support)) delete support[version];
+  }
   recommendState.isLoading = false;
+  aisimulateFabric.required = false;
+  aisimulateFabric.networks = [];
+  aisimulateFabric.defaultNetwork = null;
+  capacityCapability.disaggregated = false;
   settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -230,6 +276,46 @@ async function calculate(): Promise<RecommendParams> {
   return calls[calls.length - 1][0] as RecommendParams;
 }
 
+async function pareto(): Promise<RecommendParams> {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find(candidate => candidate.textContent === 'Pareto frontier');
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.click();
+    await Promise.resolve();
+  });
+  expect(startPareto).toHaveBeenCalled();
+  const calls = startPareto.mock.calls;
+  return calls[calls.length - 1][0] as RecommendParams;
+}
+
+/**
+ * Mount a view for a simulator whose catalog reports that it models P/D through
+ * an inter-node fabric. The fixture that declares the capability is selected
+ * here, so the fabric tests exercise the control rather than assume it.
+ */
+async function mountFabricView(search: string) {
+  settings.simulator = 'blis';
+  await mountAt(search);
+}
+
+async function selectDisaggregated() {
+  await act(async () => {
+    Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Adjust?'))
+      ?.click();
+    await Promise.resolve();
+  });
+  const disaggregated = Array.from(container.querySelectorAll('button'))
+    .find(button => button.textContent === 'Disaggregated');
+  expect(disaggregated).toBeDefined();
+  expect(disaggregated?.hasAttribute('disabled')).toBe(false);
+  await act(async () => {
+    disaggregated?.click();
+    await Promise.resolve();
+  });
+}
+
 async function acceptSharedSimulator() {
   const button = Array.from(container.querySelectorAll('button'))
     .find(candidate => /Use BLIS for this view/.test(candidate.textContent ?? ''));
@@ -241,7 +327,10 @@ async function acceptSharedSimulator() {
 }
 
 describe('recommend sizing shared views', () => {
-  it('forwards the per-pool context limits the link carries', async () => {
+  it('forwards the per-pool context limits a legacy link carries', async () => {
+    // A link written before the serving mode existed names pool lengths only.
+    // The page keeps the pre-mode search, so those lengths apply to a
+    // disaggregated request even though the link never says so.
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
@@ -250,26 +339,210 @@ describe('recommend sizing shared views', () => {
     const sent = await calculate();
     expect(sent.prefill_max_seq_len).toBe(8192);
     expect(sent.decode_max_seq_len).toBe(4096);
+    expect(sent.mode).toBe('disagg');
   });
 
-  it('forwards the named fabric', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+  it('restores disaggregated serving and its fabric from a shared link', async () => {
+    await mountFabricView(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&fabric=ib-400g',
+    );
 
-    expect((await calculate()).fabric).toBe('ib-400g');
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
+  });
+
+  it('forwards the named fabric for disaggregated serving', async () => {
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+
+    await selectDisaggregated();
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
+  });
+
+  it('searches prefill/decode by default for a latency link that names a fabric', async () => {
+    // The link predates the serving-mode field. Its named fabric described the
+    // P/D search the page made before the control existed, so the default must
+    // keep searching that topology instead of silently narrowing to aggregated.
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
+    const sizing = await calculate();
+    expect(sizing.fabric).toBe('ib-400g');
+    expect(sizing.mode).toBe('disagg');
+    const sweep = await pareto();
+    expect(sweep.fabric).toBe('ib-400g');
+    expect(sweep.mode).toBeUndefined();
+  });
+
+  it('honours an explicitly aggregated link even when it names a fabric', async () => {
+    await mountFabricView(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+
+    const sizing = await calculate();
+    // Aggregated is an explicit null fabric, not an omission the simulator
+    // would fill with its default.
+    expect(sizing.fabric).toBeNull();
+    expect(sizing.mode).toBe('agg');
+
+    // The frontier reads the same view: an aggregated view asks for aggregate
+    // candidates only, and the mode itself is omitted (the sweep rejects it).
+    const sweep = await pareto();
+    expect(sweep.fabric).toBeNull();
+    expect(sweep.mode).toBeUndefined();
+  });
+
+  it('shares the fabric the request submits, not one it merely remembers', async () => {
+    // The remembered fabric name stays selected when the view is aggregated,
+    // but the request sends an explicit null. A link that exported the name
+    // would describe a P/D topology the recipient would inherit.
+    await mountFabricView(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+
+    const url = shareUrl.getUrl?.() ?? '';
+    expect(url).toContain('servingMode=agg');
+    expect(url).toContain('fabric=none');
+    expect(url).not.toContain('fabric=ib-400g');
+  });
+
+  it('reads the serving mode in the collapsed summary', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg',
+    );
+
+    // The summary is the read-only view of the form; a mode the user cannot
+    // see without expanding the panel is not a choice they made.
+    expect(container.textContent).toContain('Deployment view: aggregated.');
+  });
+
+  it('omits the serving mode from a summary for a goal without one', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
+
+    expect(container.textContent).not.toContain('Deployment view:');
+  });
+
+  it('does not offer a serving mode for a demand link', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Adjust?'))
+        ?.click();
+      await Promise.resolve();
+    });
+
+    // The simulator reports the deployment that sustains the rate, so the page
+    // must not claim one, and the request must not narrow the search.
+    expect(Array.from(container.querySelectorAll('button'))
+      .some(button => button.textContent === 'Disaggregated')).toBe(false);
+    const sent = await calculate();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
+  });
+
+  it('restores the pre-mode topology a legacy link describes', async () => {
+    // A link applied to an already-open page replaces the view it names. A
+    // pre-mode link carries its topology only through the fabric and pool
+    // lengths, so those set the mode instead of inheriting the reader's.
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+    expect((await calculate()).mode).toBe('agg');
+
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+    expect((await calculate()).mode).toBe('disagg');
+  });
+
+  it('omits the serving mode for capacity, which reports both topologies', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
+
+    const sent = await calculate();
+    // Capacity sizing enumerates aggregated shapes and returns disaggregated
+    // comparison options separately, so it ignores mode and rejects a fabric.
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
   });
 
   it('asks for aggregate-only candidates when the link says "no fabric"', async () => {
     // A "no fabric" choice is not an omission: it must reach the API as an
     // explicit null rather than falling back to the simulator's default fabric.
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
 
-    expect((await calculate()).fabric).toBeNull();
+    const sizing = await calculate();
+    expect(sizing.fabric).toBeNull();
+    expect(sizing.mode).toBe('agg');
+    expect((await pareto()).fabric).toBeNull();
   });
 
-  it('leaves the fabric to the simulator when the link omits it', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
+  it('leaves the fabric to the simulator when the request omits one', async () => {
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
+    await selectDisaggregated();
+    const sent = await calculate();
+    expect(sent.fabric).toBe('ib-400g');
+    expect(sent.mode).toBe('disagg');
+  });
+
+  it('sends no fabric when the simulator models P/D without one', async () => {
+    // With no fabric capability in the catalog, the control stays hidden and
+    // the request must not claim a topology the simulator cannot model.
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
+    );
+
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    const sent = await calculate();
+    expect(sent.fabric).toBeUndefined();
+    expect(sent.mode).toBe('disagg');
+    expect(sent.prefill_max_seq_len).toBe(8192);
+    expect(sent.decode_max_seq_len).toBe(4096);
+  });
+
+  it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.blis['0.9.0'] = { disaggregated: true };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0&servingMode=disagg&fabric=ib-400g',
+    );
+
+    // The reader's simulator cannot model prefill/decode, so the link's mode
+    // stays held and the form stays aggregated until they accept. The held
+    // view's backend reports no fabric, so the aggregate request names none.
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    const heldSizing = await calculate();
+    expect(heldSizing.fabric).toBeUndefined();
+    expect(heldSizing.mode).toBe('agg');
+
+    await acceptSharedSimulator();
+
+    expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
     expect((await calculate()).fabric).toBe('ib-400g');
+  });
+
+  it('stays aggregated when the accepted simulator cannot model prefill/decode', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.blis['0.9.0'] = { disaggregated: false };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&simulator=blis&backend=vllm&backendVersion=0.9.0&servingMode=disagg&fabric=ib-400g',
+    );
+
+    await acceptSharedSimulator();
+
+    expect(container.querySelector('#recommend-network-fabric')).toBeNull();
+    expect((await calculate()).fabric).toBeNull();
   });
 
   it('offers the shared simulator instead of switching silently', async () => {
@@ -302,14 +575,14 @@ describe('recommend sizing shared views', () => {
       '&simulator=blis&backend=vllm&backendVersion=0.9.0',
     );
 
-    // AISimulate does not price the linked system, so the form falls back while
-    // the banner offers the sender's simulator.
+    // The reader's simulator does not price the linked system, so the form
+    // falls back while the banner offers the sender's simulator.
     expect((await calculate()).system).toBe('h200_sxm');
 
     await acceptSharedSimulator();
 
-    // BLIS prices it, so the next calculation must use the shared system rather
-    // than the fallback that was selected while the banner was up.
+    // The sender's simulator prices it, so the next calculation must use the
+    // shared system rather than the fallback selected while the banner was up.
     expect((await calculate()).system).toBe('h100_sxm');
   });
 
@@ -418,5 +691,35 @@ describe('recommend sizing shared views', () => {
     expect(row).not.toBeNull();
     const pressed = Array.from(row?.querySelectorAll('button[aria-pressed="true"]') ?? []);
     expect(pressed).toHaveLength(0);
+  });
+
+  it('describes the capacity options the catalog reports', async () => {
+    const search = '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity';
+    // The deployment-view block sits in the expandable input panel, so open it
+    // once; it stays open across the remount below.
+    const expand = async () => {
+      const adjust = Array.from(container.querySelectorAll('button'))
+        .find(button => (button.textContent ?? '').startsWith('Adjust?'));
+      if (adjust == null) return;
+      await act(async () => {
+        adjust.click();
+        await Promise.resolve();
+      });
+    };
+
+    await mountAt(search);
+    await expand();
+    expect(container.textContent).toContain(
+      'reports the aggregated deployments that hold the target',
+    );
+
+    // The catalog now reports a P/D comparison option, so the control explains
+    // both kinds of result the service can return. The input panel stays open
+    // across the re-render, so the changed copy is visible without reopening it.
+    capacityCapability.disaggregated = true;
+    await mountAt(search);
+    expect(container.textContent).toContain(
+      'reports aggregated and disaggregated options',
+    );
   });
 });

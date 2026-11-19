@@ -143,6 +143,54 @@ function inputNearLabel(page: Page, labelText: string) {
   return page.locator('label').filter({ hasText: labelText }).first().locator('..').locator('input')
 }
 
+// The mocked sizing result the recommend smoke tests render.
+const recommendResponse = {
+  requestId: 'smoke-recommend',
+  status: 'completed',
+  simulator: 'aisimulate',
+  mode: 'agg',
+  recommendation: {
+    gpusNeeded: 2,
+    gpusPerReplica: 2,
+    totalGpus: 2,
+    replicasNeeded: 1,
+    tensorParallelSize: 2,
+    pipelineParallelSize: 1,
+    dataParallelSize: 1,
+    contextParallelSize: 1,
+    moeTensorParallelSize: null,
+    moeExpertParallelSize: null,
+    batchSize: 8,
+  },
+  phases: { prefill: null, decode: null, encode: null },
+  performance: {
+    ttftLatencyMs: 120,
+    tpotMs: 25,
+    requestLatencyMs: 3_320,
+    concurrency: 1,
+  },
+  throughput: {
+    tokensPerSecond: 38.5,
+    tokensPerSecondPerGpu: 19.25,
+    tokensPerSecondPerUser: 38.5,
+  },
+  memory: {
+    value: 24,
+    unit: 'GB',
+    breakdown: { weightsGb: 16, kvCacheGb: 4, overheadGb: 4 },
+  },
+  memoryAvailable: true,
+  metadata: {
+    modelPath: 'smoke/model',
+    system: 'smoke-gpu',
+    inputTokens: 768,
+    outputTokens: 96,
+    targetTtftMs: 1_000,
+    durationMs: 12,
+  },
+  warnings: [],
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     if (window.location.origin === 'null') return
@@ -315,52 +363,7 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
 
 test('Recommend submits selected workload inputs and renders the mocked sizing result', async ({ page }) => {
   const api = await stubApi(page, {
-    '/api/recommend': {
-      requestId: 'smoke-recommend',
-      status: 'completed',
-      simulator: 'aisimulate',
-      mode: 'agg',
-      recommendation: {
-        gpusNeeded: 2,
-        gpusPerReplica: 2,
-        totalGpus: 2,
-        replicasNeeded: 1,
-        tensorParallelSize: 2,
-        pipelineParallelSize: 1,
-        dataParallelSize: 1,
-        contextParallelSize: 1,
-        moeTensorParallelSize: null,
-        moeExpertParallelSize: null,
-        batchSize: 8,
-      },
-      phases: { prefill: null, decode: null, encode: null },
-      performance: {
-        ttftLatencyMs: 120,
-        tpotMs: 25,
-        requestLatencyMs: 3_320,
-        concurrency: 1,
-      },
-      throughput: {
-        tokensPerSecond: 38.5,
-        tokensPerSecondPerGpu: 19.25,
-        tokensPerSecondPerUser: 38.5,
-      },
-      memory: {
-        value: 24,
-        unit: 'GB',
-        breakdown: { weightsGb: 16, kvCacheGb: 4, overheadGb: 4 },
-      },
-      memoryAvailable: true,
-      metadata: {
-        modelPath: 'smoke/model',
-        system: 'smoke-gpu',
-        inputTokens: 768,
-        outputTokens: 96,
-        targetTtftMs: 1_000,
-        durationMs: 12,
-      },
-      warnings: [],
-    },
+    '/api/recommend': recommendResponse,
   })
   await page.goto('/recommend')
   await selectModel(page, 'adv-model')
@@ -390,6 +393,38 @@ test('Recommend submits selected workload inputs and renders the mocked sizing r
   await expect(page.getByTestId('recommend-ttft')).toContainText('120')
   await expect(page.getByTestId('recommend-throughput')).toHaveText('39tok/s')
   await expect(page.getByTestId('recommend-peak-memory')).toContainText('24')
+})
+
+test('Recommend submits the deployment view the control shows', async ({ page }) => {
+  const api = await stubApi(page, { '/api/recommend': recommendResponse })
+  await page.goto('/recommend')
+  await selectModel(page, 'adv-model')
+  await selectSystem(page, 'adv-gpu')
+  await page.getByRole('button', { name: 'Latency SLO', exact: true }).click()
+  await page.getByRole('button', { name: /^Adjust\?/ }).click()
+
+  const calculate = async () => {
+    const responsePromise = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/recommend' && response.request().method() === 'POST',
+    )
+    await page.getByRole('button', { name: 'Calculate', exact: true }).click()
+    await responsePromise
+    return api.posts['/api/recommend']
+  }
+
+  await page.getByRole('button', { name: 'Aggregated', exact: true }).click()
+  const aggregated = await calculate()
+  expect(aggregated).toMatchObject({ mode: 'agg', objective: 'min_gpus' })
+  // An aggregated view has no pools to limit and must not claim a topology.
+  expect(aggregated).not.toHaveProperty('prefill_max_seq_len')
+  expect(aggregated).not.toHaveProperty('decode_max_seq_len')
+  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
+  const disaggregated = await calculate()
+  expect(disaggregated).toMatchObject({ mode: 'disagg', objective: 'min_gpus' })
+  await expect(page.getByText(/Deployment view: disaggregated/)).toBeVisible()
+  await expect(page.getByText('Prefill and decode have separate inputs in this view.')).toBeVisible()
 })
 
 test('KV cache submits selected capacity inputs and renders the mocked result', async ({ page }) => {

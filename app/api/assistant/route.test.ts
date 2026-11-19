@@ -458,8 +458,8 @@ describe('assistant answer', () => {
     expect(kvLink?.href).toContain('v=1');
     expect(kvLink?.href).toContain('backend=vllm');
     expect(kvLink?.href).toContain('backendVersion=0.10.1');
-    // /kv-cache is AISimulate-only: a simulator field would imply a choice the
-    // page does not offer.
+    // /kv-cache has no simulator choice: a simulator field would imply a
+    // choice the page does not offer.
     expect(kvLink?.href).not.toContain('simulator=');
   });
 

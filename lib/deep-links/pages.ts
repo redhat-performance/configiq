@@ -52,6 +52,9 @@ export const recommendLink = withProvenance(defineLink('/recommend', {
   demandRate: z.coerce.number().min(0.0001).max(1_000_000),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
   maxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
+  // Declared before the pool lengths and fabric so a link applies the mode
+  // first; those fields are only submitted for a disaggregated view.
+  servingMode: z.enum(SERVING_MODES),
   prefillMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   decodeMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   fabric: text(MAX_ID_LENGTH),
@@ -68,9 +71,9 @@ export const MEMORY_FRACTION_KINDS = ['of_total', 'of_free'] as const;
 export type MemoryFractionKind = (typeof MEMORY_FRACTION_KINDS)[number];
 
 /**
- * The KV cache calculator is AISimulate-only by contract, so its link carries
- * the backend but never a simulator: adding one would imply a choice the page
- * does not offer. The backend pair is provenance read from settings and applied
+ * The KV cache calculator has no simulator choice, so its link carries the
+ * backend but never a simulator: adding one would imply a choice the page does
+ * not offer. The backend pair is provenance read from settings and applied
  * for the session, not a pair of controls the page edits.
  */
 export const kvCacheLink = withBackendProvenance(defineLink('/kv-cache', {

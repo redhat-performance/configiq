@@ -330,8 +330,9 @@ describe('mapCatalogResponse', () => {
     // The default entry still drives the page catalogue...
     expect(mapped.gpuOptions.map(option => option.systemId)).toEqual(['h200_sxm'])
     expect(mapped.modelOptions).toEqual(['Qwen/Qwen3-8B'])
-    // ...but BLIS keeps an empty, explicitly unavailable support entry rather
-    // than inheriting AISimulate's models, systems, or goals.
+    // ...but a simulator with no reported support keeps an empty, explicitly
+    // unavailable entry rather than inheriting another simulator's models,
+    // systems, or goals.
     expect(mapped.simulatorSupport.blis).toMatchObject({
       id: 'blis',
       available: false,

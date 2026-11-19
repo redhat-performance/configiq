@@ -852,8 +852,9 @@ export default function BenchmarkComparisonPage() {
               vram_gb: currentGpu?.vramGb ?? null,
               hf_model_config: modelConfig,
               mode: assumptions.servingMode,
-              // A fabric is a BLIS P/D input. Forward it only to a simulator
-              // whose catalog says it consumes one; AISimulate rejects it.
+              // A fabric is a P/D input. Forward it only to a simulator whose
+              // catalog says it consumes one, so the request never names a
+              // topology that cannot be modelled.
               fabric: predictionFabric(assumptions.servingMode, plan.requiresFabric, assumptions.fabric),
               prefill: assumptions.servingMode === 'disagg'
                 ? {

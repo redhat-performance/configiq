@@ -230,9 +230,9 @@ export type BackendPageFieldKeys<F extends LinkFieldMap> = Exclude<keyof F, Back
 /**
  * Mark a link whose backend and version the page reads from settings.
  *
- * A view that models one capability only — the KV cache calculator is
- * AISimulate-only — still records the backend and version that produced it, but
- * it has no simulator to offer the reader. Its backend pair is applied for the
+ * A view with no simulator choice — the KV cache calculator, for example —
+ * still records the backend and version that produced it, but it has no
+ * simulator to offer the reader. Its backend pair is applied for the
  * session by the same handling as the provenance trio, so it binds one fewer
  * set of accessors without claiming a simulator the page cannot switch to.
  */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  resolveEffectiveFabric,
+  resolveSearchFabric,
   submittedInputsMatch,
   type CurrentRecommendInputs,
   type SubmittedRecommendParams,
@@ -35,6 +35,7 @@ const baseInputs: CurrentRecommendInputs = {
   prefillMaxSeqLen: null,
   decodeMaxSeqLen: null,
   effectiveFabric: undefined,
+  servingMode: 'agg',
 }
 
 describe('submittedInputsMatch', () => {
@@ -173,7 +174,7 @@ describe('submittedInputsMatch', () => {
     const params: SubmittedRecommendParams = { ...baseParams, fabric: undefined }
     const inputs: CurrentRecommendInputs = {
       ...baseInputs,
-      effectiveFabric: resolveEffectiveFabric(true, true, true, 'roce-200g'),
+      effectiveFabric: resolveSearchFabric(true, true, true, 'roce-200g', 'disagg'),
     }
     expect(inputs.effectiveFabric).toBeUndefined()
     expect(submittedInputsMatch(params, inputs)).toBe(true)
@@ -183,6 +184,12 @@ describe('submittedInputsMatch', () => {
     const params: SubmittedRecommendParams = { ...baseParams, fabric: 'roce-200g' }
     expect(submittedInputsMatch(params, { ...baseInputs, effectiveFabric: 'roce-200g' })).toBe(true)
     expect(submittedInputsMatch(params, { ...baseInputs, effectiveFabric: null })).toBe(false)
+  })
+
+  it('marks a serving-mode change dirty when the request carried one', () => {
+    const params: SubmittedRecommendParams = { ...baseParams, mode: 'agg' }
+    expect(submittedInputsMatch(params, { ...baseInputs, servingMode: 'agg' })).toBe(true)
+    expect(submittedInputsMatch(params, { ...baseInputs, servingMode: 'disagg' })).toBe(false)
   })
 })
 
@@ -265,23 +272,42 @@ describe('submittedInputsMatch for Pareto sweeps', () => {
     expect(baseParams.pareto).toBeUndefined()
     expect(submittedInputsMatch(baseParams, { ...baseInputs, ttft: 600 })).toBe(false)
   })
+
+  it('ignores serving mode for a sweep that omitted it', () => {
+    expect(submittedInputsMatch(paretoParams, { ...baseInputs, servingMode: 'disagg' })).toBe(true)
+  })
 })
 
-describe('resolveEffectiveFabric', () => {
+describe('resolveSearchFabric', () => {
   it('omits the fabric when the backend does not require one', () => {
-    expect(resolveEffectiveFabric(false, false, true, 'roce-200g')).toBeUndefined()
+    expect(resolveSearchFabric(false, false, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
   it('omits the fabric for aggregate-only goals', () => {
-    expect(resolveEffectiveFabric(true, true, true, 'roce-200g')).toBeUndefined()
+    expect(resolveSearchFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
+    // A sweep over an aggregate-only goal omits it too.
+    expect(resolveSearchFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
-  it('keeps a selected fabric when disaggregation supports it', () => {
-    expect(resolveEffectiveFabric(true, false, true, 'roce-200g')).toBe('roce-200g')
+  it('keeps a selected fabric when disaggregated serving supports it', () => {
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'disagg')).toBe('roce-200g')
+  })
+
+  it('sends null for an aggregated run even when a fabric is selected', () => {
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'agg')).toBeNull()
   })
 
   it('sends null when no fabric was selected or disaggregation needs none', () => {
-    expect(resolveEffectiveFabric(true, false, true, null)).toBeNull()
-    expect(resolveEffectiveFabric(true, false, false, 'roce-200g')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, null, 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, '', 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
+  })
+
+  it('keeps a selected fabric for a disaggregated sweep', () => {
+    // The Pareto frontier reads the same view, so a P/D view names its fabric.
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'disagg')).toBe('roce-200g')
+    expect(resolveSearchFabric(true, false, true, null, 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, '', 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
   })
 })

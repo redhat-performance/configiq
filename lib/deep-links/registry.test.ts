@@ -136,13 +136,33 @@ describe('golden links', () => {
       tpot: 50,
       prefix: 512,
       maxSeqLen: 32768,
+      // A disaggregated view carries per-pool limits and the fabric that makes
+      // those pools searchable. Only a simulator that reports the fabric
+      // capability exports one, so this view uses the fixture that reports it.
+      servingMode: 'disagg',
       prefillMaxSeqLen: 8192,
       decodeMaxSeqLen: 24576,
-      fabric: 'none',
-      simulator: 'aisimulate',
+      fabric: 'ib-400g',
+      simulator: 'blis',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=ib-400g&backend=vllm&backendVersion=0.31.0&simulator=blis"`);
+  });
+
+  it('/recommend aggregate view', () => {
+    // The other shape the page produces: an aggregated view with no per-pool
+    // limits and an explicit "no fabric". Pairing limits with `agg` would
+    // describe a request the page rejects.
+    expect(recommendLink.build({
+      model: 'Qwen/Qwen3-32B',
+      system: 'h200_sxm',
+      goal: 'latency',
+      servingMode: 'agg',
+      fabric: 'none',
+      simulator: 'blis',
+      backend: 'vllm',
+      backendVersion: '0.31.0',
+    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&servingMode=agg&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=blis"`);
   });
 
   it('/kv-cache', () => {

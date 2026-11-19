@@ -620,6 +620,15 @@ export default function KvCacheCalc() {
       {expanded.includes('customize') && (
         <div className={styles.card} style={{ marginBottom: 16 }}>
           <div className={styles.advancedBody} style={{ padding: 20 }}>
+            {/* Serving mode (agg / disagg) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+              <Button className="gc-preset-button" variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
+              <Button className="gc-preset-button" variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
+              {servingMode === 'disagg' && (
+                <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+              )}
+            </div>
             {/* Serving config */}
             <div className={styles.advancedSectionLabel}>Serving config</div>
             {/* The backend and version are edited in Settings; this view only
@@ -686,16 +695,6 @@ export default function KvCacheCalc() {
 
             {/* Parallelism */}
             <div className={styles.advancedSectionLabel}>Parallelism</div>
-
-            {/* Serving mode (agg / disagg) */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
-              <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
-              <Button className="gc-preset-button" variant={servingMode === 'agg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'agg'} onClick={() => { setServingMode('agg'); setResults([]); setInputsDirty(false); }}>Aggregated</Button>
-              <Button className="gc-preset-button" variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'} size="sm" aria-pressed={servingMode === 'disagg'} onClick={() => { setServingMode('disagg'); setResults([]); setInputsDirty(false); }}>Disaggregated</Button>
-              {servingMode === 'disagg' && (
-                <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
-              )}
-            </div>
 
             {servingMode === 'agg' ? (
               <div className={styles.advancedRow4}>

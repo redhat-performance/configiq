@@ -765,11 +765,75 @@ components:
           nullable: true
           description: Pre-fetched HuggingFace model config.json. Skips the HF download when supplied.
           default: null
+        max_seq_len:
+          type: integer
+          nullable: true
+          description: |
+            Context length one sequence may occupy. Omit to use `isl + osl`.
+            This is the aggregate context limit; a disaggregated search can set
+            a separate limit per workload with `prefill_max_seq_len` and
+            `decode_max_seq_len`.
+          default: null
+        prefill_max_seq_len:
+          type: integer
+          nullable: true
+          description: |
+            Context limit for the prefill pool of a disaggregated search. Omit
+            to fall back to `max_seq_len` (or `isl + osl`). Rejected with
+            `mode=agg`, because an aggregated deployment has no separate
+            prefill pool.
+          default: null
+        decode_max_seq_len:
+          type: integer
+          nullable: true
+          description: |
+            Context limit for the decode pool of a disaggregated search. Omit
+            to fall back to `max_seq_len` (or `isl + osl`). Rejected with
+            `mode=agg`, because an aggregated deployment has no separate decode
+            pool.
+          default: null
         fabric:
           type: string
           nullable: true
           minLength: 1
-          description: Inter-node fabric for topology-aware P/D candidates. BLIS defaults to roce-200g when omitted; explicitly set null to skip P/D candidates. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.
+          description: |
+            Inter-node fabric for topology-aware P/D candidates. BLIS: omitting
+            the field applies the catalog default (`roce-200g`, reported by
+            GET /networks), while an explicit `null` asks for aggregate
+            candidates only. An unknown fabric name is rejected with 422 even
+            when the search excludes P/D, because a named fabric is a topology
+            assumption the caller made. BLIS concurrency-capacity sizing is
+            aggregate-only and rejects an explicit non-null fabric. AISimulate
+            does not consume this field and rejects a non-null value.
+          default: null
+        mode:
+          type: string
+          nullable: true
+          enum: [agg, disagg]
+          description: |
+            Serving mode a sizing search covers. `agg` searches aggregated
+            candidates only. Omit it, or send `disagg`, to keep the
+            simulator's existing deployment search, including prefill/decode
+            candidates where that search models them. The response reports what
+            the search actually covered in `sweep.modes_searched` and what it
+            recommended in `chosen_mode`.
+
+            Rejected with 422 where the field cannot narrow the search:
+            `objective=pareto` chooses its deployments from `fabric` (both modes
+            when a fabric is named, aggregated only when it is null);
+            `objective=concurrency_capacity` sizes aggregated deployments and
+            reports disaggregated options separately; and `mode=agg` cannot
+            carry `prefill_max_seq_len`/`decode_max_seq_len`. A simulator that
+            models P/D only through a named fabric also rejects `mode=disagg`
+            when the request resolves to no fabric, and advertises that in
+            `disaggregation_requires_fabric` on GET /backends.
+
+            `mode=disagg` is accepted with `objective=throughput_demand`:
+            AISimulate searches P/D for that goal, while BLIS demand sizing
+            replays open-loop traffic without a P/D transfer fabric and stays
+            aggregated. The response reports what was searched in
+            `sweep.modes_searched` rather than echoing this field.
+          default: null
 
     RecommendResponse:
       type: object
@@ -1118,6 +1182,19 @@ components:
             `configured_max_gpus` when the simulator applies a hardware limit
             (for example a single BLIS node), and higher when an AISimulate fit
             floor needs headroom (`max(configured_max_gpus, floor × 2)`).
+        modes_searched:
+          type: array
+          nullable: true
+          description: |
+            Deployment modes the search actually covered, in contract order.
+            An aggregated winner can come from a search that also evaluated
+            prefill/decode, so `chosen_mode` describes the recommendation, not
+            the search space. AISimulate reports the union over the GPU windows
+            that returned a result; BLIS reports the modes its candidate grid
+            reached, where a candidate that ran and failed still counts, and
+            also lists them in `search_summary.modes_searched`. Null when the
+            simulator reported no search-mode facts.
+          items: { type: string, enum: [agg, disagg] }
 
     CandidateResponse:
       type: object
