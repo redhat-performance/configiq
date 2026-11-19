@@ -199,8 +199,8 @@ vi.mock('@/lib/app-config', () => ({
     suggestedModelNames: [],
     modelRequestUrl: '',
     workloadPresets: [
-      { key: 'rag', label: 'RAG / Search', isl: 16384, osl: 512 },
-      { key: 'voice', label: 'Voice / Real-time', isl: 512, osl: 128 },
+      { key: 'rag', label: 'RAG / Search', isl: 16384, osl: 512, prefix: 2000 },
+      { key: 'voice', label: 'Voice / Real-time', isl: 512, osl: 128, prefix: 100 },
     ],
     concurrencyPresets: [],
   }),
@@ -745,7 +745,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('selects the workload the linked input shape names', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=16384&osl=512');
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=16384&osl=512&prefix=2000');
 
     const pressed = Array.from(container.querySelectorAll('button[aria-pressed="true"]'))
       .map(button => button.textContent);

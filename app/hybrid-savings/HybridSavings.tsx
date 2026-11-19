@@ -111,7 +111,7 @@ const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
   ttft: 1000,
   tpot: 30,
   concurrency: 1,
-  prefix: 0,
+  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
   hours: 730,
   peak: 1,
   billingMode: 'scale-to-zero',
@@ -325,7 +325,7 @@ export default function HybridSavings() {
   // Selection follows the committed value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, targetConcurrency)
-  const [prefixTokens, setPrefixTokens] = React.useState(0)
+  const [prefixTokens, setPrefixTokens] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
   const { assumptions: planningAssumptions, hydrated: assumptionsHydrated } = useCostAssumptions()

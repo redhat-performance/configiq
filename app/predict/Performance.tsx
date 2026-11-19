@@ -79,7 +79,7 @@ const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
   pp: 1,
   weightPrecision: 'FP16',
   kvPrecision: 'FP16',
-  prefix: 0,
+  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
   prefillTp: 1,
   prefillPp: 1,
   prefillWorkers: 1,
@@ -421,7 +421,7 @@ export default function Performance() {
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
   const [prefillMaxSeqLen, setPrefillMaxSeqLen] = React.useState<number | null>(null);
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
-  const [testPrefix, setTestPrefix] = React.useState(0);
+  const [testPrefix, setTestPrefix] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0);
   // Empty means the request omits it: the simulator runs one total request.
   const [requestsPerLoadUnit, setRequestsPerLoadUnit] = React.useState<number | null>(null);
   const [testTpSize, setTestTpSize] = React.useState(1);
@@ -462,7 +462,7 @@ export default function Performance() {
   const [prefillMaxSeqLenInput, setPrefillMaxSeqLenInput] = React.useState('');
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('1');
-  const [prefixInput, setPrefixInput] = React.useState('0');
+  const [prefixInput, setPrefixInput] = React.useState(String(DEFAULT_WORKLOAD.prefix ?? 0));
   const [requestsPerLoadUnitInput, setRequestsPerLoadUnitInput] = React.useState('');
   const [tpSizeInput, setTpSizeInput] = React.useState('1');
   const [ppSizeInput, setPpSizeInput] = React.useState('1');

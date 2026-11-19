@@ -244,7 +244,8 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   }
   if (savedVersion) expect(request.backend_version).toBe(savedVersion)
   else expect(request).not.toHaveProperty('backend_version')
-  expect(request).not.toHaveProperty('prefix')
+  if (workload.prefix) expect(request).toMatchObject({ prefix: workload.prefix })
+  else expect(request).not.toHaveProperty('prefix')
   if (scenario.action === 'pareto') {
     const result = await response.json() as unknown
     await saveJson(testInfo, 'recommend-live-response.json', result)

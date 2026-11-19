@@ -587,7 +587,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-output-tokens')!.value).toBe('500,000,000')
     expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('1000')
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('1')
-    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe('0')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe(String(DEFAULT_WORKLOAD.prefix ?? 0))
     // The mix is aligned, so the action and explanation disappear.
     expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Align request mix')).toBeUndefined()
     expect(host.textContent).not.toContain('Hardware sizing uses the larger request count')
@@ -938,7 +938,7 @@ describe('Hybrid page composition', () => {
     await select('hybrid-billing-mode', 'active-window')
     const toggle = host.querySelector<HTMLButtonElement>('#hybrid-workload-toggle')!
     await act(async () => toggle.click())
-    expect(toggle.textContent).toContain('2.5s TTFT · 45 ms TPOT · 1 concurrent user · 0 prefix tokens · 200 hours/month · 2× peak · Active window')
+    expect(toggle.textContent).toContain(`2.5s TTFT · 45 ms TPOT · 1 concurrent user · ${DEFAULT_WORKLOAD.prefix ?? 0} prefix tokens · 200 hours/month · 2× peak · Active window`)
     await click('Adjust')
     expect(host.querySelector<HTMLInputElement>('#hybrid-average-input')!.value).toBe('3000')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('active-window')

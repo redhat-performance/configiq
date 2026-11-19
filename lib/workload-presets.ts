@@ -15,8 +15,9 @@ export const DEFAULT_WORKLOAD: WorkloadPreset = {
   label: 'Default',
   isl: 2048,
   osl: 128,
-  // The form starts cold: a reuse assumption must be chosen, not inherited.
-  prefix: 0
+  // A system prompt is cached on every request, so the default shape still
+  // reflects real usage (#236). Clear the field for a strictly cold view.
+  prefix: 200
 }
 
 /**

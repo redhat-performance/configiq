@@ -69,7 +69,7 @@ const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
   ttft: 1000,
   tpot: 30,
   demandRate: DEFAULT_DEMAND_RATE,
-  prefix: 0,
+  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
 };
 
 /** Match a retained request back to the sizing goal that produced it. */
@@ -372,7 +372,7 @@ export default function Sizing() {
   // configuration; see d32b0dd and 0730b07. Users raise this with the presets.
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
-  const [prefix, setPrefix] = React.useState(0);
+  const [prefix, setPrefix] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0);
 
   // GPU sizer (persistent across navigation)
   const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset } = useRecommend();
@@ -482,7 +482,7 @@ export default function Sizing() {
   const [tpotInput, setTpotInput] = React.useState('30');
   const [concurrencyInput, setConcurrencyInput] = React.useState('1');
   const [latencyInput, setLatencyInput] = React.useState('');
-  const [prefixInput, setPrefixInput] = React.useState('0');
+  const [prefixInput, setPrefixInput] = React.useState(String(DEFAULT_WORKLOAD.prefix ?? 0));
   const [demandRateInput, setDemandRateInput] = React.useState(String(DEFAULT_DEMAND_RATE));
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;

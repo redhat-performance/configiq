@@ -13,9 +13,11 @@ const presets: readonly WorkloadPreset[] = [
 ]
 
 describe('workload presets', () => {
-  it('starts cold so a reuse assumption is always chosen', () => {
-    expect(DEFAULT_WORKLOAD.prefix).toBe(0)
+  it('starts with the system prompt every request shares', () => {
+    expect(DEFAULT_WORKLOAD.prefix).toBe(200)
     expect(workloadPresetOptions(presets)[0]).toBe(DEFAULT_WORKLOAD)
+    expect(matchWorkloadPreset(workloadPresetOptions(presets), 2048, 128, 200)).toBe(DEFAULT_WORKLOAD)
+    expect(matchWorkloadPreset(workloadPresetOptions(presets), 2048, 128, 0)).toBeNull()
   })
 
   it('matches a preset only when lengths and prefix agree', () => {
