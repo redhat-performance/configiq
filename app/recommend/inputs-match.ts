@@ -51,40 +51,29 @@ export interface CurrentRecommendInputs {
 }
 
 /**
- * Mirror `handleCalculate`'s fabric decision. An aggregate-only goal omits the
- * fabric even when the selected backend normally requires one, so the dirty
- * check must use `undefined` for that case rather than a resolved fabric name.
- * Demand and capacity report the deployment they sized, so the page makes no
- * topology claim for them; capacity also rejects an explicit fabric. An
- * aggregated serving mode submits an explicit null, the same as a backend that
- * cannot model prefill/decode disaggregation.
+ * The `fabric` field a request submits, for both Calculate and a Pareto sweep.
+ *
+ * This is the single place the page decides between the three meanings the
+ * contract gives the field:
+ *
+ * - `undefined` — omit it. An aggregate-only goal makes no topology claim, and
+ *   a backend that models no fabric has nothing to name.
+ * - `null` — ask the service for aggregate candidates only. A backend that
+ *   cannot model prefill/decode, or an explicitly aggregated serving mode,
+ *   cannot use a fabric.
+ * - a name — the topology the search should model. An omitted `servingMode`
+ *   describes a sweep: it searches both deployment modes, so the page's own
+ *   mode does not narrow it.
  */
-export function resolveEffectiveFabric(
+export function resolveSearchFabric(
   fabricRequired: boolean,
   aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
-  servingMode: 'agg' | 'disagg',
+  servingMode?: 'agg' | 'disagg',
 ): string | null | undefined {
   if (!fabricRequired || aggregateOnlyGoal) return undefined
-  if (servingMode !== 'disagg' || !disaggSupported) return null
-  return selectedFabric || null
-}
-
-/**
- * Fabric a latency Pareto sweep submits. The service includes prefill/decode
- * candidates only when this field names a fabric, and that sweep searches both
- * deployment modes. Serving mode does not narrow it; Calculate's aggregated
- * null stays in `resolveEffectiveFabric`.
- */
-export function resolveParetoFabric(
-  fabricRequired: boolean,
-  aggregateOnlyGoal: boolean,
-  disaggSupported: boolean,
-  selectedFabric: string | null,
-): string | null | undefined {
-  if (!fabricRequired || aggregateOnlyGoal) return undefined
-  if (!disaggSupported) return null
+  if (!disaggSupported || servingMode === 'agg') return null
   return selectedFabric || null
 }
 

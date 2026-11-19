@@ -348,6 +348,12 @@ describe('recommend sizing shared views', () => {
     // would fill with its default.
     expect(sizing.fabric).toBeNull();
     expect(sizing.mode).toBe('agg');
+
+    // A sweep is not narrowed by the page's mode: it still names the fabric,
+    // and it omits the mode the service rejects.
+    const sweep = await pareto();
+    expect(sweep.fabric).toBe('ib-400g');
+    expect(sweep.mode).toBeUndefined();
   });
 
   it('does not offer a serving mode for a demand link', async () => {

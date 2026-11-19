@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  resolveEffectiveFabric,
-  resolveParetoFabric,
+  resolveSearchFabric,
   submittedInputsMatch,
   type CurrentRecommendInputs,
   type SubmittedRecommendParams,
@@ -175,7 +174,7 @@ describe('submittedInputsMatch', () => {
     const params: SubmittedRecommendParams = { ...baseParams, fabric: undefined }
     const inputs: CurrentRecommendInputs = {
       ...baseInputs,
-      effectiveFabric: resolveEffectiveFabric(true, true, true, 'roce-200g', 'disagg'),
+      effectiveFabric: resolveSearchFabric(true, true, true, 'roce-200g', 'disagg'),
     }
     expect(inputs.effectiveFabric).toBeUndefined()
     expect(submittedInputsMatch(params, inputs)).toBe(true)
@@ -279,43 +278,36 @@ describe('submittedInputsMatch for Pareto sweeps', () => {
   })
 })
 
-describe('resolveEffectiveFabric', () => {
+describe('resolveSearchFabric', () => {
   it('omits the fabric when the backend does not require one', () => {
-    expect(resolveEffectiveFabric(false, false, true, 'roce-200g', 'disagg')).toBeUndefined()
+    expect(resolveSearchFabric(false, false, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
   it('omits the fabric for aggregate-only goals', () => {
-    expect(resolveEffectiveFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
+    expect(resolveSearchFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
+    // A sweep over an aggregate-only goal omits it too.
+    expect(resolveSearchFabric(true, true, true, 'roce-200g')).toBeUndefined()
   })
 
   it('keeps a selected fabric when disaggregated serving supports it', () => {
-    expect(resolveEffectiveFabric(true, false, true, 'roce-200g', 'disagg')).toBe('roce-200g')
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'disagg')).toBe('roce-200g')
   })
 
   it('sends null for an aggregated run even when a fabric is selected', () => {
-    expect(resolveEffectiveFabric(true, false, true, 'roce-200g', 'agg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'agg')).toBeNull()
   })
 
   it('sends null when no fabric was selected or disaggregation needs none', () => {
-    expect(resolveEffectiveFabric(true, false, true, null, 'disagg')).toBeNull()
-    expect(resolveEffectiveFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
-  })
-})
-
-describe('resolveParetoFabric', () => {
-  it('keeps the selected fabric for a latency sweep in either serving mode', () => {
-    expect(resolveParetoFabric(true, false, true, 'roce-200g')).toBe('roce-200g')
-    expect(resolveEffectiveFabric(true, false, true, 'roce-200g', 'agg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, null, 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, '', 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
   })
 
-  it('sends null when disaggregation is unsupported or no fabric is selected', () => {
-    expect(resolveParetoFabric(true, false, false, 'roce-200g')).toBeNull()
-    expect(resolveParetoFabric(true, false, true, null)).toBeNull()
-    expect(resolveParetoFabric(true, false, true, '')).toBeNull()
-  })
-
-  it('omits the fabric when the backend does not require one or the goal is aggregate-only', () => {
-    expect(resolveParetoFabric(false, false, true, 'roce-200g')).toBeUndefined()
-    expect(resolveParetoFabric(true, true, true, 'roce-200g')).toBeUndefined()
+  it('keeps the selected fabric for a sweep, whose mode does not narrow it', () => {
+    // An omitted serving mode describes a sweep over both deployment modes.
+    expect(resolveSearchFabric(true, false, true, 'roce-200g')).toBe('roce-200g')
+    expect(resolveSearchFabric(true, false, true, null)).toBeNull()
+    expect(resolveSearchFabric(true, false, true, '')).toBeNull()
+    expect(resolveSearchFabric(true, false, false, 'roce-200g')).toBeNull()
   })
 })

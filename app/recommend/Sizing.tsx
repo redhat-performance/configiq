@@ -40,7 +40,7 @@ import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
-import { resolveEffectiveFabric, resolveParetoFabric, submittedInputsMatch } from './inputs-match';
+import { resolveSearchFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
@@ -885,20 +885,15 @@ export default function Sizing() {
       maxSeqLen,
       prefillMaxSeqLen: servingMode === 'disagg' ? prefillMaxSeqLen : null,
       decodeMaxSeqLen: servingMode === 'disagg' ? decodeMaxSeqLen : null,
-      effectiveFabric: params.pareto
-        ? resolveParetoFabric(
-            fabricRequired,
-            aggregateOnlyGoal,
-            disaggSupported,
-            selectedNetworkFabric,
-          )
-        : resolveEffectiveFabric(
-            fabricRequired,
-            aggregateOnlyGoal,
-            disaggSupported,
-            selectedNetworkFabric,
-            servingMode,
-          ),
+      effectiveFabric: resolveSearchFabric(
+        fabricRequired,
+        aggregateOnlyGoal,
+        disaggSupported,
+        selectedNetworkFabric,
+        // A retained sweep searched both deployment modes, so the current
+        // mode is not the one it submitted.
+        params.pareto ? undefined : servingMode,
+      ),
       servingMode,
     });
     if (!matches) setInputsDirty(true);
@@ -910,48 +905,58 @@ export default function Sizing() {
       ? 'throughput_demand'
       : 'min_gpus';
 
-  const buildRecommendParams = (): RecommendParams => ({
-    model_path: model,
-    system: gpuSystem,
-    isl,
-    osl,
-    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
-    objective: sizingObjective,
-    ...(isCapacity
-      ? { target_concurrency: targetConcurrency }
-      : isDemand
-        ? { target_request_rate: demandRate }
-        : {
-            target_concurrency: targetConcurrency,
-            // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
-            // request schema rejects sending both shapes at once.
-            ...(requestLatency != null
-              ? { request_latency: requestLatency }
-              : { ttft, tpot }),
-          }),
-    prefix,
-    ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
-    ...(servingMode === 'disagg' && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-    ...(servingMode === 'disagg' && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
-    backend: inferenceBackend,
-    ...(backendVersion ? { backend_version: backendVersion } : {}),
-    // Send the HF config for models AISimulators can't resolve from its catalog.
-    ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
-    simulator,
-    // The simulator reports whether it answers one bounded search or streams
-    // GPU windows. This is a proxy hint and is never forwarded upstream.
-    search_strategy: support?.recommendSearch ?? 'windowed',
-    // A release without P/D modelling can only search aggregated candidates,
-    // so do not send a fabric that asks for a disaggregated topology. Capacity
-    // sizing reports both topologies itself and rejects a fabric.
-    ...(fabricRequired && !aggregateOnlyGoal
-      ? { fabric: servingMode === 'disagg' && disaggSupported ? selectedNetworkFabric || null : null }
-      : {}),
-    // The selected serving mode, for a goal that can act on it. Demand and
-    // capacity report the deployment they sized, so a mode here would state a
-    // narrowing the response does not honour.
-    ...(aggregateOnlyGoal ? {} : { mode: servingMode }),
-  });
+  // One builder for both buttons: a Pareto sweep is the same request minus the
+  // mode, with a fabric that does not follow the page's current mode. Building
+  // it separately let the two paths drift on every field added here.
+  const buildRecommendParams = ({ pareto = false }: { pareto?: boolean } = {}): RecommendParams => {
+    const fabric = resolveSearchFabric(
+      fabricRequired,
+      aggregateOnlyGoal,
+      disaggSupported,
+      selectedNetworkFabric,
+      pareto ? undefined : servingMode,
+    );
+    return {
+      model_path: model,
+      system: gpuSystem,
+      isl,
+      osl,
+      sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
+      objective: sizingObjective,
+      ...(isCapacity
+        ? { target_concurrency: targetConcurrency }
+        : isDemand
+          ? { target_request_rate: demandRate }
+          : {
+              target_concurrency: targetConcurrency,
+              // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
+              // request schema rejects sending both shapes at once.
+              ...(requestLatency != null
+                ? { request_latency: requestLatency }
+                : { ttft, tpot }),
+            }),
+      prefix,
+      ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
+      ...(servingMode === 'disagg' && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+      ...(servingMode === 'disagg' && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+      backend: inferenceBackend,
+      ...(backendVersion ? { backend_version: backendVersion } : {}),
+      // Send the HF config for models AISimulators can't resolve from its catalog.
+      ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+      simulator,
+      // The simulator reports whether it answers one bounded search or streams
+      // GPU windows. This is a proxy hint and is never forwarded upstream.
+      search_strategy: support?.recommendSearch ?? 'windowed',
+      // Omitted for an aggregate-only goal and for a backend that models no
+      // fabric; null asks for aggregate candidates only; a name is the topology
+      // the search should model.
+      ...(fabric === undefined ? {} : { fabric }),
+      // The selected serving mode, for a goal that can act on it. Demand and
+      // capacity report the deployment they sized, so a mode here would state a
+      // narrowing the response does not honour. A sweep searches both modes.
+      ...(pareto || aggregateOnlyGoal ? {} : { mode: servingMode }),
+    };
+  };
 
   const handleCalculate = () => {
     setInputsDirty(false);
@@ -962,15 +967,7 @@ export default function Sizing() {
     setInputsDirty(false);
     // A latency sweep names the selected fabric and omits serving mode, so the
     // service searches aggregate and prefill/decode candidates together.
-    // Calculate keeps its own fabric and mode decisions.
-    const { mode: _mode, ...sizing } = buildRecommendParams();
-    const fabric = resolveParetoFabric(
-      fabricRequired,
-      aggregateOnlyGoal,
-      disaggSupported,
-      selectedNetworkFabric,
-    );
-    startPareto(fabric === undefined ? sizing : { ...sizing, fabric });
+    startPareto(buildRecommendParams({ pareto: true }));
   };
 
   // Local memory analysis using the same engine as Quick Estimate
