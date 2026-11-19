@@ -137,6 +137,34 @@ describe('AskPanel', () => {
     expect(document.body.textContent).toContain('Unverified: 96 GB');
   });
 
+  it('withholds an unfinished answer and keeps its sources', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        streamResponse([
+          { type: 'retrieval', sections: [] },
+          {
+            type: 'result',
+            status: 'incomplete',
+            // The route withholds this trace; the panel must not render it.
+            answer: 'The user is asking about concurrency. I should explain the fields.',
+            citations: [{ url: '/docs/workloads#c', title: 'Workloads', section: 'Recommend' }],
+            links: [],
+            evidence: [],
+            unsupportedNumbers: [],
+            model: 'test/model',
+          },
+        ])),
+    );
+
+    await render();
+    await ask('How do I set concurrency?');
+
+    expect(document.body.textContent).not.toContain('The user is asking');
+    expect(document.body.textContent).toContain('did not finish this answer');
+    expect(document.body.textContent).toContain('Workloads');
+  });
+
   it('leaves the question box usable when the stream ends without a result', async () => {
     vi.stubGlobal(
       'fetch',

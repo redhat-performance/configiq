@@ -144,7 +144,9 @@ const assistantToolCalls = meter.createCounter('configiq.assistant.tool.calls', 
  * Assistants are counted by outcome, never by question text: customer workload
  * shapes can be sensitive and prompts are not logged by default.
  */
-export function recordAssistantAnswer(outcome: 'answered' | 'suppressed' | 'error'): void {
+export function recordAssistantAnswer(
+  outcome: 'answered' | 'suppressed' | 'incomplete' | 'error',
+): void {
   assistantAnswers.add(1, { 'assistant.outcome': outcome });
 }
 

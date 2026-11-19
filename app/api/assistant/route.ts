@@ -15,6 +15,7 @@ import type {
   AssistantCitation,
   AssistantEvent,
   AssistantLink,
+  AssistantResultStatus,
   RetrievedSection,
 } from '@/lib/assistant/types';
 
@@ -38,7 +39,21 @@ export const dynamic = 'force-dynamic';
 const MAX_QUESTION_LENGTH = 500;
 const MAX_TOOL_ROUNDS = 2;
 const MAX_TOOL_CALLS_PER_ROUND = 2;
-const ANSWER_TOKEN_LIMIT = 320;
+/**
+ * Generation cap, not an answer cap: a reasoning model's thinking tokens count
+ * against it too. K2-Horizon defaults to a long reasoning trace, so a cap sized
+ * for the 120-word answer alone would end generation inside the reasoning
+ * block; vLLM then has no closing tag to split on and returns the unfinished
+ * thought as `content`.
+ */
+const GENERATION_TOKEN_LIMIT = 640;
+/**
+ * Reasoning effort for models whose chat template reads it. K2-Horizon accepts
+ * low/medium/high and defaults to high; low keeps the trace short enough to
+ * reach the answer inside the generation cap. Templates that do not define the
+ * variable ignore it, so this is not a model-specific branch.
+ */
+const REASONING_EFFORT = 'low';
 /**
  * Sections handed to the model, and therefore the most URLs that can be cited.
  * The list under an answer is what the model read, so it has to cover every
@@ -46,7 +61,9 @@ const ANSWER_TOKEN_LIMIT = 320;
  * on a source the reader was never shown.
  */
 const REFERENCE_SECTIONS = 6;
-const MODEL_TIMEOUT_MS = 25_000;
+// Generation now includes the reasoning trace, so the deadline covers a longer
+// reply than the answer alone. Low effort keeps the common case well inside it.
+const MODEL_TIMEOUT_MS = 40_000;
 const TOOL_TIMEOUT_MS = 8_000;
 
 const requestSchema = z.object({
@@ -134,6 +151,12 @@ interface ChatToolCall {
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /**
+   * The reasoning a reasoning model produced for this turn. K2-Horizon's chat
+   * template rejects an assistant message that carries none of its thinking
+   * fields, so a replayed tool-call turn has to include it.
+   */
+  reasoning?: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -146,7 +169,11 @@ interface ToolCall {
 }
 
 interface ChatReply {
+  /** Only the model's final content; reasoning is kept apart from it. */
   content: string;
+  reasoning: string;
+  /** `length` means generation stopped mid-turn, so `content` is not an answer. */
+  finishReason: string | null;
   toolCalls: ToolCall[];
 }
 
@@ -198,7 +225,11 @@ async function chatCompletion(
         model,
         messages,
         temperature: 0,
-        max_tokens: ANSWER_TOKEN_LIMIT,
+        max_tokens: GENERATION_TOKEN_LIMIT,
+        // A reasoning model applies this before it starts its trace; the cap
+        // above then has room for both the trace and the answer. Chat templates
+        // that do not define the variable ignore it.
+        chat_template_kwargs: { reasoning_effort: REASONING_EFFORT },
         ...(withTools
           ? { tools: toolSchemas(), tool_choice: 'auto' }
           : {}),
@@ -217,11 +248,29 @@ async function chatCompletion(
 
   try {
     const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown } }>;
+      choices?: Array<{
+        message?: {
+          content?: unknown;
+          reasoning?: unknown;
+          // Older OpenAI-compatible servers still use this name.
+          reasoning_content?: unknown;
+          tool_calls?: unknown;
+        };
+        finish_reason?: unknown;
+      }>;
     };
-    const message = payload.choices?.[0]?.message;
+    const choice = payload.choices?.[0];
+    const message = choice?.message;
+    const reasoning =
+      typeof message?.reasoning === 'string'
+        ? message.reasoning
+        : typeof message?.reasoning_content === 'string'
+          ? message.reasoning_content
+          : '';
     return {
       content: typeof message?.content === 'string' ? message.content.trim() : '',
+      reasoning,
+      finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null,
       toolCalls: readToolCalls(message?.tool_calls),
     };
   } catch {
@@ -415,6 +464,10 @@ async function runAssistant(
     messages.push({
       role: 'assistant',
       content: reply.content,
+      // The reasoning belongs to this turn. Dropping it makes the continuation
+      // invalid for K2-Horizon, whose template requires a thinking field on
+      // every assistant message.
+      reasoning: reply.reasoning,
       tool_calls: calls.map(toWireToolCall),
     });
 
@@ -461,7 +514,14 @@ async function runAssistant(
   }
 
   const draft = reply?.content?.trim() ?? '';
-  if (!draft) {
+  /**
+   * Generation stopped at the token cap. For a reasoning model that usually
+   * means the closing thinking tag never arrived, so the server returns the
+   * unfinished trace as `content`. It reads like prose, but it is not an answer
+   * and must not be shown.
+   */
+  const incomplete = reply?.finishReason === 'length';
+  if (!draft && !incomplete) {
     if (signal.aborted) return;
     emit({
       type: 'error',
@@ -485,17 +545,22 @@ async function runAssistant(
   const citations = citationsFor(sections);
   const links = linksForAnswer(request, sections, toolResults, proposal);
 
+  const status: AssistantResultStatus = incomplete
+    ? 'incomplete'
+    : verification.ok
+      ? 'answered'
+      : 'suppressed';
   emit({
     type: 'result',
-    status: verification.ok ? 'answered' : 'suppressed',
-    answer: verification.ok ? draft : '',
+    status,
+    answer: status === 'answered' ? draft : '',
     citations,
     links,
     evidence: evidence.slice(0, 8),
-    unsupportedNumbers: verification.unsupported,
+    unsupportedNumbers: incomplete ? [] : verification.unsupported,
     model: config.model!,
   });
-  recordAssistantAnswer(verification.ok ? 'answered' : 'suppressed');
+  recordAssistantAnswer(status);
 }
 
 export async function POST(request: Request) {

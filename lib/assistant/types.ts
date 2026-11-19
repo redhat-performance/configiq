@@ -41,18 +41,21 @@ export type AssistantErrorCode =
   | 'assistant_unavailable'
   | 'invalid_request';
 
+/**
+ * `suppressed` means at least one number in the draft prose could not be traced
+ * to the retrieved sections or a tool result. `incomplete` means generation
+ * stopped before the model finished its turn. In both cases the prose is not
+ * shown; the evidence and links are.
+ */
+export type AssistantResultStatus = 'answered' | 'suppressed' | 'incomplete';
+
 export type AssistantEvent =
   | { type: 'retrieval'; sections: RetrievedSection[] }
   | { type: 'tool'; name: string; ok: boolean; summary: string }
   | { type: 'token'; text: string }
   | {
       type: 'result';
-      /**
-       * `suppressed` means at least one number in the draft prose could not be
-       * traced to the retrieved sections or a tool result. The prose is not
-       * shown; the evidence and links are.
-       */
-      status: 'answered' | 'suppressed';
+      status: AssistantResultStatus;
       answer: string;
       citations: AssistantCitation[];
       links: AssistantLink[];

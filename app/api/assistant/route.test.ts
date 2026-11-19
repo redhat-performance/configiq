@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET, POST } from './route';
 import type { AssistantEvent } from '@/lib/assistant/types';
 
-type Reply = { content: string; toolCalls?: Array<{ id: string; name: string; arguments: string }> };
+type Reply = {
+  content: string;
+  reasoning?: string;
+  finishReason?: string;
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -15,8 +20,10 @@ function completion(reply: Reply): Response {
   return jsonResponse({
     choices: [
       {
+        finish_reason: reply.finishReason ?? 'stop',
         message: {
           content: reply.content,
+          ...(reply.reasoning !== undefined ? { reasoning: reply.reasoning } : {}),
           ...(reply.toolCalls
             ? {
                 tool_calls: reply.toolCalls.map((call) => ({
@@ -142,6 +149,76 @@ describe('assistant answer', () => {
 
     expect(urls.some((url) => url.startsWith('http://assistant.test:8001/v1/chat/completions'))).toBe(true);
     expect(urls.some((url) => url.startsWith('http://triton.test:8000'))).toBe(false);
+  });
+
+  it('asks for a short reasoning trace and leaves room for the answer', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          return completion({ content: 'Search and documentation still work.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    await ask('what does the costs page compare');
+
+    // A reasoning model's thinking tokens count against max_tokens, so the cap
+    // has to cover the trace as well as the 120-word answer.
+    expect(bodies[0].max_tokens).toBe(640);
+    expect(bodies[0].chat_template_kwargs).toEqual({ reasoning_effort: 'low' });
+  });
+
+  it('never renders the model reasoning as the answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({
+            reasoning: 'The user is asking about costs. I should compare the three options.',
+            content: 'The Costs page compares hosted, rented, and purchased options.',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what does the costs page compare');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('answered');
+    expect(result.answer).not.toContain('The user is asking');
+    expect(result.answer).toContain('hosted, rented, and purchased');
+  });
+
+  it('withholds prose when generation stops before the answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          // What K2-Horizon returns when the token cap lands inside its
+          // reasoning block: the unfinished trace arrives as `content`.
+          return completion({
+            content: 'The user is asking about concurrency. I should explain the workload fields.',
+            finishReason: 'length',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how do I set concurrency');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('incomplete');
+    expect(result.answer).toBe('');
+    // The sources are still useful even though the prose is not.
+    expect(result.citations.length).toBeGreaterThan(0);
   });
 
   it('answers from retrieved documentation and cites it', async () => {
@@ -477,6 +554,7 @@ describe('assistant answer', () => {
             // More calls than the round limit: the tail must not be echoed.
             return completion({
               content: '',
+              reasoning: 'The catalog tools answer this directly.',
               toolCalls: [
                 { id: 'call-1', name: 'list_gpus', arguments: '{}' },
                 { id: 'call-2', name: 'list_backends', arguments: '{}' },
@@ -495,6 +573,9 @@ describe('assistant answer', () => {
 
     const followUp = chatBodies[1]?.messages ?? [];
     const assistant = followUp.find((message) => Array.isArray(message.tool_calls));
+    // K2-Horizon's template rejects an assistant turn with no thinking field,
+    // so the reasoning that produced the calls has to travel with them.
+    expect(assistant?.reasoning).toBe('The catalog tools answer this directly.');
     const echoed = assistant?.tool_calls as
       | Array<{ id: string; type: string; function: { name: string; arguments: string } }>
       | undefined;

@@ -4,7 +4,12 @@ import * as React from 'react';
 import Link from 'next/link';
 import { Button, Spinner, TextArea } from '@patternfly/react-core';
 import { useSettings } from '@/contexts/SettingsContext';
-import type { AssistantEvent, AssistantLink, AssistantCitation } from '@/lib/assistant/types';
+import type {
+  AssistantEvent,
+  AssistantLink,
+  AssistantCitation,
+  AssistantResultStatus,
+} from '@/lib/assistant/types';
 import styles from './AskPanel.module.css';
 
 type AskStatus = 'idle' | 'asking' | 'done' | 'error';
@@ -46,6 +51,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
   const [status, setStatus] = React.useState<AskStatus>('idle');
   const [progress, setProgress] = React.useState<ProgressLine[]>([]);
   const [answer, setAnswer] = React.useState('');
+  const [resultStatus, setResultStatus] = React.useState<AssistantResultStatus>('answered');
   const [citations, setCitations] = React.useState<AssistantCitation[]>([]);
   const [links, setLinks] = React.useState<AssistantLink[]>([]);
   const [unsupported, setUnsupported] = React.useState<string[]>([]);
@@ -63,6 +69,7 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
   const reset = () => {
     setProgress([]);
     setAnswer('');
+    setResultStatus('answered');
     setCitations([]);
     setLinks([]);
     setUnsupported([]);
@@ -105,7 +112,9 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       setCitations(event.citations);
       setLinks(event.links);
       setUnsupported(event.unsupportedNumbers);
-      // Suppressed prose is never shown; the sources below carry the answer.
+      setResultStatus(event.status);
+      // Suppressed or unfinished prose is never shown; the sources below carry
+      // the answer.
       setAnswer(event.status === 'answered' ? event.answer : '');
       return true;
     }
@@ -254,6 +263,11 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
         <div className={styles.answerBlock} aria-live="polite">
           {answer ? (
             <p className={styles.answer}>{answer}</p>
+          ) : resultStatus === 'incomplete' ? (
+            <p className={styles.status}>
+              The assistant did not finish this answer, so it is not shown. Ask a narrower
+              question, or open one of the sources below.
+            </p>
           ) : (
             <p className={styles.status}>
               I could not verify the numbers in that answer, so it is not shown. The sources below
