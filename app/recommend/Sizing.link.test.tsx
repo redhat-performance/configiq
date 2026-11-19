@@ -300,7 +300,7 @@ async function mountFabricView(search: string) {
 }
 
 /**
- * Press a deployment view in the expanded panel.
+ * Press a serving mode in the expanded panel.
  *
  * Pressing the pressed view is the only way back to the unpinned default, so
  * every clear-control test goes through this.
@@ -312,7 +312,7 @@ async function pressView(label: 'Aggregated' | 'Disaggregated') {
       ?.click();
     await Promise.resolve();
   });
-  const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+  const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
   const button = Array.from(view?.querySelectorAll('button') ?? [])
     .find(candidate => candidate.textContent === label);
   expect(button).toBeDefined();
@@ -446,7 +446,7 @@ describe('recommend sizing shared views', () => {
 
     // The summary is the read-only view of the form; a mode the user cannot
     // see without expanding the panel is not a choice they made.
-    expect(container.textContent).toContain('Deployment view: aggregated.');
+    expect(container.textContent).toContain('Serving mode: aggregated.');
   });
 
   it('leaves the deployment to the service until a view is pinned', async () => {
@@ -455,7 +455,7 @@ describe('recommend sizing shared views', () => {
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     expect(container.textContent).toContain(
-      'Deployment view: service default (aggregated or disaggregated).',
+      'Serving mode: service default (aggregated or disaggregated).',
     );
     const sizing = await calculate();
     expect(sizing.mode).toBeUndefined();
@@ -490,7 +490,7 @@ describe('recommend sizing shared views', () => {
 
     await pressView('Aggregated');
 
-    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+    const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
     const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
       .find(button => button.textContent === 'Disaggregated');
     expect(disaggregated?.hasAttribute('disabled')).toBe(false);
@@ -529,7 +529,7 @@ describe('recommend sizing shared views', () => {
         ?.click();
       await Promise.resolve();
     });
-    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+    const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
     const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
       .find(button => button.textContent === 'Disaggregated');
     // The held view cannot be submitted, but the press that clears it must
@@ -549,7 +549,7 @@ describe('recommend sizing shared views', () => {
   it('omits the serving mode from a summary for a goal without one', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
 
-    expect(container.textContent).not.toContain('Deployment view:');
+    expect(container.textContent).not.toContain('Serving mode:');
   });
 
   it('does not offer a serving mode for a demand link', async () => {

@@ -68,7 +68,7 @@ export interface CurrentRecommendInputs {
  *   fabric.
  * - a name — the topology the search should model.
  *
- * Both actions read the same deployment view, so the control, the payload, and
+ * Both actions read the same serving mode, so the control, the payload, and
  * the copied link cannot describe different topologies.
  */
 export function resolveSearchFabric(
