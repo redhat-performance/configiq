@@ -3,13 +3,20 @@ export interface WorkloadPreset {
   label: string
   isl: number
   osl: number
+  /**
+   * Cached prefix tokens shared by every request, a subset of `isl`.
+   * Omitted means the preset has no reuse assumption.
+   */
+  prefix?: number
 }
 
 export const DEFAULT_WORKLOAD: WorkloadPreset = {
   key: 'default',
   label: 'Default',
   isl: 2048,
-  osl: 128
+  osl: 128,
+  // The form starts cold: a reuse assumption must be chosen, not inherited.
+  prefix: 0
 }
 
 /**
@@ -21,26 +28,34 @@ export function workloadPresetOptions(presets: readonly WorkloadPreset[]): Workl
 }
 
 /**
- * The preset that names this input/output shape, or null when the reader has a
- * custom one.
+ * The preset that names this input/output shape and prefix, or null when the
+ * reader has a custom one.
  *
  * Selection follows the values, as it does for concurrency presets: clicking a
- * preset writes the lengths, and a shared view that restores those lengths must
- * also restore the selection. Keeping the choice in separate state would let a
- * link apply the numbers while the chip still claimed "Default".
+ * preset writes the lengths and prefix, and a shared view that restores those
+ * values must also restore the selection. Keeping the choice in separate state
+ * would let a link apply the numbers while the chip still claimed "Default".
+ * Prefix is part of the identity because two views with the same lengths but a
+ * different reuse assumption are different workloads.
  */
 export function matchWorkloadPreset(
   presets: readonly WorkloadPreset[],
   isl: number,
   osl: number,
+  prefix: number,
 ): WorkloadPreset | null {
-  return presets.find(preset => preset.isl === isl && preset.osl === osl) ?? null
+  return presets.find(preset =>
+    preset.isl === isl &&
+    preset.osl === osl &&
+    (preset.prefix ?? 0) === prefix,
+  ) ?? null
 }
 
 /**
  * The preset whose tokens-per-request total matches, for a page that models
  * only the combined context budget. Such a page cannot tell two shapes with the
- * same total apart, so the first match is the honest answer.
+ * same total apart, and it has no prefix control, so the first match is the
+ * honest answer.
  */
 export function matchWorkloadPresetByTokens(
   presets: readonly WorkloadPreset[],

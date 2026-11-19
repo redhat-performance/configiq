@@ -422,6 +422,8 @@ export default function Performance() {
   const [prefillMaxSeqLen, setPrefillMaxSeqLen] = React.useState<number | null>(null);
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
   const [testPrefix, setTestPrefix] = React.useState(0);
+  // Empty means the request omits it: the simulator runs one total request.
+  const [requestsPerLoadUnit, setRequestsPerLoadUnit] = React.useState<number | null>(null);
   const [testTpSize, setTestTpSize] = React.useState(1);
   const effectiveContextLimit = servingPolicyOverride && servingManualContextLimit !== null
     ? servingManualContextLimit
@@ -461,6 +463,7 @@ export default function Performance() {
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('1');
   const [prefixInput, setPrefixInput] = React.useState('0');
+  const [requestsPerLoadUnitInput, setRequestsPerLoadUnitInput] = React.useState('');
   const [tpSizeInput, setTpSizeInput] = React.useState('1');
   const [ppSizeInput, setPpSizeInput] = React.useState('1');
   const [moeEpSizeInput, setMoeEpSizeInput] = React.useState('');
@@ -469,6 +472,7 @@ export default function Performance() {
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
+  const invalidRequestsPerLoadUnit = requestsPerLoadUnitInput !== '' && requestsPerLoadUnit === null;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
   const invalidPhase = (p: PerfPhaseInput) =>
@@ -546,6 +550,14 @@ export default function Performance() {
     markInputsDirty();
   };
 
+  const handleRequestsPerLoadUnitChange = (raw: string) => {
+    const digits = raw.replace(/[^0-9]/g, '');
+    setRequestsPerLoadUnitInput(digits);
+    const n = parseInt(digits, 10);
+    setRequestsPerLoadUnit(digits === '' || isNaN(n) || n < 1 ? null : n);
+    markInputsDirty();
+  };
+
   const handleMoeEpSizeChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
     setMoeEpSizeInput(digits);
@@ -581,13 +593,16 @@ export default function Performance() {
         workloadPresetOptions(getAppConfig().workloadPresets),
         testISL,
         testOSL,
+        testPrefix,
       )?.key ?? '');
   const calcGenRef = React.useRef(0);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'prefix'>) => {
     calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
+    const presetPrefix = p.prefix ?? 0;
+    setTestPrefix(presetPrefix); setPrefixInput(String(presetPrefix));
     setTestResult(null);
     setTestClassifierInput(null)
     setIsCalculating(false);
@@ -671,6 +686,12 @@ export default function Performance() {
       prefix: {
         read: () => parseInt(prefixInput, 10) || 0,
         write: (value) => handlePrefixChange(String(value)),
+      },
+      requestsPerLoadUnit: {
+        // Empty is a real choice (one cold request), so an unset control is
+        // omitted rather than sent as a default.
+        read: () => requestsPerLoadUnit ?? undefined,
+        write: (value) => handleRequestsPerLoadUnitChange(String(value)),
       },
       // A pinned max_num_seqs, chunked-prefill choice, and memory fraction
       // belong to an override panel the model/GPU reset clears, so they are
@@ -865,6 +886,8 @@ export default function Performance() {
           pp_size: testPpSize,
           backend: inferenceBackend,
           prefix: testPrefix > 0 ? testPrefix : undefined,
+          // Omitted means the simulator runs one total request.
+          ...(requestsPerLoadUnit != null ? { requests_per_load_unit: requestsPerLoadUnit } : {}),
           vram_gb: currentCatalogGpu?.vramGb ?? null,
           backend_version: backendVersion || undefined,
           hf_model_config: needsHfConfig(model, catalogModels) ? (hfConfig as Record<string, unknown> | null) : null,
@@ -1197,6 +1220,7 @@ export default function Performance() {
       ...(vllmOverride && vllmManualMaxNumSeqs != null && { max_num_seqs: vllmManualMaxNumSeqs }),
       ...(vllmOverride && vllmManualChunkedPrefill != null && { enable_chunked_prefill: vllmManualChunkedPrefill }),
       ...(testPrefix > 0 && { prefix: testPrefix }),
+      ...(requestsPerLoadUnit != null && { requests_per_load_unit: requestsPerLoadUnit }),
       ...(backendVersion && { backend_version: backendVersion }),
       ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
       ...(testWeightPrecision === 'INT8' && { gemm_quant_mode: 'int8_wo' }),
@@ -1223,7 +1247,7 @@ export default function Performance() {
   }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers,
     effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization,
     vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize,
-    testPpSize, currentGpuVramGb, testPrefix, backendVersion, testWeightPrecision,
+    testPpSize, currentGpuVramGb, testPrefix, requestsPerLoadUnit, backendVersion, testWeightPrecision,
     testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig,
     modelNeedsHfConfig, testMoeQuantMode, testMoeEpSize, testMoeEtpSize,
     moeEpSizeInput, moeEtpSizeInput, simulator, selectedNetworkFabric, fabricRequired]);
@@ -1387,6 +1411,9 @@ export default function Performance() {
         { k: 'OSL', v: `${testOSL}` },
         { k: 'users', v: `${testConcurrentUsers}` },
         { k: 'prefix', v: `${testPrefix}` },
+        ...(requestsPerLoadUnit != null
+          ? [{ k: 'requests/user', v: `${requestsPerLoadUnit}` }]
+          : []),
       ],
       fields: [
         {
@@ -1420,6 +1447,14 @@ export default function Performance() {
           type: 'number' as const,
           invalid: false,
           onChange: (val: string) => handlePrefixChange(val)
+        },
+        {
+          label: 'Requests per user',
+          value: requestsPerLoadUnitInput,
+          type: 'number' as const,
+          invalid: invalidRequestsPerLoadUnit,
+          help: 'How many requests each concurrent user sends. Requests after the first can reuse the shared prefix when one is set. Leave empty to simulate one request across all users.',
+          onChange: (val: string) => handleRequestsPerLoadUnitChange(val)
         },
       ],
     },
@@ -1793,7 +1828,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
+            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidRequestsPerLoadUnit || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -2614,19 +2649,34 @@ export default function Performance() {
                     />
                   </div>
                 ) : f.type === 'number' ? (
-                  <TextInput
-                    value={String(f.value)}
-                    aria-label={f.label}
-                    type="number"
-                    validated={f.invalid ? 'error' : 'default'}
-                    onChange={(_, val) => f.onChange?.(val)}
-                  />
+                  <>
+                    <TextInput
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      type="number"
+                      validated={f.invalid ? 'error' : 'default'}
+                      placeholder={f.placeholder}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    />
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <TextInput
-                    value={String(f.value)}
-                    aria-label={f.label}
-                    onChange={(_, val) => f.onChange?.(val)}
-                  />
+                  <>
+                    <TextInput
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    />
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -2708,7 +2758,7 @@ export default function Performance() {
                       </div>
                     )}
                     {sec.fields.length > 0 && (
-                      <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
+                      <div className={sec.id === 'parallel' || sec.id === 'workload' ? styles.accGrid5 : styles.accGrid}>
                         {(sec.fields as AccordionField[]).map(renderField)}
                       </div>
                     )}

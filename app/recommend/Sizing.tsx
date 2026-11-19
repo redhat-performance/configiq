@@ -715,15 +715,18 @@ export default function Sizing() {
         workloadPresetOptions(getAppConfig().workloadPresets),
         isl,
         osl,
+        prefix,
       )?.key ?? '');
   // Selection follows the actual value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'prefix'>) => {
     reset();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
+    const presetPrefix = p.prefix ?? 0;
+    setPrefix(presetPrefix); setPrefixInput(String(presetPrefix));
     setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
@@ -1462,7 +1465,10 @@ export default function Sizing() {
                     {capacityContextTokens.toLocaleString()} tokens
                   </div>
                   <div className={styles.helperText}>
-                    {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL, with no prefix-cache credit'}
+                    {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL peak'}
+                    {prefix > 0
+                      ? ` · shared prefix ${prefix.toLocaleString()} tokens`
+                      : ' · no shared prefix'}
                   </div>
                 </div>
                 <div>
@@ -1771,6 +1777,9 @@ export default function Sizing() {
                         {(result.capacity?.capacityTokens ?? 0).toLocaleString()} tokens
                       </span><br />
                       fits: <span className={styles.em}>{result.capacity?.capacitySequences ?? '—'} sequences</span><br />
+                      {result.capacity != null && result.capacity.sharedPrefixTokens > 0 && (
+                        <>shared prefix credited once per replica: <span className={styles.em}>{result.capacity.sharedPrefixTokens.toLocaleString()} tokens</span><br /></>
+                      )}
                       {result.capacity?.shortfallTokens != null && (
                         <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} tokens</span><br /></>
                       )}

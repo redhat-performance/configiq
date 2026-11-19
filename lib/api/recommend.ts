@@ -68,6 +68,8 @@ export interface RecommendDemandOutcome {
 export interface RecommendCapacityOutcome {
   targetConcurrency: number
   contextPerSequenceTokens: number
+  /** Prefix tokens cached once per replica; 0 when no credit was applied. */
+  sharedPrefixTokens: number
   capacityTokens: number
   capacitySequences: number
   fits: boolean
@@ -542,6 +544,9 @@ function parseRecommendPayload(
         targetConcurrency: typeof capacityRaw.target_concurrency === 'number' ? capacityRaw.target_concurrency : 0,
         contextPerSequenceTokens: typeof capacityRaw.context_per_sequence_tokens === 'number'
           ? capacityRaw.context_per_sequence_tokens
+          : 0,
+        sharedPrefixTokens: typeof capacityRaw.shared_prefix_tokens === 'number'
+          ? capacityRaw.shared_prefix_tokens
           : 0,
         capacityTokens: typeof capacityRaw.capacity_tokens === 'number' ? capacityRaw.capacity_tokens : 0,
         capacitySequences: typeof capacityRaw.capacity_sequences === 'number' ? capacityRaw.capacity_sequences : 0,

@@ -35,7 +35,7 @@ vi.mock('@/lib/app-config', async (importOriginal) => {
       ...actual.getAppConfig(),
       defaultSystem: 'retired_gpu',
       workloadPresets: [
-        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300 },
+        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300, prefix: 3950 },
       ],
       concurrencyPresets: [
         { key: 'small', label: 'Small (100)', concurrency: 100 },
@@ -893,6 +893,64 @@ describe('performance page parameter defaults', () => {
 
     await typeUsers('5');
     expect(pressed()).not.toContain('Small (100)');
+  });
+
+  it('applies a workload preset prefix and matches the preset back', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Interactive chat')
+        ?.click();
+    });
+
+    const prefix = container.querySelector<HTMLInputElement>('input[aria-label="Shared prefix tokens"]');
+    expect(prefix?.value).toBe('3950');
+    const pressed = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]'))
+      .map((button) => button.textContent);
+    expect(pressed).toContain('Interactive chat');
+  });
+
+  it('omits the per-user request count by default', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .not.toHaveProperty('requests_per_load_unit');
+  });
+
+  it('forwards an explicit per-user request count', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      const reuse = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(reuse, '4');
+      reuse.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('4');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ requests_per_load_unit: 4 });
   });
 
   it('keeps current values visible on collapsed assumption rows', async () => {

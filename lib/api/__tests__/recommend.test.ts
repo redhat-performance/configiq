@@ -43,6 +43,7 @@ const EXTERNAL_RESPONSE = {
 const CAPACITY_OUTCOME = {
   target_concurrency: 64,
   context_per_sequence_tokens: 2176,
+  shared_prefix_tokens: 2048,
   capacity_tokens: 150000,
   capacity_sequences: 68,
   fits: true,
@@ -902,6 +903,8 @@ describe('callRecommend', () => {
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') return
+    expect(result.capacity?.sharedPrefixTokens).toBe(2048)
+    expect(result.capacityOptions?.every(option => option.capacity.sharedPrefixTokens === 2048)).toBe(true)
     expect(result.capacityOptions?.map(option => [
       option.optionId,
       option.rank,

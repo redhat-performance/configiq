@@ -1034,7 +1034,8 @@ describe('Hybrid page composition', () => {
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ target_concurrency: 2 })
   })
 
-  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies token lengths for $label without changing the other workload settings', async preset => {
+  it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies token lengths and prefix for $label without changing the other workload settings', async preset => {
+    const presetPrefix = preset.prefix ?? 0
     vi.mocked(readRecommendStream).mockResolvedValue({ ...sizing, performance: { ttftLatencyMs: 100, tpotMs: 10 } } as RecommendResponse)
     await render(); await click('Adjust')
     await editNumber('hybrid-ttft', '900')
@@ -1051,7 +1052,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('900')
     expect(host.querySelector<HTMLInputElement>('#hybrid-tpot')!.value).toBe('25')
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('3')
-    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe('64')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe(String(presetPrefix))
     expect(host.querySelector<HTMLInputElement>('#hybrid-active-hours')!.value).toBe('200')
     expect(host.querySelector<HTMLInputElement>('#hybrid-peak')!.value).toBe('2')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('always-on')
@@ -1060,7 +1061,7 @@ describe('Hybrid page composition', () => {
     await click('Calculate')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({
       isl: preset.isl, osl: preset.osl, ttft: 900, tpot: 25,
-      target_concurrency: 3, prefix: 64,
+      target_concurrency: 3, prefix: presetPrefix,
     })
     await click('Data and assumptions')
     const reference = [...host.querySelectorAll('dt')].find(term => term.textContent === 'Capacity reference')!

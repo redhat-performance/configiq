@@ -419,7 +419,11 @@ export default function HybridSavings() {
     value={apiModel} items={apiModelItems} portalMenu
     onChange={value => { setApiModel(value || SAME_API_MODEL); setSelectedHostedOfferKey(null) }} />
   const workloadPresets = hydrated ? [DEFAULT_WORKLOAD, ...getAppConfig().workloadPresets] : [DEFAULT_WORKLOAD]
-  const activePreset = matchRequestShapePreset({ averageInputTokens, averageOutputTokens }, workloadPresets)
+  const activePreset = matchRequestShapePreset(
+    { averageInputTokens, averageOutputTokens },
+    workloadPresets,
+    prefixTokens,
+  )
   const workload = React.useMemo<HybridWorkload>(() => ({
     monthlyInputTokens,
     monthlyOutputTokens,
@@ -608,6 +612,7 @@ export default function HybridSavings() {
   const applyProfile = (profile: WorkloadPreset) => {
     setAverageInputTokens(profile.isl)
     setAverageOutputTokens(profile.osl)
+    setPrefixTokens(profile.prefix ?? 0)
     setWorkloadAdvancedOpen(true)
   }
 

@@ -70,6 +70,9 @@ const FIELDS = {
   prefillMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   decodeMaxSeqLen: positiveInt(MAX_SEQUENCE_LENGTH),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
+  // How many requests each concurrency slot sends against the same cached
+  // prefix. Absent means the simulator runs one total request.
+  requestsPerLoadUnit: positiveInt(1_000_000),
   maxNumSeqs: positiveInt(1_000_000),
   // The manual vLLM override panel. A view that pins chunked prefill is a
   // different view from one that leaves the backend to choose, so the choice

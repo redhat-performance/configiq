@@ -37,7 +37,7 @@ describe('analyzeRequestMix', () => {
     expect(matchRequestShapePreset({
       averageInputTokens: DEFAULT_HYBRID_WORKLOAD.averageInputTokens,
       averageOutputTokens: DEFAULT_HYBRID_WORKLOAD.averageOutputTokens,
-    }, [DEFAULT_WORKLOAD])).toBe(DEFAULT_WORKLOAD)
+    }, [DEFAULT_WORKLOAD], DEFAULT_WORKLOAD.prefix ?? 0)).toBe(DEFAULT_WORKLOAD)
     expect(mix.aligned).toBe(true)
     expect(mix.monthlyInputTokens + mix.monthlyOutputTokens).toBe(2_550_000_000)
     expect(mix.inputImpliedRequests).toBe(1_171_875)
@@ -217,10 +217,12 @@ describe('proposeRequestMixAlignment', () => {
 })
 
 describe('matchRequestShapePreset', () => {
-  it.each(presets)('matches $label only when both token lengths match', preset => {
+  it.each(presets)('matches $label only when lengths and prefix match', preset => {
+    const prefix = preset.prefix ?? 0
     const shape = { averageInputTokens: preset.isl, averageOutputTokens: preset.osl }
-    expect(matchRequestShapePreset(shape, presets)).toBe(preset)
-    expect(matchRequestShapePreset({ ...shape, averageInputTokens: preset.isl + 1 }, presets)).toBeNull()
-    expect(matchRequestShapePreset({ ...shape, averageOutputTokens: preset.osl + 1 }, presets)).toBeNull()
+    expect(matchRequestShapePreset(shape, presets, prefix)).toBe(preset)
+    expect(matchRequestShapePreset({ ...shape, averageInputTokens: preset.isl + 1 }, presets, prefix)).toBeNull()
+    expect(matchRequestShapePreset({ ...shape, averageOutputTokens: preset.osl + 1 }, presets, prefix)).toBeNull()
+    expect(matchRequestShapePreset(shape, presets, prefix + 1)).toBeNull()
   })
 })
