@@ -8,7 +8,7 @@ import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from aisimulate_core.sdk.perf_database import load_system_spec
 
@@ -169,8 +169,9 @@ class RecommendInput:
     decode_max_seq_len: int | None = None
     fabric: str | None = None
     # 'agg' searches aggregate candidates only. None and 'disagg' keep the
-    # fabric-gated search. Pareto does not read this field.
-    mode: str | None = None
+    # fabric-gated search. Pareto does not read this field, and the request
+    # contract rejects a mode with it.
+    mode: Literal["agg", "disagg"] | None = None
     database_mode: str = "HYBRID"
     inclusive_tpot: bool = False
     model_config_provided: bool = False
@@ -1369,10 +1370,13 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     resolved = _resolve_request(
         request.model_path, request.system, request.backend, request.backend_version
     )
-    include_disagg = bool(request.fabric)
+    # Resolve a named fabric even though a Pareto sweep is the one path that
+    # always searches P/D: a caller's topology assumption must be valid before
+    # the sweep reports a frontier built from it.
+    fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
+    include_disagg = fabric is not None
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg and fabric is not None
     )
@@ -1601,14 +1605,17 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     if request.database_mode != "HYBRID":
         raise BlisUnsupportedRequest("BLIS does not accept the AISimulate database_mode option")
     resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
+    # A named fabric is a topology assumption, so resolve it before deciding
+    # whether this run searches P/D: an unknown fabric must fail rather than be
+    # ignored because the search happens to be aggregate-only.
+    fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
     # Demand runs replay open-loop traffic and are aggregate-only: the adapter
     # cannot attach a P/D transfer fabric to a rate-driven run it did not search.
     # An aggregated serving mode asks for that same aggregate-only search even
     # when a fabric is present. Pareto does not use this path.
-    include_disagg = bool(request.fabric) and not demand and request.mode != "agg"
+    include_disagg = fabric is not None and not demand and request.mode != "agg"
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg
     )
