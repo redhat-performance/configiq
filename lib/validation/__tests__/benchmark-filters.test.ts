@@ -63,6 +63,20 @@ describe('shared measured backend filters', () => {
       .toEqual([1, 1, 1])
   })
 
+  it('keeps measured parallel serving configurations separate', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, pp: 1, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2 },
+      { ...internal, pp: 2, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2 },
+      { ...internal, pp: 2, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2, enable_expert_parallel: '1' },
+    ]
+    const options = getConfigurationOptions(rows)
+
+    expect(options).toHaveLength(3)
+    expect(options.some(option => option.label.includes('PP 2') && option.label.includes('expert parallel 1'))).toBe(true)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1])
+  })
+
   it('does not equate unknown or nightly tags with a numbered release', () => {
     expect(normalizeBackendVersion('vllm', null)).toBe('Version not reported')
     expect(normalizeBackendVersion('vllm', 'nightly-abc123')).toBe('nightly-abc123')

@@ -156,6 +156,33 @@ def test_import_refuses_to_choose_newest_without_start_time(tmp_path) -> None:
         )
 
 
+def test_import_keeps_distinct_parallel_serving_configurations(tmp_path) -> None:
+    csv_path = tmp_path / "aggregate.csv"
+    config_path = tmp_path / "config.json"
+    _write_config(config_path, ["org/model"])
+    base = {
+        "model": "org/model", "accelerator": "H200", "version": "vLLM-0.31.0",
+        "TP": "4", "prompt toks": "8192", "output toks": "1024",
+        "intended concurrency": "8", "guidellm_start_time_ms": "1000", "turn_index": "",
+    }
+    _write_csv(csv_path, [
+        {**base, "PP": "1", "TP_prefill": "2", "TP_decode": "4", "moe_tp_size": "2", "moe_ep_size": "2"},
+        {**base, "PP": "2", "TP_prefill": "2", "TP_decode": "4", "moe_tp_size": "2", "moe_ep_size": "2"},
+    ])
+
+    manifest = import_s3_ground_truth.import_csv(
+        csv_path, config_path, tmp_path / "datasets", tmp_path / "manifest.json"
+    )
+    frame = pd.read_parquet(tmp_path / "datasets/org_model__h200.parquet")
+
+    assert manifest["published_rows"] == 2
+    assert set(frame["pp"]) == {1, 2}
+    assert set(frame["tp_prefill"]) == {2}
+    assert set(frame["tp_decode"]) == {4}
+    assert set(frame["moe_tp_size"]) == {2}
+    assert set(frame["moe_ep_size"]) == {2}
+
+
 def test_backend_name_prefers_productized_stack_labels() -> None:
     assert _backend_name("RHAIIS-3.2-vLLM-0.9.0") == "rhaiis"
     assert _backend_name("vLLM-0.10.2") == "vllm"

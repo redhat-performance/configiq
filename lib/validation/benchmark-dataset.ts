@@ -131,6 +131,13 @@ const CONFIGURATION_FIELDS = [
   'max_seq_len',
   'max_num_seqs',
   'max_num_batched_tokens',
+  'pp',
+  'dp',
+  'ep',
+  'cp',
+  'moe_tp_size',
+  'moe_ep_size',
+  'enable_expert_parallel',
   'vllm_rocm_use_aiter',
   'vllm_rocm_use_aiter_moe',
   'vllm_rocm_use_aiter_moe_situv2',
@@ -233,6 +240,15 @@ function configurationLabel(values: DatasetConfiguration): string {
   if (values.max_seq_len) labels.push(`max sequence ${values.max_seq_len}`)
   if (values.max_num_seqs) labels.push(`max sequences ${values.max_num_seqs}`)
   if (values.max_num_batched_tokens) labels.push(`max batched tokens ${values.max_num_batched_tokens}`)
+  if (values.pp) labels.push(`PP ${values.pp}`)
+  if (values.dp) labels.push(`DP ${values.dp}`)
+  if (values.ep) labels.push(`EP ${values.ep}`)
+  if (values.cp) labels.push(`CP ${values.cp}`)
+  if (values.tp_prefill) labels.push(`prefill TP ${values.tp_prefill}`)
+  if (values.tp_decode) labels.push(`decode TP ${values.tp_decode}`)
+  if (values.moe_tp_size) labels.push(`MoE TP ${values.moe_tp_size}`)
+  if (values.moe_ep_size) labels.push(`MoE EP ${values.moe_ep_size}`)
+  if (values.enable_expert_parallel) labels.push(`expert parallel ${values.enable_expert_parallel}`)
   if (values.vllm_rocm_use_aiter) labels.push(`ROCm AITER ${values.vllm_rocm_use_aiter}`)
   if (values.vllm_rocm_use_aiter_moe) labels.push(`ROCm AITER MoE ${values.vllm_rocm_use_aiter_moe}`)
   if (values.vllm_rocm_use_aiter_moe_situv2) labels.push(`ROCm AITER MoE SITU v2 ${values.vllm_rocm_use_aiter_moe_situv2}`)

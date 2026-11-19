@@ -47,6 +47,7 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
         "concurrency",
         "max_num_seqs",
         "max_num_batched_tokens",
+        "pp", "dp", "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel",
         "max_seq_len",
         "precision",
         "gpu_memory_utilization",
@@ -54,6 +55,32 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
         "weight_quantization",
         "kv_quantization",
     }
+
+
+def test_normalize_rows_keeps_explicit_serving_parallelism() -> None:
+    frame = normalize_rows([
+        {
+            "model": "org/model", "version": "vLLM-0.31.0", "TP": "4",
+            "PP": "2", "DP": "3", "TP_prefill": "2", "TP_decode": "4",
+            "moe_tp_size": "2", "moe_ep_size": "2", "enable_expert_parallel": "true",
+        },
+        {
+            "model": "org/model", "version": "vLLM-0.31.0", "TP": "4",
+            "runtime_args": (
+                "pipeline-parallel-size=2; data-parallel-size=3; "
+                "prefill-tp-size=2; decode-tp-size=4; moe-tp-size=2; "
+                "moe-ep-size=2; enable-expert-parallel=False"
+            ),
+        },
+    ], "org/model", "H200")
+
+    for column, expected in {
+        "pp": "2", "dp": "3", "tp_prefill": "2", "tp_decode": "4",
+        "moe_tp_size": "2", "moe_ep_size": "2",
+    }.items():
+        assert frame[column].tolist() == [expected, expected]
+    assert frame["enable_expert_parallel"].tolist() == ["1", "0"]
+    assert not {"PP", "DP", "TP_prefill", "TP_decode", "runtime_args"} & set(frame)
 
 
 def test_normalize_rows_exposes_only_whitelisted_vllm_env_flags() -> None:

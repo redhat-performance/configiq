@@ -32,7 +32,8 @@ SENSITIVE_VALUE_PATTERN = re.compile(
 )
 CLASSIFICATION_COLUMNS = {
     "model", "model_id", "accelerator", "pair_id", "version", "backend", "backend_version",
-    "tp", "pp", "dp", "ep", "cp", "isl", "osl", "concurrency",
+    "tp", "pp", "dp", "ep", "cp", "tp_prefill", "tp_decode",
+    "moe_tp_size", "moe_ep_size", "enable_expert_parallel", "isl", "osl", "concurrency",
     "measured concurrency", "measured rps", "output_tok/sec", "total_tok/sec",
     "prompt_token_count_mean", "prompt_token_count_p99", "output_token_count_mean",
     "output_token_count_p99", "ttft_median", "ttft_p95", "ttft_p1", "ttft_p999",
@@ -94,6 +95,17 @@ def _env_flags(text: str) -> dict[str, str | None]:
         else:
             raise ValueError(f"unsupported value for {source_name}")
     return result
+
+
+def _explicit_bool(value: Any) -> str | None:
+    if value is None or pd.isna(value) or str(value).strip() == "":
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes"):
+        return "1"
+    if normalized in ("0", "false", "no"):
+        return "0"
+    raise ValueError(f"unsupported explicit boolean value: {value!r}")
 
 
 def _backend_name(version: Any) -> str:
@@ -164,6 +176,12 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     frame = frame.rename(
         columns={
             "TP": "tp",
+            "PP": "pp",
+            "DP": "dp",
+            "EP": "ep",
+            "CP": "cp",
+            "TP_prefill": "tp_prefill",
+            "TP_decode": "tp_decode",
             "intended concurrency": "concurrency",
             "prompt toks": "isl",
             "output toks": "osl",
@@ -178,6 +196,13 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
         "gpu_memory_utilization": ("gpu-memory-utilization", "gpu_memory_utilization"),
         "max_num_seqs": ("max-num-seqs", "max_num_seqs"),
         "max_num_batched_tokens": ("max-num-batched-tokens", "max_num_batched_tokens"),
+        "pp": ("pipeline-parallel-size", "pipeline_parallel_size"),
+        "dp": ("data-parallel-size", "data_parallel_size"),
+        "tp_prefill": ("tp-prefill", "tp_prefill", "prefill-tp-size", "prefill_tp_size", "prefill-tensor-parallel-size"),
+        "tp_decode": ("tp-decode", "tp_decode", "decode-tp-size", "decode_tp_size", "decode-tensor-parallel-size"),
+        "moe_tp_size": ("moe-tp-size", "moe_tp_size"),
+        "moe_ep_size": ("moe-ep-size", "moe_ep_size"),
+        "enable_expert_parallel": ("enable-expert-parallel", "enable_expert_parallel"),
         "max_seq_len": ("max-model-len", "max_model_len"),
         "chunked_prefill_enabled": ("enable-chunked-prefill", "enable_chunked_prefill"),
         "precision": ("dtype", "precision"),
@@ -185,8 +210,13 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
         "kv_quantization": ("kv-cache-dtype", "kv-quantization"),
     }
     for column, names in runtime_aliases.items():
+        parsed = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
         if column not in frame:
-            frame[column] = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+            frame[column] = parsed
+        elif column in {"pp", "dp", "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel"}:
+            recorded = frame[column].replace("", None)
+            frame[column] = recorded.combine_first(parsed)
+    frame["enable_expert_parallel"] = frame["enable_expert_parallel"].map(_explicit_bool)
     if "env_vars" in frame:
         flags = frame["env_vars"].fillna("").astype(str).map(_env_flags)
         for column in ("vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2"):

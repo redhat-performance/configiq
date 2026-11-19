@@ -67,7 +67,9 @@ def _schema() -> dict:
         "layout": "pairs/<pair-id>/ground_truth.parquet",
         "identity_fields": ["pair_id", *PUBLIC_CURVE_FIELDS, "concurrency", "turn_index"],
         "configuration_fields": [
-            "backend", "backend_version", "tp", "pp", "dp", "ep", "cp", "isl", "osl",
+            "backend", "backend_version", "tp", "pp", "dp", "ep", "cp",
+            "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel",
+            "isl", "osl",
             "concurrency", "max_seq_len", "max_num_seqs", "max_num_batched_tokens",
             "gpu_memory_utilization", "chunked_prefill_enabled", "prefix_caching",
             "prefix_tokens", "prefix_count", "precision", "weight_quantization",

@@ -99,6 +99,12 @@ identity is limited to settings recorded by the source. The importer publishes
 only `0`/`1` values for three explicit ROCm AITER switches in `env_vars`; raw
 environment values and paths remain private. Configuration backfill from the
 matching run logs remains separate.
+When recorded in the aggregate or its explicit runtime arguments, pipeline and
+data parallel sizes, separate prefill/decode TP sizes, MoE TP/EP sizes, and the
+expert-parallel switch are also published. Missing values remain null; a
+generic TP value is never copied into the prefill or decode TP fields. The
+current aggregate records no prefill/decode TP, pipeline parallel size, or MoE
+TP/EP sizes, although a few runs explicitly enable expert parallelism.
 
 The scheduled GitHub Actions workflow consumes the public
 `redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.

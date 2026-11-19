@@ -28,7 +28,9 @@ REQUIRED_COLUMNS = {"model", "accelerator", "version"}
 # runs; none of them are copied into the public Parquet files.
 SOURCE_CURVE_FIELDS = (
     "model", "accelerator", "version", "prompt toks", "output toks", "TP", "DP",
-    "PP", "EP", "CP", "backend", "backend_version", "precision",
+    "PP", "EP", "CP", "TP_prefill", "TP_decode", "tp_prefill", "tp_decode",
+    "moe_tp_size", "moe_ep_size", "enable_expert_parallel",
+    "backend", "backend_version", "precision",
     "weight_quantization", "kv_quantization", "max_num_seqs",
     "max_num_batched_tokens", "max_model_len", "max_seq_len",
     "gpu_memory_utilization", "chunked_prefill_enabled",
@@ -38,7 +40,8 @@ SOURCE_CURVE_FIELDS = (
 )
 PUBLIC_CURVE_FIELDS = (
     "model_id", "accelerator", "version", "backend", "backend_version",
-    "tp", "pp", "dp", "ep", "cp", "isl", "osl", "request_type", "turns",
+    "tp", "pp", "dp", "ep", "cp", "tp_prefill", "tp_decode",
+    "moe_tp_size", "moe_ep_size", "enable_expert_parallel", "isl", "osl", "request_type", "turns",
     "prefix_caching", "prefix_tokens", "prefix_count", "spec_decoding",
     "precision", "weight_quantization", "kv_quantization", "max_seq_len",
     "max_num_seqs", "max_num_batched_tokens", "gpu_memory_utilization",
@@ -46,7 +49,8 @@ PUBLIC_CURVE_FIELDS = (
     "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2",
 )
 NUMERIC_COLUMNS = {
-    "isl", "osl", "tp", "concurrency", "measured concurrency", "measured rps",
+    "isl", "osl", "tp", "pp", "dp", "ep", "cp", "tp_prefill", "tp_decode",
+    "moe_tp_size", "moe_ep_size", "concurrency", "measured concurrency", "measured rps",
     "output_tok/sec", "total_tok/sec", "prompt_token_count_mean", "prompt_token_count_p99",
     "output_token_count_mean", "output_token_count_p99", "ttft_median", "ttft_p95",
     "ttft_p1", "ttft_p999", "ttft_mean", "ttft_p99", "tpot_median", "tpot_p95",

@@ -45,6 +45,10 @@ establish equality of unrecorded effective vLLM settings. Three explicit ROCm
 AITER switches are extracted from `env_vars`; raw environment values and paths
 are not published. Run IDs, UUIDs, MLflow IDs, timestamps, raw runtime
 arguments, and other administrative fields are dropped before parquet is written.
+Additional serving fields (`pp`, `dp`, `tp_prefill`, `tp_decode`,
+`moe_tp_size`, `moe_ep_size`, and `enable_expert_parallel`) are retained only
+when explicitly recorded in source columns or runtime arguments; missing
+values remain null. Raw runtime arguments are never published.
 The publisher rejects missing concurrency or `turn_index` and duplicate
 combinations of published configuration fields, concurrency, and turn index.
 A row reduction in any published pair
