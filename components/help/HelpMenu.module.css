@@ -21,6 +21,8 @@
    * The 9rem leaves room for the masthead and the popover's own padding.
    */
   max-height: calc(100vh - 9rem);
+  /* Mobile browsers report a smaller visible viewport than 100vh allows for. */
+  max-height: calc(100dvh - 9rem);
   overflow-y: auto;
   overscroll-behavior: contain;
 }

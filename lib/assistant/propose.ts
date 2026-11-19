@@ -445,13 +445,14 @@ const SYSTEM_IDS = [
 /**
  * Bare accelerator names the catalog carries only one system for.
  *
- * "H200" is unambiguous — the catalog has the 141 GB SXM part alone — so a
- * question that says only "H200" has named it. "H100" is deliberately absent:
- * it ships as SXM and PCIe, and pinning either would name a machine the
- * question did not.
+ * "H200" resolves to the 141 GB SXM part, but only when the question did not
+ * qualify it: "H200 NVL" and "H200 PCIe" are different machines, and pinning
+ * SXM for them would open the page on hardware the question did not name.
+ * "H100" is deliberately absent for the same reason: it ships as SXM and PCIe,
+ * and pinning either would name a machine the question did not.
  */
 const SYSTEM_ALIASES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
-  { id: 'h200_sxm', pattern: /\bh200\b/i },
+  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*(?:nvl|pcie))/i },
 ];
 
 /**

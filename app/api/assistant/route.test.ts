@@ -5,6 +5,7 @@ import type { AssistantEvent } from '@/lib/assistant/types';
 type Reply = {
   content: string;
   reasoning?: string;
+  reasoningContent?: string;
   finishReason?: string;
   toolCalls?: Array<{ id: string; name: string; arguments: string }>;
 };
@@ -24,6 +25,9 @@ function completion(reply: Reply): Response {
         message: {
           content: reply.content,
           ...(reply.reasoning !== undefined ? { reasoning: reply.reasoning } : {}),
+          ...(reply.reasoningContent !== undefined
+            ? { reasoning_content: reply.reasoningContent }
+            : {}),
           ...(reply.toolCalls
             ? {
                 tool_calls: reply.toolCalls.map((call) => ({
@@ -195,6 +199,31 @@ describe('assistant answer', () => {
     expect(result.answer).toContain('hosted, rented, and purchased');
   });
 
+  it('reads reasoning from the older reasoning_content field too', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          // Older OpenAI-compatible servers name the trace `reasoning_content`
+          // rather than `reasoning`; either way it must not be the answer.
+          return completion({
+            reasoningContent: 'The user is asking about costs. I should compare the three options.',
+            content: 'The Costs page compares hosted, rented, and purchased options.',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what does the costs page compare');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('answered');
+    expect(result.answer).not.toContain('The user is asking');
+    expect(result.answer).toContain('hosted, rented, and purchased');
+  });
+
   it('withholds prose when generation stops before the answer', async () => {
     vi.stubGlobal(
       'fetch',
@@ -219,6 +248,36 @@ describe('assistant answer', () => {
     expect(result.answer).toBe('');
     // The sources are still useful even though the prose is not.
     expect(result.citations.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the action links when an answer is incomplete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({
+            content: 'The user is asking how many GPUs. I should size the deployment.',
+            finishReason: 'length',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many GPUs for 4096 input tokens', {
+      route: '/predict',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'nvidia-l40s',
+    });
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    // Withholding the prose must not also withhold the view the question
+    // described: the link is built from the question, not from the model.
+    expect(result.status).toBe('incomplete');
+    expect(result.answer).toBe('');
+    expect(result.links[0].kind).toBe('proposal');
+    expect(result.links[0].href).toContain('isl=4096');
   });
 
   it('answers from retrieved documentation and cites it', async () => {
@@ -508,6 +567,27 @@ describe('assistant answer', () => {
     expect(hint?.kind).toBe('page');
   });
 
+  it('does not link the page hint back to the page it is already on', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({ content: 'Recommend sizing starts from the targets you name.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how do I recommend a sizing', { route: '/recommend' });
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    // The hint carries only provenance, so reloading /recommend would set
+    // nothing. The slot goes to the documentation link instead.
+    expect(result.links.some((link) => link.href.startsWith('/recommend'))).toBe(false);
+    expect(result.links[0].href.startsWith('/docs/')).toBe(true);
+  });
+
   it('does not mark a documentation link as the action', async () => {
     vi.stubGlobal(
       'fetch',
@@ -608,6 +688,57 @@ describe('assistant answer', () => {
     // /kv-cache is AISimulate-only: a simulator field would imply a choice the
     // page does not offer.
     expect(kvLink?.href).not.toContain('simulator=');
+  });
+
+  it('keeps a value-carrying link to the page the question was asked on', async () => {
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          call += 1;
+          if (call === 1) {
+            return completion({
+              content: '',
+              toolCalls: [
+                {
+                  id: 'call-memory',
+                  name: 'memory',
+                  arguments: '{"model":"Qwen/Qwen3-32B","system":"h200_sxm"}',
+                },
+              ],
+            });
+          }
+          return completion({ content: 'The KV cache holds 62,500 tokens.' });
+        }
+        if (url.endsWith('/memory')) {
+          return jsonResponse({
+            simulator: 'aisimulate',
+            total_gpu_capacity_bytes: 141_000_000_000,
+            total_kv_size_tokens: 62_500,
+            memory_breakdown: { weights_bytes: 70_000_000_000 },
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    // On the calculator itself, the plain page hint is redundant, but the tool
+    // link carries the model and system the question named, so it still fills
+    // the form and must survive.
+    const { events } = await ask('how much VRAM does this model need', {
+      route: '/kv-cache',
+      simulator: 'aisimulate',
+    });
+
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    const kvLinks = result.links.filter((link) => link.href.startsWith('/kv-cache'));
+    expect(kvLinks).toHaveLength(1);
+    expect(kvLinks[0].href).toContain('model=Qwen%2FQwen3-32B');
+    expect(kvLinks[0].href).toContain('system=h200_sxm');
   });
 
   it('answers every tool call it echoes back to the model', async () => {

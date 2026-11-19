@@ -302,6 +302,26 @@ function linkPath(href: string): string {
 }
 
 /**
+ * Parameters that describe where a view came from rather than what it asks
+ * for. A page link carrying only these sets nothing on the page.
+ */
+const PROVENANCE_PARAMS = new Set(['v', 'simulator', 'backend', 'backendVersion']);
+
+/**
+ * A plain link to the page the user is already looking at.
+ *
+ * It would reload the same view, so it is dropped. A link that carries values
+ * is not: opening it on the page in front of the user fills the form with what
+ * the question named, which is exactly what the link is for.
+ */
+function isRedundantSelfLink(link: AssistantLink, route: string | undefined): boolean {
+  if (!route || link.kind !== 'page' || linkPath(link.href) !== route) return false;
+  const query = link.href.split('#')[0].split('?')[1];
+  if (!query) return true;
+  return [...new URLSearchParams(query).keys()].every((key) => PROVENANCE_PARAMS.has(key));
+}
+
+/**
  * Add provenance to a page link.
  *
  * Documentation links are `/docs/<slug>#<anchor>`: the fragment is the
@@ -363,17 +383,19 @@ function linksForAnswer(
     push({ label: hint.label, href: hint.href, kind: 'page' });
   }
 
-  // A question about a page the user is already on does not need a link to it,
-  // but a proposal for that page does carry values, so it is kept.
+  // A question about a page the user is already on does not need a bare link
+  // to it, but a link carrying the values the question named does: opening it
+  // fills the form in front of them. A proposal is never dropped, because its
+  // contract only emits a link when the question stated something to apply.
   //
   // The comparison is the parsed path, not a prefix: `"/"` is a prefix of every
   // link on the site, so comparing prefixes on the home page deleted the sizing
   // hint the question was asking for.
-  if (request.route && routeLabel(request.route) !== request.route) {
-    const current = links.find(
-      (link) => link.kind === 'page' && linkPath(link.href) === request.route,
-    );
-    if (current) links.splice(links.indexOf(current), 1);
+  //
+  // This runs before the documentation link is pushed so a dropped self-link
+  // frees its slot for the reading suggestion.
+  for (const link of links.filter((candidate) => isRedundantSelfLink(candidate, request.route))) {
+    links.splice(links.indexOf(link), 1);
   }
 
   const primary = sections[0];

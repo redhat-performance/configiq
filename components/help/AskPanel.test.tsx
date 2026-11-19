@@ -136,7 +136,7 @@ describe('AskPanel', () => {
       await render();
       await ask('Where do I set concurrency?');
 
-      expect(scrollIntoView).toHaveBeenCalled();
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
     } finally {
       Element.prototype.scrollIntoView = original;
     }

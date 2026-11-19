@@ -131,7 +131,7 @@ export function recordHelpSearch(matched: number): void {
 }
 
 const assistantAnswers = meter.createCounter('configiq.assistant.answers', {
-  description: 'Assistant answers by outcome, including suppressed answers',
+  description: 'Assistant answers by outcome, including suppressed and incomplete answers',
   unit: '1',
 });
 

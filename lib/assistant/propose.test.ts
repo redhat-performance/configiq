@@ -410,15 +410,31 @@ describe('proposeView', () => {
     });
   });
 
-  it('resolves a bare accelerator name the catalog has one system for', () => {
+  it('resolves a bare accelerator name to its SXM part', () => {
     const proposal = proposeView({
       question: 'Recommend a size for TTFT 1 s on an H200 at 4096 input tokens.',
       model: 'meta-llama/Llama-3.1-8B-Instruct',
       system: 'l40s',
     });
 
-    // H200 ships only as the 141 GB SXM part, so the name is unambiguous.
+    // A bare name resolves to the SXM part; a qualified one does not.
     expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('h200_sxm');
+  });
+
+  it('does not resolve an H200 variant to the SXM part', () => {
+    for (const variant of ['H200 NVL', 'H200 PCIe']) {
+      const proposal = proposeView({
+        question: `Recommend a size for TTFT 1 s on an ${variant} at 4096 input tokens.`,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+        system: 'l40s',
+      });
+
+      // NVL and PCIe are different machines. Pinning SXM would open the page
+      // on hardware the question did not name, so the question is left to the
+      // configured system instead.
+      expect(proposal).not.toBeNull();
+      expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('l40s');
+    }
   });
 
   it('opens the reported sizing question with every value it names', () => {
