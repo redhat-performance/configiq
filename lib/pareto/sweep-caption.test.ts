@@ -65,6 +65,14 @@ describe('describeFrontierDeployments', () => {
     )
   })
 
+  it('does not read a repeated mode as coverage of both', () => {
+    // The contract keeps order and does not forbid repeats, so list length is
+    // not evidence: two aggregate entries describe one deployment.
+    expect(describeFrontierDeployments({ modesSearched: ['agg', 'agg'] })).toBe(
+      'Efficiency trade-off across aggregated deployments',
+    )
+  })
+
   it('does not promise a search space the response did not report', () => {
     // No sweep yet, or a report with no usable mode facts: the header cannot
     // claim which deployments were compared.

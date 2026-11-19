@@ -60,14 +60,14 @@ export function describeFrontierDeployments(
   sweep: Pick<FrontierSweep, 'modesSearched'> | null | undefined,
 ): string {
   const modes = sweep?.modesSearched
-  if (modes?.length === 1 && modes[0] === 'agg') {
+  if (modes?.includes('agg') && modes.includes('disagg')) {
+    return 'Efficiency trade-off across aggregated and disaggregated deployments'
+  }
+  if (modes?.includes('agg')) {
     return 'Efficiency trade-off across aggregated deployments'
   }
-  if (modes?.length === 1 && modes[0] === 'disagg') {
+  if (modes?.includes('disagg')) {
     return 'Efficiency trade-off across disaggregated deployments'
-  }
-  if (modes?.length === 2) {
-    return 'Efficiency trade-off across aggregated and disaggregated deployments'
   }
   // No sweep yet, or a report with no usable mode facts: describe the workload
   // instead of claiming which deployments were compared.
