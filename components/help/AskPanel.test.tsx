@@ -107,6 +107,41 @@ describe('AskPanel', () => {
     expect(document.body.textContent).toContain('test/model');
   });
 
+  it('brings a new answer into view inside the scrollable panel', async () => {
+    // The panel is bounded to the viewport, so a result below the fold has to
+    // be scrolled to rather than waiting off-screen.
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          streamResponse([
+            { type: 'retrieval', sections: [] },
+            {
+              type: 'result',
+              status: 'answered',
+              answer: 'Set concurrency in the workload section.',
+              citations: [],
+              links: [],
+              evidence: [],
+              unsupportedNumbers: [],
+              model: 'test/model',
+            },
+          ])),
+      );
+
+      await render();
+      await ask('Where do I set concurrency?');
+
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it('replaces unverified prose with the sources instead of showing the numbers', async () => {
     vi.stubGlobal(
       'fetch',
@@ -135,6 +170,34 @@ describe('AskPanel', () => {
     expect(document.body.textContent).not.toContain('96 GB of VRAM');
     expect(document.body.textContent).toContain('could not verify the numbers');
     expect(document.body.textContent).toContain('Unverified: 96 GB');
+  });
+
+  it('withholds an unfinished answer and keeps its sources', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        streamResponse([
+          { type: 'retrieval', sections: [] },
+          {
+            type: 'result',
+            status: 'incomplete',
+            // The route withholds this trace; the panel must not render it.
+            answer: 'The user is asking about concurrency. I should explain the fields.',
+            citations: [{ url: '/docs/workloads#c', title: 'Workloads', section: 'Recommend' }],
+            links: [],
+            evidence: [],
+            unsupportedNumbers: [],
+            model: 'test/model',
+          },
+        ])),
+    );
+
+    await render();
+    await ask('How do I set concurrency?');
+
+    expect(document.body.textContent).not.toContain('The user is asking');
+    expect(document.body.textContent).toContain('did not finish this answer');
+    expect(document.body.textContent).toContain('Workloads');
   });
 
   it('leaves the question box usable when the stream ends without a result', async () => {

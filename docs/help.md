@@ -41,9 +41,11 @@ refuses, a question that offers two alternatives, an input the destination page
 does not have, or an input the selected goal does not use. The model and GPU
 system come from your settings unless the question names its own, in which case
 the question wins. Anything else the question did not name keeps the value the
-page already had. The answer cites the documentation sections it used. If a
-number cannot be traced to a source or to your question, the panel shows the
-sources without the prose rather than presenting an unverified value.
+page already had. The answer cites the documentation sections it used. Only the
+model's final answer is shown: its internal reasoning is not. If a number cannot
+be traced to a source or to your question, or the model stops before it finishes
+the answer, the panel shows the sources without the prose rather than presenting
+an unverified or unfinished reply.
 
 Ask is optional and can be switched off by the deployment. When it is off, the
 button, search, and tours still work.

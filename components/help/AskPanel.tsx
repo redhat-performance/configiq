@@ -4,7 +4,12 @@ import * as React from 'react';
 import Link from 'next/link';
 import { Button, Spinner, TextArea } from '@patternfly/react-core';
 import { useSettings } from '@/contexts/SettingsContext';
-import type { AssistantEvent, AssistantLink, AssistantCitation } from '@/lib/assistant/types';
+import type {
+  AssistantEvent,
+  AssistantLink,
+  AssistantCitation,
+  AssistantResultStatus,
+} from '@/lib/assistant/types';
 import styles from './AskPanel.module.css';
 
 type AskStatus = 'idle' | 'asking' | 'done' | 'error';
@@ -46,12 +51,14 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
   const [status, setStatus] = React.useState<AskStatus>('idle');
   const [progress, setProgress] = React.useState<ProgressLine[]>([]);
   const [answer, setAnswer] = React.useState('');
+  const [resultStatus, setResultStatus] = React.useState<AssistantResultStatus>('answered');
   const [citations, setCitations] = React.useState<AssistantCitation[]>([]);
   const [links, setLinks] = React.useState<AssistantLink[]>([]);
   const [unsupported, setUnsupported] = React.useState<string[]>([]);
   const [answeredBy, setAnsweredBy] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const abortRef = React.useRef<AbortController | null>(null);
+  const answerRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(
     () => () => {
@@ -60,9 +67,17 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
     [],
   );
 
+  React.useEffect(() => {
+    if (status !== 'done') return;
+    // The help panel is the scroll container. Bring a new answer into view so a
+    // long one starts at its first line; `nearest` leaves a short answer alone.
+    answerRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [status]);
+
   const reset = () => {
     setProgress([]);
     setAnswer('');
+    setResultStatus('answered');
     setCitations([]);
     setLinks([]);
     setUnsupported([]);
@@ -105,7 +120,9 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       setCitations(event.citations);
       setLinks(event.links);
       setUnsupported(event.unsupportedNumbers);
-      // Suppressed prose is never shown; the sources below carry the answer.
+      setResultStatus(event.status);
+      // Suppressed or unfinished prose is never shown; the sources below carry
+      // the answer.
       setAnswer(event.status === 'answered' ? event.answer : '');
       return true;
     }
@@ -251,9 +268,14 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
       )}
 
       {status === 'done' && (
-        <div className={styles.answerBlock} aria-live="polite">
+        <div className={styles.answerBlock} aria-live="polite" ref={answerRef}>
           {answer ? (
             <p className={styles.answer}>{answer}</p>
+          ) : resultStatus === 'incomplete' ? (
+            <p className={styles.status}>
+              The assistant did not finish this answer, so it is not shown. Ask a narrower
+              question, or open one of the sources below.
+            </p>
           ) : (
             <p className={styles.status}>
               I could not verify the numbers in that answer, so it is not shown. The sources below
@@ -279,10 +301,13 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
 
           {links.length > 0 && (
             <div className={styles.links}>
-              {links.map((link, index) => (
+              {links.map((link) => (
                 <div className={styles.linkRow} key={link.href}>
                   <Link
-                    className={index === 0 ? styles.primaryLink : styles.secondaryLink}
+                    // Only an action gets primary styling. A documentation
+                    // link can come first when the question names no page, and
+                    // styling it as the action reads as "run this".
+                    className={link.kind ? styles.primaryLink : styles.secondaryLink}
                     href={link.href}
                     prefetch={false}
                     onClick={hide}

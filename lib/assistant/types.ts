@@ -31,8 +31,11 @@ export interface AssistantLink {
    * `proposal` marks a link built from a page's own link contract with the
    * values the question named. It is inputs only — opening it still requires
    * the user to press Calculate — and the panel says which fields it sets.
+   * `page` marks a link into a tool page: an action to take, not something to
+   * read. Documentation links carry neither, so only an action is styled as
+   * the primary one.
    */
-  kind?: 'proposal';
+  kind?: 'proposal' | 'page';
 }
 
 export type AssistantErrorCode =
@@ -41,18 +44,21 @@ export type AssistantErrorCode =
   | 'assistant_unavailable'
   | 'invalid_request';
 
+/**
+ * `suppressed` means at least one number in the draft prose could not be traced
+ * to the retrieved sections or a tool result. `incomplete` means generation
+ * stopped before the model finished its turn. In both cases the prose is not
+ * shown; the evidence and links are.
+ */
+export type AssistantResultStatus = 'answered' | 'suppressed' | 'incomplete';
+
 export type AssistantEvent =
   | { type: 'retrieval'; sections: RetrievedSection[] }
   | { type: 'tool'; name: string; ok: boolean; summary: string }
   | { type: 'token'; text: string }
   | {
       type: 'result';
-      /**
-       * `suppressed` means at least one number in the draft prose could not be
-       * traced to the retrieved sections or a tool result. The prose is not
-       * shown; the evidence and links are.
-       */
-      status: 'answered' | 'suppressed';
+      status: AssistantResultStatus;
       answer: string;
       citations: AssistantCitation[];
       links: AssistantLink[];

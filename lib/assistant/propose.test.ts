@@ -369,6 +369,183 @@ describe('proposeView', () => {
     }
   });
 
+  it('reads a latency written before its label', () => {
+    const cases: Array<[string, string, number]> = [
+      ['Recommend a size for 1second TTFT at 4096 input tokens.', 'ttft', 1000],
+      ['Recommend a size for 2 s to first token at 4096 input tokens.', 'ttft', 2000],
+      ['Recommend a size for 100ms ITL at 4096 input tokens.', 'tpot', 100],
+      ['Recommend a size for 25 ms per output token at 4096 input tokens.', 'tpot', 25],
+    ];
+    for (const [question, field, expected] of cases) {
+      const proposal = proposeView({
+        question,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+      });
+      const values = valuesOf(proposal!.link.href, recommendLink.parse);
+      expect(values[field]).toBe(expected);
+      expect(values.goal).toBe('latency');
+    }
+  });
+
+  it('does not read a negative number as a positive latency target', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for -2 s TTFT and -100ms ITL at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // A negative target is not a target. Reading the digits after the minus
+    // would turn it into 2 s and 100 ms, which the question did not ask for.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.ttft).toBeUndefined();
+    expect(values.tpot).toBeUndefined();
+  });
+
+  it('keeps a following length when a latency label states no time unit', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for ITL at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // `ITL at 4096` is a label with a bare number, not a latency target: the
+    // number is the input length and must not be blanked out with the label.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.isl).toBe(4096);
+    expect(values.tpot).toBeUndefined();
+  });
+
+  it('does not let a trailing label claim the previous target', () => {
+    const cases = [
+      'Recommend TTFT 2 s TPOT 50 ms at 4096 input tokens.',
+      'Recommend TPOT 50 ms TTFT 2 s at 4096 input tokens.',
+    ];
+    for (const question of cases) {
+      const proposal = proposeView({
+        question,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+      });
+
+      // `2 s` belongs to TTFT and `50 ms` to TPOT whichever order they appear
+      // in. The trailing form must not read the first target as its own and
+      // make the field ambiguous.
+      const values = valuesOf(proposal!.link.href, recommendLink.parse);
+      expect(values.ttft).toBe(2000);
+      expect(values.tpot).toBe(50);
+    }
+  });
+
+  it('finds the target after a label that contains a digit', () => {
+    const proposal = proposeView({
+      question: 'Recommend e2e latency 2 s TTFT 1 s at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // The `2` in `e2e` is not a target. The claimed span has to point at the
+    // `2 s` that follows, or the trailing form reads it as the first-token
+    // target and the real `1 s` becomes ambiguous.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.e2eLatency).toBe(2000);
+    expect(values.ttft).toBe(1000);
+  });
+
+  it('keeps an output length after a latency label with no unit', () => {
+    const proposal = proposeView({
+      question:
+        'Recommend time per output token 25 with output length 512 at 1024 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // `output token 25` must not be read as an output length. Masking the label
+    // leaves `25` in place, which no count pattern pairs with, and `output
+    // length 512` is still read.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.osl).toBe(512);
+    expect(values.isl).toBe(1024);
+    expect(values.tpot).toBeUndefined();
+  });
+
+  it('reads inter-token latency as time per output token', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for ITL of 50 ms at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // ITL and TPOT are the same quantity under two names; the page only has
+    // the second, and leaving the number out would answer a different question.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).tpot).toBe(50);
+  });
+
+  it('reads a length written with the token count first', () => {
+    const proposal = proposeView({
+      question: 'Recommend sizing for 4,000 token inputs and 1,000 token outputs.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    expect(valuesOf(proposal!.link.href, recommendLink.parse)).toMatchObject({
+      isl: 4000,
+      osl: 1000,
+    });
+  });
+
+  it('resolves a bare accelerator name to its SXM part', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for TTFT 1 s on an H200 at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'l40s',
+    });
+
+    // A bare name resolves to the SXM part; a qualified one does not.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('h200_sxm');
+  });
+
+  it('does not resolve an H200 variant to the SXM part', () => {
+    for (const variant of ['H200 NVL', 'H200 PCIe', 'H200 (NVL)', 'H200 (PCIe)']) {
+      const proposal = proposeView({
+        question: `Recommend a size for TTFT 1 s on an ${variant} at 4096 input tokens.`,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+        system: 'l40s',
+      });
+
+      // NVL and PCIe are different machines. Pinning SXM would open the page
+      // on hardware the question did not name, so the question is left to the
+      // configured system instead.
+      expect(proposal).not.toBeNull();
+      expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('l40s');
+    }
+  });
+
+  it('resolves H200 SXM even when the question mentions NVLink', () => {
+    const proposal = proposeView({
+      question:
+        'Recommend a size for TTFT 1 s on an H200 (NVLink) SXM at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'l40s',
+    });
+
+    // NVLink is an interconnect on the SXM part, not the NVL variant.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('h200_sxm');
+  });
+
+  it('opens the reported sizing question with every value it names', () => {
+    const proposal = proposeView({
+      question:
+        'recommend a small Qwen model that can perform 1second TTFT, 100ms ITL with a default workload and minimal H200 GPUs',
+      model: 'Qwen/Qwen3-32B',
+      system: 'h200_sxm',
+    });
+
+    expect(proposal).not.toBeNull();
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values).toMatchObject({
+      ttft: 1000,
+      tpot: 100,
+      system: 'h200_sxm',
+      goal: 'latency',
+    });
+    // "a small Qwen model" is not a model id, so the assistant must not choose
+    // one; the view keeps the model the page was already set to.
+    expect(values.model).toBe('Qwen/Qwen3-32B');
+  });
+
   it('leaves out a request rate the latency goal does not read', () => {
     const proposal = proposeView({
       question: 'Recommend a size for TTFT under 2 s at 50 requests per second.',

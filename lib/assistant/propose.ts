@@ -171,15 +171,24 @@ const BEFORE_ISL = new RegExp(
 );
 /** `input=4096`. */
 const EXPLICIT_ISL = new RegExp(String.raw`\b(?:isl|input|prompt)\s*[=:]\s*${COUNT}`, 'i');
-/** `4096 input tokens`. */
-const AFTER_ISL = new RegExp(String.raw`${COUNT}\s*(?:input|prompt)\s*(?:tokens?|tok)?\b`, 'i');
+/**
+ * `4096 input tokens`, `4,000 token inputs`. The word order varies, and the
+ * second form is easy to read backwards: the number is the length either way.
+ */
+const AFTER_ISL = new RegExp(
+  String.raw`${COUNT}\s*(?:tokens?\s+(?:of\s+)?(?:input|prompt)s?|(?:input|prompt)\s*(?:tokens?|tok)?)\b`,
+  'i',
+);
 
 const BEFORE_OSL = new RegExp(
   String.raw`\b(?:osl|output\s+(?:length|size|tokens?)|completion\s+(?:length|tokens?)|response\s+(?:length|tokens?))\b\s*(?:=|:|of)?\s*${COUNT}`,
   'i',
 );
 const EXPLICIT_OSL = new RegExp(String.raw`\b(?:osl|output|completion)\s*[=:]\s*${COUNT}`, 'i');
-const AFTER_OSL = new RegExp(String.raw`${COUNT}\s*(?:output|completion)\s*(?:tokens?|tok)?\b`, 'i');
+const AFTER_OSL = new RegExp(
+  String.raw`${COUNT}\s*(?:tokens?\s+(?:of\s+)?(?:output|completion)s?|(?:output|completion)\s*(?:tokens?|tok)?)\b`,
+  'i',
+);
 
 const BEFORE_CONCURRENCY = new RegExp(
   String.raw`\bconcurrency\b\s*(?:=|:|of)?\s*${COUNT}`,
@@ -207,12 +216,38 @@ const AFTER_TTFT = new RegExp(
   'i',
 );
 
+/**
+ * Inter-token latency is the same quantity the tools call time per output
+ * token: the average gap between two output tokens. A question that states ITL
+ * is stating TPOT in another name, and the page only has the latter.
+ */
+const TPOT_LABEL = String.raw`(?:tpot|itl|inter[- ]?token\s+latency|time\s+per\s+(?:output\s+)?token|per\s+(?:output\s+)?token)`;
+
 const BEFORE_TPOT = new RegExp(
-  String.raw`\b(?:tpot|time\s+per\s+(?:output\s+)?token|per\s+(?:output\s+)?token)\b${TARGET_LEAD}${NUMBER}\s*${TIME_UNIT}?`,
+  String.raw`\b${TPOT_LABEL}\b${TARGET_LEAD}${NUMBER}\s*${TIME_UNIT}?`,
   'i',
 );
 const AFTER_TPOT = new RegExp(
   String.raw`${NUMBER}\s*${TIME_UNIT}\s*(?:per|for\s+each)\s+(?:output\s+)?token`,
+  'i',
+);
+
+/**
+ * A latency written before its label: `1second TTFT`, `100ms ITL`. The
+ * label-first patterns cannot read these, because no connective ties the
+ * number to the word that follows it, and the number would otherwise be read
+ * as a length or ignored.
+ *
+ * A minus sign in front of the number is not a target, and a digit or decimal
+ * point means the match would be the tail of a longer number, so neither may
+ * start the number.
+ */
+const TRAILING_TTFT = new RegExp(
+  String.raw`(?<![\d.,-])${NUMBER}\s*${TIME_UNIT}\s*(?:ttft|time\s+to\s+first\s+token|first\s+token)\b`,
+  'i',
+);
+const TRAILING_TPOT = new RegExp(
+  String.raw`(?<![\d.,-])${NUMBER}\s*${TIME_UNIT}\s*${TPOT_LABEL}\b`,
   'i',
 );
 
@@ -303,14 +338,45 @@ interface Reading {
   text: string;
 }
 
-/** Every match of every pattern, in pattern then text order. */
+/**
+ * Every match of every pattern, in pattern then text order.
+ *
+ * The `d` flag is always on so a caller can ask the match where one of its
+ * capture groups came from, rather than searching the text again.
+ */
 function eachMatch(text: string, patterns: RegExp[]): RegExpExecArray[] {
   const matches: RegExpExecArray[] = [];
   for (const pattern of patterns) {
-    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const flags = `${pattern.flags}${pattern.flags.includes('g') ? '' : 'g'}${pattern.flags.includes('d') ? '' : 'd'}`;
     for (const match of text.matchAll(new RegExp(pattern.source, flags))) matches.push(match);
   }
   return matches;
+}
+
+interface Span {
+  start: number;
+  end: number;
+}
+
+/**
+ * The number each pattern captured, not the whole match.
+ *
+ * Two patterns can share a label without sharing a target: in `1second TTFT at
+ * 4096 input tokens`, the explicit pattern starts at `TTFT` and reads `4096`,
+ * while the trailing pattern reads `1second`. Only the numbers decide whether
+ * one pattern is reusing another's target.
+ *
+ * The offset comes from the capture itself. Searching the match for the digits
+ * would find the `2` in `e2e` instead of the target in `e2e latency 2 s`.
+ */
+function numberSpans(text: string, patterns: RegExp[]): Span[] {
+  const spans: Span[] = [];
+  for (const match of eachMatch(text, patterns)) {
+    const number = match.indices?.[1];
+    if (!number) continue;
+    spans.push({ start: number[0], end: number[1] });
+  }
+  return spans;
 }
 
 /**
@@ -336,10 +402,17 @@ function counts(text: string, patterns: RegExp[]): Reading[] {
  * milliseconds because that is the unit the page stores. A bare number with no
  * unit is not carried: `TTFT 2` could be two seconds or two milliseconds, and
  * picking one would invent a target.
+ *
+ * `claimed` holds the spans another field already read. A trailing label can
+ * sit immediately after another field's target ("TTFT 2 s TPOT 50 ms"), and
+ * that earlier number is not this field's target.
  */
-function durations(text: string, patterns: RegExp[]): Reading[] {
+function durations(text: string, patterns: RegExp[], claimed: Span[] = []): Reading[] {
   const readings: Reading[] = [];
   for (const match of eachMatch(text, patterns)) {
+    const start = match.index;
+    const end = start + (match[1]?.length ?? 0);
+    if (claimed.some((span) => start < span.end && span.start < end)) continue;
     const unit = match[2]?.toLowerCase();
     if (!unit) continue;
     const value = toNumber(match[1]);
@@ -356,10 +429,27 @@ function durations(text: string, patterns: RegExp[]): Reading[] {
 }
 
 /**
- * Every pattern that names a latency. Used to blank those expressions out
- * before the token-count patterns run.
+ * The readings from several pattern sets, with the same value kept once.
+ *
+ * A question can state one target in both forms ("50 ms per output token" is
+ * read by the explicit and the trailing pattern), and the same value is one
+ * target, not an alternative.
  */
-const LATENCY_PATTERNS = [
+function uniqueReadings(...groups: Reading[][]): Reading[] {
+  const readings: Reading[] = [];
+  for (const reading of groups.flat()) {
+    if (readings.some((existing) => existing.value === reading.value)) continue;
+    readings.push(reading);
+  }
+  return readings;
+}
+
+/**
+ * The latency patterns that name their field explicitly, by label before the
+ * number or by a connective after it. The number they read is authoritative: a
+ * trailing label may not reuse it.
+ */
+const EXPLICIT_LATENCY = [
   BEFORE_TTFT,
   AFTER_TTFT,
   BEFORE_TPOT,
@@ -369,23 +459,48 @@ const LATENCY_PATTERNS = [
 ];
 
 /**
+ * Every pattern that names a latency. Used to blank those expressions out
+ * before the token-count patterns run.
+ */
+const LATENCY_PATTERNS = [
+  BEFORE_TTFT,
+  AFTER_TTFT,
+  TRAILING_TTFT,
+  BEFORE_TPOT,
+  AFTER_TPOT,
+  TRAILING_TPOT,
+  BEFORE_E2E,
+  AFTER_E2E,
+];
+
+/**
  * The question with its latency expressions blanked out.
  *
  * "time per output token 25 ms with output length 512" names one latency and
  * one length. Read as counts, `output token 25` looks like 25 output tokens, so
- * the real length would be dropped as ambiguous. Blanking the latency spans
- * keeps each number with the field that owns it, without narrowing the count
- * patterns and losing ordinary phrasing.
+ * the real length would be dropped as ambiguous. Blanking the latency label
+ * keeps the count and the label apart, without narrowing the count patterns and
+ * losing ordinary phrasing.
+ *
+ * A label with no time unit ("ITL at 4096 input tokens") is not a latency
+ * target, so its number is kept rather than blanked: it is the length that
+ * follows. Only the label is masked, so it cannot pair with that number as a
+ * count either.
  */
 function withoutLatencies(text: string, patterns: RegExp[]): string {
-  let masked = text;
-  // Every replacement has the same length as its match, so the indices found in
-  // the original text stay valid.
+  const masked = text.split('');
   for (const match of eachMatch(text, patterns)) {
     const start = match.index;
-    masked = `${masked.slice(0, start)}${' '.repeat(match[0].length)}${masked.slice(start + match[0].length)}`;
+    const end = start + match[0].length;
+    // With a unit the whole expression is a latency; without one, the number
+    // may belong to the count that follows.
+    const keep = match[2] ? null : match.indices?.[1];
+    for (let index = start; index < end; index += 1) {
+      if (keep && index >= keep[0] && index < keep[1]) continue;
+      masked[index] = ' ';
+    }
   }
-  return masked;
+  return masked.join('');
 }
 
 /**
@@ -410,6 +525,22 @@ const SYSTEM_IDS = [
 ];
 
 /**
+ * Bare accelerator names the catalog carries only one system for.
+ *
+ * "H200" resolves to the 141 GB SXM part, but only when the question did not
+ * qualify it: "H200 NVL" and "H200 PCIe" are different machines, and pinning
+ * SXM for them would open the page on hardware the question did not name.
+ * "H100" is deliberately absent for the same reason: it ships as SXM and PCIe,
+ * and pinning either would name a machine the question did not.
+ */
+const SYSTEM_ALIASES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
+  // The qualifier may be wrapped: `H200 NVL`, `H200 (NVL)`, `H200 (PCIe)`.
+  // `NVL` needs its own boundary so `NVLink` — an interconnect on the SXM part,
+  // not the NVL variant — still names H200 SXM.
+  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*[(\[]?\s*(?:nvl\b|pcie))/i },
+];
+
+/**
  * The GPU system the question names, if it names exactly one.
  *
  * The system the page is set to is the default, and a named one has to win:
@@ -425,6 +556,11 @@ function namedSystems(question: string): string[] {
     // multi-part id is specific enough to match inside a longer run.
     const pattern = id.includes('_') ? new RegExp(id, 'i') : new RegExp(`\\b${id}\\b`, 'i');
     if (pattern.test(normalised) && !found.includes(id)) found.push(id);
+  }
+  // A bare name counts only when it did not resolve through an id above, so
+  // "h200_sxm" is not also read as the alias and reported twice.
+  for (const alias of SYSTEM_ALIASES) {
+    if (alias.pattern.test(normalised) && !found.includes(alias.id)) found.push(alias.id);
   }
   return found;
 }
@@ -614,11 +750,25 @@ export function proposeView(context: ProposalContext): ProposedView | null {
   place('demandRate', counts(countsFrom, [REQUEST_RATE, RATE_SHORTHAND]), (reading) =>
     `Request rate: ${reading.text} requests per second.`,
   );
-  place('ttft', durations(question, [AFTER_TTFT, BEFORE_TTFT]), (reading) =>
-    `Time to first token: ${reading.text}.`,
+  // A trailing label may follow another field's target ("TTFT 2 s TPOT
+  // 50 ms"). The explicit span owns that number, so the trailing form does not
+  // read it as a second target and turn one value into an ambiguity.
+  const explicitSpans = numberSpans(question, EXPLICIT_LATENCY);
+  place(
+    'ttft',
+    uniqueReadings(
+      durations(question, [AFTER_TTFT, BEFORE_TTFT]),
+      durations(question, [TRAILING_TTFT], explicitSpans),
+    ),
+    (reading) => `Time to first token: ${reading.text}.`,
   );
-  place('tpot', durations(question, [AFTER_TPOT, BEFORE_TPOT]), (reading) =>
-    `Time per output token: ${reading.text}.`,
+  place(
+    'tpot',
+    uniqueReadings(
+      durations(question, [AFTER_TPOT, BEFORE_TPOT]),
+      durations(question, [TRAILING_TPOT], explicitSpans),
+    ),
+    (reading) => `Time per output token: ${reading.text}.`,
   );
   place('e2eLatency', durations(question, [AFTER_E2E, BEFORE_E2E]), (reading) =>
     `End-to-end latency: ${reading.text}.`,

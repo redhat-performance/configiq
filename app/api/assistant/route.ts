@@ -15,6 +15,7 @@ import type {
   AssistantCitation,
   AssistantEvent,
   AssistantLink,
+  AssistantResultStatus,
   RetrievedSection,
 } from '@/lib/assistant/types';
 
@@ -38,7 +39,21 @@ export const dynamic = 'force-dynamic';
 const MAX_QUESTION_LENGTH = 500;
 const MAX_TOOL_ROUNDS = 2;
 const MAX_TOOL_CALLS_PER_ROUND = 2;
-const ANSWER_TOKEN_LIMIT = 320;
+/**
+ * Generation cap, not an answer cap: a reasoning model's thinking tokens count
+ * against it too. K2-Horizon defaults to a long reasoning trace, so a cap sized
+ * for the 120-word answer alone would end generation inside the reasoning
+ * block; vLLM then has no closing tag to split on and returns the unfinished
+ * thought as `content`.
+ */
+const GENERATION_TOKEN_LIMIT = 640;
+/**
+ * Reasoning effort for models whose chat template reads it. K2-Horizon accepts
+ * low/medium/high and defaults to high; low keeps the trace short enough to
+ * reach the answer inside the generation cap. Templates that do not define the
+ * variable ignore it, so this is not a model-specific branch.
+ */
+const REASONING_EFFORT = 'low';
 /**
  * Sections handed to the model, and therefore the most URLs that can be cited.
  * The list under an answer is what the model read, so it has to cover every
@@ -46,7 +61,9 @@ const ANSWER_TOKEN_LIMIT = 320;
  * on a source the reader was never shown.
  */
 const REFERENCE_SECTIONS = 6;
-const MODEL_TIMEOUT_MS = 25_000;
+// Generation now includes the reasoning trace, so the deadline covers a longer
+// reply than the answer alone. Low effort keeps the common case well inside it.
+const MODEL_TIMEOUT_MS = 40_000;
 const TOOL_TIMEOUT_MS = 8_000;
 
 const requestSchema = z.object({
@@ -134,6 +151,12 @@ interface ChatToolCall {
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /**
+   * The reasoning a reasoning model produced for this turn. K2-Horizon's chat
+   * template rejects an assistant message that carries none of its thinking
+   * fields, so a replayed tool-call turn has to include it.
+   */
+  reasoning?: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
   name?: string;
@@ -146,7 +169,11 @@ interface ToolCall {
 }
 
 interface ChatReply {
+  /** Only the model's final content; reasoning is kept apart from it. */
   content: string;
+  reasoning: string;
+  /** `length` means generation stopped mid-turn, so `content` is not an answer. */
+  finishReason: string | null;
   toolCalls: ToolCall[];
 }
 
@@ -198,7 +225,11 @@ async function chatCompletion(
         model,
         messages,
         temperature: 0,
-        max_tokens: ANSWER_TOKEN_LIMIT,
+        max_tokens: GENERATION_TOKEN_LIMIT,
+        // A reasoning model applies this before it starts its trace; the cap
+        // above then has room for both the trace and the answer. Chat templates
+        // that do not define the variable ignore it.
+        chat_template_kwargs: { reasoning_effort: REASONING_EFFORT },
         ...(withTools
           ? { tools: toolSchemas(), tool_choice: 'auto' }
           : {}),
@@ -217,11 +248,29 @@ async function chatCompletion(
 
   try {
     const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: unknown; tool_calls?: unknown } }>;
+      choices?: Array<{
+        message?: {
+          content?: unknown;
+          reasoning?: unknown;
+          // Older OpenAI-compatible servers still use this name.
+          reasoning_content?: unknown;
+          tool_calls?: unknown;
+        };
+        finish_reason?: unknown;
+      }>;
     };
-    const message = payload.choices?.[0]?.message;
+    const choice = payload.choices?.[0];
+    const message = choice?.message;
+    const reasoning =
+      typeof message?.reasoning === 'string'
+        ? message.reasoning
+        : typeof message?.reasoning_content === 'string'
+          ? message.reasoning_content
+          : '';
     return {
       content: typeof message?.content === 'string' ? message.content.trim() : '',
+      reasoning,
+      finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null,
       toolCalls: readToolCalls(message?.tool_calls),
     };
   } catch {
@@ -244,6 +293,33 @@ const SIMULATOR_ROUTES = new Set(['/predict', '/recommend', '/hybrid-savings', '
 
 /** Pages with a versioned link contract. Other pages take no query at all. */
 const LINK_ROUTES = new Set([...PROVENANCE_ROUTES, '/gpu-explorer']);
+
+/** The path of a page link, without its query or fragment. */
+function linkPath(href: string): string {
+  const withoutHash = href.split('#')[0];
+  const queryIndex = withoutHash.indexOf('?');
+  return queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+}
+
+/**
+ * Parameters that describe where a view came from rather than what it asks
+ * for. A page link carrying only these sets nothing on the page.
+ */
+const PROVENANCE_PARAMS = new Set(['v', 'simulator', 'backend', 'backendVersion']);
+
+/**
+ * A plain link to the page the user is already looking at.
+ *
+ * It would reload the same view, so it is dropped. A link that carries values
+ * is not: opening it on the page in front of the user fills the form with what
+ * the question named, which is exactly what the link is for.
+ */
+function isRedundantSelfLink(link: AssistantLink, route: string | undefined): boolean {
+  if (!route || link.kind !== 'page' || linkPath(link.href) !== route) return false;
+  const query = link.href.split('#')[0].split('?')[1];
+  if (!query) return true;
+  return [...new URLSearchParams(query).keys()].every((key) => PROVENANCE_PARAMS.has(key));
+}
 
 /**
  * Add provenance to a page link.
@@ -296,22 +372,30 @@ function linksForAnswer(
   if (proposal) push(proposal.link);
 
   for (const result of toolResults) {
-    if (result.link) push(result.link);
+    // A tool link opens the page the tool read from, which is an action even
+    // when it carries no values of its own.
+    if (result.link) push({ ...result.link, kind: 'page' });
   }
 
   const hint = pageHintFor(request.question);
   // A proposal supersedes the plain hint for the same page.
   if (hint && !(proposal && proposal.link.href.startsWith(hint.href))) {
-    push({ label: hint.label, href: hint.href });
+    push({ label: hint.label, href: hint.href, kind: 'page' });
   }
 
-  // A question about a page the user is already on does not need a link to it,
-  // but a proposal for that page does carry values, so it is kept.
-  if (request.route && routeLabel(request.route) !== request.route) {
-    const current = links.find(
-      (link) => link.kind !== 'proposal' && link.href.startsWith(request.route ?? ''),
-    );
-    if (current) links.splice(links.indexOf(current), 1);
+  // A question about a page the user is already on does not need a bare link
+  // to it, but a link carrying the values the question named does: opening it
+  // fills the form in front of them. A proposal is never dropped, because its
+  // contract only emits a link when the question stated something to apply.
+  //
+  // The comparison is the parsed path, not a prefix: `"/"` is a prefix of every
+  // link on the site, so comparing prefixes on the home page deleted the sizing
+  // hint the question was asking for.
+  //
+  // This runs before the documentation link is pushed so a dropped self-link
+  // frees its slot for the reading suggestion.
+  for (const link of links.filter((candidate) => isRedundantSelfLink(candidate, request.route))) {
+    links.splice(links.indexOf(link), 1);
   }
 
   const primary = sections[0];
@@ -415,6 +499,10 @@ async function runAssistant(
     messages.push({
       role: 'assistant',
       content: reply.content,
+      // The reasoning belongs to this turn. Dropping it makes the continuation
+      // invalid for K2-Horizon, whose template requires a thinking field on
+      // every assistant message.
+      reasoning: reply.reasoning,
       tool_calls: calls.map(toWireToolCall),
     });
 
@@ -461,7 +549,14 @@ async function runAssistant(
   }
 
   const draft = reply?.content?.trim() ?? '';
-  if (!draft) {
+  /**
+   * Generation stopped at the token cap. For a reasoning model that usually
+   * means the closing thinking tag never arrived, so the server returns the
+   * unfinished trace as `content`. It reads like prose, but it is not an answer
+   * and must not be shown.
+   */
+  const incomplete = reply?.finishReason === 'length';
+  if (!draft && !incomplete) {
     if (signal.aborted) return;
     emit({
       type: 'error',
@@ -485,17 +580,22 @@ async function runAssistant(
   const citations = citationsFor(sections);
   const links = linksForAnswer(request, sections, toolResults, proposal);
 
+  const status: AssistantResultStatus = incomplete
+    ? 'incomplete'
+    : verification.ok
+      ? 'answered'
+      : 'suppressed';
   emit({
     type: 'result',
-    status: verification.ok ? 'answered' : 'suppressed',
-    answer: verification.ok ? draft : '',
+    status,
+    answer: status === 'answered' ? draft : '',
     citations,
     links,
     evidence: evidence.slice(0, 8),
-    unsupportedNumbers: verification.unsupported,
+    unsupportedNumbers: incomplete ? [] : verification.unsupported,
     model: config.model!,
   });
-  recordAssistantAnswer(verification.ok ? 'answered' : 'suppressed');
+  recordAssistantAnswer(status);
 }
 
 export async function POST(request: Request) {
