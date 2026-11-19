@@ -401,9 +401,9 @@ export default function Sizing() {
   // therefore survives a goal or simulator change and applies again as soon as
   // the form can honour it.
   const servingMode: 'agg' | 'disagg' = disaggSelectable ? servingModeChoice ?? 'disagg' : 'agg';
-  // A Pareto sweep always searches both aggregated and disaggregated
-  // deployments. It is not a sizing goal, so it is unavailable only when the
+  // A Pareto sweep is not a sizing goal, so it is unavailable only when the
   // simulator cannot compute one or the workload has no throughput trade-off.
+  // It is unavailable for capacity because capacity already reports P/D options.
   const paretoDisabledReason = isCapacity
     ? 'Pareto frontier is not available for concurrency-capacity sizing.'
     : !paretoSupported
@@ -977,8 +977,9 @@ export default function Sizing() {
 
   const handlePareto = () => {
     setInputsDirty(false);
-    // A latency sweep names the selected fabric and omits serving mode, so the
-    // service searches aggregate and prefill/decode candidates together.
+    // The sweep reads the same deployment view as sizing: a P/D view names the
+    // fabric, while an aggregated view asks for aggregate candidates only. It
+    // omits the mode, which a sweep rejects.
     startPareto(buildRecommendParams({ pareto: true }));
   };
 

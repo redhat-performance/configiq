@@ -278,8 +278,8 @@ class RecommendRequest(BaseModel):
             "Omit it, or send 'disagg', to keep the simulator's existing deployment search, "
             "including prefill/decode candidates when that search models them. A simulator "
             "that models P/D only through a fabric rejects 'disagg' when the request names "
-            "no fabric. objective='pareto' searches both deployment modes and does not "
-            "accept this field."
+            "no fabric. objective='pareto' chooses its deployments from the fabric and "
+            "does not accept this field."
         ),
     )
     objective: Literal["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"] = Field(
@@ -403,7 +403,8 @@ class RecommendRequest(BaseModel):
 
         # A serving mode states which deployments a search covers. Aggregated
         # sizing has no per-pool context limits to apply, and a Pareto sweep
-        # enumerates both topologies, so neither can honour a mode.
+        # chooses its topologies from the fabric rather than a mode, so neither
+        # can honour one.
         if self.mode == "agg" and (
             self.prefill_max_seq_len is not None or self.decode_max_seq_len is not None
         ):
@@ -413,8 +414,8 @@ class RecommendRequest(BaseModel):
             )
         if self.mode is not None and self.objective == "pareto":
             raise ValueError(
-                "objective='pareto' searches both deployment modes and does not accept "
-                "mode; omit it."
+                "objective='pareto' chooses its deployments from the fabric and does not "
+                "accept mode; omit it."
             )
         # Capacity sizing reports aggregated configurations plus separate
         # disaggregated comparison options; it never searches a P/D topology.

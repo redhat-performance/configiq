@@ -819,7 +819,8 @@ components:
             recommended in `chosen_mode`.
 
             Rejected with 422 where the field cannot narrow the search:
-            `objective=pareto` enumerates both deployment modes;
+            `objective=pareto` chooses its deployments from `fabric` (both modes
+            when a fabric is named, aggregated only when it is null);
             `objective=concurrency_capacity` sizes aggregated deployments and
             reports disaggregated options separately; and `mode=agg` cannot
             carry `prefill_max_seq_len`/`decode_max_seq_len`. A simulator that

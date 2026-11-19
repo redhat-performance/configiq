@@ -108,7 +108,7 @@ export const RecommendRequestSchema = z.object({
     })
   }
   if (data.mode != null && data.objective === 'pareto') {
-    // A Pareto sweep enumerates both deployment modes.
+    // A Pareto sweep chooses its deployments from the fabric, not a mode.
     ctx.addIssue({
       code: 'custom',
       message: "objective='pareto' does not accept mode",
