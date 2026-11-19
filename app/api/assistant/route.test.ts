@@ -224,6 +224,120 @@ describe('assistant answer', () => {
     expect(result.answer).toContain('hosted, rented, and purchased');
   });
 
+  it('strips a closed reasoning block the runtime left in the answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          // A continuation can start without the opening thinking marker, so the
+          // runtime's reasoning parser returns the trace and its terminator as
+          // content. Only what follows the terminator is the answer.
+          return completion({
+            content:
+              'The tool read 10 GPU systems. Answer: 10.</ifm|think>The catalog lists 10 GPU systems.',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many of the 10 GPU systems are NVIDIA');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('answered');
+    expect(result.answer).toBe('The catalog lists 10 GPU systems.');
+    expect(result.answer).not.toContain('ifm|think');
+    expect(result.answer).not.toContain('The tool read');
+  });
+
+  it('strips the Qwen3 thinking terminator the same way', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({
+            content: 'The user asks about costs.</think>The Costs page compares hosted, rented, and purchased options.',
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what does the costs page compare');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('answered');
+    expect(result.answer).toBe('The Costs page compares hosted, rented, and purchased options.');
+  });
+
+  it('withholds prose when the turn ends as thinking closes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          // The block closed but no answer followed: there is nothing to show,
+          // and it is not an unavailable model either.
+          return completion({ content: 'I should decide which tool to call.</ifm|think>' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many GPU systems are in the catalog');
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.status).toBe('incomplete');
+    expect(result.answer).toBe('');
+    expect(result.citations.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the trace it stripped as the reasoning of a replayed tool turn', async () => {
+    const chatBodies: Array<Record<string, unknown>> = [];
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          chatBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+          call += 1;
+          if (call === 1) {
+            return completion({
+              content: '',
+              reasoning: 'The catalog tools answer this directly.',
+              toolCalls: [{ id: 'call-1', name: 'list_gpus', arguments: '{}' }],
+            });
+          }
+          return completion({
+            content: 'The catalog lists one GPU system.</ifm|think>The catalog lists one GPU system.',
+          });
+        }
+        if (url.startsWith('http://gateway.test/systems')) {
+          return jsonResponse({
+            simulator: 'aisimulate',
+            systems: [{ id: 'h200_sxm', name: 'H200 SXM', vendor: 'nvidia' }],
+          });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what GPUs are in the catalog');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+    expect(result.answer).toBe('The catalog lists one GPU system.');
+
+    // The second call replays the first turn; a continuation must still carry
+    // the thinking field the template requires.
+    const followUp = chatBodies[1]?.messages as Array<Record<string, unknown>> | undefined;
+    const assistant = followUp?.find((message) => Array.isArray(message.tool_calls));
+    expect(assistant?.reasoning).toBe('The catalog tools answer this directly.');
+  });
+
   it('withholds prose when generation stops before the answer', async () => {
     vi.stubGlobal(
       'fetch',

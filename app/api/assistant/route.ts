@@ -174,7 +174,35 @@ interface ChatReply {
   reasoning: string;
   /** `length` means generation stopped mid-turn, so `content` is not an answer. */
   finishReason: string | null;
+  /**
+   * `content` held a closed thinking block and nothing after it: the turn ended
+   * as the model finished thinking, so there is no answer to show.
+   */
+  closedWithoutAnswer: boolean;
   toolCalls: ToolCall[];
+}
+
+/**
+ * The marker that closes a reasoning block, in the tag shape these models emit:
+ * `</ifm|think>` for K2-Horizon and `</think>` for Qwen3.
+ *
+ * A continuation can begin without the opening marker — the thinking it
+ * continues is already in the prompt — and the runtime's reasoning parser then
+ * has nothing to key on, so it returns the whole trace inside `content`, its
+ * terminator included. Everything after the last terminator is the answer;
+ * nothing before it may reach the user.
+ */
+const THINK_CLOSE = /<\/[^\s<>]*think[^\s<>]*>/gi;
+
+function splitClosedReasoning(text: string): { content: string; reasoning: string; closed: boolean } {
+  let start = -1;
+  let end = -1;
+  for (const match of text.matchAll(THINK_CLOSE)) {
+    start = match.index ?? -1;
+    end = start + match[0].length;
+  }
+  if (start < 0) return { content: text, reasoning: '', closed: false };
+  return { content: text.slice(end), reasoning: text.slice(0, start), closed: true };
 }
 
 function readToolCalls(raw: unknown): ToolCall[] {
@@ -261,16 +289,22 @@ async function chatCompletion(
     };
     const choice = payload.choices?.[0];
     const message = choice?.message;
-    const reasoning =
+    const separate =
       typeof message?.reasoning === 'string'
         ? message.reasoning
         : typeof message?.reasoning_content === 'string'
           ? message.reasoning_content
           : '';
+    const rawContent = typeof message?.content === 'string' ? message.content : '';
+    const split = splitClosedReasoning(rawContent);
     return {
-      content: typeof message?.content === 'string' ? message.content.trim() : '',
-      reasoning,
+      content: split.content.trim(),
+      // The trace the runtime left in `content` is this turn's reasoning, which
+      // a replayed tool-call turn has to carry. When the runtime already split
+      // it out, its copy wins and the stray prefix is a duplicate.
+      reasoning: separate || split.reasoning.trim(),
       finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null,
+      closedWithoutAnswer: split.closed && split.content.trim().length === 0,
       toolCalls: readToolCalls(message?.tool_calls),
     };
   } catch {
@@ -553,9 +587,10 @@ async function runAssistant(
    * Generation stopped at the token cap. For a reasoning model that usually
    * means the closing thinking tag never arrived, so the server returns the
    * unfinished trace as `content`. It reads like prose, but it is not an answer
-   * and must not be shown.
+   * and must not be shown. A turn that closed its thinking block but produced
+   * nothing after it ended the same way: there is no answer to show.
    */
-  const incomplete = reply?.finishReason === 'length';
+  const incomplete = reply?.finishReason === 'length' || reply?.closedWithoutAnswer === true;
   if (!draft && !incomplete) {
     if (signal.aborted) return;
     emit({
