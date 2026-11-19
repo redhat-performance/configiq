@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { describeSweepCoverage } from './sweep-caption'
+import { describeFrontierDeployments, describeSweepCoverage } from './sweep-caption'
 
 const feasible = { status: 'feasible' as const }
 const infeasible = { status: 'infeasible' as const }
@@ -45,6 +45,37 @@ describe('describeSweepCoverage', () => {
   it('falls back to the ledger length when the sweep did not report a count', () => {
     expect(describeSweepCoverage(null, [feasible, feasible])).toBe(
       '2 sampled · 2 feasible — not exhaustive.',
+    )
+  })
+})
+
+describe('describeFrontierDeployments', () => {
+  it('names only the deployments the sweep reported searching', () => {
+    expect(describeFrontierDeployments({ modesSearched: ['agg'] })).toBe(
+      'Efficiency trade-off across aggregated deployments',
+    )
+    expect(describeFrontierDeployments({ modesSearched: ['disagg'] })).toBe(
+      'Efficiency trade-off across disaggregated deployments',
+    )
+  })
+
+  it('names both deployments when the sweep covered both', () => {
+    expect(describeFrontierDeployments({ modesSearched: ['agg', 'disagg'] })).toBe(
+      'Efficiency trade-off across aggregated and disaggregated deployments',
+    )
+  })
+
+  it('does not promise a search space the response did not report', () => {
+    // No sweep yet, or a report with no usable mode facts: the header cannot
+    // claim which deployments were compared.
+    expect(describeFrontierDeployments(null)).toBe(
+      'Efficiency trade-off for this workload',
+    )
+    expect(describeFrontierDeployments({ modesSearched: null })).toBe(
+      'Efficiency trade-off for this workload',
+    )
+    expect(describeFrontierDeployments({ modesSearched: [] })).toBe(
+      'Efficiency trade-off for this workload',
     )
   })
 })

@@ -24,7 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
-import { describeSweepCoverage } from '@/lib/pareto/sweep-caption';
+import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
 
@@ -445,6 +445,9 @@ export function FrontierPanel({
   );
   const views = state.status === 'ready' ? state.views : null;
   const sweep = state.status === 'ready' ? state.sweep : null;
+  // `sweep` is null until the run reports one, and the helper describes the
+  // workload rather than promising deployments it cannot confirm.
+  const subtitle = describeFrontierDeployments(sweep);
 
   const feasible = React.useMemo(() => candidates.filter(isFeasible), [candidates]);
   const failed = React.useMemo(() => candidates.filter(candidate => !isFeasible(candidate)), [candidates]);
@@ -511,7 +514,7 @@ export function FrontierPanel({
         <CardTitle>
           <div className={styles.titleRow}>
             <h2 id="frontier-heading" className={styles.title}>Pareto frontier</h2>
-            <span className={styles.subtitle}>{frontierSubtitle(state)}</span>
+            <span className={styles.subtitle}>{subtitle}</span>
           </div>
         </CardTitle>
         <CardBody>
@@ -645,25 +648,4 @@ export function FrontierPanel({
       </Card>
     </section>
   );
-}
-
-/**
- * Describe the deployments the sweep reported covering.
- *
- * The frontier must not promise both deployment modes: a run can ask for
- * aggregated candidates only, and a simulator can stop before reaching P/D.
- * While loading nothing is known yet, so describe the workload instead.
- */
-function frontierSubtitle(state: FrontierState): string {
-  if (state.status !== 'ready') {
-    return 'Efficiency trade-off for this workload';
-  }
-  const modes = state.sweep?.modesSearched;
-  if (modes?.length === 1 && modes[0] === 'agg') {
-    return 'Efficiency trade-off across aggregated deployments';
-  }
-  if (modes?.length === 1 && modes[0] === 'disagg') {
-    return 'Efficiency trade-off across disaggregated deployments';
-  }
-  return 'Efficiency trade-off across aggregated and disaggregated deployments';
 }

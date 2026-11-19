@@ -48,3 +48,28 @@ export function describeSweepCoverage(
 
   return `${parts.join(' · ')} — ${coverage}`
 }
+
+/**
+ * Describe the deployments a frontier sweep reported covering.
+ *
+ * A sweep can be asked for aggregated candidates only, and a decomposed sweep
+ * can still stop before reaching its P/D half, so the header must not promise
+ * both deployments until the response says what ran.
+ */
+export function describeFrontierDeployments(
+  sweep: Pick<FrontierSweep, 'modesSearched'> | null | undefined,
+): string {
+  const modes = sweep?.modesSearched
+  if (modes?.length === 1 && modes[0] === 'agg') {
+    return 'Efficiency trade-off across aggregated deployments'
+  }
+  if (modes?.length === 1 && modes[0] === 'disagg') {
+    return 'Efficiency trade-off across disaggregated deployments'
+  }
+  if (modes?.length === 2) {
+    return 'Efficiency trade-off across aggregated and disaggregated deployments'
+  }
+  // No sweep yet, or a report with no usable mode facts: describe the workload
+  // instead of claiming which deployments were compared.
+  return 'Efficiency trade-off for this workload'
+}
