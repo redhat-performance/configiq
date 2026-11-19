@@ -535,7 +535,9 @@ const SYSTEM_IDS = [
  */
 const SYSTEM_ALIASES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
   // The qualifier may be wrapped: `H200 NVL`, `H200 (NVL)`, `H200 (PCIe)`.
-  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*[(\[]?\s*(?:nvl|pcie))/i },
+  // `NVL` needs its own boundary so `NVLink` — an interconnect on the SXM part,
+  // not the NVL variant — still names H200 SXM.
+  { id: 'h200_sxm', pattern: /\bh200\b(?!\s*[(\[]?\s*(?:nvl\b|pcie))/i },
 ];
 
 /**

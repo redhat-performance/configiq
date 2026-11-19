@@ -513,6 +513,18 @@ describe('proposeView', () => {
     }
   });
 
+  it('resolves H200 SXM even when the question mentions NVLink', () => {
+    const proposal = proposeView({
+      question:
+        'Recommend a size for TTFT 1 s on an H200 (NVLink) SXM at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'l40s',
+    });
+
+    // NVLink is an interconnect on the SXM part, not the NVL variant.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('h200_sxm');
+  });
+
   it('opens the reported sizing question with every value it names', () => {
     const proposal = proposeView({
       question:
