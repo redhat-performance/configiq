@@ -279,8 +279,8 @@ export default function Sizing() {
     ?? support?.backends[0];
   const engineSupport = engineVersionSupport(engineBackend, backendVersion || engineBackend?.defaultVersion);
   const disaggSupported = engineSupport?.disaggregated ?? true;
-  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
-  // search takes none, so the fabric control stays hidden there.
+  // The catalog reports whether a P/D run needs a fabric, so the control
+  // follows that capability instead of assuming a topology.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
   // Name the release in the "cannot disaggregate" explanation without ever
   // rendering an empty version.

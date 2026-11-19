@@ -197,6 +197,15 @@ Rules:
 - Simulator-specific support (for example which backend versions, fabrics, or
   request fields are accepted) belongs in catalog/capability metadata and the
   service README/OpenAPI, not in frontend conditionals.
+- Keep that rule in comments and tests too. Do not write a note that names a
+  simulator and states what it accepts, needs, or rejects (for example
+  `// AISimulate rejects fabric` or `// BLIS needs a fabric for P/D`): those
+  facts change between releases and belong in the service documentation.
+  Describe the capability instead (`// the catalog reports whether P/D needs a
+  fabric`), and mount the fixture that declares the capability rather than
+  giving another simulator that behavior. `lib/simulator-generic.test.ts`
+  enforces this for comments under `app/`, `components/`, and `lib/` (outside
+  the `lib/api/` service boundary).
 - When a default or invariant moves to the service, add or update API and
   service tests. Keep frontend tests focused on forwarding intent and rendering
   the response.

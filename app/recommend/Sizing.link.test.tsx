@@ -127,8 +127,8 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         backends: [aisimulateBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
-      // BLIS prices the linked system that AISimulate does not offer, so
-      // accepting the shared simulator makes it selectable again.
+      // The second catalog prices the linked system that the default one does
+      // not offer, so accepting the shared simulator makes it selectable again.
       blis: {
         id: 'blis',
         label: 'BLIS',
@@ -571,14 +571,14 @@ describe('recommend sizing shared views', () => {
       '&simulator=blis&backend=vllm&backendVersion=0.9.0',
     );
 
-    // AISimulate does not price the linked system, so the form falls back while
-    // the banner offers the sender's simulator.
+    // The reader's simulator does not price the linked system, so the form
+    // falls back while the banner offers the sender's simulator.
     expect((await calculate()).system).toBe('h200_sxm');
 
     await acceptSharedSimulator();
 
-    // BLIS prices it, so the next calculation must use the shared system rather
-    // than the fallback that was selected while the banner was up.
+    // The sender's simulator prices it, so the next calculation must use the
+    // shared system rather than the fallback selected while the banner was up.
     expect((await calculate()).system).toBe('h100_sxm');
   });
 

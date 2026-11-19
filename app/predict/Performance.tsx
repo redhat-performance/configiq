@@ -197,8 +197,8 @@ export default function Performance() {
   // Fail open when the service reports no per-version support: the API still
   // refuses an unmodeled topology with a 422 that names the alternatives.
   const disaggSupported = engineSupport?.disaggregated ?? true;
-  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
-  // search takes none, so the fabric control stays hidden there.
+  // The catalog reports whether a P/D run needs a fabric, so the control
+  // follows that capability instead of assuming a topology.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
