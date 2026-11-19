@@ -56,6 +56,11 @@ export const RecommendRequestSchema = z.object({
   // Whether a simulator consumes a fabric is its own capability; the service
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
+  // Selected serving mode. `agg` asks the service to search aggregated
+  // candidates only. Omit it for the service's existing deployment search.
+  // The OpenAPI field is `nullable` as well as optional, so accept the same
+  // shapes a caller can copy from the contract: `null` means "not chosen".
+  mode: z.enum(['agg', 'disagg']).nullish(),
   /**
    * Internal client hint describing how this proxy should bound the request:
    * `single` also sends a `search_budget_seconds` for a simulator that owns one
@@ -89,6 +94,33 @@ export const RecommendRequestSchema = z.object({
 }).strict().superRefine((data, ctx) => {
   const hasLatency = data.request_latency != null
   const hasTokenLatency = data.ttft != null || data.tpot != null
+
+  // A serving mode names the deployments a search covers. These rules are
+  // simulator-independent, so the proxy answers them before dispatch. Whether a
+  // mode needs a fabric is a simulator capability, checked by the service.
+  if (
+    data.mode === 'agg' &&
+    (data.prefill_max_seq_len != null || data.decode_max_seq_len != null)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      message: "mode='agg' does not accept prefill_max_seq_len or decode_max_seq_len",
+    })
+  }
+  if (data.mode != null && data.objective === 'pareto') {
+    // A Pareto sweep chooses its deployments from the fabric, not a mode.
+    ctx.addIssue({
+      code: 'custom',
+      message: "objective='pareto' does not accept mode",
+    })
+  }
+  if (data.mode === 'disagg' && data.objective === 'concurrency_capacity') {
+    // Capacity sizes aggregated deployments and reports P/D options separately.
+    ctx.addIssue({
+      code: 'custom',
+      message: "objective='concurrency_capacity' does not accept mode='disagg'",
+    })
+  }
 
   // P/D transfer bandwidth is a Pareto sweep input. Accepting it elsewhere
   // would imply a topology the search does not model.

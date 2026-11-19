@@ -354,6 +354,7 @@ def test_blis_recommend_pareto_returns_candidates_views_and_enumerated_sweep():
             "evaluated_configurations": 1,
             "effective_max_gpus": 1,
             "budget_exhausted": False,
+            "modes_searched": ["agg", "disagg"],
         },
         candidates=[candidate],
         views={"pareto_front": ["agg-tp1-c1"], "top_n": ["agg-tp1-c1"]},
@@ -381,6 +382,9 @@ def test_blis_recommend_pareto_returns_candidates_views_and_enumerated_sweep():
     assert payload["views"]["pareto_front"] == ["agg-tp1-c1"]
     assert payload["sweep"]["algorithm"] == "enumerate"
     assert payload["sweep"]["strict_sla"] is True
+    # BLIS reports its search modes in its own summary; the shared sweep facts
+    # carry them too so a client reads one field for both simulators.
+    assert payload["sweep"]["modes_searched"] == ["agg", "disagg"]
     assert payload["capacity"] is None
     run_blis.assert_called_once()
     run_aisimulate.assert_not_called()

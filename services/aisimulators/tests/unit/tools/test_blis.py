@@ -114,6 +114,20 @@ def _write_catalog(root: Path) -> Path:
     return root
 
 
+def test_search_modes_follow_the_evaluated_ledger():
+    def candidate(mode: str) -> blis_service._RecommendCandidate:
+        return blis_service._RecommendCandidate(mode=mode, total_gpus=4)
+
+    # Only what ran counts, in contract order, and "nothing ran" is reported as
+    # None rather than as an empty search of one mode.
+    assert blis_service._searched_modes([]) is None
+    assert blis_service._searched_modes([candidate("agg")]) == ["agg"]
+    assert blis_service._searched_modes([candidate("disagg")]) == ["disagg"]
+    assert blis_service._searched_modes(
+        [candidate("disagg"), candidate("agg")]
+    ) == ["agg", "disagg"]
+
+
 def test_catalog_reads_hugging_face_ids_and_skips_unpriceable_models(tmp_path: Path):
     catalog = load_catalog(str(_write_catalog(tmp_path)))
 
@@ -704,6 +718,165 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
         + first_pd["decode_config"]["tp"] * first_pd["decode_config"]["num_workers"]
     )
     assert any(call.prefill_instances == 1 and call.decode_instances == 1 for call, _docs in calls)
+
+
+def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    monkeypatch.setattr(blis_service, "run_blis", lambda *_args, **_kwargs: _result())
+
+    result = blis_service.recommend(blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version=None,
+        isl=2048,
+        osl=128,
+        concurrency=8,
+        request_rate=None,
+        ttft=1000,
+        tpot=30,
+        request_latency=None,
+        prefix=0,
+        min_candidate_gpus=1,
+        max_candidate_gpus=8,
+        # One aggregate shape fills the requested top-N, so the grid stops at
+        # the end of its group before the P/D half runs.
+        top_n=1,
+        search_budget_seconds=60,
+        fabric="ib-400g",
+    ))
+
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert all(config["mode"] == "agg" for config in result.configs)
+    assert all(
+        any(
+            "stopped before evaluating a P/D candidate" in warning
+            for warning in config["warnings"]
+        )
+        for config in result.configs
+    )
+
+
+def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        return _result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+    result = blis_service.recommend(blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version=None,
+        isl=2048,
+        osl=128,
+        concurrency=8,
+        request_rate=None,
+        ttft=1000,
+        tpot=30,
+        request_latency=None,
+        prefix=0,
+        min_candidate_gpus=1,
+        max_candidate_gpus=8,
+        top_n=20,
+        search_budget_seconds=60,
+        fabric="ib-400g",
+        mode="agg",
+    ))
+
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert all(config["mode"] == "agg" for config in result.configs)
+    assert any(
+        "Aggregated serving was requested" in warning
+        for warning in result.configs[0]["warnings"]
+    )
+
+
+def test_recommend_validates_a_named_fabric_even_when_serving_is_aggregated(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+
+    # An aggregated search does not use the fabric, but the caller still named a
+    # topology assumption, so an unknown one fails instead of being ignored.
+    with pytest.raises(BlisUnsupportedRequest, match="cannot price network fabric"):
+        blis_service.recommend(blis_service.RecommendInput(
+            model_path="Qwen/Qwen3-32B", system="h100_sxm", backend="vllm", backend_version=None,
+            isl=2048, osl=128, concurrency=8, request_rate=None, ttft=1000, tpot=30,
+            request_latency=None, prefix=0, min_candidate_gpus=1, max_candidate_gpus=8,
+            top_n=20, search_budget_seconds=60, fabric="bogus-fabric", mode="agg",
+        ))
+
+
+def test_recommend_searches_pd_when_disaggregated_is_named(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    monkeypatch.setattr(blis_service, "run_blis", lambda *_args, **_kwargs: _result())
+
+    result = blis_service.recommend(blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B", system="h100_sxm", backend="vllm", backend_version=None,
+        isl=2048, osl=128, concurrency=8, request_rate=None, ttft=1000, tpot=30,
+        request_latency=None, prefix=0, min_candidate_gpus=1, max_candidate_gpus=8,
+        top_n=20, search_budget_seconds=60, fabric="ib-400g", mode="disagg",
+    ))
+
+    # An explicit P/D choice must match the search an omitted mode gets.
+    assert result.search_summary["modes_searched"] == ["agg", "disagg"]
+    assert any(config["mode"] == "disagg" for config in result.configs)
+
+
+def test_recommend_demand_stays_aggregated_with_a_named_fabric(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, run_request, *, timeout_seconds: _demand_replay(
+            run_request.num_requests, 12.0
+        ),
+    )
+    request = _demand_recommend_input()
+    result = blis_service.recommend(blis_service.RecommendInput(
+        **{**request.__dict__, "fabric": "ib-400g", "mode": "disagg"}
+    ))
+
+    # A rate-driven replay cannot attach a P/D transfer fabric, so naming one
+    # keeps the run aggregate-only rather than implying a topology it did not
+    # simulate.
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert all(config["mode"] == "agg" for config in result.configs)
 
 
 def test_run_command_uses_rate_and_omits_concurrency():

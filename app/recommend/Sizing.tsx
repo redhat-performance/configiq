@@ -40,7 +40,7 @@ import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
-import { resolveEffectiveFabric, submittedInputsMatch } from './inputs-match';
+import { resolveSearchFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
@@ -279,9 +279,18 @@ export default function Sizing() {
     ?? support?.backends[0];
   const engineSupport = engineVersionSupport(engineBackend, backendVersion || engineBackend?.defaultVersion);
   const disaggSupported = engineSupport?.disaggregated ?? true;
-  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
-  // search takes none, so the fabric control stays hidden there.
+  // The catalog reports whether a P/D run needs a fabric, so the control
+  // follows that capability instead of assuming a topology.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
+  // Whether a capacity run can return disaggregated comparison options, so the
+  // explanation describes the options the service really offers.
+  const capacityOffersDisagg = engineBackend?.capacityOptions.disaggregated ?? false;
+  // Name the release in the "cannot disaggregate" explanation without ever
+  // rendering an empty version.
+  const modeledBackendLabel = [
+    inferenceBackend === 'vllm' ? 'vLLM' : inferenceBackend,
+    backendVersion || engineBackend?.defaultVersion,
+  ].filter(Boolean).join(' ');
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
   const MODEL_OPTIONS = catalogModels;
   const [networkFabric, setNetworkFabric] = React.useState<string | null>(null);
@@ -370,10 +379,34 @@ export default function Sizing() {
   const availableObjectives = support?.objectives ?? catalogObjectives;
   const capacitySupported = availableObjectives.includes('concurrency_capacity');
   const paretoSupported = availableObjectives.includes('pareto');
+  // Demand and capacity both report a GPU count without a latency SLA, and
+  // neither searches a topology the page can choose: demand's answer is the
+  // deployment that sustains the rate, and capacity reports aggregated
+  // configurations plus disaggregated comparison options. The page therefore
+  // leaves the topology to the service for both goals.
   const aggregateOnlyGoal = isDemand || isCapacity;
-  // A Pareto sweep always searches both aggregated and disaggregated
-  // deployments. It is not a sizing goal, so it is unavailable only when the
+  // The mode the user or a shared link chose, or null while nothing has chosen
+  // one. A null choice derives from capability so this page keeps the
+  // deployment search it made before this control existed: aggregated only when
+  // the simulator cannot model prefill/decode or the goal has no mode to choose.
+  const [servingModeChoice, setServingModeChoice] = React.useState<'agg' | 'disagg' | null>(null);
+  // Whether the simulator can search a prefill/decode topology at all: it must
+  // model one, the goal must offer the choice, and a P/D search needs a fabric,
+  // so a catalog that offers none leaves nothing to search. Both inputs are
+  // capability, never a simulator ID.
+  const disaggCapable = disaggSupported
+    && !aggregateOnlyGoal
+    && (!fabricRequired || availableNetworks.length > 0);
+  // The explicit "None" fabric is an aggregate-only request, so it leaves no P/D
+  // topology either.
+  const disaggSelectable = disaggCapable && (!fabricRequired || selectedNetworkFabric !== '');
+  // Clamp display and submission; never overwrite the choice. An explicit mode
+  // therefore survives a goal or simulator change and applies again as soon as
+  // the form can honour it.
+  const servingMode: 'agg' | 'disagg' = disaggSelectable ? servingModeChoice ?? 'disagg' : 'agg';
+  // A Pareto sweep is not a sizing goal, so it is unavailable only when the
   // simulator cannot compute one or the workload has no throughput trade-off.
+  // It is unavailable for capacity because capacity already reports P/D options.
   const paretoDisabledReason = isCapacity
     ? 'Pareto frontier is not available for concurrency-capacity sizing.'
     : !paretoSupported
@@ -744,24 +777,57 @@ export default function Sizing() {
       read: () => maxSeqLen ?? undefined,
       write: (value) => { setMaxSeqLen(value); setMaxSeqLenInput(String(value)); },
     },
+    servingMode: {
+      read: () => servingMode,
+      // A link names the topology the author was viewing, so applying it is an
+      // explicit choice even while the current simulator cannot honour it.
+      write: (value) => setServingModeChoice(value),
+    },
     prefillMaxSeqLen: {
-      read: () => prefillMaxSeqLen ?? undefined,
-      write: (value) => { setPrefillMaxSeqLen(value); setPrefillMaxSeqLenInput(String(value)); },
+      read: () => (servingMode === 'disagg' ? prefillMaxSeqLen ?? undefined : undefined),
+      write: (value, values) => {
+        setPrefillMaxSeqLen(value);
+        setPrefillMaxSeqLenInput(String(value));
+        // Pool lengths only exist in a prefill/decode view, so a link written
+        // before the mode field described one. A link that names the mode has
+        // already been applied and must keep its own choice.
+        if (values.servingMode == null) setServingModeChoice('disagg');
+      },
     },
     decodeMaxSeqLen: {
-      read: () => decodeMaxSeqLen ?? undefined,
-      write: (value) => { setDecodeMaxSeqLen(value); setDecodeMaxSeqLenInput(String(value)); },
+      read: () => (servingMode === 'disagg' ? decodeMaxSeqLen ?? undefined : undefined),
+      write: (value, values) => {
+        setDecodeMaxSeqLen(value);
+        setDecodeMaxSeqLenInput(String(value));
+        if (values.servingMode == null) setServingModeChoice('disagg');
+      },
     },
-    // An unset fabric means "use the simulator default", which is what the
-    // recipient gets if the field is absent. An explicit None is sentinel-
-    // encoded so it survives an empty-string build.
+    // The field has three meanings and the link must carry the one the page
+    // submits: omitted for a goal or backend that makes no topology claim, the
+    // name for a P/D search, and sentinel-encoded "none" for an explicit
+    // aggregate-only request. Reading the raw selection instead would export a
+    // remembered fabric name for a request that sends null.
     fabric: {
-      read: () => (
-        fabricRequired && !aggregateOnlyGoal
-          ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
-          : undefined
-      ),
-      write: (value) => setNetworkFabric(value === FABRIC_NONE ? '' : value),
+      read: () => {
+        const submitted = resolveSearchFabric(
+          fabricRequired,
+          aggregateOnlyGoal,
+          disaggSupported,
+          selectedNetworkFabric,
+          servingMode,
+        );
+        if (submitted === undefined) return undefined;
+        return submitted === null || submitted === '' ? FABRIC_NONE : submitted;
+      },
+      write: (value, values) => {
+        setNetworkFabric(value === FABRIC_NONE ? '' : value);
+        // A named fabric is the topology a pre-mode link described, and "None"
+        // was that link's aggregate-only request. Applied in field order, so a
+        // fabric write settles an inferred pool-length mode.
+        if (values.servingMode == null) {
+          setServingModeChoice(value === FABRIC_NONE ? 'agg' : 'disagg');
+        }
+      },
     },
   });
 
@@ -801,7 +867,7 @@ export default function Sizing() {
     // replaces a system that simulator does not offer. Keep the linked system
     // to re-apply once it is selectable again, and mark any visible output
     // stale because a different simulator will produce the next result.
-    pendingLinkedSystem.current = shared.parsed?.values.system ?? null;
+    pendingLinkedSystem.current = shared.parsed?.values?.system ?? null;
     markInputsDirty();
     acceptSharedSimulator();
   };
@@ -834,17 +900,19 @@ export default function Sizing() {
       requestLatency,
       prefix,
       maxSeqLen,
-      prefillMaxSeqLen,
-      decodeMaxSeqLen,
-      effectiveFabric: resolveEffectiveFabric(
+      prefillMaxSeqLen: servingMode === 'disagg' ? prefillMaxSeqLen : null,
+      decodeMaxSeqLen: servingMode === 'disagg' ? decodeMaxSeqLen : null,
+      effectiveFabric: resolveSearchFabric(
         fabricRequired,
         aggregateOnlyGoal,
         disaggSupported,
         selectedNetworkFabric,
+        servingMode,
       ),
+      servingMode,
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const sizingObjective: RecommendObjective = isCapacity
     ? 'concurrency_capacity'
@@ -852,44 +920,59 @@ export default function Sizing() {
       ? 'throughput_demand'
       : 'min_gpus';
 
-  const buildRecommendParams = (): RecommendParams => ({
-    model_path: model,
-    system: gpuSystem,
-    isl,
-    osl,
-    sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
-    objective: sizingObjective,
-    ...(isCapacity
-      ? { target_concurrency: targetConcurrency }
-      : isDemand
-        ? { target_request_rate: demandRate }
-        : {
-            target_concurrency: targetConcurrency,
-            // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
-            // request schema rejects sending both shapes at once.
-            ...(requestLatency != null
-              ? { request_latency: requestLatency }
-              : { ttft, tpot }),
-          }),
-    prefix,
-    ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
-    ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-    ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
-    backend: inferenceBackend,
-    ...(backendVersion ? { backend_version: backendVersion } : {}),
-    // Send the HF config for models AISimulators can't resolve from its catalog.
-    ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
-    simulator,
-    // The simulator reports whether it answers one bounded search or streams
-    // GPU windows. This is a proxy hint and is never forwarded upstream.
-    search_strategy: support?.recommendSearch ?? 'windowed',
-    // A release without P/D modelling can only search aggregated candidates,
-    // so do not send a fabric that asks for a disaggregated topology. Demand
-    // and capacity sizing are aggregate-only regardless of the selected fabric.
-    ...(fabricRequired && !aggregateOnlyGoal
-      ? { fabric: disaggSupported ? selectedNetworkFabric || null : null }
-      : {}),
-  });
+  // One builder for both buttons: a Pareto sweep is the same request minus the
+  // mode. Both read the same fabric, so the control, the sweep, and the copied
+  // link describe one topology. Building them separately let the paths drift.
+  const buildRecommendParams = ({ pareto = false }: { pareto?: boolean } = {}): RecommendParams => {
+    const fabric = resolveSearchFabric(
+      fabricRequired,
+      aggregateOnlyGoal,
+      disaggSupported,
+      selectedNetworkFabric,
+      servingMode,
+    );
+    return {
+      model_path: model,
+      system: gpuSystem,
+      isl,
+      osl,
+      sla_mode: aggregateOnlyGoal ? 'none' : 'enforce',
+      objective: sizingObjective,
+      ...(isCapacity
+        ? { target_concurrency: targetConcurrency }
+        : isDemand
+          ? { target_request_rate: demandRate }
+          : {
+              target_concurrency: targetConcurrency,
+              // An end-to-end bound replaces the decomposed TTFT/TPOT bounds; the
+              // request schema rejects sending both shapes at once.
+              ...(requestLatency != null
+                ? { request_latency: requestLatency }
+                : { ttft, tpot }),
+            }),
+      prefix,
+      ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
+      ...(servingMode === 'disagg' && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+      ...(servingMode === 'disagg' && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+      backend: inferenceBackend,
+      ...(backendVersion ? { backend_version: backendVersion } : {}),
+      // Send the HF config for models AISimulators can't resolve from its catalog.
+      ...(needsHfConfig(model, MODEL_OPTIONS) && hfConfig ? { model_config: hfConfig } : {}),
+      simulator,
+      // The simulator reports whether it answers one bounded search or streams
+      // GPU windows. This is a proxy hint and is never forwarded upstream.
+      search_strategy: support?.recommendSearch ?? 'windowed',
+      // Omitted for an aggregate-only goal and for a backend that models no
+      // fabric; null asks for aggregate candidates only; a name is the topology
+      // the search should model.
+      ...(fabric === undefined ? {} : { fabric }),
+      // The selected serving mode, for a goal that can act on it. Demand and
+      // capacity report the deployment they sized, so a mode here would state a
+      // narrowing the response does not honour. A sweep rejects the field, so
+      // it omits the mode and reports the deployments it covered.
+      ...(pareto || aggregateOnlyGoal ? {} : { mode: servingMode }),
+    };
+  };
 
   const handleCalculate = () => {
     setInputsDirty(false);
@@ -898,7 +981,9 @@ export default function Sizing() {
 
   const handlePareto = () => {
     setInputsDirty(false);
-    startPareto(buildRecommendParams());
+    // A sweep rejects the mode field, so it reads only the fabric the selected
+    // view submits; the response reports which deployments the search covered.
+    startPareto(buildRecommendParams({ pareto: true }));
   };
 
   // Local memory analysis using the same engine as Quick Estimate
@@ -989,15 +1074,26 @@ export default function Sizing() {
           </div>
         )}
 
-        {fabricRequired && (
+        {fabricRequired && disaggCapable && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
             <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
             <FormSelect
               id="recommend-network-fabric"
-              value={selectedNetworkFabric}
+              // Show what the request will submit. An aggregated view sends an
+              // explicit null even when a fabric name is still remembered, so
+              // displaying the remembered name would claim a topology the
+              // request does not use.
+              value={servingMode === 'disagg' ? selectedNetworkFabric : ''}
               aria-label="Inter-node fabric"
-              isDisabled={availableNetworks.length === 0 || !disaggSupported || aggregateOnlyGoal}
-              onChange={(_, value) => { setNetworkFabric(value); markInputsDirty(); }}
+              isDisabled={availableNetworks.length === 0}
+              onChange={(_, value) => {
+                setNetworkFabric(value);
+                // A named fabric is a prefill/decode topology; "None" is the
+                // aggregate-only request. Record the explicit choice so a later
+                // capability change does not silently reverse it.
+                setServingModeChoice(value === '' ? 'agg' : 'disagg');
+                markInputsDirty();
+              }}
             >
               <FormSelectOption value="" label="None (aggregate candidates only)" />
               {availableNetworks.map(network => (
@@ -1005,19 +1101,11 @@ export default function Sizing() {
               ))}
             </FormSelect>
             <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-              {isDemand
-                ? 'Throughput-demand sizing is aggregate-only, so the fabric selection does not affect this run.'
-                : isCapacity
-                  ? 'Concurrency-capacity sizing is aggregate-only, so the fabric selection does not affect this run.'
-                : !disaggSupported
-                ? `The selected simulator does not model prefill/decode disaggregation for vLLM ${backendVersion || engineBackend?.defaultVersion}; only aggregate candidates are searched.`
-                : availableNetworks.length === 0
-                  ? 'No network fabrics were returned by the simulator catalog; only aggregate candidates can be searched.'
-                  : networkFabric === null && defaultNetworkFabric
-                    ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
-                    : selectedNetworkFabric
-                      ? 'The simulator searches aggregate and P/D candidates using this fabric.'
-                      : 'No fabric selected; the simulator searches aggregate candidates only.'}
+              {servingMode === 'disagg'
+                ? networkFabric === null && defaultNetworkFabric
+                  ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
+                  : 'The simulator searches aggregate and P/D candidates using this fabric.'
+                : 'The aggregated view sends no fabric, so sizing and the Pareto frontier both ask for aggregated candidates only.'}
             </div>
           </div>
         )}
@@ -1037,8 +1125,7 @@ export default function Sizing() {
               invalidISL ||
               invalidOSL ||
               invalidMaxSeqLen ||
-              invalidPrefillMaxSeqLen ||
-              invalidDecodeMaxSeqLen ||
+              (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) ||
               catalogLoading ||
               invalidParetoInputs
             }
@@ -1048,7 +1135,7 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -1155,6 +1242,11 @@ export default function Sizing() {
             {prefix > 0 ? `, prefix ${prefix.toLocaleString()} tokens` : ''}, Maximum TPOT: {tpot} ms, {targetConcurrency} concurrent {targetConcurrency === 1 ? 'user' : 'users'}.
           </>
         )}
+        {!aggregateOnlyGoal && (
+          <>
+            {' '}Deployment view: {servingMode === 'disagg' ? 'disaggregated' : 'aggregated'}.
+          </>
+        )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
           Adjust? (edit fields below)
         </InfoStripAction>
@@ -1164,6 +1256,57 @@ export default function Sizing() {
       {expanded.includes('customize') && (
         <div className={`${styles.card}`} style={{ marginBottom: 16 }}>
           <div className={styles.cardBody}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12, fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'var(--t)' }}>
+              Deployment view
+              {!aggregateOnlyGoal && (
+                <>
+                  <Button
+                    className="gc-preset-button"
+                    variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
+                    size="sm"
+                    aria-pressed={servingMode === 'agg'}
+                    onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
+                  >
+                    Aggregated
+                  </Button>
+                  <Button
+                    className="gc-preset-button"
+                    variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+                    size="sm"
+                    aria-pressed={servingMode === 'disagg'}
+                    isDisabled={!disaggSelectable}
+                    onClick={() => {
+                      if (!disaggSelectable) return;
+                      setServingModeChoice('disagg');
+                      markInputsDirty();
+                    }}
+                  >
+                    Disaggregated
+                  </Button>
+                </>
+              )}
+              {!aggregateOnlyGoal && servingMode === 'disagg' && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode have separate inputs in this view.</span>
+              )}
+              {!aggregateOnlyGoal && !disaggSelectable && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  {!disaggSupported
+                    ? `The selected simulator does not model prefill/decode disaggregation for ${modeledBackendLabel || 'the selected backend'}.`
+                    : availableNetworks.length === 0
+                      ? 'No network fabric is available to model a prefill/decode search.'
+                      : 'Choose a network fabric to view prefill/decode inputs.'}
+                </span>
+              )}
+              {aggregateOnlyGoal && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  {isCapacity
+                    ? capacityOffersDisagg
+                      ? 'Capacity sizing reports aggregated and disaggregated options; it does not search one serving mode.'
+                      : 'Capacity sizing reports the aggregated deployments that hold the target; it does not search one serving mode.'
+                    : 'Demand sizing reports the deployment that sustains the arrival rate; it does not take a serving mode.'}
+                </span>
+              )}
+            </div>
             <div className={styles.paramGrid} style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
               <div>
                 <label className={styles.fieldLabel}>Avg input tokens (ISL) <Term k="isl" /></label>
@@ -1356,32 +1499,36 @@ export default function Sizing() {
                           aria-invalid={invalidMaxSeqLen}
                         />
                       </div>
-                      <div>
-                        <label className={styles.fieldLabel}>Prefill length (tokens) <Term k="prefillMaxSeqLen" /></label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          className={invalidPrefillMaxSeqLen ? styles.paramInputInvalid : styles.paramInput}
-                          value={prefillMaxSeqLenInput}
-                          onChange={e => handleSequenceLengthChange(e.target.value, setPrefillMaxSeqLenInput, setPrefillMaxSeqLen)}
-                          min={1}
-                          placeholder="Optional override"
-                          aria-invalid={invalidPrefillMaxSeqLen}
-                        />
-                      </div>
-                      <div>
-                        <label className={styles.fieldLabel}>Decode length (tokens) <Term k="decodeMaxSeqLen" /></label>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          className={invalidDecodeMaxSeqLen ? styles.paramInputInvalid : styles.paramInput}
-                          value={decodeMaxSeqLenInput}
-                          onChange={e => handleSequenceLengthChange(e.target.value, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen)}
-                          min={1}
-                          placeholder="Optional override"
-                          aria-invalid={invalidDecodeMaxSeqLen}
-                        />
-                      </div>
+                      {servingMode === 'disagg' && (
+                        <div>
+                          <label className={styles.fieldLabel}>Prefill length (tokens) <Term k="prefillMaxSeqLen" /></label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            className={invalidPrefillMaxSeqLen ? styles.paramInputInvalid : styles.paramInput}
+                            value={prefillMaxSeqLenInput}
+                            onChange={e => handleSequenceLengthChange(e.target.value, setPrefillMaxSeqLenInput, setPrefillMaxSeqLen)}
+                            min={1}
+                            placeholder="Optional override"
+                            aria-invalid={invalidPrefillMaxSeqLen}
+                          />
+                        </div>
+                      )}
+                      {servingMode === 'disagg' && (
+                        <div>
+                          <label className={styles.fieldLabel}>Decode length (tokens) <Term k="decodeMaxSeqLen" /></label>
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            className={invalidDecodeMaxSeqLen ? styles.paramInputInvalid : styles.paramInput}
+                            value={decodeMaxSeqLenInput}
+                            onChange={e => handleSequenceLengthChange(e.target.value, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen)}
+                            min={1}
+                            placeholder="Optional override"
+                            aria-invalid={invalidDecodeMaxSeqLen}
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </AccordionContent>
@@ -1425,7 +1572,7 @@ export default function Sizing() {
           <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {primaryResult.searchSummary && (
               <span>
-                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
+                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
               </span>
             )}
             {primaryResult.sweep?.windowMinGpus != null && primaryResult.sweep.windowMaxGpus != null && (
@@ -1930,5 +2077,13 @@ function sweepCoverageLabel(sweep: RecommendSweepMeta): string {
   const range = min === max ? `${min} GPU${min === 1 ? '' : 's'}` : `${min}–${max} GPUs`
   const evaluated = sweep.evaluated ?? 0
   const budget = sweep.budgetExhausted ? ' · time budget reached' : ''
-  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}`
+  // Report the deployments the run actually covered. The form's deployment
+  // view is an input, not a promise: a search can recommend an aggregated
+  // deployment after also evaluating P/D, or stop before reaching it.
+  const modes = sweep.modesSearched?.length
+    ? ` · searched ${sweep.modesSearched
+        .map(mode => (mode === 'disagg' ? 'disaggregated' : 'aggregated'))
+        .join(' and ')}`
+    : ''
+  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}${modes}`
 }

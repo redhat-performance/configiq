@@ -103,8 +103,8 @@ describe('page link contracts', () => {
   });
 
   it('never puts a simulator in a KV cache link', () => {
-    // The calculator is AISimulate-only by contract, so a simulator parameter
-    // would imply a choice the page does not offer.
+    // The calculator has no simulator choice, so a simulator parameter would
+    // imply a choice the page does not offer.
     const built = kvCacheLink.build({
       model: 'Qwen/Qwen3-32B',
       system: 'h200_sxm',
@@ -166,6 +166,23 @@ describe('page link contracts', () => {
 
     expect(parsed.values).toEqual({ memFractionValue: 0.5 });
     expect(parsed.warnings).toEqual(['Ignored "memFractionKind": the value was not valid.']);
+  });
+
+  it('round-trips the recommend serving mode with its pool limits and fabric', () => {
+    const values: RecommendLinkValues = {
+      model: 'Qwen/Qwen3-32B',
+      servingMode: 'disagg',
+      prefillMaxSeqLen: 8192,
+      decodeMaxSeqLen: 4096,
+      fabric: 'ib-400g',
+    };
+
+    // The mode is declared before the fields that only exist in a
+    // disaggregated view, so applying the link settles it before they apply.
+    expect(recommendLink.parse(query(recommendLink.build(values)))).toEqual({
+      values,
+      warnings: [],
+    });
   });
 
   it('round-trips both pool parallelism sets for the KV cache calculator', () => {

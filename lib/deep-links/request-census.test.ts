@@ -81,6 +81,7 @@ function maximalRecommendRequest(): RecommendRequest {
     model_config: { hidden_size: 4096 },
     simulator: 'aisimulate',
     fabric: 'ib-400g',
+    mode: 'disagg',
     objective: 'min_gpus',
     // `enforce` with no request latency keeps the default TPOT branch reachable;
     // the payload below sets both, so every branch key is present once.
@@ -174,6 +175,7 @@ const recommendCensus: RequestCensus = {
     target_concurrency: { from: ['concurrency'] },
     simulator: { from: ['simulator'] },
     fabric: { from: ['fabric'] },
+    mode: { from: ['servingMode'] },
     // The goal decides both the objective and whether latency constrains it.
     objective: { from: ['goal'] },
     sla_mode: { from: ['goal'] },

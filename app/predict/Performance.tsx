@@ -197,8 +197,8 @@ export default function Performance() {
   // Fail open when the service reports no per-version support: the API still
   // refuses an unmodeled topology with a 422 that names the alternatives.
   const disaggSupported = engineSupport?.disaggregated ?? true;
-  // The simulator reports whether a P/D run needs a fabric; AISimulate's P/D
-  // search takes none, so the fabric control stays hidden there.
+  // The catalog reports whether a P/D run needs a fabric, so the control
+  // follows that capability instead of assuming a topology.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
   const { pairs: testedPairs, validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels();
 
@@ -857,8 +857,8 @@ export default function Performance() {
           simulator,
           ...(servingMode === 'disagg' && fabricRequired && selectedNetworkFabric ? { fabric: selectedNetworkFabric } : {}),
           ...(effectiveContextLimit != null ? { max_seq_len: effectiveContextLimit } : {}),
-          ...(prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-          ...(decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+          ...(servingMode === 'disagg' && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+          ...(servingMode === 'disagg' && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
           ...(gpuMemoryUtilization != null ? { gpu_memory_utilization: gpuMemoryUtilization } : {}),
           ...(vllmOverride && vllmManualMaxNumSeqs != null ? { max_num_seqs: vllmManualMaxNumSeqs } : {}),
           ...(vllmOverride && vllmManualChunkedPrefill != null ? { enable_chunked_prefill: vllmManualChunkedPrefill } : {}),
@@ -1191,8 +1191,8 @@ export default function Performance() {
       pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
       vram_gb: currentGpuVramGb,
       ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
-      ...(prefillMaxSeqLen != null && { prefill_max_seq_len: prefillMaxSeqLen }),
-      ...(decodeMaxSeqLen != null && { decode_max_seq_len: decodeMaxSeqLen }),
+      ...(servingMode === 'disagg' && prefillMaxSeqLen != null && { prefill_max_seq_len: prefillMaxSeqLen }),
+      ...(servingMode === 'disagg' && decodeMaxSeqLen != null && { decode_max_seq_len: decodeMaxSeqLen }),
       ...(gpuMemoryUtilization != null && { gpu_memory_utilization: gpuMemoryUtilization }),
       ...(vllmOverride && vllmManualMaxNumSeqs != null && { max_num_seqs: vllmManualMaxNumSeqs }),
       ...(vllmOverride && vllmManualChunkedPrefill != null && { enable_chunked_prefill: vllmManualChunkedPrefill }),
@@ -1374,6 +1374,13 @@ export default function Performance() {
 
     return [
     {
+      id: 'serving-mode', title: 'Serving mode',
+      summary: [
+        { k: 'mode', v: servingMode === 'disagg' ? 'disaggregated' : 'aggregated' },
+      ],
+      fields: [],
+    },
+    {
       id: 'workload', title: 'Workload',
       summary: [
         { k: 'ISL', v: `${testISL}` },
@@ -1420,8 +1427,10 @@ export default function Performance() {
       id: 'context-window', title: 'Context window sizing',
       summary: [
         { k: 'max_seq_len', v: maxSeqLen != null ? `${maxSeqLen}` : 'auto' },
-        { k: 'prefill_max_seq_len', v: prefillMaxSeqLen != null ? `${prefillMaxSeqLen}` : 'auto' },
-        { k: 'decode_max_seq_len', v: decodeMaxSeqLen != null ? `${decodeMaxSeqLen}` : 'auto' },
+        ...(servingMode === 'disagg' ? [
+          { k: 'prefill_max_seq_len', v: prefillMaxSeqLen != null ? `${prefillMaxSeqLen}` : 'auto' },
+          { k: 'decode_max_seq_len', v: decodeMaxSeqLen != null ? `${decodeMaxSeqLen}` : 'auto' },
+        ] : []),
       ],
       fields: [
         {
@@ -1433,24 +1442,26 @@ export default function Performance() {
           invalid: invalidMaxSeqLen,
           onChange: (val: string) => handleSequenceLengthChange(val, setMaxSeqLenInput, setMaxSeqLen),
         },
-        {
-          label: 'Prefill length (tokens)',
-          value: prefillMaxSeqLenInput,
-          term: 'prefillMaxSeqLen',
-          type: 'number' as const,
-          placeholder: 'Optional override',
-          invalid: invalidPrefillMaxSeqLen,
-          onChange: (val: string) => handleSequenceLengthChange(val, setPrefillMaxSeqLenInput, setPrefillMaxSeqLen),
-        },
-        {
-          label: 'Decode length (tokens)',
-          value: decodeMaxSeqLenInput,
-          term: 'decodeMaxSeqLen',
-          type: 'number' as const,
-          placeholder: 'Optional override',
-          invalid: invalidDecodeMaxSeqLen,
-          onChange: (val: string) => handleSequenceLengthChange(val, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
-        },
+        ...(servingMode === 'disagg' ? [
+          {
+            label: 'Prefill length (tokens)',
+            value: prefillMaxSeqLenInput,
+            term: 'prefillMaxSeqLen',
+            type: 'number' as const,
+            placeholder: 'Optional override',
+            invalid: invalidPrefillMaxSeqLen,
+            onChange: (val: string) => handleSequenceLengthChange(val, setPrefillMaxSeqLenInput, setPrefillMaxSeqLen),
+          },
+          {
+            label: 'Decode length (tokens)',
+            value: decodeMaxSeqLenInput,
+            term: 'decodeMaxSeqLen',
+            type: 'number' as const,
+            placeholder: 'Optional override',
+            invalid: invalidDecodeMaxSeqLen,
+            onChange: (val: string) => handleSequenceLengthChange(val, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
+          },
+        ] : []),
       ],
     },
     {
@@ -1782,7 +1793,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || (servingMode === 'disagg' && !disaggSupported) || (fabricRequired && servingMode === 'disagg' && !selectedNetworkFabric)}
+            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -2553,7 +2564,7 @@ export default function Performance() {
           <div className={styles.card} style={{ padding: 20, marginBottom: 16 }}>
           {(() => {
             const allSections = buildAccordionSections();
-            const alwaysOpenIds = new Set(['workload', 'context-window', 'memory', 'parallel']);
+            const alwaysOpenIds = new Set(['serving-mode', 'workload', 'context-window', 'memory', 'parallel']);
             const openSections = allSections.filter(s => alwaysOpenIds.has(s.id));
             const accordionSections = allSections.filter(s => !alwaysOpenIds.has(s.id));
 
@@ -2628,17 +2639,8 @@ export default function Performance() {
                   <div key={sec.id}>
                     <div className={styles.sectionLabel} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', ...(idx === 0 ? { marginTop: 4 } : {}) }}>
                       {sec.title}
-                      {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
-                      {'hasOverride' in sec && sec.hasOverride && (
-                        <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()} style={{ fontSize: '13px' }}>
-                        {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
-                        </Button>
-                      )}
-                    </div>
-                    {sec.id === 'parallel' && (
-                      <>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '8px', marginTop: '4px' }}>
-                          <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>Serving mode:</span>
+                      {sec.id === 'serving-mode' && (
+                        <>
                           <Button
                             className="gc-preset-button"
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
@@ -2665,43 +2667,51 @@ export default function Performance() {
                             Disaggregated
                           </Button>
                           {servingMode === 'disagg' && (
-                            <span style={{ fontSize: '12px', color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
+                            <span style={{ fontSize: '12px', fontWeight: 400, color: '#54585c' }}>Prefill and decode run on separate GPU pools.</span>
                           )}
-                        </div>
-                        {!disaggSupported && (
-                          <div style={{ fontSize: 13, color: '#3c3f42', marginBottom: 8 }}>
-                            The selected simulator does not model prefill/decode disaggregation for vLLM {backendVersion || engineBackend?.defaultVersion}. Choose another version, or use aggregated serving.
-                          </div>
-                        )}
-                        {servingMode === 'disagg' && fabricRequired && (
-                          <div style={{ marginBottom: 12, maxWidth: 360 }}>
-                            <label className={styles.accFieldLabel} htmlFor="predict-network-fabric">Inter-node fabric</label>
-                            <FormSelect
-                              id="predict-network-fabric"
-                              value={selectedNetworkFabric}
-                              aria-label="Inter-node fabric"
-                              isDisabled={availableNetworks.length === 0}
-                              onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
-                            >
-                              <FormSelectOption value="" label="Select a fabric" isDisabled />
-                              {availableNetworks.map(network => (
-                                <FormSelectOption key={network} value={network} label={network} />
-                              ))}
-                            </FormSelect>
-                            <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-                              {availableNetworks.length === 0
-                                ? 'No network fabrics were returned by the simulator catalog.'
-                                : networkFabric === null && defaultNetworkFabric
-                                  ? `${defaultNetworkFabric} is the simulator's default; change it if your cluster uses another fabric.`
-                                  : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
-                      {(sec.fields as AccordionField[]).map(renderField)}
+                          {!disaggSupported && (
+                            <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                              The selected simulator does not model prefill/decode disaggregation for vLLM {backendVersion || engineBackend?.defaultVersion}.
+                            </span>
+                          )}
+                        </>
+                      )}
+                      {'badge' in sec && sec.badge ? <Label isCompact color={sec.badgeColor as any}>{sec.badge}</Label> : null}
+                      {'hasOverride' in sec && sec.hasOverride && (
+                        <Button variant="link" isInline onClick={() => sec.onOverrideToggle?.()} style={{ fontSize: '13px' }}>
+                        {sec.isOverridden ? '↺ Reset to auto' : '✎ Override'}
+                        </Button>
+                      )}
                     </div>
+                    {sec.id === 'parallel' && servingMode === 'disagg' && fabricRequired && (
+                      <div style={{ marginBottom: 12, maxWidth: 360 }}>
+                        <label className={styles.accFieldLabel} htmlFor="predict-network-fabric">Inter-node fabric</label>
+                        <FormSelect
+                          id="predict-network-fabric"
+                          value={selectedNetworkFabric}
+                          aria-label="Inter-node fabric"
+                          isDisabled={availableNetworks.length === 0}
+                          onChange={(_, value) => { setNetworkFabric(value); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
+                        >
+                          <FormSelectOption value="" label="Select a fabric" isDisabled />
+                          {availableNetworks.map(network => (
+                            <FormSelectOption key={network} value={network} label={network} />
+                          ))}
+                        </FormSelect>
+                        <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                          {availableNetworks.length === 0
+                            ? 'No network fabrics were returned by the simulator catalog.'
+                            : networkFabric === null && defaultNetworkFabric
+                              ? `${defaultNetworkFabric} is the simulator's default; change it if your cluster uses another fabric.`
+                              : 'The simulator uses this fabric to price prefill-to-decode KV transfer.'}
+                        </div>
+                      </div>
+                    )}
+                    {sec.fields.length > 0 && (
+                      <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
+                        {(sec.fields as AccordionField[]).map(renderField)}
+                      </div>
+                    )}
                   </div>
                 ))}
 

@@ -8,7 +8,7 @@ import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from aisimulate_core.sdk.perf_database import load_system_spec
 
@@ -168,6 +168,10 @@ class RecommendInput:
     prefill_max_seq_len: int | None = None
     decode_max_seq_len: int | None = None
     fabric: str | None = None
+    # 'agg' searches aggregate candidates only. None and 'disagg' keep the
+    # fabric-gated search. Pareto does not read this field, and the request
+    # contract rejects a mode with it.
+    mode: Literal["agg", "disagg"] | None = None
     database_mode: str = "HYBRID"
     inclusive_tpot: bool = False
     model_config_provided: bool = False
@@ -766,6 +770,21 @@ def _recommend_disagg_scenario(
     )
 
 
+def _searched_modes(evaluated: list[_RecommendCandidate]) -> list[str] | None:
+    """Deployment modes the enumerated grid reached, in contract order.
+
+    Derived from the candidates the grid evaluated rather than from the grid
+    the request asked for, so a budget that stopped before the P/D half reports
+    what it reached. A candidate that ran and failed still counts: the grid
+    reached that deployment, and its failure is reported per candidate. None
+    when nothing was evaluated, which lets a client tell "no search happened"
+    from "one mode was searched".
+    """
+    covered = {candidate.mode for candidate in evaluated}
+    modes = [mode for mode in ("agg", "disagg") if mode in covered]
+    return modes or None
+
+
 def _search_summary(
     request: RecommendInput,
     candidates: list[_RecommendCandidate],
@@ -778,7 +797,8 @@ def _search_summary(
 ) -> dict[str, Any]:
     return {
         "strategy": "aggregate_tp_and_pd_grid" if include_disagg else "tensor_parallel_only",
-        "modes_searched": ["agg", "disagg"] if include_disagg else ["agg"],
+        # What the ledger covered, not what the grid intended to cover.
+        "modes_searched": _searched_modes(evaluated),
         "candidate_gpus": sorted({candidate.total_gpus for candidate in candidates}),
         "evaluated_gpus": sorted({candidate.total_gpus for candidate in evaluated}),
         "max_candidates": len(candidates),
@@ -1366,10 +1386,13 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     resolved = _resolve_request(
         request.model_path, request.system, request.backend, request.backend_version
     )
-    include_disagg = bool(request.fabric)
+    # Resolve a named fabric even though a Pareto sweep is the one path that
+    # always searches P/D: a caller's topology assumption must be valid before
+    # the sweep reports a frontier built from it.
+    fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
+    include_disagg = fabric is not None
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg and fabric is not None
     )
@@ -1598,12 +1621,17 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     if request.database_mode != "HYBRID":
         raise BlisUnsupportedRequest("BLIS does not accept the AISimulate database_mode option")
     resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
+    # A named fabric is a topology assumption, so resolve it before deciding
+    # whether this run searches P/D: an unknown fabric must fail rather than be
+    # ignored because the search happens to be aggregate-only.
+    fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
     # Demand runs replay open-loop traffic and are aggregate-only: the adapter
     # cannot attach a P/D transfer fabric to a rate-driven run it did not search.
-    include_disagg = bool(request.fabric) and not demand
+    # An aggregated serving mode asks for that same aggregate-only search even
+    # when a fabric is present. Pareto does not use this path.
+    include_disagg = fabric is not None and not demand and request.mode != "agg"
     if include_disagg:
         _require_disaggregation(resolved)
-    fabric = resolved.catalog.resolve_network(request.fabric) if include_disagg and request.fabric else None
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg
     )
@@ -1789,6 +1817,10 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 common_config["warnings"].append(
                     "BLIS throughput-demand sizing is aggregate-only; P/D candidates were not searched."
                 )
+            elif request.mode == "agg":
+                common_config["warnings"].append(
+                    "Aggregated serving was requested; BLIS P/D candidates were not searched."
+                )
             elif not include_disagg:
                 common_config["warnings"].append(
                     "No network fabric was selected; BLIS P/D candidates were not searched."
@@ -1904,6 +1936,16 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         config["mode"],
     ))
     feasible = feasible[:request.top_n]
+    if include_disagg and not any(candidate.mode == "disagg" for candidate in evaluated):
+        # A fabric was named, so the grid intended to compare P/D, but it
+        # stopped (a full top-N of aggregate shapes, or a spent budget) before
+        # reaching one. Say so rather than leaving an aggregate-only answer
+        # unexplained.
+        for config in feasible:
+            config["warnings"].append(
+                "BLIS stopped before evaluating a P/D candidate; the search covered "
+                "aggregated deployments only."
+            )
     return BlisRecommendation(
         configs=feasible,
         provenance=_provenance(resolved, request.model_path, request.system),

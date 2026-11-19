@@ -251,6 +251,24 @@ class TestRecommend:
 
         assert config.optimization.constraints.max_candidate_gpus == 4096
 
+    def test_aggregated_mode_searches_only_aggregated_candidates(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
+
+        assert config.engine.mode.choices == ["aggregated"]
+        assert "prefill" not in config.engine.workers
+        assert "decode" not in config.engine.workers
+
+    def test_pareto_rejects_a_serving_mode(self):
+        # A Pareto sweep enumerates both deployment modes, so a mode would state
+        # a narrowing the sweep does not apply. Reject it rather than ignore it.
+        with pytest.raises(ValueError, match="does not accept mode"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_PARETO_BODY, "mode": "agg"}
+            )
+
     def test_one_gpu_window_avoids_disaggregated_trials(self):
         body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1}
         request = app_module.RecommendRequest.model_validate(body)
@@ -811,6 +829,26 @@ class TestParetoAutoWindow:
         assert sweep.configured_max_gpus == 1024
         assert sweep.effective_max_gpus == 1024
 
+    def test_report_follows_the_modes_the_sweep_evaluated(self):
+        request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
+        result = types.SimpleNamespace(
+            counts=types.SimpleNamespace(evaluated=4, feasible=2, timed_out=0),
+            provenance=types.SimpleNamespace(run_id="run-1"),
+            candidates=[
+                types.SimpleNamespace(
+                    provenance=types.SimpleNamespace(
+                        topology={"deployment_mode": "agg", "tp": 2}
+                    )
+                )
+            ],
+        )
+
+        sweep = app_module._sweep_meta(result, request, window=(4, 16))
+
+        # Both modes were configured, but the ledger shows the sweep only
+        # evaluated aggregate candidates.
+        assert sweep.modes_searched == ["agg"]
+
     def test_window_searches_both_deployment_modes(self):
         request = app_module.RecommendRequest.model_validate(VALID_PARETO_BODY)
         config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
@@ -1005,6 +1043,91 @@ class TestRecommendDemand:
         assert e2e_sla.get("ttft_ms") is None
 
 
+class TestRecommendServingMode:
+    """A serving mode must name a search the request can actually run."""
+
+    def test_aggregated_mode_rejects_per_pool_context_limits(self):
+        body = {
+            **VALID_RECOMMEND_BODY,
+            "mode": "agg",
+            "prefill_max_seq_len": 8192,
+            "decode_max_seq_len": 4096,
+        }
+        with pytest.raises(ValueError, match="prefill_max_seq_len"):
+            app_module.RecommendRequest.model_validate(body)
+
+    def test_capacity_rejects_disaggregated_serving(self):
+        # Capacity sizes aggregated deployments and reports P/D options
+        # separately; it does not search a prefill/decode topology.
+        with pytest.raises(ValueError, match="mode='disagg'"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_CAPACITY_BODY, "mode": "disagg"}
+            )
+
+    def test_capacity_accepts_an_aggregated_mode(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "mode": "agg"}
+        )
+
+        assert request.mode == "agg"
+
+    def test_disagg_without_a_fabric_is_rejected_where_pd_needs_one(self):
+        # BLIS models P/D through a fabric, so an explicit null names a topology
+        # it cannot run. The rule reads the simulator's capability, not its ID.
+        with pytest.raises(ValueError, match="through a named fabric"):
+            app_module.RecommendRequest.model_validate(
+                {
+                    **VALID_RECOMMEND_BODY,
+                    "simulator": "blis",
+                    "mode": "disagg",
+                    "fabric": None,
+                }
+            )
+
+    def test_disagg_without_a_fabric_is_accepted_where_it_needs_none(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "simulator": "aisimulate", "mode": "disagg"}
+        )
+
+        assert request.fabric is None
+
+    def test_the_search_modes_follow_the_mode_and_the_window(self):
+        request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+
+        # An omitted mode keeps the pre-existing search, which includes P/D when
+        # the window has room for two pools.
+        assert app_module._aisimulate_search_modes(request, (4, 16)) == ["agg", "disagg"]
+        # A one-GPU window cannot hold a P/D deployment.
+        assert app_module._aisimulate_search_modes(request, (1, 1)) == ["agg"]
+
+        aggregated = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+        assert app_module._aisimulate_search_modes(aggregated, (4, 16)) == ["agg"]
+
+    def test_a_merged_ladder_reports_every_mode_it_covered(self):
+        assert app_module._merge_search_modes(["agg"], ["agg", "disagg"]) == [
+            "agg",
+            "disagg",
+        ]
+        assert app_module._merge_search_modes([], ["agg"]) == ["agg"]
+
+    def test_an_unreported_search_mode_is_absent_rather_than_guessed(self):
+        assert app_module._reported_search_modes(None) is None
+        assert app_module._reported_search_modes([]) is None
+        assert app_module._reported_search_modes(["aggregated"]) is None
+        assert app_module._reported_search_modes(["agg", "disagg"]) == ["agg", "disagg"]
+
+    def test_omitted_fabric_takes_the_catalog_default_before_the_mode_check(self):
+        # Omission is not "no fabric": the simulator's default names the
+        # topology, so a disagg request that leaves the field out still runs.
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "simulator": "blis", "mode": "disagg"}
+        )
+
+        assert request.fabric == "roce-200g"
+
+
 class TestSelectDemandRecord:
     def test_prefers_fewest_gpus_that_sustains_the_rate(self):
         small = MockLedgerCandidate(
@@ -1154,6 +1277,90 @@ class TestRunDemandWindows:
         return app_module.RecommendRequest.model_validate(
             {**VALID_DEMAND_BODY, **overrides}
         )
+
+    def _ledger(self, *modes: str):
+        """A window result whose ledger shows one candidate per evaluated mode."""
+        return MockLedgerRecommendationResult(
+            candidates=[
+                MockLedgerCandidate(
+                    candidate_id=f"fits-{mode}",
+                    used_gpus=8,
+                    metrics=_demand_metrics(12.0),
+                    provenance=MockLedgerProvenance(
+                        topology={
+                            "deployment_mode": mode,
+                            "tp": 2,
+                            "pp": 1,
+                            "attention_dp": 1,
+                            "replicas": 1,
+                        }
+                    ),
+                )
+                for mode in modes
+            ],
+            counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+            provenance=MockRecommendationProvenance(run_id="run-demand"),
+        )
+
+    def test_reports_the_modes_the_ladder_evaluated(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg", "disagg"),
+        )
+
+        _records, sweep = app_module._run_demand_windows(self._request())
+
+        # Demand keeps the simulator's own search when the page sends no mode,
+        # so the response says which deployments were explored.
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_does_not_report_a_mode_the_ledger_never_evaluated(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        # The window is configured for both modes, but the SDK skipped P/D here
+        # and evaluated aggregated candidates only, so the response must not
+        # claim the P/D half ran.
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg"),
+        )
+
+        _records, sweep = app_module._run_demand_windows(self._request())
+
+        assert sweep.modes_searched == ["agg"]
+
+    def test_an_aggregated_demand_search_reports_one_mode(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._ledger("agg"),
+        )
+
+        _records, sweep = app_module._run_demand_windows(self._request(mode="agg"))
+
+        assert sweep.modes_searched == ["agg"]
+
+    def test_a_ladder_that_search_nothing_reports_no_modes(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        def no_fit(request, **kwargs):
+            raise RuntimeError("No configuration meets the specified requirements.")
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", no_fit)
+        # `_is_no_viable_config` only skips a window; every window failing means
+        # the ladder searched no deployment mode at all.
+        monkeypatch.setattr(app_module, "_is_no_viable_config", lambda exc: True)
+
+        records, sweep = app_module._run_demand_windows(self._request())
+
+        assert records == []
+        assert sweep.modes_searched is None
 
     def test_stops_at_the_first_window_that_sustains_the_rate(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -1337,10 +1544,23 @@ class TestRunMinGpusWindows:
     def _request(self):
         return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
 
-    def _result(self, used_gpus: int, *, evaluated: int = 2):
+    def _result(self, used_gpus: int, *, evaluated: int = 2, modes: tuple[str, ...] = ("agg",)):
         return MockLedgerRecommendationResult(
             candidates=[
-                MockLedgerCandidate(candidate_id=f"g{used_gpus}", used_gpus=used_gpus)
+                MockLedgerCandidate(
+                    candidate_id=f"g{used_gpus}-{mode}",
+                    used_gpus=used_gpus,
+                    provenance=MockLedgerProvenance(
+                        topology={
+                            "deployment_mode": mode,
+                            "tp": 2,
+                            "pp": 1,
+                            "attention_dp": 1,
+                            "replicas": 1,
+                        }
+                    ),
+                )
+                for mode in modes
             ],
             counts=MockRecommendationCounts(
                 evaluated=evaluated, feasible=1, timed_out=0
@@ -1369,6 +1589,78 @@ class TestRunMinGpusWindows:
         assert sweep.effective_max_gpus == 32
         assert sweep.run_id == "run-min"
         assert sweep.evaluated == 2
+
+    def test_the_configured_search_is_the_one_the_ledger_reports(self, monkeypatch):
+        # The configured modes and the report share one rule, so this pins them
+        # together: if the config stops asking for P/D while the sweep still
+        # reports it, the two disagree about what was searched.
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        configs = []
+
+        def fake(request, *, window=None, **kwargs):
+            configs.append(
+                app_module._aisimulate_recommendation_config(request, window=window)
+            )
+            return self._result(8, modes=("agg", "disagg"))
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert configs
+        assert configs[0].engine.mode.choices == ["aggregated", "disaggregated"]
+        # The SDK model does not support `in` (it iterates field/value pairs),
+        # so read the dumped fields: a both-modes window must configure both
+        # pools, which is what the reported modes claim it searched.
+        workers = configs[0].engine.workers.model_dump()
+        assert workers["prefill"] is not None
+        assert workers["decode"] is not None
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_reports_both_modes_for_the_wide_ladder(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8, modes=("agg", "disagg")),
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_does_not_report_a_mode_the_ledger_never_evaluated(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        # The window is configured for both modes, but the SDK skipped P/D for
+        # it, so only the evaluated mode is reported.
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8, modes=("agg",)),
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.modes_searched == ["agg"]
+
+    def test_reports_one_mode_for_an_aggregated_request(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(request)
+
+        assert sweep.modes_searched == ["agg"]
 
     def test_passes_the_window_parallelism_with_its_trial_budget(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -2266,6 +2558,68 @@ class TestRunCapacityRecommendation:
         assert options[0].role == "minimum"
         assert options[0].config is config
 
+    def test_capacity_reports_one_mode_without_a_pd_option(self, monkeypatch):
+        _config, _capacity, sweep, _options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=100_000)],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=8,
+        )
+        # Nothing disaggregated was simulated, so the search covered one mode.
+        assert sweep.modes_searched == ["agg"]
+
+    def test_capacity_reports_both_modes_when_it_simulated_a_pd_option(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+        )
+        # A returned P/D comparison option is evidence that a disaggregated
+        # deployment was simulated, so the search covered both modes.
+        assert any(option.role == "disaggregated" for option in options)
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_capacity_reports_pd_coverage_when_truncation_hides_the_option(self, monkeypatch):
+        shapes = [_capacity_shape(tp=2, per_rank_tokens=100_000)]
+        prefill = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+        )
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=2176,
+        )
+        disagg = app_module._DisaggCapacityCandidate(prefill=prefill, decode=decode)
+        _config, _capacity, sweep, options = self._run(
+            monkeypatch,
+            shapes,
+            disagg=[disagg],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=16,
+            top_n=1,
+        )
+        # The top-N cut keeps only the aggregate minimum, but the disaggregated
+        # enumeration still ran, so the search covered both modes.
+        assert options
+        assert all(option.role != "disaggregated" for option in options)
+        assert sweep.modes_searched == ["agg", "disagg"]
+
     def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
         _config, capacity, _sweep, options = self._run(
             monkeypatch,
@@ -2576,6 +2930,9 @@ class TestBackendObjectives:
             "concurrency_capacity",
         ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
+        # P/D runs in BLIS are priced through a named fabric, so a client knows
+        # it must collect one before offering a prefill/decode search.
+        assert data["backends"][0]["disaggregation_requires_fabric"] is True
 
 
 # ─── /memory tests ───────────────────────────────────────────────────────────

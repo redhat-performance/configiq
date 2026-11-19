@@ -22,6 +22,8 @@ export interface SubmittedRecommendParams {
   request_latency?: number
   prefix?: number
   fabric?: string | null
+  /** Serving mode sent on a sizing request. A Pareto sweep omits it. */
+  mode?: 'agg' | 'disagg'
   /** The submitted action was a Pareto sweep rather than a sizing run. */
   pareto?: boolean
 }
@@ -44,21 +46,36 @@ export interface CurrentRecommendInputs {
   decodeMaxSeqLen: number | null
   /** `undefined` means fabric is not required for this goal; `null` means omitted on purpose. */
   effectiveFabric: string | null | undefined
+  /** Serving mode the next Calculate would send. Pareto omits the field. */
+  servingMode: 'agg' | 'disagg'
 }
 
 /**
- * Mirror `handleCalculate`'s fabric decision. An aggregate-only goal omits the
- * fabric even when the selected backend normally requires one, so the dirty
- * check must use `undefined` for that case rather than a resolved fabric name.
+ * The `fabric` field a request submits, for both Calculate and a Pareto sweep.
+ *
+ * This is the single place the page decides between the three meanings the
+ * contract gives the field:
+ *
+ * - `undefined` — omit it. An aggregate-only goal makes no topology claim, and
+ *   a backend that models no fabric has nothing to name.
+ * - `null` — ask the service for aggregate candidates only. A backend that
+ *   cannot model prefill/decode, or an explicitly aggregated view, cannot use a
+ *   fabric.
+ * - a name — the topology the search should model.
+ *
+ * Both actions read the same deployment view, so the control, the payload, and
+ * the copied link cannot describe different topologies.
  */
-export function resolveEffectiveFabric(
+export function resolveSearchFabric(
   fabricRequired: boolean,
   aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
+  servingMode: 'agg' | 'disagg',
 ): string | null | undefined {
   if (!fabricRequired || aggregateOnlyGoal) return undefined
-  return disaggSupported ? selectedFabric || null : null
+  if (!disaggSupported || servingMode === 'agg') return null
+  return selectedFabric || null
 }
 
 /**
@@ -86,6 +103,9 @@ export function submittedInputsMatch(
   if ((params.prefill_max_seq_len ?? null) !== inputs.prefillMaxSeqLen) return false
   if ((params.decode_max_seq_len ?? null) !== inputs.decodeMaxSeqLen) return false
   if (params.fabric !== inputs.effectiveFabric) return false
+  // A sizing request carries the selected mode. A Pareto sweep omits it and
+  // keeps searching both deployments, so a mode change does not stale that result.
+  if (params.mode != null && params.mode !== inputs.servingMode) return false
 
   if (params.pareto) {
     // A Pareto sweep sends the workload, not a load target: the service drives

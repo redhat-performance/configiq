@@ -93,6 +93,12 @@ export interface FrontierSweep {
   seed: number | null
   windowMinGpus: number | null
   windowMaxGpus: number | null
+  /**
+   * Deployment modes the sweep covered, as the service reported them. Null
+   * when the service reported no search-mode facts; the frontier must not
+   * assume both modes were searched.
+   */
+  modesSearched: ('agg' | 'disagg')[] | null
 }
 
 /** State of the Pareto companion sweep that runs alongside a sizing request. */

@@ -321,6 +321,48 @@ describe('RecommendRequestSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('rejects an aggregated mode that carries per-pool context limits', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      mode: 'agg',
+      prefill_max_seq_len: 8192,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts an explicit null serving mode, the shape the contract documents', () => {
+    // The OpenAPI field is `nullable` as well as optional, so a caller copying
+    // the contract must not be rejected for "not chosen".
+    const result = RecommendRequestSchema.safeParse({ ...VALID_REQUEST, mode: null })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects a serving mode on a pareto sweep', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+      mode: 'agg',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects disaggregated serving for a capacity run', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    // A valid capacity request, so the mode guard — not a missing field — is
+    // what decides this: the aggregated form must pass and the P/D form fail.
+    const capacity = {
+      ...rest,
+      objective: 'concurrency_capacity' as const,
+      sla_mode: 'none' as const,
+      target_concurrency: 64,
+    }
+
+    expect(RecommendRequestSchema.safeParse({ ...capacity, mode: 'agg' }).success).toBe(true)
+    expect(RecommendRequestSchema.safeParse({ ...capacity, mode: 'disagg' }).success).toBe(false)
+  })
+
   it('rejects P/D transfer bandwidth outside a pareto sweep', () => {
     const minGpus = RecommendRequestSchema.safeParse({
       ...VALID_REQUEST,
@@ -448,6 +490,18 @@ describe('callRecommend', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
+  })
+
+  it('does not forward a null serving mode upstream', async () => {
+    // `null` and "omitted" both mean the user chose no mode; only an explicit
+    // mode may narrow the service's own search.
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+
+    await callRecommend({ ...VALID_REQUEST, mode: null })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    const body = JSON.parse(String(init?.body))
+    expect(body.mode).toBeUndefined()
   })
 
   it('returns a normalized response on success', async () => {
@@ -686,6 +740,16 @@ describe('callRecommend', () => {
     expect(sentBody.simulator).toBe('blis')
     expect(sentBody.fabric).toBe('ib-400g')
     expect(sentBody.search_budget_seconds).toBe(40)
+  })
+
+  it('forwards an aggregated serving mode', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    await callRecommend({ ...VALID_REQUEST, mode: 'agg' })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody.mode).toBe('agg')
   })
 
   it('preserves an explicit aggregate-only fabric opt-out', async () => {
@@ -1079,6 +1143,7 @@ describe('callRecommend', () => {
         evaluated: 4,
         budget_exhausted: false,
         strict_sla: false,
+        modes_searched: ['agg', 'disagg'],
       },
     }))
 
@@ -1099,7 +1164,13 @@ describe('callRecommend', () => {
       evaluatedConfigurations: 4,
       simulator: 'aisimulate',
     })
-    expect(result.sweep).toMatchObject({ evaluated: 4, strictSla: false, budgetExhausted: false })
+    expect(result.sweep).toMatchObject({
+      evaluated: 4,
+      strictSla: false,
+      budgetExhausted: false,
+      // The recommendation is one mode, but the search covered both.
+      modesSearched: ['agg', 'disagg'],
+    })
   })
 
   it('reports an unmet demand target as a completed 200 result', async () => {

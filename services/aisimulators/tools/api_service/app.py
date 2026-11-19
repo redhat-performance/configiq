@@ -154,6 +154,11 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         # /memory is an AISimulate capability; a simulator that does not model
         # a KV-cache breakdown must refuse the request, not borrow the answer.
         "memory": True,
+        # AISimulate's P/D search takes no inter-node fabric, so a caller needs
+        # no topology input before asking for one. This same flag tells a client
+        # whether it must collect a fabric and tells request validation whether
+        # "disagg" names a search this simulator can run without one.
+        "disaggregation_requires_fabric": False,
     },
     {
         "id": "blis",
@@ -165,6 +170,10 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "recommend_search": "single",
         "networks": True,
         "memory": False,
+        # A P/D run transfers KV between pools, and BLIS prices that transfer
+        # through a named fabric, so a P/D search without one has no topology to
+        # model.
+        "disaggregation_requires_fabric": True,
         # The fabric a P/D request uses when the caller omits one is the
         # catalog's default, named here so /networks can report it as the
         # user-visible assumption rather than the UI inventing a value.
@@ -261,6 +270,17 @@ class RecommendRequest(BaseModel):
         default=None,
         min_length=1,
         description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.",
+    )
+    mode: Literal["agg", "disagg"] | None = Field(
+        default=None,
+        description=(
+            "Serving mode for a sizing search. 'agg' searches aggregated candidates only. "
+            "Omit it, or send 'disagg', to keep the simulator's existing deployment search, "
+            "including prefill/decode candidates when that search models them. A simulator "
+            "that models P/D only through a fabric rejects 'disagg' when the request names "
+            "no fabric. objective='pareto' chooses its deployments from the fabric and "
+            "does not accept this field."
+        ),
     )
     objective: Literal["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"] = Field(
         default="min_gpus",
@@ -381,10 +401,58 @@ class RecommendRequest(BaseModel):
         if self.kv_transfer_bandwidth_gb_per_second is not None and self.objective != "pareto":
             raise ValueError("kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'.")
 
-        if self.simulator == "aisimulate" and self.fabric is not None:
-            raise ValueError("AISimulate does not currently consume a network-fabric selection")
-        if self.simulator == "blis" and "fabric" not in self.model_fields_set:
-            self.fabric = _simulator_entry("blis").get("default_network")
+        # A serving mode states which deployments a search covers. Aggregated
+        # sizing has no per-pool context limits to apply, and a Pareto sweep
+        # chooses its topologies from the fabric rather than a mode, so neither
+        # can honour one.
+        if self.mode == "agg" and (
+            self.prefill_max_seq_len is not None or self.decode_max_seq_len is not None
+        ):
+            raise ValueError(
+                "mode='agg' does not accept prefill_max_seq_len or decode_max_seq_len; "
+                "omit them or the mode."
+            )
+        if self.mode is not None and self.objective == "pareto":
+            raise ValueError(
+                "objective='pareto' chooses its deployments from the fabric and does not "
+                "accept mode; omit it."
+            )
+        # Capacity sizing reports aggregated configurations plus separate
+        # disaggregated comparison options; it never searches a P/D topology.
+        if self.mode == "disagg" and self.objective == "concurrency_capacity":
+            raise ValueError(
+                "objective='concurrency_capacity' sizes aggregated deployments and does "
+                "not accept mode='disagg'; omit mode or send mode='agg'."
+            )
+
+        # Capabilities come from the same registry that answers /simulators and
+        # /backends, so request validation cannot drift from what the service
+        # advertises. The route validates the registry before dispatch, so an
+        # unknown simulator has no capabilities to check here.
+        entry = next((item for item in _SIMULATORS if item["id"] == self.simulator), None)
+        if entry is None:
+            return self
+        # A simulator that does not model fabrics refuses a selection rather
+        # than silently ignoring a topology the caller asked for.
+        if not entry["networks"] and self.fabric is not None:
+            raise ValueError(
+                f"{entry['label']} does not currently consume a network-fabric selection"
+            )
+        # Omission means "use the catalog default"; an explicit null means the
+        # caller asked for no fabric. Do not collapse the two.
+        if "fabric" not in self.model_fields_set and entry.get("default_network"):
+            self.fabric = entry["default_network"]
+        # A P/D topology exists only across a named fabric for a simulator that
+        # models one, so "disagg" without a fabric names a search it cannot run.
+        if (
+            self.mode == "disagg"
+            and entry["disaggregation_requires_fabric"]
+            and self.fabric is None
+        ):
+            raise ValueError(
+                f"{entry['label']} models prefill/decode through a named fabric; "
+                "send fabric, or omit mode for the simulator's default search."
+            )
         return self
 
 
@@ -658,6 +726,11 @@ class SweepMeta(BaseModel):
     #: headroom can make it higher.
     configured_max_gpus: int | None = None
     effective_max_gpus: int | None = None
+    #: Deployment modes the search actually covered, in contract order. A
+    #: response can pick an aggregated winner from a search that also evaluated
+    #: prefill/decode, so `chosen_mode` alone does not say what was explored.
+    #: None when the simulator reported no search (for example a single point).
+    modes_searched: list[Literal["agg", "disagg"]] | None = None
 
 
 class RecommendConfig(BaseModel):
@@ -1256,6 +1329,88 @@ def _pareto_slots() -> threading.BoundedSemaphore:
         return _PARETO_SLOTS
 
 
+#: Deployment modes as the public contract names them. The SDK spells them
+#: "aggregated"/"disaggregated"; those names never reach the API payload. The
+#: literal tuple is what makes the accumulators type-check against `SweepMeta`.
+_DEPLOYMENT_MODES: tuple[Literal["agg"], Literal["disagg"]] = ("agg", "disagg")
+_SDK_DEPLOYMENT_MODES: dict[Literal["agg", "disagg"], str] = {
+    "agg": "aggregated",
+    "disagg": "disaggregated",
+}
+
+
+def _aisimulate_search_modes(
+    req: RecommendRequest,
+    window: tuple[int, int],
+) -> list[Literal["agg", "disagg"]]:
+    """Deployment modes one AISimulate GPU window searches.
+
+    A one-GPU total window cannot contain a disaggregated deployment: it needs
+    at least one prefill and one decode GPU. An aggregated serving mode searches
+    that deployment only. A Pareto sweep keeps both modes; request validation
+    rejects a mode with Pareto, so that guard only protects configs a test
+    builds directly.
+    """
+    window_max_gpus = window[1]
+    aggregate_only = req.mode == "agg" and req.objective != "pareto"
+    return ["agg"] if window_max_gpus == 1 or aggregate_only else ["agg", "disagg"]
+
+
+def _merge_search_modes(
+    covered: list[Literal["agg", "disagg"]],
+    window: list[Literal["agg", "disagg"]],
+) -> list[Literal["agg", "disagg"]]:
+    """Union of modes searched, in contract order, across a window ladder."""
+    return [mode for mode in _DEPLOYMENT_MODES if mode in covered or mode in window]
+
+
+def _reported_search_modes(reported: Any) -> list[Literal["agg", "disagg"]] | None:
+    """Normalise a simulator's own search-mode report into contract values.
+
+    A simulator that reports an unknown spelling gets no field rather than a
+    guessed one, so a client can tell "not reported" from "searched one mode".
+    """
+    if not isinstance(reported, (list, tuple)):
+        return None
+    modes = [mode for mode in _DEPLOYMENT_MODES if any(item == mode for item in reported)]
+    return modes or None
+
+
+#: Candidate topologies name a deployment mode the way the SDK configures it.
+_MODE_FROM_TOPOLOGY: dict[str, Literal["agg", "disagg"]] = {
+    "agg": "agg",
+    "disagg": "disagg",
+    "aggregated": "agg",
+    "disaggregated": "disagg",
+}
+
+
+def _evaluated_search_modes(
+    result: Any,
+    configured: list[Literal["agg", "disagg"]],
+) -> list[Literal["agg", "disagg"]]:
+    """Deployment modes the SDK's candidate ledger shows it evaluated.
+
+    A window can be configured for both modes and still run one: the SDK skips
+    a deployment mode with no viable configuration and evaluates the other.
+    Every candidate records the mode it was built for in
+    ``provenance.topology``, so the ledger is the evidence of coverage. A ledger
+    with no topology reports nothing about modes, so the configured list is the
+    only statement available in that case.
+    """
+    evaluated: set[str] = set()
+    for record in getattr(result, "candidates", None) or []:
+        topology = getattr(getattr(record, "provenance", None), "topology", None)
+        if not isinstance(topology, dict):
+            continue
+        mode = _MODE_FROM_TOPOLOGY.get(str(topology.get("deployment_mode")))
+        if mode is not None:
+            evaluated.add(mode)
+    if not evaluated:
+        return list(configured)
+    return [mode for mode in _DEPLOYMENT_MODES if mode in evaluated]
+
+
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
@@ -1277,8 +1432,10 @@ def _aisimulate_recommendation_config(
     # per-window timeout on redundant optimizer trials.
     is_pareto = req.objective == "pareto"
     is_demand = req.objective == "throughput_demand"
-    narrow_window = window_max_gpus == 1
-    modes = ["aggregated"] if narrow_window else ["aggregated", "disaggregated"]
+    modes = [
+        _SDK_DEPLOYMENT_MODES[mode]
+        for mode in _aisimulate_search_modes(req, (window_min_gpus, window_max_gpus))
+    ]
     max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
         req.objective,
         window_max_gpus,
@@ -2005,6 +2162,11 @@ def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) 
         # The sweep started at the fit floor, so the ceiling it was allowed to
         # reach follows the same policy the resolver used.
         effective_max_gpus=_effective_search_ceiling(configured_max_gpus, window_min_gpus),
+        # The configured modes are a request; the ledger says which ones the
+        # SDK actually evaluated.
+        modes_searched=_evaluated_search_modes(
+            result, _aisimulate_search_modes(req, window)
+        ),
     )
 
 
@@ -2036,6 +2198,7 @@ def _run_demand_windows(
     timed_out = 0
     budget_exhausted = False
     run_id: str | None = None
+    modes_searched: list[Literal["agg", "disagg"]] = []
     for lower, upper in windows:
         remaining = deadline - time.monotonic()
         if attempted and remaining < _DEMAND_MIN_WINDOW_S:
@@ -2073,6 +2236,14 @@ def _run_demand_windows(
                 continue
             raise
         searched = True
+        # A window that returned a result is the smallest unit of evidence: a
+        # skipped window below the model's fit evaluated no candidate, so it
+        # must not report a deployment mode the simulator never searched. The
+        # ledger then narrows the configured modes to the ones it evaluated.
+        modes_searched = _merge_search_modes(
+            modes_searched,
+            _evaluated_search_modes(result, _aisimulate_search_modes(req, (lower, upper))),
+        )
         counts = getattr(result, "counts", None)
         window_evaluated = getattr(counts, "evaluated", None)
         if not isinstance(window_evaluated, int):
@@ -2107,6 +2278,7 @@ def _run_demand_windows(
         window_max_gpus=last[1],
         configured_max_gpus=_max_candidate_gpus(),
         effective_max_gpus=windows[-1][1],
+        modes_searched=modes_searched or None,
     )
 
 
@@ -2154,6 +2326,7 @@ def _run_min_gpus_windows(
     run_id: str | None = None
     result: Any | None = None
     best_gpus: int | None = None
+    modes_searched: list[Literal["agg", "disagg"]] = []
 
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
@@ -2201,6 +2374,15 @@ def _run_min_gpus_windows(
 
         if window_result is not None:
             searched = True
+            # Only a window that returned a result searched its modes; a window
+            # below the model's fit evaluated nothing, so it contributes none.
+            # The ledger then narrows the configured modes to the ones evaluated.
+            modes_searched = _merge_search_modes(
+                modes_searched,
+                _evaluated_search_modes(
+                    window_result, _aisimulate_search_modes(req, (lower, upper))
+                ),
+            )
             counts = getattr(window_result, "counts", None)
             window_evaluated = getattr(counts, "evaluated", None)
             if not isinstance(window_evaluated, int):
@@ -2275,6 +2457,7 @@ def _run_min_gpus_windows(
         window_max_gpus=max(upper for _, upper in attempted),
         configured_max_gpus=configured,
         effective_max_gpus=ceiling,
+        modes_searched=modes_searched or None,
     )
 
 
@@ -3573,6 +3756,12 @@ def _run_capacity_recommendation(
             window_max_gpus=upper_gpus,
             configured_max_gpus=_max_candidate_gpus(),
             effective_max_gpus=upper_gpus,
+            # Capacity enumerates aggregated shapes, then the disaggregated
+            # comparison set. Coverage follows the enumeration that ran, not
+            # the options a top-N cut keeps: truncation can hide a P/D option
+            # that was still searched. Performance-simulation availability is
+            # reported separately on each option.
+            modes_searched=(["agg", "disagg"] if disagg_candidates else ["agg"]),
         )
         return primary.config, primary.capacity, sweep, options
 
@@ -4195,7 +4384,9 @@ def _blis_backends() -> dict[str, Any]:
                 "system_defaults": {},
                 # A P/D run transfers KV between pools, and BLIS prices that
                 # transfer through a named fabric, so the request must choose one.
-                "disaggregation_requires_fabric": True,
+                "disaggregation_requires_fabric": _simulator_entry("blis")[
+                    "disaggregation_requires_fabric"
+                ],
                 # BLIS capacity sizing is aggregate-only for now: it reads the
                 # aggregate engine's KV pool and does not model a disaggregated
                 # decode-pool capacity, so no comparison options are offered.
@@ -4279,7 +4470,9 @@ def get_backends(
                 for system, version in system_defaults.items()
             },
             # AISimulate's P/D search takes no fabric; no extra input is needed.
-            "disaggregation_requires_fabric": False,
+            "disaggregation_requires_fabric": _simulator_entry("aisimulate")[
+                "disaggregation_requires_fabric"
+            ],
             # Capacity runs can compare aggregated and disaggregated options.
             "capacity_options": {"disaggregated": True},
         })
@@ -4357,6 +4550,10 @@ def post_recommend(
                 window_max_gpus=summary.get("effective_max_gpus"),
                 configured_max_gpus=summary.get("configured_max_gpus"),
                 effective_max_gpus=summary.get("effective_max_gpus"),
+                # BLIS reports the modes its candidate grid covered in its own
+                # search summary; mirror it into the shared sweep facts so a
+                # client reads one field for both simulators.
+                modes_searched=_reported_search_modes(summary.get("modes_searched")),
             )
             if req.objective == "pareto":
                 candidates = [
@@ -4752,6 +4949,7 @@ def _blis_recommend(req: RecommendRequest):
         prefill_max_seq_len=req.prefill_max_seq_len,
         decode_max_seq_len=req.decode_max_seq_len,
         fabric=req.fabric,
+        mode=req.mode,
         database_mode=req.database_mode,
         inclusive_tpot=req.inclusive_tpot,
         model_config_provided=req.model_config_data is not None,
