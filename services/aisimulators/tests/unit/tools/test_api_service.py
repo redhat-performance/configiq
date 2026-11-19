@@ -2207,7 +2207,7 @@ class TestCapacityContextTokens:
             (3000, 2176, 0),
         ],
     )
-    def test_prefix_credit_is_stored_once_per_replica_only_when_it_shortens(
+    def test_prefix_credit_is_stored_once_per_rank_only_when_it_shortens(
         self, prefix, context, expected
     ):
         request = app_module.RecommendRequest.model_validate(
@@ -2300,6 +2300,22 @@ class TestPrefixValidation:
         assert response.status_code == 422
         assert response.json()["detail"].startswith(
             "prefix must not exceed max_seq_len"
+        )
+
+    def test_predict_rejects_a_prefix_longer_than_a_disaggregated_pool(self):
+        response = client.post(
+            "/predict",
+            json={
+                **VALID_ESTIMATE_BODY,
+                "mode": "disagg",
+                "prefix": 1024,
+                "decode_max_seq_len": 512,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed decode_max_seq_len"
         )
 
 

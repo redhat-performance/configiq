@@ -1573,8 +1573,9 @@ components:
           description: |
             Cached prefix tokens shared by every request. A prefix is a subset
             of `isl`, not additional input: `prefix=1000, isl=4000` means 3000
-            uncached input tokens. A value greater than `isl` is rejected with
-            422. Requests reuse the shared prefix when
+            uncached input tokens. A value greater than `isl` or a supplied
+            context limit (`max_seq_len`, or a disaggregated pool's sequence
+            length) is rejected with 422. Requests reuse the shared prefix when
             `requests_per_load_unit` asks for more than one request per
             concurrency slot.
           default: 0

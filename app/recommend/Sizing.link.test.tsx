@@ -763,6 +763,7 @@ describe('recommend sizing shared views', () => {
   it('blocks sizing when the default prefix cannot fit the input length', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=128');
 
+    expect(container.textContent).toContain('Shared prefix cannot exceed');
     const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Calculate');
     expect(calculate?.disabled).toBe(true);

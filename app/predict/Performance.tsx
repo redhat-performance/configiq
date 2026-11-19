@@ -472,8 +472,15 @@ export default function Performance() {
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
   // A shared prefix is part of the input, so it cannot outgrow either the
-  // prompt or a stated context limit. The service rejects both combinations.
-  const invalidPrefix = testPrefix > testISL || (maxSeqLen != null && testPrefix > maxSeqLen);
+  // prompt or the context limits the request sends. The service rejects these
+  // combinations; the form mirrors them so Calculate cannot submit one.
+  const prefixPoolLimits = servingMode === 'disagg'
+    ? [prefillMaxSeqLen, decodeMaxSeqLen].filter((value): value is number => value != null)
+    : [];
+  const invalidPrefix =
+    testPrefix > testISL ||
+    (effectiveContextLimit != null && testPrefix > effectiveContextLimit) ||
+    prefixPoolLimits.some(limit => testPrefix > limit);
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
   const invalidRequestsPerLoadUnit = requestsPerLoadUnitInput !== '' && requestsPerLoadUnit === null;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;

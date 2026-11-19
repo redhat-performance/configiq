@@ -176,6 +176,11 @@ configuration, so there is no cross-simulator config relation to report.
 BLIS predictions do not include KV-cache memory breakdowns; `/memory` refuses a
 simulator without that capability rather than substituting AISimulate.
 
+Both `/predict` and `/recommend` accept `prefix`, the shared prefix cached as a
+subset of `isl`; a value larger than `isl` or a supplied context limit is
+rejected with 422. `/predict` forwards it to the simulator so the cached tokens
+reduce prefill, and `/recommend` applies the capacity credit described below.
+
 BLIS `/predict` supports both colocated and prefill/decode-disaggregated vLLM
 scenarios. P/D requests require a `fabric` from `GET /networks`, the same GPU
 system for both pools, and `attention_dp_size=1`. The adapter generates separate
@@ -184,10 +189,7 @@ disaggregates every request. Both modes accept `requests_per_load_unit` and
 simulate `max(1, round(batch_size x requests_per_load_unit))` total requests
 when it is specified, the same rule AISimulate uses. When omitted, both modes
 simulate one total request.
-Both `/predict` and `/recommend` accept `prefix`, the shared prefix cached as a
-subset of `isl`; a value larger than `isl` or a supplied `max_seq_len` is
-rejected with 422. `/predict` forwards it to the simulator so the cached tokens
-reduce prefill, and `/recommend` applies the capacity credit described below.
+
 The run also pins the prompt and output token distributions to the requested
 ISL/OSL (`min = max = requested`, stdev 0), so a prompt longer than BLIS's
 default 7000-token ceiling is simulated instead of rejected.

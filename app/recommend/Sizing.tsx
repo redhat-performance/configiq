@@ -1190,6 +1190,11 @@ export default function Sizing() {
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
         </div>
+        {invalidPrefix && (
+          <div style={{ fontSize: 13, color: '#c9190b', marginTop: 6, textAlign: 'right' }}>
+            Shared prefix cannot exceed the input length or context limit.
+          </div>
+        )}
         {paretoDisabledReason && (
           <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 6, textAlign: 'right' }}>
             {paretoDisabledReason}

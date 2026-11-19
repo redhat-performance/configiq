@@ -225,6 +225,21 @@ def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
                 "in the context it is cached for."
             ),
         )
+    # A disaggregated estimate renders each pool with its own context length,
+    # so the prefix has to fit both of them.
+    if getattr(req, "mode", "agg") == "disagg":
+        for field_name in ("prefill_max_seq_len", "decode_max_seq_len"):
+            limit = getattr(req, field_name, None)
+            if limit is not None and req.prefix > limit:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"prefix must not exceed {field_name}: got "
+                        f"prefix={req.prefix} and {field_name}={limit}. A "
+                        "cached prefix has to fit in the context it is cached "
+                        "for."
+                    ),
+                )
 
 
 # ─── Pydantic models ────────────────────────────────────────────────────────
@@ -280,9 +295,10 @@ class RecommendRequest(BaseModel):
         description=(
             "Cached prefix tokens shared by every request. A prefix is a subset "
             "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
-            "uncached input tokens. With objective='concurrency_capacity' the "
-            "prefix is cached once per replica, so additional resident sequences "
-            "need only their suffix."
+            "uncached input tokens. It must also fit a supplied `max_seq_len`. "
+            "With objective='concurrency_capacity' each attention-DP rank caches "
+            "the prefix once, so additional resident sequences on that rank need "
+            "only their suffix."
         ),
     )
     database_mode: str = Field(default="HYBRID", description="Perf database mode.")
@@ -522,7 +538,9 @@ class EstimateRequest(BaseModel):
         description=(
             "Cached prefix tokens shared by every request. A prefix is a subset "
             "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
-            "uncached input tokens."
+            "uncached input tokens. It must also fit a supplied `max_seq_len` "
+            "and, for a disaggregated request, each pool's sequence-length "
+            "override."
         ),
     )
     gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1, description="GPU memory fraction for KV-cache capacity.")
