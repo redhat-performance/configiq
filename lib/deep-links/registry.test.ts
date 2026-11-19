@@ -136,16 +136,17 @@ describe('golden links', () => {
       tpot: 50,
       prefix: 512,
       maxSeqLen: 32768,
-      // A disaggregated view is the only one that carries per-pool limits, so
-      // the golden link names the fabric that makes those pools searchable.
+      // A disaggregated view carries per-pool limits and the fabric that makes
+      // those pools searchable. Only a simulator that models P/D through a
+      // fabric exports one, so this view is BLIS's.
       servingMode: 'disagg',
       prefillMaxSeqLen: 8192,
       decodeMaxSeqLen: 24576,
       fabric: 'ib-400g',
-      simulator: 'aisimulate',
+      simulator: 'blis',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=ib-400g&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=ib-400g&backend=vllm&backendVersion=0.31.0&simulator=blis"`);
   });
 
   it('/recommend aggregate view', () => {
@@ -158,10 +159,10 @@ describe('golden links', () => {
       goal: 'latency',
       servingMode: 'agg',
       fabric: 'none',
-      simulator: 'aisimulate',
+      simulator: 'blis',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&servingMode=agg&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&servingMode=agg&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=blis"`);
   });
 
   it('/kv-cache', () => {
