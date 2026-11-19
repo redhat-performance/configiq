@@ -443,6 +443,86 @@ describe('assistant answer', () => {
     expect(toolNames).not.toContain('predict');
   });
 
+  it('treats a count the tool summary stated as quotable', async () => {
+    // The tool message the model reads carries `Read N GPU systems`; the rows
+    // do not restate the count. An answer repeating it must not be suppressed,
+    // or every "how many" question loses its prose.
+    const systems = Array.from({ length: 10 }, (_unused, index) => ({
+      id: `gpu_${index}`,
+      name: `GPU ${index}`,
+      vendor: 'nvidia',
+      memory_bytes: 80_000_000_000,
+    }));
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          call += 1;
+          if (call === 1) {
+            return completion({
+              content: '',
+              toolCalls: [{ id: 'call-1', name: 'list_gpus', arguments: '{}' }],
+            });
+          }
+          return completion({ content: 'The catalog lists 10 GPU systems.' });
+        }
+        if (url.startsWith('http://gateway.test/systems')) {
+          return jsonResponse({ simulator: 'aisimulate', systems });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many GPU systems are in the catalog');
+    const result = events.find((event) => event.type === 'result');
+    expect(result?.type).toBe('result');
+    if (result?.type === 'result') {
+      expect(result.status).toBe('answered');
+      expect(result.answer).toContain('10 GPU systems');
+    }
+  });
+
+  it('still rejects a count no tool stated', async () => {
+    const systems = Array.from({ length: 10 }, (_unused, index) => ({
+      id: `gpu_${index}`,
+      name: `GPU ${index}`,
+      vendor: 'nvidia',
+      memory_bytes: 80_000_000_000,
+    }));
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/v1/chat/completions')) {
+          call += 1;
+          if (call === 1) {
+            return completion({
+              content: '',
+              toolCalls: [{ id: 'call-1', name: 'list_gpus', arguments: '{}' }],
+            });
+          }
+          return completion({ content: 'The catalog lists 40 GPU systems.' });
+        }
+        if (url.startsWith('http://gateway.test/systems')) {
+          return jsonResponse({ simulator: 'aisimulate', systems });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how many GPU systems are in the catalog');
+    const result = events.find((event) => event.type === 'result');
+    expect(result?.type).toBe('result');
+    if (result?.type === 'result') {
+      expect(result.status).toBe('suppressed');
+      expect(result.answer).toBe('');
+      expect(result.unsupportedNumbers.length).toBeGreaterThan(0);
+    }
+  });
+
   it('returns an error event when the model is unreachable', async () => {
     vi.stubGlobal(
       'fetch',
