@@ -576,7 +576,12 @@ async function runAssistant(
   // evidence along with the normalised forms a proposal adds (`2 s` and
   // `2000 ms`). Neither becomes one of the answer's sources.
   const quotable = [request.question, ...(proposal?.evidence ?? [])];
-  const verification = verifyNumbers(draft, [...evidence, ...quotable]);
+  // A tool summary is a sentence the model was given about what the tool read,
+  // so a count it repeats (`10 GPU systems`) is quotable even when the rows do
+  // not restate it. Summaries stay out of `evidence` because that list is the
+  // sources the reader sees.
+  const toolNotes = toolResults.map((result) => result.summary);
+  const verification = verifyNumbers(draft, [...evidence, ...quotable, ...toolNotes]);
   const citations = citationsFor(sections);
   const links = linksForAnswer(request, sections, toolResults, proposal);
 
