@@ -775,16 +775,21 @@ export default function Sizing() {
     },
     prefillMaxSeqLen: {
       read: () => (servingMode === 'disagg' ? prefillMaxSeqLen ?? undefined : undefined),
-      write: (value) => {
+      write: (value, values) => {
         setPrefillMaxSeqLen(value);
         setPrefillMaxSeqLenInput(String(value));
+        // Pool lengths only exist in a prefill/decode view, so a link written
+        // before the mode field described one. A link that names the mode has
+        // already been applied and must keep its own choice.
+        if (values.servingMode == null) setServingModeChoice('disagg');
       },
     },
     decodeMaxSeqLen: {
       read: () => (servingMode === 'disagg' ? decodeMaxSeqLen ?? undefined : undefined),
-      write: (value) => {
+      write: (value, values) => {
         setDecodeMaxSeqLen(value);
         setDecodeMaxSeqLenInput(String(value));
+        if (values.servingMode == null) setServingModeChoice('disagg');
       },
     },
     // An unset fabric means "use the simulator default", which is what the
@@ -796,7 +801,15 @@ export default function Sizing() {
           ? (networkFabric === null ? undefined : networkFabric || FABRIC_NONE)
           : undefined
       ),
-      write: (value) => setNetworkFabric(value === FABRIC_NONE ? '' : value),
+      write: (value, values) => {
+        setNetworkFabric(value === FABRIC_NONE ? '' : value);
+        // A named fabric is the topology a pre-mode link described, and "None"
+        // was that link's aggregate-only request. Applied in field order, so a
+        // fabric write settles an inferred pool-length mode.
+        if (values.servingMode == null) {
+          setServingModeChoice(value === FABRIC_NONE ? 'agg' : 'disagg');
+        }
+      },
     },
   });
 

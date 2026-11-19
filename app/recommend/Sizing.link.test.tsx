@@ -372,6 +372,20 @@ describe('recommend sizing shared views', () => {
     expect(sent.fabric).toBeNull();
   });
 
+  it('restores the pre-mode topology a legacy link describes', async () => {
+    // A link applied to an already-open page replaces the view it names. A
+    // pre-mode link carries its topology only through the fabric and pool
+    // lengths, so those set the mode instead of inheriting the reader's.
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=agg&fabric=ib-400g',
+    );
+    expect((await calculate()).mode).toBe('agg');
+
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+    expect((await calculate()).mode).toBe('disagg');
+  });
+
   it('omits the serving mode for capacity, which reports both topologies', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
 
