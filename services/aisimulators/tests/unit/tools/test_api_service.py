@@ -1551,7 +1551,12 @@ class TestRunMinGpusWindows:
 
         assert configs
         assert configs[0].engine.mode.choices == ["aggregated", "disaggregated"]
-        assert "prefill" in configs[0].engine.workers
+        # The SDK model does not support `in` (it iterates field/value pairs),
+        # so read the dumped fields: a both-modes window must configure both
+        # pools, which is what the reported modes claim it searched.
+        workers = configs[0].engine.workers.model_dump()
+        assert workers["prefill"] is not None
+        assert workers["decode"] is not None
         assert sweep.modes_searched == ["agg", "disagg"]
 
     def test_reports_both_modes_for_the_wide_ladder(self, monkeypatch):
