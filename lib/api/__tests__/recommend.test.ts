@@ -330,6 +330,13 @@ describe('RecommendRequestSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('accepts an explicit null serving mode, the shape the contract documents', () => {
+    // The OpenAPI field is `nullable` as well as optional, so a caller copying
+    // the contract must not be rejected for "not chosen".
+    const result = RecommendRequestSchema.safeParse({ ...VALID_REQUEST, mode: null })
+    expect(result.success).toBe(true)
+  })
+
   it('rejects a serving mode on a pareto sweep', () => {
     const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
     const result = RecommendRequestSchema.safeParse({
@@ -480,6 +487,18 @@ describe('callRecommend', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
+  })
+
+  it('does not forward a null serving mode upstream', async () => {
+    // `null` and "omitted" both mean the user chose no mode; only an explicit
+    // mode may narrow the service's own search.
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+
+    await callRecommend({ ...VALID_REQUEST, mode: null })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    const body = JSON.parse(String(init?.body))
+    expect(body.mode).toBeUndefined()
   })
 
   it('returns a normalized response on success', async () => {
