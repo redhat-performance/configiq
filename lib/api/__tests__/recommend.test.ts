@@ -321,6 +321,38 @@ describe('RecommendRequestSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('rejects an aggregated mode that carries per-pool context limits', () => {
+    const result = RecommendRequestSchema.safeParse({
+      ...VALID_REQUEST,
+      mode: 'agg',
+      prefill_max_seq_len: 8192,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects a serving mode on a pareto sweep', () => {
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    const result = RecommendRequestSchema.safeParse({
+      ...rest,
+      objective: 'pareto',
+      sla_mode: 'none',
+      mode: 'agg',
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('rejects disaggregated serving for a capacity run', () => {
+    const result = RecommendRequestSchema.safeParse({
+      model_path: 'meta-llama/Llama-3.1-70B-Instruct',
+      system: 'h200_sxm',
+      objective: 'concurrency_capacity',
+      sla_mode: 'none',
+      target_concurrency: 64,
+      mode: 'disagg',
+    })
+    expect(result.success).toBe(false)
+  })
+
   it('rejects P/D transfer bandwidth outside a pareto sweep', () => {
     const minGpus = RecommendRequestSchema.safeParse({
       ...VALID_REQUEST,

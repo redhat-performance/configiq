@@ -154,6 +154,11 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         # /memory is an AISimulate capability; a simulator that does not model
         # a KV-cache breakdown must refuse the request, not borrow the answer.
         "memory": True,
+        # AISimulate's P/D search takes no inter-node fabric, so a caller needs
+        # no topology input before asking for one. This same flag tells a client
+        # whether it must collect a fabric and tells request validation whether
+        # "disagg" names a search this simulator can run without one.
+        "disaggregation_requires_fabric": False,
     },
     {
         "id": "blis",
@@ -165,6 +170,10 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "recommend_search": "single",
         "networks": True,
         "memory": False,
+        # A P/D run transfers KV between pools, and BLIS prices that transfer
+        # through a named fabric, so a P/D search without one has no topology to
+        # model.
+        "disaggregation_requires_fabric": True,
         # The fabric a P/D request uses when the caller omits one is the
         # catalog's default, named here so /networks can report it as the
         # user-visible assumption rather than the UI inventing a value.
@@ -267,8 +276,10 @@ class RecommendRequest(BaseModel):
         description=(
             "Serving mode for a sizing search. 'agg' searches aggregated candidates only. "
             "Omit it, or send 'disagg', to keep the simulator's existing deployment search, "
-            "including prefill/decode candidates when that search models them. "
-            "objective='pareto' ignores this field and keeps searching both deployment modes."
+            "including prefill/decode candidates when that search models them. A simulator "
+            "that models P/D only through a fabric rejects 'disagg' when the request names "
+            "no fabric. objective='pareto' searches both deployment modes and does not "
+            "accept this field."
         ),
     )
     objective: Literal["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"] = Field(
@@ -390,10 +401,57 @@ class RecommendRequest(BaseModel):
         if self.kv_transfer_bandwidth_gb_per_second is not None and self.objective != "pareto":
             raise ValueError("kv_transfer_bandwidth_gb_per_second is only supported with objective='pareto'.")
 
-        if self.simulator == "aisimulate" and self.fabric is not None:
-            raise ValueError("AISimulate does not currently consume a network-fabric selection")
-        if self.simulator == "blis" and "fabric" not in self.model_fields_set:
-            self.fabric = _simulator_entry("blis").get("default_network")
+        # A serving mode states which deployments a search covers. Aggregated
+        # sizing has no per-pool context limits to apply, and a Pareto sweep
+        # enumerates both topologies, so neither can honour a mode.
+        if self.mode == "agg" and (
+            self.prefill_max_seq_len is not None or self.decode_max_seq_len is not None
+        ):
+            raise ValueError(
+                "mode='agg' does not accept prefill_max_seq_len or decode_max_seq_len; "
+                "omit them or the mode."
+            )
+        if self.mode is not None and self.objective == "pareto":
+            raise ValueError(
+                "objective='pareto' searches both deployment modes and does not accept "
+                "mode; omit it."
+            )
+        # Capacity sizing reports aggregated configurations plus separate
+        # disaggregated comparison options; it never searches a P/D topology.
+        if self.mode == "disagg" and self.objective == "concurrency_capacity":
+            raise ValueError(
+                "objective='concurrency_capacity' sizes aggregated deployments and does "
+                "not accept mode='disagg'; omit mode or send mode='agg'."
+            )
+
+        # Capabilities come from the same registry that answers /simulators and
+        # /backends, so request validation cannot drift from what the service
+        # advertises. The route validates the registry before dispatch, so an
+        # unknown simulator has no capabilities to check here.
+        entry = next((item for item in _SIMULATORS if item["id"] == self.simulator), None)
+        if entry is None:
+            return self
+        # A simulator that does not model fabrics refuses a selection rather
+        # than silently ignoring a topology the caller asked for.
+        if not entry["networks"] and self.fabric is not None:
+            raise ValueError(
+                f"{entry['label']} does not currently consume a network-fabric selection"
+            )
+        # Omission means "use the catalog default"; an explicit null means the
+        # caller asked for no fabric. Do not collapse the two.
+        if "fabric" not in self.model_fields_set and entry.get("default_network"):
+            self.fabric = entry["default_network"]
+        # A P/D topology exists only across a named fabric for a simulator that
+        # models one, so "disagg" without a fabric names a search it cannot run.
+        if (
+            self.mode == "disagg"
+            and entry["disaggregation_requires_fabric"]
+            and self.fabric is None
+        ):
+            raise ValueError(
+                f"{entry['label']} models prefill/decode through a named fabric; "
+                "send fabric, or omit mode for the simulator's default search."
+            )
         return self
 
 
@@ -1288,7 +1346,9 @@ def _aisimulate_recommendation_config(
     is_demand = req.objective == "throughput_demand"
     narrow_window = window_max_gpus == 1
     # An aggregated sizing request searches that deployment only. A Pareto sweep
-    # keeps both modes, and an omitted mode keeps the existing both-mode search.
+    # keeps both modes. Request validation rejects a mode with Pareto, so the
+    # `not is_pareto` guard only protects configs built directly in tests; keep
+    # it so a direct caller cannot silently narrow a sweep.
     aggregate_only = req.mode == "agg" and not is_pareto
     modes = ["aggregated"] if narrow_window or aggregate_only else ["aggregated", "disaggregated"]
     max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
@@ -4207,7 +4267,9 @@ def _blis_backends() -> dict[str, Any]:
                 "system_defaults": {},
                 # A P/D run transfers KV between pools, and BLIS prices that
                 # transfer through a named fabric, so the request must choose one.
-                "disaggregation_requires_fabric": True,
+                "disaggregation_requires_fabric": _simulator_entry("blis")[
+                    "disaggregation_requires_fabric"
+                ],
                 # BLIS capacity sizing is aggregate-only for now: it reads the
                 # aggregate engine's KV pool and does not model a disaggregated
                 # decode-pool capacity, so no comparison options are offered.
@@ -4291,7 +4353,9 @@ def get_backends(
                 for system, version in system_defaults.items()
             },
             # AISimulate's P/D search takes no fabric; no extra input is needed.
-            "disaggregation_requires_fabric": False,
+            "disaggregation_requires_fabric": _simulator_entry("aisimulate")[
+                "disaggregation_requires_fabric"
+            ],
             # Capacity runs can compare aggregated and disaggregated options.
             "capacity_options": {"disaggregated": True},
         })

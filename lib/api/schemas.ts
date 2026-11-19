@@ -93,6 +93,33 @@ export const RecommendRequestSchema = z.object({
   const hasLatency = data.request_latency != null
   const hasTokenLatency = data.ttft != null || data.tpot != null
 
+  // A serving mode names the deployments a search covers. These rules are
+  // simulator-independent, so the proxy answers them before dispatch. Whether a
+  // mode needs a fabric is a simulator capability, checked by the service.
+  if (
+    data.mode === 'agg' &&
+    (data.prefill_max_seq_len != null || data.decode_max_seq_len != null)
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      message: "mode='agg' does not accept prefill_max_seq_len or decode_max_seq_len",
+    })
+  }
+  if (data.mode != null && data.objective === 'pareto') {
+    // A Pareto sweep enumerates both deployment modes.
+    ctx.addIssue({
+      code: 'custom',
+      message: "objective='pareto' does not accept mode",
+    })
+  }
+  if (data.mode === 'disagg' && data.objective === 'concurrency_capacity') {
+    // Capacity sizes aggregated deployments and reports P/D options separately.
+    ctx.addIssue({
+      code: 'custom',
+      message: "objective='concurrency_capacity' does not accept mode='disagg'",
+    })
+  }
+
   // P/D transfer bandwidth is a Pareto sweep input. Accepting it elsewhere
   // would imply a topology the search does not model.
   if (data.objective !== 'pareto' && data.kv_transfer_bandwidth_gb_per_second != null) {

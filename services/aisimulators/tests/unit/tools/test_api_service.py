@@ -261,13 +261,13 @@ class TestRecommend:
         assert "prefill" not in config.engine.workers
         assert "decode" not in config.engine.workers
 
-    def test_pareto_keeps_both_modes_when_the_request_names_aggregated(self):
-        request = app_module.RecommendRequest.model_validate(
-            {**VALID_PARETO_BODY, "mode": "agg"}
-        )
-        config = app_module._aisimulate_recommendation_config(request, window=(4, 16))
-
-        assert config.engine.mode.choices == ["aggregated", "disaggregated"]
+    def test_pareto_rejects_a_serving_mode(self):
+        # A Pareto sweep enumerates both deployment modes, so a mode would state
+        # a narrowing the sweep does not apply. Reject it rather than ignore it.
+        with pytest.raises(ValueError, match="does not accept mode"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_PARETO_BODY, "mode": "agg"}
+            )
 
     def test_one_gpu_window_avoids_disaggregated_trials(self):
         body = {**VALID_RECOMMEND_BODY, "target_concurrency": 1}
@@ -1021,6 +1021,64 @@ class TestRecommendDemand:
         e2e_sla = (e2e_config.model_dump().get("evaluation") or {}).get("sla") or {}
         assert e2e_sla.get("e2e_ms") == 2500.0
         assert e2e_sla.get("ttft_ms") is None
+
+
+class TestRecommendServingMode:
+    """A serving mode must name a search the request can actually run."""
+
+    def test_aggregated_mode_rejects_per_pool_context_limits(self):
+        body = {
+            **VALID_RECOMMEND_BODY,
+            "mode": "agg",
+            "prefill_max_seq_len": 8192,
+            "decode_max_seq_len": 4096,
+        }
+        with pytest.raises(ValueError, match="prefill_max_seq_len"):
+            app_module.RecommendRequest.model_validate(body)
+
+    def test_capacity_rejects_disaggregated_serving(self):
+        # Capacity sizes aggregated deployments and reports P/D options
+        # separately; it does not search a prefill/decode topology.
+        with pytest.raises(ValueError, match="mode='disagg'"):
+            app_module.RecommendRequest.model_validate(
+                {**VALID_CAPACITY_BODY, "mode": "disagg"}
+            )
+
+    def test_capacity_accepts_an_aggregated_mode(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "mode": "agg"}
+        )
+
+        assert request.mode == "agg"
+
+    def test_disagg_without_a_fabric_is_rejected_where_pd_needs_one(self):
+        # BLIS models P/D through a fabric, so an explicit null names a topology
+        # it cannot run. The rule reads the simulator's capability, not its ID.
+        with pytest.raises(ValueError, match="through a named fabric"):
+            app_module.RecommendRequest.model_validate(
+                {
+                    **VALID_RECOMMEND_BODY,
+                    "simulator": "blis",
+                    "mode": "disagg",
+                    "fabric": None,
+                }
+            )
+
+    def test_disagg_without_a_fabric_is_accepted_where_it_needs_none(self):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "simulator": "aisimulate", "mode": "disagg"}
+        )
+
+        assert request.fabric is None
+
+    def test_omitted_fabric_takes_the_catalog_default_before_the_mode_check(self):
+        # Omission is not "no fabric": the simulator's default names the
+        # topology, so a disagg request that leaves the field out still runs.
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "simulator": "blis", "mode": "disagg"}
+        )
+
+        assert request.fabric == "roce-200g"
 
 
 class TestSelectDemandRecord:
@@ -2594,6 +2652,9 @@ class TestBackendObjectives:
             "concurrency_capacity",
         ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": False}
+        # P/D runs in BLIS are priced through a named fabric, so a client knows
+        # it must collect one before offering a prefill/decode search.
+        assert data["backends"][0]["disaggregation_requires_fabric"] is True
 
 
 # ─── /memory tests ───────────────────────────────────────────────────────────
