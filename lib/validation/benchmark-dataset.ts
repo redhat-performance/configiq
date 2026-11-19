@@ -130,6 +130,10 @@ const CONFIGURATION_FIELDS = [
   'prefix_count',
   'max_seq_len',
   'max_num_seqs',
+  'max_num_batched_tokens',
+  'vllm_rocm_use_aiter',
+  'vllm_rocm_use_aiter_moe',
+  'vllm_rocm_use_aiter_moe_situv2',
   'gpu_memory_utilization',
   'chunked_prefill_enabled',
   'spec_decoding',
@@ -228,6 +232,10 @@ function configurationLabel(values: DatasetConfiguration): string {
   if (values.prefix_count) labels.push(`${values.prefix_count} prefixes`)
   if (values.max_seq_len) labels.push(`max sequence ${values.max_seq_len}`)
   if (values.max_num_seqs) labels.push(`max sequences ${values.max_num_seqs}`)
+  if (values.max_num_batched_tokens) labels.push(`max batched tokens ${values.max_num_batched_tokens}`)
+  if (values.vllm_rocm_use_aiter) labels.push(`ROCm AITER ${values.vllm_rocm_use_aiter}`)
+  if (values.vllm_rocm_use_aiter_moe) labels.push(`ROCm AITER MoE ${values.vllm_rocm_use_aiter_moe}`)
+  if (values.vllm_rocm_use_aiter_moe_situv2) labels.push(`ROCm AITER MoE SITU v2 ${values.vllm_rocm_use_aiter_moe_situv2}`)
   if (values.gpu_memory_utilization) labels.push(`GPU memory ${values.gpu_memory_utilization}`)
   if (values.chunked_prefill_enabled) labels.push(`chunked prefill ${values.chunked_prefill_enabled}`)
   if (values.spec_decoding) labels.push(`speculative decoding ${values.spec_decoding}`)
@@ -357,6 +365,11 @@ export async function getBenchmarkDataset(refresh = false): Promise<DatasetCache
   } finally {
     if (inFlightDataset === pending) inFlightDataset = null
   }
+}
+
+/** A missing turn_index is a whole-run summary (including older HF revisions). */
+export function isSummaryBenchmarkRow(row: DatasetRow): boolean {
+  return row.turn_index == null || String(row.turn_index).trim() === ''
 }
 
 export function parseBenchmarkFilters(searchParams: URLSearchParams): BenchmarkFilters {

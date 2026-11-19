@@ -4,6 +4,7 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   normalizeBackendVersion,
+  rowMatchesConfiguration,
 } from '../benchmark-dataset'
 import type { DatasetRow, BenchmarkFilters } from '../benchmark-types'
 
@@ -42,6 +43,24 @@ describe('shared measured backend filters', () => {
     ])
     expect(configurations.find(option => option.values.measurement_source === 'Red Hat')?.values.benchmark_version)
       .toBe('GT release 2')
+  })
+
+  it('distinguishes explicit ROCm and batch-limit settings', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, max_num_batched_tokens: 8192 },
+      { ...internal, max_num_batched_tokens: 8192, vllm_rocm_use_aiter: '1' },
+      { ...internal, max_num_batched_tokens: 16384 },
+    ]
+    const options = getConfigurationOptions(rows)
+    expect(options).toHaveLength(3)
+    expect(options.map(option => option.label)).toEqual([
+      expect.stringContaining('max batched tokens'),
+      expect.stringContaining('max batched tokens'),
+      expect.stringContaining('max batched tokens'),
+    ])
+    expect(options.some(option => option.label.includes('ROCm AITER 1'))).toBe(true)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1])
   })
 
   it('does not equate unknown or nightly tags with a numbered release', () => {

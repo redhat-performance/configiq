@@ -88,6 +88,17 @@ in `public/config.json`'s `approvedModels` list, and only rows whose version is 
 plain upstream vLLM release (`vLLM-<major>.<minor>.<patch>`). Productized Red
 Hat AI Inference Server builds and pre-release labels are dropped, and the
 import manifest records the kept and dropped counts.
+The import keeps each selected run's overall summary (`turn_index` is blank)
+and its available per-turn detail rows (`turn_index` starts at zero). For
+matching published configurations at the same concurrency it selects the
+newest run by GuideLLM start time before removing run identifiers. Published
+configuration fields, concurrency, and turn index form the row identity.
+Compare and classifier training consume only summary rows. Missing
+effective vLLM settings are not inferred from blank CSV fields, so this
+identity is limited to settings recorded by the source. The importer publishes
+only `0`/`1` values for three explicit ROCm AITER switches in `env_vars`; raw
+environment values and paths remain private. Configuration backfill from the
+matching run logs remains separate.
 
 The scheduled GitHub Actions workflow consumes the public
 `redhat-performance/configiq-performance-upstream-data` Hugging Face dataset.
@@ -134,6 +145,13 @@ with the public Hugging Face dataset. It runs at 00:00 Monday in
 variable `PERFORMANCE_DATA_PUBLISH_ENABLED=true`; otherwise scheduled runs
 only prepare and compare. A manual run on `main` publishes only when its
 `publish` input is selected. Unchanged content is never uploaded.
+The publisher requires nonblank concurrency and a turn index column. It allows
+one row per combination of published configuration fields, concurrency, and
+turn index. If any prepared model/GPU pair has fewer rows
+than the current dataset, automatic publishing stops. Review the prepare job's row
+counts, then select `allow_row_reduction` in a manual workflow run to publish
+the reviewed reduction. The Compare page warns when a saved configuration link
+cannot be resolved after a dataset refresh.
 
 When an upload succeeds, the publish workflow dispatches `tested-models.yml`
 with the new dataset commit SHA, so new ground truth retrains the classifiers

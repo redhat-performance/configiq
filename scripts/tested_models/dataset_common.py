@@ -40,7 +40,9 @@ CLASSIFICATION_COLUMNS = {
     "tpot_p1", "itl_median", "itl_p95", "itl_p99", "itl_p999", "itl_p1", "itl_mean",
     "request_latency_median", "request_latency_min", "request_latency_max",
     "successful_requests", "errored_requests", "gpu_memory_utilization", "max_num_seqs",
-    "chunked_prefill_enabled", "prefix_caching", "turns", "prefix_tokens", "prefix_count",
+    "max_num_batched_tokens",
+    "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2",
+    "chunked_prefill_enabled", "prefix_caching", "turns", "turn_index", "prefix_tokens", "prefix_count",
     "request_type", "spec_decoding", "precision", "weight_quantization", "kv_quantization",
     "moe_num_experts", "moe_top_k", "max_seq_len",
 }
@@ -65,6 +67,33 @@ def _runtime_value(text: str, *names: str) -> str | None:
         if match:
             return match.group(1).strip("'")
     return None
+
+
+def _env_flags(text: str) -> dict[str, str | None]:
+    """Expose only explicit, non-sensitive vLLM performance switches."""
+    names = {
+        "VLLM_ROCM_USE_AITER": "vllm_rocm_use_aiter",
+        "VLLM_ROCM_USE_AITER_MOE": "vllm_rocm_use_aiter_moe",
+        "VLLM_ROCM_USE_AITER_MOE_SITUV2": "vllm_rocm_use_aiter_moe_situv2",
+    }
+    try:
+        source = json.loads(text or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("env_vars is not valid JSON") from error
+    if not isinstance(source, dict):
+        raise ValueError("env_vars must be a JSON object")
+    result = {}
+    for source_name, public_name in names.items():
+        value = source.get(source_name)
+        if value is None:
+            result[public_name] = None
+        elif str(value).lower() in ("1", "true"):
+            result[public_name] = "1"
+        elif str(value).lower() in ("0", "false"):
+            result[public_name] = "0"
+        else:
+            raise ValueError(f"unsupported value for {source_name}")
+    return result
 
 
 def _backend_name(version: Any) -> str:
@@ -148,6 +177,7 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     runtime_aliases = {
         "gpu_memory_utilization": ("gpu-memory-utilization", "gpu_memory_utilization"),
         "max_num_seqs": ("max-num-seqs", "max_num_seqs"),
+        "max_num_batched_tokens": ("max-num-batched-tokens", "max_num_batched_tokens"),
         "max_seq_len": ("max-model-len", "max_model_len"),
         "chunked_prefill_enabled": ("enable-chunked-prefill", "enable_chunked_prefill"),
         "precision": ("dtype", "precision"),
@@ -157,6 +187,10 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     for column, names in runtime_aliases.items():
         if column not in frame:
             frame[column] = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+    if "env_vars" in frame:
+        flags = frame["env_vars"].fillna("").astype(str).map(_env_flags)
+        for column in ("vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2"):
+            frame[column] = flags.map(lambda value, name=column: value[name])
     for column in ("weight_quantization", "kv_quantization"):
         if column in frame:
             frame[column] = frame[column].map(

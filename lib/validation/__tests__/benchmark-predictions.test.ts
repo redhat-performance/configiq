@@ -11,6 +11,10 @@ function configuration(overrides: Partial<DatasetConfiguration> = {}): DatasetCo
   return {
     measurement_source: null,
     benchmark_version: null,
+    max_num_batched_tokens: null,
+    vllm_rocm_use_aiter: null,
+    vllm_rocm_use_aiter_moe: null,
+    vllm_rocm_use_aiter_moe_situv2: null,
     backend: 'vllm',
     backend_version: 'v0.31.0',
     precision: null,

@@ -16,7 +16,7 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
             "intended concurrency": 8,
             "prompt toks": 512,
             "output toks": 128,
-            "runtime_args": "dtype=float16 --max-num-seqs=32 max-model-len:8192",
+            "runtime_args": "dtype=float16 --max-num-seqs=32 max-model-len:8192 --max-num-batched-tokens=4096",
             "uuid": "run-secret",
             "mlflow_run_id": "mlflow-secret",
             "admin_note": "internal-only",
@@ -29,6 +29,7 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
     assert normalized.loc[0, "tp"] == 2
     assert normalized.loc[0, "isl"] == 512
     assert normalized.loc[0, "max_num_seqs"] == "32"
+    assert normalized.loc[0, "max_num_batched_tokens"] == "4096"
     assert normalized.loc[0, "max_seq_len"] == "8192"
     assert normalized.loc[0, "precision"] == "float16"
     assert not {"uuid", "mlflow_run_id", "runtime_args", "admin_note", "timestamp"} & set(normalized)
@@ -45,6 +46,7 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
         "osl",
         "concurrency",
         "max_num_seqs",
+        "max_num_batched_tokens",
         "max_seq_len",
         "precision",
         "gpu_memory_utilization",
@@ -52,6 +54,21 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
         "weight_quantization",
         "kv_quantization",
     }
+
+
+def test_normalize_rows_exposes_only_whitelisted_vllm_env_flags() -> None:
+    frame = normalize_rows([{
+        "model": "org/model", "version": "vLLM-0.31.0",
+        "env_vars": json.dumps({
+            "VLLM_ROCM_USE_AITER": "1",
+            "VLLM_ROCM_USE_AITER_MOE": "0",
+            "FLASHINFER_CUBIN_DIR": "/internal/location",
+        }),
+    }], "org/model", "MI355X")
+    assert frame.loc[0, "vllm_rocm_use_aiter"] == "1"
+    assert frame.loc[0, "vllm_rocm_use_aiter_moe"] == "0"
+    assert pd.isna(frame.loc[0, "vllm_rocm_use_aiter_moe_situv2"])
+    assert "env_vars" not in frame and "FLASHINFER_CUBIN_DIR" not in frame
 
 
 @pytest.mark.parametrize(

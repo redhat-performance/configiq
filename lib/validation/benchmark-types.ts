@@ -25,6 +25,10 @@ export interface DatasetConfiguration extends Record<string, string | null> {
   prefix_count: string | null
   max_seq_len: string | null
   max_num_seqs: string | null
+  max_num_batched_tokens: string | null
+  vllm_rocm_use_aiter: string | null
+  vllm_rocm_use_aiter_moe: string | null
+  vllm_rocm_use_aiter_moe_situv2: string | null
   gpu_memory_utilization: string | null
   chunked_prefill_enabled: string | null
   spec_decoding: string | null

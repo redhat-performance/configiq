@@ -6,6 +6,7 @@ import {
   getFilterOptions,
   getBenchmarkDataset,
   getInferenceXDataset,
+  isSummaryBenchmarkRow,
   normalizeBackendVersion,
   parseBenchmarkFilters,
   parseConfiguration,
@@ -63,8 +64,9 @@ export async function GET(request: NextRequest) {
       inferencexError = error instanceof Error ? error.message : 'Private InferenceX dataset is unavailable'
     }
     const inferencexRows = inferencex?.rows ?? []
+    const benchmarkRows = (benchmark?.rows ?? []).filter(isSummaryBenchmarkRow)
     if (!benchmark && !inferencex) return failure(benchmarkError ?? inferencexError ?? 'No measured data is available', 502)
-    const combinedRows = [...(benchmark?.rows ?? []), ...inferencexRows]
+    const combinedRows = [...benchmarkRows, ...inferencexRows]
     const requestedFilters = parseBenchmarkFilters(searchParams)
 
     if (mode === 'resolve' || mode === 'filters') {
@@ -102,7 +104,7 @@ export async function GET(request: NextRequest) {
     const configuration = parseConfiguration(searchParams.get('configuration') ?? '')
     if (!configuration) return failure('Choose a benchmark runtime configuration before comparing.', 400)
 
-    const internalRows = filterRows(benchmark?.rows ?? [], filters)
+    const internalRows = filterRows(benchmarkRows, filters)
       .filter(row => rowMatchesConfiguration(row, configuration))
     const selectedInferenceXRows = configuration.measurement_source === 'InferenceX'
       ? filterRows(inferencexRows, filters).filter(row => rowMatchesConfiguration(row, configuration))

@@ -6,6 +6,10 @@ function configuration(values: Partial<DatasetConfiguration>): DatasetConfigurat
   return {
     measurement_source: 'redhat',
     benchmark_version: '1',
+    max_num_batched_tokens: null,
+    vllm_rocm_use_aiter: null,
+    vllm_rocm_use_aiter_moe: null,
+    vllm_rocm_use_aiter_moe_situv2: null,
     backend: 'vllm',
     backend_version: '0.9.0',
     precision: 'fp16',
