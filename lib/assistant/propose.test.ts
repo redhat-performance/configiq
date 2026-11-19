@@ -369,6 +369,79 @@ describe('proposeView', () => {
     }
   });
 
+  it('reads a latency written before its label', () => {
+    const cases: Array<[string, string, number]> = [
+      ['Recommend a size for 1second TTFT at 4096 input tokens.', 'ttft', 1000],
+      ['Recommend a size for 2 s to first token at 4096 input tokens.', 'ttft', 2000],
+      ['Recommend a size for 100ms ITL at 4096 input tokens.', 'tpot', 100],
+      ['Recommend a size for 25 ms per output token at 4096 input tokens.', 'tpot', 25],
+    ];
+    for (const [question, field, expected] of cases) {
+      const proposal = proposeView({
+        question,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+      });
+      const values = valuesOf(proposal!.link.href, recommendLink.parse);
+      expect(values[field]).toBe(expected);
+      expect(values.goal).toBe('latency');
+    }
+  });
+
+  it('reads inter-token latency as time per output token', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for ITL of 50 ms at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // ITL and TPOT are the same quantity under two names; the page only has
+    // the second, and leaving the number out would answer a different question.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).tpot).toBe(50);
+  });
+
+  it('reads a length written with the token count first', () => {
+    const proposal = proposeView({
+      question: 'Recommend sizing for 4,000 token inputs and 1,000 token outputs.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    expect(valuesOf(proposal!.link.href, recommendLink.parse)).toMatchObject({
+      isl: 4000,
+      osl: 1000,
+    });
+  });
+
+  it('resolves a bare accelerator name the catalog has one system for', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for TTFT 1 s on an H200 at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+      system: 'l40s',
+    });
+
+    // H200 ships only as the 141 GB SXM part, so the name is unambiguous.
+    expect(valuesOf(proposal!.link.href, recommendLink.parse).system).toBe('h200_sxm');
+  });
+
+  it('opens the reported sizing question with every value it names', () => {
+    const proposal = proposeView({
+      question:
+        'recommend a small Qwen model that can perform 1second TTFT, 100ms ITL with a default workload and minimal H200 GPUs',
+      model: 'Qwen/Qwen3-32B',
+      system: 'h200_sxm',
+    });
+
+    expect(proposal).not.toBeNull();
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values).toMatchObject({
+      ttft: 1000,
+      tpot: 100,
+      system: 'h200_sxm',
+      goal: 'latency',
+    });
+    // "a small Qwen model" is not a model id, so the assistant must not choose
+    // one; the view keeps the model the page was already set to.
+    expect(values.model).toBe('Qwen/Qwen3-32B');
+  });
+
   it('leaves out a request rate the latency goal does not read', () => {
     const proposal = proposeView({
       question: 'Recommend a size for TTFT under 2 s at 50 requests per second.',

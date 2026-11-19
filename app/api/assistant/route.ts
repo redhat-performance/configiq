@@ -294,6 +294,13 @@ const SIMULATOR_ROUTES = new Set(['/predict', '/recommend', '/hybrid-savings', '
 /** Pages with a versioned link contract. Other pages take no query at all. */
 const LINK_ROUTES = new Set([...PROVENANCE_ROUTES, '/gpu-explorer']);
 
+/** The path of a page link, without its query or fragment. */
+function linkPath(href: string): string {
+  const withoutHash = href.split('#')[0];
+  const queryIndex = withoutHash.indexOf('?');
+  return queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+}
+
 /**
  * Add provenance to a page link.
  *
@@ -345,20 +352,26 @@ function linksForAnswer(
   if (proposal) push(proposal.link);
 
   for (const result of toolResults) {
-    if (result.link) push(result.link);
+    // A tool link opens the page the tool read from, which is an action even
+    // when it carries no values of its own.
+    if (result.link) push({ ...result.link, kind: 'page' });
   }
 
   const hint = pageHintFor(request.question);
   // A proposal supersedes the plain hint for the same page.
   if (hint && !(proposal && proposal.link.href.startsWith(hint.href))) {
-    push({ label: hint.label, href: hint.href });
+    push({ label: hint.label, href: hint.href, kind: 'page' });
   }
 
   // A question about a page the user is already on does not need a link to it,
   // but a proposal for that page does carry values, so it is kept.
+  //
+  // The comparison is the parsed path, not a prefix: `"/"` is a prefix of every
+  // link on the site, so comparing prefixes on the home page deleted the sizing
+  // hint the question was asking for.
   if (request.route && routeLabel(request.route) !== request.route) {
     const current = links.find(
-      (link) => link.kind !== 'proposal' && link.href.startsWith(request.route ?? ''),
+      (link) => link.kind === 'page' && linkPath(link.href) === request.route,
     );
     if (current) links.splice(links.indexOf(current), 1);
   }

@@ -486,6 +486,76 @@ describe('assistant answer', () => {
     expect(result.links[0].href).toContain('isl=4096');
   });
 
+  it('keeps a tool link on the home page instead of treating every link as current', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({ content: 'Recommend sizing starts from the targets you name.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('how do I recommend a sizing', { route: '/' });
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    // "/" is a prefix of every path, so a prefix comparison deleted the sizing
+    // link and left only documentation — the "link that opens nothing".
+    const hint = result.links.find((link) => link.href.startsWith('/recommend'));
+    expect(hint).toBeDefined();
+    expect(hint?.kind).toBe('page');
+  });
+
+  it('does not mark a documentation link as the action', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({ content: 'The verifier checks quantitative claims.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask('what does the numeric verifier check');
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    expect(result.links.length).toBeGreaterThan(0);
+    expect(result.links[0].href.startsWith('/docs/')).toBe(true);
+    // Only a proposal or a tool page is an action; reading is not.
+    expect(result.links.every((link) => link.kind === undefined)).toBe(true);
+  });
+
+  it('opens the reported sizing question with the values it names', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('/v1/chat/completions')) {
+          return completion({ content: 'Use Recommend sizing, then press Calculate.' });
+        }
+        return jsonResponse({}, 404);
+      }),
+    );
+
+    const { events } = await ask(
+      'recommend a small Qwen model that can perform 1second TTFT, 100ms ITL with a default workload and minimal H200 GPUs',
+      { route: '/', model: 'Qwen/Qwen3-32B', system: 'h200_sxm' },
+    );
+    const result = events.find((event) => event.type === 'result');
+    if (result?.type !== 'result') throw new Error('no result event');
+
+    const proposal = result.links[0];
+    expect(proposal.kind).toBe('proposal');
+    expect(proposal.href.startsWith('/recommend?v=1')).toBe(true);
+    expect(proposal.href).toContain('ttft=1000');
+    expect(proposal.href).toContain('tpot=100');
+    expect(proposal.href).toContain('goal=latency');
+    expect(proposal.href).toContain('system=h200_sxm');
+  });
+
   it('carries the backend and never a simulator on a KV cache link', async () => {
     let call = 0;
     vi.stubGlobal(

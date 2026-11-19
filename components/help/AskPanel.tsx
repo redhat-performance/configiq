@@ -301,10 +301,13 @@ export function AskPanel({ currentRoute, model, hide }: AskPanelProps) {
 
           {links.length > 0 && (
             <div className={styles.links}>
-              {links.map((link, index) => (
+              {links.map((link) => (
                 <div className={styles.linkRow} key={link.href}>
                   <Link
-                    className={index === 0 ? styles.primaryLink : styles.secondaryLink}
+                    // Only an action gets primary styling. A documentation
+                    // link can come first when the question names no page, and
+                    // styling it as the action reads as "run this".
+                    className={link.kind ? styles.primaryLink : styles.secondaryLink}
                     href={link.href}
                     prefetch={false}
                     onClick={hide}

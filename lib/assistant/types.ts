@@ -31,8 +31,11 @@ export interface AssistantLink {
    * `proposal` marks a link built from a page's own link contract with the
    * values the question named. It is inputs only — opening it still requires
    * the user to press Calculate — and the panel says which fields it sets.
+   * `page` marks a link into a tool page: an action to take, not something to
+   * read. Documentation links carry neither, so only an action is styled as
+   * the primary one.
    */
-  kind?: 'proposal';
+  kind?: 'proposal' | 'page';
 }
 
 export type AssistantErrorCode =

@@ -171,15 +171,24 @@ const BEFORE_ISL = new RegExp(
 );
 /** `input=4096`. */
 const EXPLICIT_ISL = new RegExp(String.raw`\b(?:isl|input|prompt)\s*[=:]\s*${COUNT}`, 'i');
-/** `4096 input tokens`. */
-const AFTER_ISL = new RegExp(String.raw`${COUNT}\s*(?:input|prompt)\s*(?:tokens?|tok)?\b`, 'i');
+/**
+ * `4096 input tokens`, `4,000 token inputs`. The word order varies, and the
+ * second form is easy to read backwards: the number is the length either way.
+ */
+const AFTER_ISL = new RegExp(
+  String.raw`${COUNT}\s*(?:tokens?\s+(?:of\s+)?(?:input|prompt)s?|(?:input|prompt)\s*(?:tokens?|tok)?)\b`,
+  'i',
+);
 
 const BEFORE_OSL = new RegExp(
   String.raw`\b(?:osl|output\s+(?:length|size|tokens?)|completion\s+(?:length|tokens?)|response\s+(?:length|tokens?))\b\s*(?:=|:|of)?\s*${COUNT}`,
   'i',
 );
 const EXPLICIT_OSL = new RegExp(String.raw`\b(?:osl|output|completion)\s*[=:]\s*${COUNT}`, 'i');
-const AFTER_OSL = new RegExp(String.raw`${COUNT}\s*(?:output|completion)\s*(?:tokens?|tok)?\b`, 'i');
+const AFTER_OSL = new RegExp(
+  String.raw`${COUNT}\s*(?:tokens?\s+(?:of\s+)?(?:output|completion)s?|(?:output|completion)\s*(?:tokens?|tok)?)\b`,
+  'i',
+);
 
 const BEFORE_CONCURRENCY = new RegExp(
   String.raw`\bconcurrency\b\s*(?:=|:|of)?\s*${COUNT}`,
@@ -207,12 +216,34 @@ const AFTER_TTFT = new RegExp(
   'i',
 );
 
+/**
+ * Inter-token latency is the same quantity the tools call time per output
+ * token: the average gap between two output tokens. A question that states ITL
+ * is stating TPOT in another name, and the page only has the latter.
+ */
+const TPOT_LABEL = String.raw`(?:tpot|itl|inter[- ]?token\s+latency|time\s+per\s+(?:output\s+)?token|per\s+(?:output\s+)?token)`;
+
 const BEFORE_TPOT = new RegExp(
-  String.raw`\b(?:tpot|time\s+per\s+(?:output\s+)?token|per\s+(?:output\s+)?token)\b${TARGET_LEAD}${NUMBER}\s*${TIME_UNIT}?`,
+  String.raw`\b${TPOT_LABEL}\b${TARGET_LEAD}${NUMBER}\s*${TIME_UNIT}?`,
   'i',
 );
 const AFTER_TPOT = new RegExp(
   String.raw`${NUMBER}\s*${TIME_UNIT}\s*(?:per|for\s+each)\s+(?:output\s+)?token`,
+  'i',
+);
+
+/**
+ * A latency written before its label: `1second TTFT`, `100ms ITL`. The
+ * label-first patterns cannot read these, because no connective ties the
+ * number to the word that follows it, and the number would otherwise be read
+ * as a length or ignored.
+ */
+const TRAILING_TTFT = new RegExp(
+  String.raw`${NUMBER}\s*${TIME_UNIT}\s*(?:ttft|time\s+to\s+first\s+token|first\s+token)\b`,
+  'i',
+);
+const TRAILING_TPOT = new RegExp(
+  String.raw`${NUMBER}\s*${TIME_UNIT}\s*${TPOT_LABEL}\b`,
   'i',
 );
 
@@ -362,8 +393,10 @@ function durations(text: string, patterns: RegExp[]): Reading[] {
 const LATENCY_PATTERNS = [
   BEFORE_TTFT,
   AFTER_TTFT,
+  TRAILING_TTFT,
   BEFORE_TPOT,
   AFTER_TPOT,
+  TRAILING_TPOT,
   BEFORE_E2E,
   AFTER_E2E,
 ];
@@ -410,6 +443,18 @@ const SYSTEM_IDS = [
 ];
 
 /**
+ * Bare accelerator names the catalog carries only one system for.
+ *
+ * "H200" is unambiguous — the catalog has the 141 GB SXM part alone — so a
+ * question that says only "H200" has named it. "H100" is deliberately absent:
+ * it ships as SXM and PCIe, and pinning either would name a machine the
+ * question did not.
+ */
+const SYSTEM_ALIASES: ReadonlyArray<{ id: string; pattern: RegExp }> = [
+  { id: 'h200_sxm', pattern: /\bh200\b/i },
+];
+
+/**
  * The GPU system the question names, if it names exactly one.
  *
  * The system the page is set to is the default, and a named one has to win:
@@ -425,6 +470,11 @@ function namedSystems(question: string): string[] {
     // multi-part id is specific enough to match inside a longer run.
     const pattern = id.includes('_') ? new RegExp(id, 'i') : new RegExp(`\\b${id}\\b`, 'i');
     if (pattern.test(normalised) && !found.includes(id)) found.push(id);
+  }
+  // A bare name counts only when it did not resolve through an id above, so
+  // "h200_sxm" is not also read as the alias and reported twice.
+  for (const alias of SYSTEM_ALIASES) {
+    if (alias.pattern.test(normalised) && !found.includes(alias.id)) found.push(alias.id);
   }
   return found;
 }
@@ -614,10 +664,10 @@ export function proposeView(context: ProposalContext): ProposedView | null {
   place('demandRate', counts(countsFrom, [REQUEST_RATE, RATE_SHORTHAND]), (reading) =>
     `Request rate: ${reading.text} requests per second.`,
   );
-  place('ttft', durations(question, [AFTER_TTFT, BEFORE_TTFT]), (reading) =>
+  place('ttft', durations(question, [AFTER_TTFT, TRAILING_TTFT, BEFORE_TTFT]), (reading) =>
     `Time to first token: ${reading.text}.`,
   );
-  place('tpot', durations(question, [AFTER_TPOT, BEFORE_TPOT]), (reading) =>
+  place('tpot', durations(question, [AFTER_TPOT, TRAILING_TPOT, BEFORE_TPOT]), (reading) =>
     `Time per output token: ${reading.text}.`,
   );
   place('e2eLatency', durations(question, [AFTER_E2E, BEFORE_E2E]), (reading) =>
