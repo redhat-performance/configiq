@@ -138,11 +138,13 @@ describe('golden links', () => {
       maxSeqLen: 32768,
       prefillMaxSeqLen: 8192,
       decodeMaxSeqLen: 24576,
+      // "No fabric" is an aggregated view, so the mode agrees with it.
+      servingMode: 'agg',
       fabric: 'none',
       simulator: 'aisimulate',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/recommend?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&goal=latency&isl=4096&osl=512&concurrency=32&ttft=2000&tpot=50&prefix=512&maxSeqLen=32768&servingMode=agg&prefillMaxSeqLen=8192&decodeMaxSeqLen=24576&fabric=none&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
   });
 
   it('/kv-cache', () => {
