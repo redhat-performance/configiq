@@ -349,15 +349,18 @@ describe('RecommendRequestSchema', () => {
   })
 
   it('rejects disaggregated serving for a capacity run', () => {
-    const result = RecommendRequestSchema.safeParse({
-      model_path: 'meta-llama/Llama-3.1-70B-Instruct',
-      system: 'h200_sxm',
-      objective: 'concurrency_capacity',
-      sla_mode: 'none',
+    const { ttft, tpot, target_concurrency, ...rest } = VALID_REQUEST
+    // A valid capacity request, so the mode guard — not a missing field — is
+    // what decides this: the aggregated form must pass and the P/D form fail.
+    const capacity = {
+      ...rest,
+      objective: 'concurrency_capacity' as const,
+      sla_mode: 'none' as const,
       target_concurrency: 64,
-      mode: 'disagg',
-    })
-    expect(result.success).toBe(false)
+    }
+
+    expect(RecommendRequestSchema.safeParse({ ...capacity, mode: 'agg' }).success).toBe(true)
+    expect(RecommendRequestSchema.safeParse({ ...capacity, mode: 'disagg' }).success).toBe(false)
   })
 
   it('rejects P/D transfer bandwidth outside a pareto sweep', () => {
