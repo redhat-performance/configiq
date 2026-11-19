@@ -453,6 +453,36 @@ describe('recommend sizing shared views', () => {
     expect(url).not.toContain('decodeMaxSeqLen=');
   });
 
+  it('keeps Disaggregated reachable after clearing an aggregate-only fabric', async () => {
+    // Choosing "None" remembers an explicit aggregate-only fabric. Returning to
+    // Default must not strand that value: Default hides the selector, so a
+    // remembered "None" would disable Disaggregated with no way back to it.
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
+    expect((await calculate()).mode).toBe('agg');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Adjust?'))
+        ?.click();
+      await Promise.resolve();
+    });
+    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent === 'Default');
+    await act(async () => {
+      unpin?.click();
+      await Promise.resolve();
+    });
+
+    const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent === 'Disaggregated');
+    expect(disaggregated?.hasAttribute('disabled')).toBe(false);
+
+    const sent = await calculate();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
+  });
+
   it('returns to the service default when the pinned view is cleared', async () => {
     await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +

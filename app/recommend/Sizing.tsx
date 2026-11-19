@@ -1308,7 +1308,15 @@ export default function Sizing() {
                     variant={servingModeChoice == null ? 'secondary' : 'tertiary'}
                     size="sm"
                     aria-pressed={servingModeChoice == null}
-                    onClick={() => { setServingModeChoice(null); markInputsDirty(); }}
+                    onClick={() => {
+                      // Default narrows nothing, the fabric included. A
+                      // remembered "None" belongs to the aggregate-only view
+                      // being left; keeping it would also leave Disaggregated
+                      // disabled behind a selector this state hides.
+                      if (networkFabric === '') setNetworkFabric(null);
+                      setServingModeChoice(null);
+                      markInputsDirty();
+                    }}
                   >
                     Default
                   </Button>
