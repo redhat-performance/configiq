@@ -142,7 +142,10 @@ BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default i
 states a concrete `engine.max_model_len`: the request's `max_seq_len` when set,
 otherwise the catalog model's native context, otherwise `isl + osl`. It does not
 emit `auto`, because BLIS resolves that from the model graph and some catalog
-graphs (for example `gpt-oss-120b`) omit the context window. Any other
+graphs (for example `gpt-oss-120b`) omit the context window. A P/D scenario
+gives each pool its own limit from `prefill_max_seq_len` /
+`decode_max_seq_len` when set, falling back to `max_seq_len`; AISimulate applies
+the same per-pool fallback. Any other
 `backend_version`, including AISimulate aliases such as `current`, is refused
 with a 422 that names the modeled releases — BLIS treats `engine_version` as a
 check, not a selector, so the service never substitutes a different release
@@ -189,9 +192,32 @@ for `min_gpus` and `throughput_demand`. It defaults to `roce-200g` when the
 `fabric` field is omitted and also searches bounded P/D TP and worker-count
 combinations, with one node per pool and DP=PP=1. Send `fabric: null` or
 `mode=agg` to request aggregate-only candidates; the response then warns that
-P/D candidates were not searched. `concurrency_capacity` is aggregate-only.
-`pareto` ignores `mode` and enumerates both topology modes when a fabric is
-selected.
+P/D candidates were not searched. A named fabric is a topology assumption, so
+an unknown one is rejected with 422 even when the search excludes P/D (for
+example `mode=agg`). `concurrency_capacity` is aggregate-only. `pareto`
+enumerates both topology modes when a fabric is selected and rejects `mode`,
+because a sweep has no single serving mode to narrow.
+
+`mode` names the deployments a sizing search covers, for both simulators.
+`agg` searches aggregated candidates only; omitting it or sending `disagg`
+keeps the simulator's existing search. Omission is not the same as
+`fabric: null`: an omitted fabric takes the catalog default (BLIS:
+`roce-200g`), while an explicit null asks for aggregate candidates only. The
+field is rejected with 422 where it cannot narrow anything: with
+`objective=pareto`, with `objective=concurrency_capacity` and `disagg`, and as
+`mode=agg` combined with `prefill_max_seq_len`/`decode_max_seq_len`
+(per-pool limits only exist in a P/D deployment). A simulator that models P/D
+only through a fabric (`disaggregation_requires_fabric` on `/backends`, true
+for BLIS) also rejects `mode=disagg` when the request resolves to no fabric.
+Validation reads that capability flag, never the simulator ID.
+
+Both simulators report what the search covered in `sweep.modes_searched`
+(contract values `agg`/`disagg`; null when the simulator reported no search
+facts). `chosen_mode` describes the recommendation, which can be aggregated
+even when P/D candidates were evaluated. AISimulate reports the union over the
+GPU windows its ladder attempted, so a one-GPU window contributes `agg` only;
+BLIS reports the modes its candidate grid enumerated and also lists them in
+`search_summary.modes_searched`.
 
 BLIS recommendation sizes closed-loop concurrency by default. With
 `objective=throughput_demand` `sla_mode=none` it instead replays open-loop
@@ -254,7 +280,9 @@ The first window is wide — `floor .. min(ceiling, max(16, floor × 2))` — so
 both aggregated and disaggregated shapes have room and the SDK's
 smallest-first ordering can find the true minimum. `mode=agg` limits that
 search to aggregated candidates. Omit `mode`, or send `disagg`, to keep both
-deployment modes. A Pareto sweep ignores `mode` and keeps both. The ladder then:
+deployment modes. A Pareto sweep rejects `mode` and enumerates both. The ladder
+reports the modes it covered in `sweep.modes_searched`, so a one-GPU window
+shows `agg` alone even when the request kept the broader search. The ladder then:
 
 - narrows to `floor .. candidate − 1` when a feasible candidate is above the
   floor;

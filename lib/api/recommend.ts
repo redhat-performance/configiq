@@ -128,6 +128,13 @@ export interface RecommendSweepMeta {
   configuredMaxGpus: number | null
   /** Ceiling the search actually used; may exceed the configured value. */
   effectiveMaxGpus: number | null
+  /**
+   * Deployment modes the search covered, as the API reported them. A chosen
+   * mode describes the recommendation, which can be aggregated even when
+   * prefill/decode candidates were evaluated. Null when the API reported no
+   * search-mode facts.
+   */
+  modesSearched: ServingMode[] | null
 }
 
 export interface RecommendResult {
@@ -580,6 +587,9 @@ function parseRecommendPayload(
         windowMaxGpus: typeof sweepRaw.window_max_gpus === 'number' ? sweepRaw.window_max_gpus : null,
         configuredMaxGpus: typeof sweepRaw.configured_max_gpus === 'number' ? sweepRaw.configured_max_gpus : null,
         effectiveMaxGpus: typeof sweepRaw.effective_max_gpus === 'number' ? sweepRaw.effective_max_gpus : null,
+        modesSearched: Array.isArray(sweepRaw.modes_searched)
+          ? sweepRaw.modes_searched.filter((mode): mode is ServingMode => mode === 'agg' || mode === 'disagg')
+          : null,
       }
     : undefined
 

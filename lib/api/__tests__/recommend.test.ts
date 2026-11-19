@@ -1121,6 +1121,7 @@ describe('callRecommend', () => {
         evaluated: 4,
         budget_exhausted: false,
         strict_sla: false,
+        modes_searched: ['agg', 'disagg'],
       },
     }))
 
@@ -1141,7 +1142,13 @@ describe('callRecommend', () => {
       evaluatedConfigurations: 4,
       simulator: 'aisimulate',
     })
-    expect(result.sweep).toMatchObject({ evaluated: 4, strictSla: false, budgetExhausted: false })
+    expect(result.sweep).toMatchObject({
+      evaluated: 4,
+      strictSla: false,
+      budgetExhausted: false,
+      // The recommendation is one mode, but the search covered both.
+      modesSearched: ['agg', 'disagg'],
+    })
   })
 
   it('reports an unmet demand target as a completed 200 result', async () => {

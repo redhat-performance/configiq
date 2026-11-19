@@ -725,6 +725,11 @@ class SweepMeta(BaseModel):
     #: headroom can make it higher.
     configured_max_gpus: int | None = None
     effective_max_gpus: int | None = None
+    #: Deployment modes the search actually covered, in contract order. A
+    #: response can pick an aggregated winner from a search that also evaluated
+    #: prefill/decode, so `chosen_mode` alone does not say what was explored.
+    #: None when the simulator reported no search (for example a single point).
+    modes_searched: list[Literal["agg", "disagg"]] | None = None
 
 
 class RecommendConfig(BaseModel):
@@ -1323,6 +1328,43 @@ def _pareto_slots() -> threading.BoundedSemaphore:
         return _PARETO_SLOTS
 
 
+#: Deployment modes as the public contract names them. The SDK spells them
+#: "aggregated"/"disaggregated"; those names never reach the API payload.
+_DEPLOYMENT_MODES = ("agg", "disagg")
+_SDK_DEPLOYMENT_MODES = {"agg": "aggregated", "disagg": "disaggregated"}
+
+
+def _aisimulate_search_modes(req: RecommendRequest, window: tuple[int, int]) -> list[str]:
+    """Deployment modes one AISimulate GPU window searches.
+
+    A one-GPU total window cannot contain a disaggregated deployment: it needs
+    at least one prefill and one decode GPU. An aggregated serving mode searches
+    that deployment only. A Pareto sweep keeps both modes; request validation
+    rejects a mode with Pareto, so that guard only protects configs a test
+    builds directly.
+    """
+    window_max_gpus = window[1]
+    aggregate_only = req.mode == "agg" and req.objective != "pareto"
+    return ["agg"] if window_max_gpus == 1 or aggregate_only else ["agg", "disagg"]
+
+
+def _merge_search_modes(covered: list[str], window: list[str]) -> list[str]:
+    """Union of modes searched, in contract order, across a window ladder."""
+    return [mode for mode in _DEPLOYMENT_MODES if mode in covered or mode in window]
+
+
+def _reported_search_modes(reported: Any) -> list[str] | None:
+    """Normalise a simulator's own search-mode report into contract values.
+
+    A simulator that reports an unknown spelling gets no field rather than a
+    guessed one, so a client can tell "not reported" from "searched one mode".
+    """
+    if not isinstance(reported, (list, tuple)):
+        return None
+    modes = [mode for mode in _DEPLOYMENT_MODES if any(item == mode for item in reported)]
+    return modes or None
+
+
 def _aisimulate_recommendation_config(
     req: RecommendRequest,
     *,
@@ -1344,13 +1386,10 @@ def _aisimulate_recommendation_config(
     # per-window timeout on redundant optimizer trials.
     is_pareto = req.objective == "pareto"
     is_demand = req.objective == "throughput_demand"
-    narrow_window = window_max_gpus == 1
-    # An aggregated sizing request searches that deployment only. A Pareto sweep
-    # keeps both modes. Request validation rejects a mode with Pareto, so the
-    # `not is_pareto` guard only protects configs built directly in tests; keep
-    # it so a direct caller cannot silently narrow a sweep.
-    aggregate_only = req.mode == "agg" and not is_pareto
-    modes = ["aggregated"] if narrow_window or aggregate_only else ["aggregated", "disaggregated"]
+    modes = [
+        _SDK_DEPLOYMENT_MODES[mode]
+        for mode in _aisimulate_search_modes(req, (window_min_gpus, window_max_gpus))
+    ]
     max_trials, parallelism, candidate_timeout_seconds = _recommendation_trial_budget(
         req.objective,
         window_max_gpus,
@@ -2077,6 +2116,7 @@ def _sweep_meta(result: Any, req: RecommendRequest, *, window: tuple[int, int]) 
         # The sweep started at the fit floor, so the ceiling it was allowed to
         # reach follows the same policy the resolver used.
         effective_max_gpus=_effective_search_ceiling(configured_max_gpus, window_min_gpus),
+        modes_searched=_aisimulate_search_modes(req, window),
     )
 
 
@@ -2108,12 +2148,16 @@ def _run_demand_windows(
     timed_out = 0
     budget_exhausted = False
     run_id: str | None = None
+    modes_searched: list[str] = []
     for lower, upper in windows:
         remaining = deadline - time.monotonic()
         if attempted and remaining < _DEMAND_MIN_WINDOW_S:
             budget_exhausted = True
             break
         attempted.append((lower, upper))
+        modes_searched = _merge_search_modes(
+            modes_searched, _aisimulate_search_modes(req, (lower, upper))
+        )
         window_max_trials, window_parallelism, candidate_timeout = (
             _recommendation_trial_budget(req.objective, upper)
         )
@@ -2179,6 +2223,7 @@ def _run_demand_windows(
         window_max_gpus=last[1],
         configured_max_gpus=_max_candidate_gpus(),
         effective_max_gpus=windows[-1][1],
+        modes_searched=modes_searched or None,
     )
 
 
@@ -2226,6 +2271,7 @@ def _run_min_gpus_windows(
     run_id: str | None = None
     result: Any | None = None
     best_gpus: int | None = None
+    modes_searched: list[str] = []
 
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
@@ -2236,6 +2282,9 @@ def _run_min_gpus_windows(
             _recommendation_trial_budget(req.objective, upper)
         )
         attempted.append((lower, upper))
+        modes_searched = _merge_search_modes(
+            modes_searched, _aisimulate_search_modes(req, (lower, upper))
+        )
         # Honour this window's own trial budget when time allows. The per-wave
         # timeout absorbs the remaining time rather than shrinking the sample
         # count, so a wide window is not under-sampled by a pessimistic
@@ -2347,6 +2396,7 @@ def _run_min_gpus_windows(
         window_max_gpus=max(upper for _, upper in attempted),
         configured_max_gpus=configured,
         effective_max_gpus=ceiling,
+        modes_searched=modes_searched or None,
     )
 
 
@@ -3645,6 +3695,9 @@ def _run_capacity_recommendation(
             window_max_gpus=upper_gpus,
             configured_max_gpus=_max_candidate_gpus(),
             effective_max_gpus=upper_gpus,
+            # Capacity enumerates aggregated shapes and reports disaggregated
+            # comparison options separately, so it searches one mode.
+            modes_searched=["agg"],
         )
         return primary.config, primary.capacity, sweep, options
 
@@ -4433,6 +4486,10 @@ def post_recommend(
                 window_max_gpus=summary.get("effective_max_gpus"),
                 configured_max_gpus=summary.get("configured_max_gpus"),
                 effective_max_gpus=summary.get("effective_max_gpus"),
+                # BLIS reports the modes its candidate grid covered in its own
+                # search summary; mirror it into the shared sweep facts so a
+                # client reads one field for both simulators.
+                modes_searched=_reported_search_modes(summary.get("modes_searched")),
             )
             if req.objective == "pareto":
                 candidates = [

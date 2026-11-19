@@ -1071,6 +1071,33 @@ class TestRecommendServingMode:
 
         assert request.fabric is None
 
+    def test_the_search_modes_follow_the_mode_and_the_window(self):
+        request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
+
+        # An omitted mode keeps the pre-existing search, which includes P/D when
+        # the window has room for two pools.
+        assert app_module._aisimulate_search_modes(request, (4, 16)) == ["agg", "disagg"]
+        # A one-GPU window cannot hold a P/D deployment.
+        assert app_module._aisimulate_search_modes(request, (1, 1)) == ["agg"]
+
+        aggregated = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+        assert app_module._aisimulate_search_modes(aggregated, (4, 16)) == ["agg"]
+
+    def test_a_merged_ladder_reports_every_mode_it_covered(self):
+        assert app_module._merge_search_modes(["agg"], ["agg", "disagg"]) == [
+            "agg",
+            "disagg",
+        ]
+        assert app_module._merge_search_modes([], ["agg"]) == ["agg"]
+
+    def test_an_unreported_search_mode_is_absent_rather_than_guessed(self):
+        assert app_module._reported_search_modes(None) is None
+        assert app_module._reported_search_modes([]) is None
+        assert app_module._reported_search_modes(["aggregated"]) is None
+        assert app_module._reported_search_modes(["agg", "disagg"]) == ["agg", "disagg"]
+
     def test_omitted_fabric_takes_the_catalog_default_before_the_mode_check(self):
         # Omission is not "no fabric": the simulator's default names the
         # topology, so a disagg request that leaves the field out still runs.
@@ -1230,6 +1257,48 @@ class TestRunDemandWindows:
         return app_module.RecommendRequest.model_validate(
             {**VALID_DEMAND_BODY, **overrides}
         )
+
+    def test_reports_the_modes_the_ladder_searched(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="fits", used_gpus=8, metrics=_demand_metrics(12.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+                provenance=MockRecommendationProvenance(run_id="run-demand"),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _records, sweep = app_module._run_demand_windows(self._request())
+
+        # Demand keeps the simulator's own search when the page sends no mode,
+        # so the response says which deployments were explored.
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_an_aggregated_demand_search_reports_one_mode(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+
+        def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
+            return MockLedgerRecommendationResult(
+                candidates=[
+                    MockLedgerCandidate(
+                        candidate_id="fits", used_gpus=8, metrics=_demand_metrics(12.0)
+                    )
+                ],
+                counts=MockRecommendationCounts(evaluated=4, feasible=1, timed_out=0),
+                provenance=MockRecommendationProvenance(run_id="run-demand"),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+        _records, sweep = app_module._run_demand_windows(self._request(mode="agg"))
+
+        assert sweep.modes_searched == ["agg"]
 
     def test_stops_at_the_first_window_that_sustains_the_rate(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -1445,6 +1514,35 @@ class TestRunMinGpusWindows:
         assert sweep.effective_max_gpus == 32
         assert sweep.run_id == "run-min"
         assert sweep.evaluated == 2
+
+    def test_reports_both_modes_for_the_wide_ladder(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8),
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(self._request())
+
+        assert sweep.modes_searched == ["agg", "disagg"]
+
+    def test_reports_one_mode_for_an_aggregated_request(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
+        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_recommendation",
+            lambda request, **kwargs: self._result(8),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "mode": "agg"}
+        )
+
+        _result, sweep = app_module._run_min_gpus_windows(request)
+
+        assert sweep.modes_searched == ["agg"]
 
     def test_passes_the_window_parallelism_with_its_trial_budget(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
@@ -2341,6 +2439,17 @@ class TestRunCapacityRecommendation:
         assert config.tokens_per_second == 250.0
         assert options[0].role == "minimum"
         assert options[0].config is config
+
+    def test_capacity_reports_the_single_mode_it_enumerated(self, monkeypatch):
+        _config, _capacity, sweep, _options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=100_000)],
+            prediction=self._available_prediction(),
+            max_candidate_gpus=8,
+        )
+        # Capacity enumerates aggregated shapes and returns P/D comparison
+        # options separately, so its search covered one deployment mode.
+        assert sweep.modes_searched == ["agg"]
 
     def test_gpus_over_minimum_is_measured_from_the_fitting_minimum(self, monkeypatch):
         _config, capacity, _sweep, options = self._run(
