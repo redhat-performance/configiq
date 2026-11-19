@@ -78,6 +78,9 @@ const aisimulateFabric = vi.hoisted(() => ({
   defaultNetwork: null as string | null,
 }));
 
+// Which comparison options a capacity run can return, as the catalog reports it.
+const capacityCapability = vi.hoisted(() => ({ disaggregated: false }));
+
 vi.mock('@/lib/hooks/useCatalog', () => {
   const buildCatalog = () => {
   const backend = {
@@ -91,7 +94,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     systems: {},
     systemDefaults: {},
     disaggregationRequiresFabric: true,
-    capacityOptions: { disaggregated: false },
+    capacityOptions: { disaggregated: capacityCapability.disaggregated },
   };
   const aisimulateBackend = {
     ...backend,
@@ -232,6 +235,7 @@ beforeEach(() => {
   aisimulateFabric.required = false;
   aisimulateFabric.networks = [];
   aisimulateFabric.defaultNetwork = null;
+  capacityCapability.disaggregated = false;
   settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -687,5 +691,35 @@ describe('recommend sizing shared views', () => {
     expect(row).not.toBeNull();
     const pressed = Array.from(row?.querySelectorAll('button[aria-pressed="true"]') ?? []);
     expect(pressed).toHaveLength(0);
+  });
+
+  it('describes the capacity options the catalog reports', async () => {
+    const search = '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity';
+    // The deployment-view block sits in the expandable input panel, so open it
+    // once; it stays open across the remount below.
+    const expand = async () => {
+      const adjust = Array.from(container.querySelectorAll('button'))
+        .find(button => (button.textContent ?? '').startsWith('Adjust?'));
+      if (adjust == null) return;
+      await act(async () => {
+        adjust.click();
+        await Promise.resolve();
+      });
+    };
+
+    await mountAt(search);
+    await expand();
+    expect(container.textContent).toContain(
+      'reports the aggregated deployments that hold the target',
+    );
+
+    // The catalog now reports a P/D comparison option, so the control explains
+    // both kinds of result the service can return. The input panel stays open
+    // across the re-render, so the changed copy is visible without reopening it.
+    capacityCapability.disaggregated = true;
+    await mountAt(search);
+    expect(container.textContent).toContain(
+      'reports aggregated and disaggregated options',
+    );
   });
 });

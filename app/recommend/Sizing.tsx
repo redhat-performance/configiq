@@ -282,6 +282,9 @@ export default function Sizing() {
   // The catalog reports whether a P/D run needs a fabric, so the control
   // follows that capability instead of assuming a topology.
   const fabricRequired = engineBackend?.disaggregationRequiresFabric ?? false;
+  // Whether a capacity run can return disaggregated comparison options, so the
+  // explanation describes the options the service really offers.
+  const capacityOffersDisagg = engineBackend?.capacityOptions.disaggregated ?? false;
   // Name the release in the "cannot disaggregate" explanation without ever
   // rendering an empty version.
   const modeledBackendLabel = [
@@ -965,7 +968,8 @@ export default function Sizing() {
       ...(fabric === undefined ? {} : { fabric }),
       // The selected serving mode, for a goal that can act on it. Demand and
       // capacity report the deployment they sized, so a mode here would state a
-      // narrowing the response does not honour. A sweep searches both modes.
+      // narrowing the response does not honour. A sweep rejects the field, so
+      // it omits the mode and reports the deployments it covered.
       ...(pareto || aggregateOnlyGoal ? {} : { mode: servingMode }),
     };
   };
@@ -977,9 +981,8 @@ export default function Sizing() {
 
   const handlePareto = () => {
     setInputsDirty(false);
-    // The sweep reads the same deployment view as sizing: a P/D view names the
-    // fabric, while an aggregated view asks for aggregate candidates only. It
-    // omits the mode, which a sweep rejects.
+    // A sweep rejects the mode field, so it reads only the fabric the selected
+    // view submits; the response reports which deployments the search covered.
     startPareto(buildRecommendParams({ pareto: true }));
   };
 
@@ -1297,7 +1300,9 @@ export default function Sizing() {
               {aggregateOnlyGoal && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
                   {isCapacity
-                    ? 'Capacity sizing reports aggregated and disaggregated options; it does not search one serving mode.'
+                    ? capacityOffersDisagg
+                      ? 'Capacity sizing reports aggregated and disaggregated options; it does not search one serving mode.'
+                      : 'Capacity sizing reports the aggregated deployments that hold the target; it does not search one serving mode.'
                     : 'Demand sizing reports the deployment that sustains the arrival rate; it does not take a serving mode.'}
                 </span>
               )}
