@@ -511,7 +511,7 @@ export function FrontierPanel({
         <CardTitle>
           <div className={styles.titleRow}>
             <h2 id="frontier-heading" className={styles.title}>Pareto frontier</h2>
-            <span className={styles.subtitle}>Efficiency trade-off across aggregated and disaggregated deployments</span>
+            <span className={styles.subtitle}>{frontierSubtitle(state)}</span>
           </div>
         </CardTitle>
         <CardBody>
@@ -521,7 +521,7 @@ export function FrontierPanel({
               <div>
                 <div className={styles.loadingTitle}>Evaluating the efficiency frontier…</div>
                 <div className={styles.loadingHint}>
-                  Testing a range of GPU counts across aggregated and disaggregated deployments.
+                  Testing a range of GPU counts for this workload.
                   {elapsed > 0 && <> <span className={styles.elapsed}>{elapsed}s elapsed.</span></>}
                   {timeoutSeconds != null && <> The gateway limit is {timeoutSeconds}s.</>}
                 </div>
@@ -645,4 +645,25 @@ export function FrontierPanel({
       </Card>
     </section>
   );
+}
+
+/**
+ * Describe the deployments the sweep reported covering.
+ *
+ * The frontier must not promise both deployment modes: a run can ask for
+ * aggregated candidates only, and a simulator can stop before reaching P/D.
+ * While loading nothing is known yet, so describe the workload instead.
+ */
+function frontierSubtitle(state: FrontierState): string {
+  if (state.status !== 'ready') {
+    return 'Efficiency trade-off for this workload';
+  }
+  const modes = state.sweep?.modesSearched;
+  if (modes?.length === 1 && modes[0] === 'agg') {
+    return 'Efficiency trade-off across aggregated deployments';
+  }
+  if (modes?.length === 1 && modes[0] === 'disagg') {
+    return 'Efficiency trade-off across disaggregated deployments';
+  }
+  return 'Efficiency trade-off across aggregated and disaggregated deployments';
 }
