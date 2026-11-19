@@ -338,11 +338,16 @@ interface Reading {
   text: string;
 }
 
-/** Every match of every pattern, in pattern then text order. */
+/**
+ * Every match of every pattern, in pattern then text order.
+ *
+ * The `d` flag is always on so a caller can ask the match where one of its
+ * capture groups came from, rather than searching the text again.
+ */
 function eachMatch(text: string, patterns: RegExp[]): RegExpExecArray[] {
   const matches: RegExpExecArray[] = [];
   for (const pattern of patterns) {
-    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const flags = `${pattern.flags}${pattern.flags.includes('g') ? '' : 'g'}${pattern.flags.includes('d') ? '' : 'd'}`;
     for (const match of text.matchAll(new RegExp(pattern.source, flags))) matches.push(match);
   }
   return matches;
@@ -360,15 +365,16 @@ interface Span {
  * 4096 input tokens`, the explicit pattern starts at `TTFT` and reads `4096`,
  * while the trailing pattern reads `1second`. Only the numbers decide whether
  * one pattern is reusing another's target.
+ *
+ * The offset comes from the capture itself. Searching the match for the digits
+ * would find the `2` in `e2e` instead of the target in `e2e latency 2 s`.
  */
 function numberSpans(text: string, patterns: RegExp[]): Span[] {
   const spans: Span[] = [];
   for (const match of eachMatch(text, patterns)) {
-    const number = match[1];
+    const number = match.indices?.[1];
     if (!number) continue;
-    const offset = match[0].indexOf(number);
-    if (offset === -1) continue;
-    spans.push({ start: match.index + offset, end: match.index + offset + number.length });
+    spans.push({ start: number[0], end: number[1] });
   }
   return spans;
 }
@@ -472,22 +478,29 @@ const LATENCY_PATTERNS = [
  *
  * "time per output token 25 ms with output length 512" names one latency and
  * one length. Read as counts, `output token 25` looks like 25 output tokens, so
- * the real length would be dropped as ambiguous. Blanking the latency spans
- * keeps each number with the field that owns it, without narrowing the count
- * patterns and losing ordinary phrasing.
+ * the real length would be dropped as ambiguous. Blanking the latency label
+ * keeps the count and the label apart, without narrowing the count patterns and
+ * losing ordinary phrasing.
+ *
+ * A label with no time unit ("ITL at 4096 input tokens") is not a latency
+ * target, so its number is kept rather than blanked: it is the length that
+ * follows. Only the label is masked, so it cannot pair with that number as a
+ * count either.
  */
 function withoutLatencies(text: string, patterns: RegExp[]): string {
-  let masked = text;
-  // Every replacement has the same length as its match, so the indices found in
-  // the original text stay valid.
+  const masked = text.split('');
   for (const match of eachMatch(text, patterns)) {
-    // A label with no time unit ("ITL at 4096 input tokens") names no latency.
-    // Blanking its number would also delete the input length that follows.
-    if (!match[2]) continue;
     const start = match.index;
-    masked = `${masked.slice(0, start)}${' '.repeat(match[0].length)}${masked.slice(start + match[0].length)}`;
+    const end = start + match[0].length;
+    // With a unit the whole expression is a latency; without one, the number
+    // may belong to the count that follows.
+    const keep = match[2] ? null : match.indices?.[1];
+    for (let index = start; index < end; index += 1) {
+      if (keep && index >= keep[0] && index < keep[1]) continue;
+      masked[index] = ' ';
+    }
   }
-  return masked;
+  return masked.join('');
 }
 
 /**

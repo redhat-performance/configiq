@@ -433,6 +433,36 @@ describe('proposeView', () => {
     }
   });
 
+  it('finds the target after a label that contains a digit', () => {
+    const proposal = proposeView({
+      question: 'Recommend e2e latency 2 s TTFT 1 s at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // The `2` in `e2e` is not a target. The claimed span has to point at the
+    // `2 s` that follows, or the trailing form reads it as the first-token
+    // target and the real `1 s` becomes ambiguous.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.e2eLatency).toBe(2000);
+    expect(values.ttft).toBe(1000);
+  });
+
+  it('keeps an output length after a latency label with no unit', () => {
+    const proposal = proposeView({
+      question:
+        'Recommend time per output token 25 with output length 512 at 1024 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // `output token 25` must not be read as an output length. Masking the label
+    // leaves `25` in place, which no count pattern pairs with, and `output
+    // length 512` is still read.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.osl).toBe(512);
+    expect(values.isl).toBe(1024);
+    expect(values.tpot).toBeUndefined();
+  });
+
   it('reads inter-token latency as time per output token', () => {
     const proposal = proposeView({
       question: 'Recommend a size for ITL of 50 ms at 4096 input tokens.',
