@@ -720,6 +720,50 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
     assert any(call.prefill_instances == 1 and call.decode_instances == 1 for call, _docs in calls)
 
 
+def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    monkeypatch.setattr(blis_service, "run_blis", lambda *_args, **_kwargs: _result())
+
+    result = blis_service.recommend(blis_service.RecommendInput(
+        model_path="Qwen/Qwen3-32B",
+        system="h100_sxm",
+        backend="vllm",
+        backend_version=None,
+        isl=2048,
+        osl=128,
+        concurrency=8,
+        request_rate=None,
+        ttft=1000,
+        tpot=30,
+        request_latency=None,
+        prefix=0,
+        min_candidate_gpus=1,
+        max_candidate_gpus=8,
+        # One aggregate shape fills the requested top-N, so the grid stops at
+        # the end of its group before the P/D half runs.
+        top_n=1,
+        search_budget_seconds=60,
+        fabric="ib-400g",
+    ))
+
+    assert result.search_summary["modes_searched"] == ["agg"]
+    assert all(config["mode"] == "agg" for config in result.configs)
+    assert all(
+        any(
+            "stopped before evaluating a P/D candidate" in warning
+            for warning in config["warnings"]
+        )
+        for config in result.configs
+    )
+
+
 def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monkeypatch, catalog):
     runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
