@@ -412,6 +412,16 @@ test('Recommend submits the deployment view the control shows', async ({ page })
     return api.posts['/api/recommend']
   }
 
+  // Untouched, the page pins no view: it must not narrow the search, so the
+  // service picks the deployment. Before a run the summary claims no view.
+  await expect(page.getByText(/Deployment view: service default/)).toBeVisible()
+  const untouched = await calculate()
+  expect(untouched).toMatchObject({ objective: 'min_gpus' })
+  expect(untouched).not.toHaveProperty('mode')
+  // The mocked service answered with an aggregated recommendation, so the
+  // summary reports the deployment that was served.
+  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+
   await page.getByRole('button', { name: 'Aggregated', exact: true }).click()
   const aggregated = await calculate()
   expect(aggregated).toMatchObject({ mode: 'agg', objective: 'min_gpus' })
@@ -421,10 +431,14 @@ test('Recommend submits the deployment view the control shows', async ({ page })
   await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
-  const disaggregated = await calculate()
-  expect(disaggregated).toMatchObject({ mode: 'disagg', objective: 'min_gpus' })
+  // Before the run the summary states the view the next request pins.
   await expect(page.getByText(/Deployment view: disaggregated/)).toBeVisible()
+  expect((await calculate())).toMatchObject({ mode: 'disagg', objective: 'min_gpus' })
   await expect(page.getByText('Prefill and decode have separate inputs in this view.')).toBeVisible()
+  // The mocked service answers with an aggregated recommendation, so the
+  // summary must report what was returned rather than what was asked for.
+  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+  await expect(page.getByText('The last run returned an aggregated recommendation instead.')).toBeVisible()
 })
 
 test('KV cache submits selected capacity inputs and renders the mocked result', async ({ page }) => {

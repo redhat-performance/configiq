@@ -46,8 +46,11 @@ export interface CurrentRecommendInputs {
   decodeMaxSeqLen: number | null
   /** `undefined` means fabric is not required for this goal; `null` means omitted on purpose. */
   effectiveFabric: string | null | undefined
-  /** Serving mode the next Calculate would send. Pareto omits the field. */
-  servingMode: 'agg' | 'disagg'
+  /**
+   * Serving mode the next Calculate would submit: `null` when the page pins no
+   * view and leaves the deployment to the service. Pareto omits the field.
+   */
+  servingMode: 'agg' | 'disagg' | null
 }
 
 /**
@@ -57,7 +60,9 @@ export interface CurrentRecommendInputs {
  * contract gives the field:
  *
  * - `undefined` — omit it. An aggregate-only goal makes no topology claim, and
- *   a backend that models no fabric has nothing to name.
+ *   a backend that models no fabric has nothing to name, and an unpinned view
+ *   leaves the fabric to the service's documented default so it can search
+ *   either deployment.
  * - `null` — ask the service for aggregate candidates only. A backend that
  *   cannot model prefill/decode, or an explicitly aggregated view, cannot use a
  *   fabric.
@@ -71,9 +76,12 @@ export function resolveSearchFabric(
   aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
-  servingMode: 'agg' | 'disagg',
+  servingMode: 'agg' | 'disagg' | null,
 ): string | null | undefined {
   if (!fabricRequired || aggregateOnlyGoal) return undefined
+  // No pinned view: naming a fabric here would settle the deployment the page
+  // deliberately left to the service.
+  if (servingMode == null) return undefined
   if (!disaggSupported || servingMode === 'agg') return null
   return selectedFabric || null
 }
