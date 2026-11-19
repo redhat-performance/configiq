@@ -945,13 +945,19 @@ describe('performance page parameter defaults', () => {
 
   it('reads a link that omits the prefix as a cold request', async () => {
     // Links written before the system-prompt default left the field out and
-    // meant 0, so the recipient must not inherit the new 200-token default.
-    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+    // meant 0, so the recipient must not inherit the new 200-token default —
+    // including when its inputs are shorter than 200, where the inherited
+    // prefix would make the view invalid.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128&osl=128');
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Shared prefix tokens"]')?.value)
+      .toBe('0');
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(false);
 
     await act(async () => {
-      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent === 'Calculate')
-        ?.click();
+      calculate?.click();
     });
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1026,12 +1032,49 @@ describe('performance page parameter defaults', () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')
-      ?.getAttribute('aria-invalid')).toBe('true');
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]');
+    expect(field?.getAttribute('aria-invalid')).toBe('true');
+    // The rejection states the accepted range, and the input describes it.
+    expect(field?.getAttribute('aria-describedby')).toBe('predict-requests-per-user-error');
+    expect(container.querySelector('#predict-requests-per-user-error')?.textContent)
+      .toContain('1 to 1,000,000');
     const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Calculate');
     expect(calculate?.disabled).toBe(true);
     expect(fetchEstimateAsInferenceResult).not.toHaveBeenCalled();
+  });
+
+  it('clears a per-user request count when a newly opened link omits it', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&requestsPerLoadUnit=4');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('4');
+
+    // A second link describes the same view without the optional count.
+    // Omission means one total request, so the previous 4 must not leak into
+    // the request the page would now send.
+    window.history.replaceState(
+      {},
+      '',
+      '/predict?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=1024',
+    );
+    navigation.search = window.location.search;
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .not.toHaveProperty('requests_per_load_unit');
   });
 
   it('keeps current values visible on collapsed assumption rows', async () => {

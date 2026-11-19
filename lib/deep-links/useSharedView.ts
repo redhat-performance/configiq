@@ -24,7 +24,7 @@ export interface SharedViewOptions<F extends LinkFieldMap, B extends keyof F> {
   /** Values this page always sends but does not own as state (provenance). */
   provenance?: Partial<LinkValues<F>>;
   /** Runs after a link's values are applied: mark a retained result stale, etc. */
-  onApplied?: () => void;
+  onApplied?: (values: LinkValues<F>) => void;
 }
 
 export interface SharedView<F extends LinkFieldMap> extends DeepLinkState<F> {
@@ -64,7 +64,9 @@ export function useSharedView<F extends LinkFieldMap, B extends keyof F>(
     } else {
       applyLinkValues(values, fields.current);
     }
-    applied.current?.();
+    // The hook's caller sees what the link itself stated, not the absence fill,
+    // so a field the link omits can be reported as unaddressed.
+    applied.current?.(values);
   });
 
   const build = React.useCallback(

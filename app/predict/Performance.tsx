@@ -167,6 +167,10 @@ interface AccordionField {
   invalid?: boolean;
   placeholder?: string;
   help?: string;
+  /** A correction shown instead of the help text while `invalid` is set. */
+  error?: string;
+  /** Id of `error`, so the input describes the correction rather than sitting beside it. */
+  errorId?: string;
   options?: Array<string | { value: string; label: string }>;
   min?: number;
   max?: number;
@@ -783,8 +787,17 @@ export default function Performance() {
       backendVersion: backendVersion || undefined,
       simulator: simulator || undefined,
     },
-    // A retained result no longer matches the form the link just described.
-    onApplied: markInputsDirty,
+    // A retained result no longer matches the form the link described, and a
+    // count the link does not state is unset rather than whatever this page
+    // was showing: omission means one total request, so keeping 4 would
+    // submit a reuse the link never asked for.
+    onApplied: (values) => {
+      if (!('requestsPerLoadUnit' in values)) {
+        setRequestsPerLoadUnit(null);
+        setRequestsPerLoadUnitInput('');
+      }
+      markInputsDirty();
+    },
   });
 
   // Provenance is applied separately: a differing simulator is never switched
@@ -1473,6 +1486,8 @@ export default function Performance() {
           type: 'number' as const,
           invalid: invalidRequestsPerLoadUnit,
           help: 'How many requests each concurrent user sends. Requests after the first can reuse the shared prefix when one is set. Leave empty to simulate one request across all users.',
+          error: `Enter a count from 1 to ${MAX_REQUESTS_PER_LOAD_UNIT.toLocaleString('en-US')}, or leave it empty.`,
+          errorId: 'predict-requests-per-user-error',
           onChange: (val: string) => handleRequestsPerLoadUnitChange(val)
         },
       ],
@@ -2675,9 +2690,17 @@ export default function Performance() {
                       type="number"
                       validated={f.invalid ? 'error' : 'default'}
                       placeholder={f.placeholder}
+                      aria-describedby={f.invalid && f.error && f.errorId ? f.errorId : undefined}
                       onChange={(_, val) => f.onChange?.(val)}
                     />
-                    {f.help && (
+                    {f.invalid && f.error && f.errorId ? (
+                      <div
+                        id={f.errorId}
+                        style={{ fontSize: '12px', color: '#c9190b', marginTop: '4px', lineHeight: '1.5' }}
+                      >
+                        {f.error}
+                      </div>
+                    ) : f.help && (
                       <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
                         {f.help}
                       </div>
