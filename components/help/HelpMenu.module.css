@@ -23,6 +23,12 @@
   max-height: calc(100vh - 9rem);
   /* Mobile browsers report a smaller visible viewport than 100vh allows for. */
   max-height: calc(100dvh - 9rem);
+  /*
+   * At a viewport shorter than the 9rem reserved above, the maximum resolves
+   * below a usable height. A floor keeps the search box and the start of the
+   * answer on screen rather than collapsing the panel to nothing.
+   */
+  min-height: 6rem;
   overflow-y: auto;
   overscroll-behavior: contain;
 }

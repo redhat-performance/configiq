@@ -237,13 +237,17 @@ const AFTER_TPOT = new RegExp(
  * label-first patterns cannot read these, because no connective ties the
  * number to the word that follows it, and the number would otherwise be read
  * as a length or ignored.
+ *
+ * A minus sign in front of the number is not a target, and a digit or decimal
+ * point means the match would be the tail of a longer number, so neither may
+ * start the number.
  */
 const TRAILING_TTFT = new RegExp(
-  String.raw`${NUMBER}\s*${TIME_UNIT}\s*(?:ttft|time\s+to\s+first\s+token|first\s+token)\b`,
+  String.raw`(?<![\d.,-])${NUMBER}\s*${TIME_UNIT}\s*(?:ttft|time\s+to\s+first\s+token|first\s+token)\b`,
   'i',
 );
 const TRAILING_TPOT = new RegExp(
-  String.raw`${NUMBER}\s*${TIME_UNIT}\s*${TPOT_LABEL}\b`,
+  String.raw`(?<![\d.,-])${NUMBER}\s*${TIME_UNIT}\s*${TPOT_LABEL}\b`,
   'i',
 );
 
@@ -344,6 +348,31 @@ function eachMatch(text: string, patterns: RegExp[]): RegExpExecArray[] {
   return matches;
 }
 
+interface Span {
+  start: number;
+  end: number;
+}
+
+/**
+ * The number each pattern captured, not the whole match.
+ *
+ * Two patterns can share a label without sharing a target: in `1second TTFT at
+ * 4096 input tokens`, the explicit pattern starts at `TTFT` and reads `4096`,
+ * while the trailing pattern reads `1second`. Only the numbers decide whether
+ * one pattern is reusing another's target.
+ */
+function numberSpans(text: string, patterns: RegExp[]): Span[] {
+  const spans: Span[] = [];
+  for (const match of eachMatch(text, patterns)) {
+    const number = match[1];
+    if (!number) continue;
+    const offset = match[0].indexOf(number);
+    if (offset === -1) continue;
+    spans.push({ start: match.index + offset, end: match.index + offset + number.length });
+  }
+  return spans;
+}
+
 /**
  * Every count the question states for one field.
  *
@@ -367,10 +396,17 @@ function counts(text: string, patterns: RegExp[]): Reading[] {
  * milliseconds because that is the unit the page stores. A bare number with no
  * unit is not carried: `TTFT 2` could be two seconds or two milliseconds, and
  * picking one would invent a target.
+ *
+ * `claimed` holds the spans another field already read. A trailing label can
+ * sit immediately after another field's target ("TTFT 2 s TPOT 50 ms"), and
+ * that earlier number is not this field's target.
  */
-function durations(text: string, patterns: RegExp[]): Reading[] {
+function durations(text: string, patterns: RegExp[], claimed: Span[] = []): Reading[] {
   const readings: Reading[] = [];
   for (const match of eachMatch(text, patterns)) {
+    const start = match.index;
+    const end = start + (match[1]?.length ?? 0);
+    if (claimed.some((span) => start < span.end && span.start < end)) continue;
     const unit = match[2]?.toLowerCase();
     if (!unit) continue;
     const value = toNumber(match[1]);
@@ -385,6 +421,36 @@ function durations(text: string, patterns: RegExp[]): Reading[] {
   }
   return readings;
 }
+
+/**
+ * The readings from several pattern sets, with the same value kept once.
+ *
+ * A question can state one target in both forms ("50 ms per output token" is
+ * read by the explicit and the trailing pattern), and the same value is one
+ * target, not an alternative.
+ */
+function uniqueReadings(...groups: Reading[][]): Reading[] {
+  const readings: Reading[] = [];
+  for (const reading of groups.flat()) {
+    if (readings.some((existing) => existing.value === reading.value)) continue;
+    readings.push(reading);
+  }
+  return readings;
+}
+
+/**
+ * The latency patterns that name their field explicitly, by label before the
+ * number or by a connective after it. The number they read is authoritative: a
+ * trailing label may not reuse it.
+ */
+const EXPLICIT_LATENCY = [
+  BEFORE_TTFT,
+  AFTER_TTFT,
+  BEFORE_TPOT,
+  AFTER_TPOT,
+  BEFORE_E2E,
+  AFTER_E2E,
+];
 
 /**
  * Every pattern that names a latency. Used to blank those expressions out
@@ -415,6 +481,9 @@ function withoutLatencies(text: string, patterns: RegExp[]): string {
   // Every replacement has the same length as its match, so the indices found in
   // the original text stay valid.
   for (const match of eachMatch(text, patterns)) {
+    // A label with no time unit ("ITL at 4096 input tokens") names no latency.
+    // Blanking its number would also delete the input length that follows.
+    if (!match[2]) continue;
     const start = match.index;
     masked = `${masked.slice(0, start)}${' '.repeat(match[0].length)}${masked.slice(start + match[0].length)}`;
   }
@@ -665,11 +734,25 @@ export function proposeView(context: ProposalContext): ProposedView | null {
   place('demandRate', counts(countsFrom, [REQUEST_RATE, RATE_SHORTHAND]), (reading) =>
     `Request rate: ${reading.text} requests per second.`,
   );
-  place('ttft', durations(question, [AFTER_TTFT, TRAILING_TTFT, BEFORE_TTFT]), (reading) =>
-    `Time to first token: ${reading.text}.`,
+  // A trailing label may follow another field's target ("TTFT 2 s TPOT
+  // 50 ms"). The explicit span owns that number, so the trailing form does not
+  // read it as a second target and turn one value into an ambiguity.
+  const explicitSpans = numberSpans(question, EXPLICIT_LATENCY);
+  place(
+    'ttft',
+    uniqueReadings(
+      durations(question, [AFTER_TTFT, BEFORE_TTFT]),
+      durations(question, [TRAILING_TTFT], explicitSpans),
+    ),
+    (reading) => `Time to first token: ${reading.text}.`,
   );
-  place('tpot', durations(question, [AFTER_TPOT, TRAILING_TPOT, BEFORE_TPOT]), (reading) =>
-    `Time per output token: ${reading.text}.`,
+  place(
+    'tpot',
+    uniqueReadings(
+      durations(question, [AFTER_TPOT, BEFORE_TPOT]),
+      durations(question, [TRAILING_TPOT], explicitSpans),
+    ),
+    (reading) => `Time per output token: ${reading.text}.`,
   );
   place('e2eLatency', durations(question, [AFTER_E2E, BEFORE_E2E]), (reading) =>
     `End-to-end latency: ${reading.text}.`,

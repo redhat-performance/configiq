@@ -387,6 +387,52 @@ describe('proposeView', () => {
     }
   });
 
+  it('does not read a negative number as a positive latency target', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for -2 s TTFT and -100ms ITL at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // A negative target is not a target. Reading the digits after the minus
+    // would turn it into 2 s and 100 ms, which the question did not ask for.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.ttft).toBeUndefined();
+    expect(values.tpot).toBeUndefined();
+  });
+
+  it('keeps a following length when a latency label states no time unit', () => {
+    const proposal = proposeView({
+      question: 'Recommend a size for ITL at 4096 input tokens.',
+      model: 'meta-llama/Llama-3.1-8B-Instruct',
+    });
+
+    // `ITL at 4096` is a label with a bare number, not a latency target: the
+    // number is the input length and must not be blanked out with the label.
+    const values = valuesOf(proposal!.link.href, recommendLink.parse);
+    expect(values.isl).toBe(4096);
+    expect(values.tpot).toBeUndefined();
+  });
+
+  it('does not let a trailing label claim the previous target', () => {
+    const cases = [
+      'Recommend TTFT 2 s TPOT 50 ms at 4096 input tokens.',
+      'Recommend TPOT 50 ms TTFT 2 s at 4096 input tokens.',
+    ];
+    for (const question of cases) {
+      const proposal = proposeView({
+        question,
+        model: 'meta-llama/Llama-3.1-8B-Instruct',
+      });
+
+      // `2 s` belongs to TTFT and `50 ms` to TPOT whichever order they appear
+      // in. The trailing form must not read the first target as its own and
+      // make the field ambiguous.
+      const values = valuesOf(proposal!.link.href, recommendLink.parse);
+      expect(values.ttft).toBe(2000);
+      expect(values.tpot).toBe(50);
+    }
+  });
+
   it('reads inter-token latency as time per output token', () => {
     const proposal = proposeView({
       question: 'Recommend a size for ITL of 50 ms at 4096 input tokens.',
