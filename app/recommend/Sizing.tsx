@@ -82,6 +82,18 @@ function goalFromParams(params: RecommendParams | null): SizingGoal {
   return 'latency';
 }
 
+/**
+ * Word a deployment view for the collapsed summary.
+ *
+ * `null` is the page's default, not a third deployment: the request pins no
+ * mode and the service returns whichever deployment answers the workload.
+ */
+function describeDeploymentView(mode: 'agg' | 'disagg' | null): string {
+  if (mode === 'agg') return 'aggregated';
+  if (mode === 'disagg') return 'disaggregated';
+  return 'service default (aggregated or disaggregated)';
+}
+
 // ─── FlipTile (reused from Quick Estimate pattern) ───────────────────────────
 
 function FlipTile({ dark = false, front, back }: {
@@ -385,10 +397,9 @@ export default function Sizing() {
   // configurations plus disaggregated comparison options. The page therefore
   // leaves the topology to the service for both goals.
   const aggregateOnlyGoal = isDemand || isCapacity;
-  // The mode the user or a shared link chose, or null while nothing has chosen
-  // one. A null choice derives from capability so this page keeps the
-  // deployment search it made before this control existed: aggregated only when
-  // the simulator cannot model prefill/decode or the goal has no mode to choose.
+  // The mode the user or a shared link pinned, or null while nothing has pinned
+  // one. A null choice is the page's default: it submits no mode, so the
+  // service resolves the deployment and the page reports what it resolved.
   const [servingModeChoice, setServingModeChoice] = React.useState<'agg' | 'disagg' | null>(null);
   // Whether the simulator can search a prefill/decode topology at all: it must
   // model one, the goal must offer the choice, and a P/D search needs a fabric,
@@ -400,10 +411,16 @@ export default function Sizing() {
   // The explicit "None" fabric is an aggregate-only request, so it leaves no P/D
   // topology either.
   const disaggSelectable = disaggCapable && (!fabricRequired || selectedNetworkFabric !== '');
-  // Clamp display and submission; never overwrite the choice. An explicit mode
-  // therefore survives a goal or simulator change and applies again as soon as
-  // the form can honour it.
-  const servingMode: 'agg' | 'disagg' = disaggSelectable ? servingModeChoice ?? 'disagg' : 'agg';
+  // Clamp submission; never overwrite the choice. An explicit mode therefore
+  // survives a goal or simulator change and applies again as soon as the form
+  // can honour it. A pinned prefill/decode view the form cannot honour falls
+  // back to an explicit aggregated request rather than a mode the service would
+  // reject, and an unpinned view submits nothing at all.
+  const servingMode: 'agg' | 'disagg' | null =
+    servingModeChoice === 'disagg' && !disaggSelectable ? 'agg' : servingModeChoice;
+  // Per-pool limits and fabric belong to a pinned prefill/decode view only: an
+  // unpinned run may be served aggregated, and `mode=agg` cannot carry them.
+  const disaggregatedView = servingMode === 'disagg';
   // A Pareto sweep is not a sizing goal, so it is unavailable only when the
   // simulator cannot compute one or the workload has no throughput trade-off.
   // It is unavailable for capacity because capacity already reports P/D options.
@@ -778,13 +795,16 @@ export default function Sizing() {
       write: (value) => { setMaxSeqLen(value); setMaxSeqLenInput(String(value)); },
     },
     servingMode: {
-      read: () => servingMode,
+      // A pinned view is part of the shared contract; an unpinned one is the
+      // default, so the link carries nothing and the recipient's own choice
+      // stands rather than inheriting a mode nobody picked.
+      read: () => servingMode ?? undefined,
       // A link names the topology the author was viewing, so applying it is an
       // explicit choice even while the current simulator cannot honour it.
       write: (value) => setServingModeChoice(value),
     },
     prefillMaxSeqLen: {
-      read: () => (servingMode === 'disagg' ? prefillMaxSeqLen ?? undefined : undefined),
+      read: () => (disaggregatedView ? prefillMaxSeqLen ?? undefined : undefined),
       write: (value, values) => {
         setPrefillMaxSeqLen(value);
         setPrefillMaxSeqLenInput(String(value));
@@ -795,7 +815,7 @@ export default function Sizing() {
       },
     },
     decodeMaxSeqLen: {
-      read: () => (servingMode === 'disagg' ? decodeMaxSeqLen ?? undefined : undefined),
+      read: () => (disaggregatedView ? decodeMaxSeqLen ?? undefined : undefined),
       write: (value, values) => {
         setDecodeMaxSeqLen(value);
         setDecodeMaxSeqLenInput(String(value));
@@ -878,6 +898,17 @@ export default function Sizing() {
   // presented as matching the inputs that produced it.
   const checkedSubmittedParams = React.useRef<typeof params>(null);
   const hasDisplayedResult = primaryResult != null || runMode === 'pareto';
+  // The view the collapsed summary reports: what the visible result was served
+  // in, or the view the next run pins once the form has moved on. Neither,
+  // while the page leaves the choice to the service.
+  const reportedServingMode: 'agg' | 'disagg' | null =
+    !inputsDirty && hasDisplayedResult && result ? result.mode : null;
+  const statedServingMode: 'agg' | 'disagg' | null = reportedServingMode ?? servingModeChoice;
+  // A pinned view the service did not return is worth saying out loud: the
+  // request asked for one deployment and the answer named another.
+  const pinnedViewServedDifferently = reportedServingMode != null
+    && servingModeChoice != null
+    && reportedServingMode !== servingModeChoice;
   React.useEffect(() => {
     if (!hydrated || !modelFromSettingsApplied || catalogLoading || !params || !hasDisplayedResult) return;
     if (checkedSubmittedParams.current === params) return;
@@ -900,8 +931,8 @@ export default function Sizing() {
       requestLatency,
       prefix,
       maxSeqLen,
-      prefillMaxSeqLen: servingMode === 'disagg' ? prefillMaxSeqLen : null,
-      decodeMaxSeqLen: servingMode === 'disagg' ? decodeMaxSeqLen : null,
+      prefillMaxSeqLen: disaggregatedView ? prefillMaxSeqLen : null,
+      decodeMaxSeqLen: disaggregatedView ? decodeMaxSeqLen : null,
       effectiveFabric: resolveSearchFabric(
         fabricRequired,
         aggregateOnlyGoal,
@@ -912,7 +943,7 @@ export default function Sizing() {
       servingMode,
     });
     if (!matches) setInputsDirty(true);
-  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
+  }, [hydrated, modelFromSettingsApplied, catalogLoading, params, hasDisplayedResult, model, gpuSystem, isl, osl, ttft, tpot, targetConcurrency, demandRate, prefix, maxSeqLen, prefillMaxSeqLen, decodeMaxSeqLen, servingMode, disaggregatedView, requestLatency, isCapacity, isDemand, aggregateOnlyGoal, fabricRequired, disaggSupported, selectedNetworkFabric]);
 
   const sizingObjective: RecommendObjective = isCapacity
     ? 'concurrency_capacity'
@@ -952,8 +983,8 @@ export default function Sizing() {
             }),
       prefix,
       ...(maxSeqLen != null ? { max_seq_len: maxSeqLen } : {}),
-      ...(servingMode === 'disagg' && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
-      ...(servingMode === 'disagg' && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
+      ...(disaggregatedView && prefillMaxSeqLen != null ? { prefill_max_seq_len: prefillMaxSeqLen } : {}),
+      ...(disaggregatedView && decodeMaxSeqLen != null ? { decode_max_seq_len: decodeMaxSeqLen } : {}),
       backend: inferenceBackend,
       ...(backendVersion ? { backend_version: backendVersion } : {}),
       // Send the HF config for models AISimulators can't resolve from its catalog.
@@ -969,8 +1000,9 @@ export default function Sizing() {
       // The selected serving mode, for a goal that can act on it. Demand and
       // capacity report the deployment they sized, so a mode here would state a
       // narrowing the response does not honour. A sweep rejects the field, so
-      // it omits the mode and reports the deployments it covered.
-      ...(pareto || aggregateOnlyGoal ? {} : { mode: servingMode }),
+      // it omits the mode and reports the deployments it covered. An unpinned
+      // view sends nothing, leaving the deployment to the service.
+      ...(pareto || aggregateOnlyGoal || servingMode == null ? {} : { mode: servingMode }),
     };
   };
 
@@ -1076,37 +1108,48 @@ export default function Sizing() {
 
         {fabricRequired && disaggCapable && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
-            <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
-            <FormSelect
-              id="recommend-network-fabric"
-              // Show what the request will submit. An aggregated view sends an
-              // explicit null even when a fabric name is still remembered, so
-              // displaying the remembered name would claim a topology the
-              // request does not use.
-              value={servingMode === 'disagg' ? selectedNetworkFabric : ''}
-              aria-label="Inter-node fabric"
-              isDisabled={availableNetworks.length === 0}
-              onChange={(_, value) => {
-                setNetworkFabric(value);
-                // A named fabric is a prefill/decode topology; "None" is the
-                // aggregate-only request. Record the explicit choice so a later
-                // capability change does not silently reverse it.
-                setServingModeChoice(value === '' ? 'agg' : 'disagg');
-                markInputsDirty();
-              }}
-            >
-              <FormSelectOption value="" label="None (aggregate candidates only)" />
-              {availableNetworks.map(network => (
-                <FormSelectOption key={network} value={network} label={network} />
-              ))}
-            </FormSelect>
-            <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
-              {servingMode === 'disagg'
-                ? networkFabric === null && defaultNetworkFabric
-                  ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
-                  : 'The simulator searches aggregate and P/D candidates using this fabric.'
-                : 'The aggregated view sends no fabric, so sizing and the Pareto frontier both ask for aggregated candidates only.'}
-            </div>
+            {servingMode == null ? (
+              // An unpinned view sends no fabric, so naming one here would
+              // decide the deployment the page just left to the service.
+              <div style={{ fontSize: 13, color: '#3c3f42' }}>
+                The service picks aggregated or prefill/decode and its own default fabric.
+                Choose Disaggregated to name a fabric.
+              </div>
+            ) : (
+              <>
+                <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
+                <FormSelect
+                  id="recommend-network-fabric"
+                  // Show what the request will submit. An aggregated view sends an
+                  // explicit null even when a fabric name is still remembered, so
+                  // displaying the remembered name would claim a topology the
+                  // request does not use.
+                  value={disaggregatedView ? selectedNetworkFabric : ''}
+                  aria-label="Inter-node fabric"
+                  isDisabled={availableNetworks.length === 0}
+                  onChange={(_, value) => {
+                    setNetworkFabric(value);
+                    // A named fabric is a prefill/decode topology; "None" is the
+                    // aggregate-only request. Record the explicit choice so a later
+                    // capability change does not silently reverse it.
+                    setServingModeChoice(value === '' ? 'agg' : 'disagg');
+                    markInputsDirty();
+                  }}
+                >
+                  <FormSelectOption value="" label="None (aggregate candidates only)" />
+                  {availableNetworks.map(network => (
+                    <FormSelectOption key={network} value={network} label={network} />
+                  ))}
+                </FormSelect>
+                <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
+                  {disaggregatedView
+                    ? networkFabric === null && defaultNetworkFabric
+                      ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
+                      : 'The simulator searches aggregate and P/D candidates using this fabric.'
+                    : 'The aggregated view sends no fabric, so sizing and the Pareto frontier both ask for aggregated candidates only.'}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1125,7 +1168,7 @@ export default function Sizing() {
               invalidISL ||
               invalidOSL ||
               invalidMaxSeqLen ||
-              (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) ||
+              (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) ||
               catalogLoading ||
               invalidParetoInputs
             }
@@ -1135,7 +1178,7 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -1244,7 +1287,7 @@ export default function Sizing() {
         )}
         {!aggregateOnlyGoal && (
           <>
-            {' '}Deployment view: {servingMode === 'disagg' ? 'disaggregated' : 'aggregated'}.
+            {' '}Deployment view: {describeDeploymentView(statedServingMode)}.
           </>
         )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
@@ -1259,21 +1302,30 @@ export default function Sizing() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12, fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'var(--t)' }}>
               Deployment view
               {!aggregateOnlyGoal && (
-                <>
+                <span role="group" aria-label="Deployment view" style={{ display: 'contents' }}>
                   <Button
                     className="gc-preset-button"
-                    variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
+                    variant={servingModeChoice == null ? 'secondary' : 'tertiary'}
                     size="sm"
-                    aria-pressed={servingMode === 'agg'}
+                    aria-pressed={servingModeChoice == null}
+                    onClick={() => { setServingModeChoice(null); markInputsDirty(); }}
+                  >
+                    Default
+                  </Button>
+                  <Button
+                    className="gc-preset-button"
+                    variant={servingModeChoice === 'agg' ? 'secondary' : 'tertiary'}
+                    size="sm"
+                    aria-pressed={servingModeChoice === 'agg'}
                     onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
                   >
                     Aggregated
                   </Button>
                   <Button
                     className="gc-preset-button"
-                    variant={servingMode === 'disagg' ? 'secondary' : 'tertiary'}
+                    variant={servingModeChoice === 'disagg' ? 'secondary' : 'tertiary'}
                     size="sm"
-                    aria-pressed={servingMode === 'disagg'}
+                    aria-pressed={servingModeChoice === 'disagg'}
                     isDisabled={!disaggSelectable}
                     onClick={() => {
                       if (!disaggSelectable) return;
@@ -1283,10 +1335,21 @@ export default function Sizing() {
                   >
                     Disaggregated
                   </Button>
-                </>
+                </span>
               )}
-              {!aggregateOnlyGoal && servingMode === 'disagg' && (
+              {!aggregateOnlyGoal && servingModeChoice == null && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  The service picks the deployment that answers the workload and reports it with the result.
+                </span>
+              )}
+              {!aggregateOnlyGoal && disaggregatedView && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode have separate inputs in this view.</span>
+              )}
+              {!aggregateOnlyGoal && pinnedViewServedDifferently && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  The last run returned
+                  {reportedServingMode === 'agg' ? ' an aggregated' : ' a disaggregated'} recommendation instead.
+                </span>
               )}
               {!aggregateOnlyGoal && !disaggSelectable && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
@@ -1499,7 +1562,7 @@ export default function Sizing() {
                           aria-invalid={invalidMaxSeqLen}
                         />
                       </div>
-                      {servingMode === 'disagg' && (
+                      {disaggregatedView && (
                         <div>
                           <label className={styles.fieldLabel}>Prefill length (tokens) <Term k="prefillMaxSeqLen" /></label>
                           <input
@@ -1514,7 +1577,7 @@ export default function Sizing() {
                           />
                         </div>
                       )}
-                      {servingMode === 'disagg' && (
+                      {disaggregatedView && (
                         <div>
                           <label className={styles.fieldLabel}>Decode length (tokens) <Term k="decodeMaxSeqLen" /></label>
                           <input

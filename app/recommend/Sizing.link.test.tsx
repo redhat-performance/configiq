@@ -424,6 +424,64 @@ describe('recommend sizing shared views', () => {
     expect(container.textContent).toContain('Deployment view: aggregated.');
   });
 
+  it('leaves the deployment to the service until a view is pinned', async () => {
+    // The page's default is no narrowing at all: no mode, and no fabric that
+    // would settle the topology the service is free to choose.
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
+
+    expect(container.textContent).toContain(
+      'Deployment view: service default (aggregated or disaggregated).',
+    );
+    const sizing = await calculate();
+    expect(sizing.mode).toBeUndefined();
+    expect(sizing.fabric).toBeUndefined();
+    const sweep = await pareto();
+    expect(sweep.mode).toBeUndefined();
+    expect(sweep.fabric).toBeUndefined();
+  });
+
+  it('leaves the serving mode out of a link while no view is pinned', async () => {
+    // A link describes the request it would reproduce. An unpinned view sends
+    // no mode and no fabric, so a link that named either would make the
+    // recipient answer a different question.
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
+
+    const url = shareUrl.getUrl?.() ?? '';
+    expect(url).not.toContain('servingMode=');
+    expect(url).not.toContain('fabric=');
+    expect(url).not.toContain('prefillMaxSeqLen=');
+    expect(url).not.toContain('decodeMaxSeqLen=');
+  });
+
+  it('returns to the service default when the pinned view is cleared', async () => {
+    await mountFabricView(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&fabric=ib-400g',
+    );
+    expect((await calculate()).mode).toBe('disagg');
+
+    // "Default" must be reachable again: a control that can only pin a view
+    // leaves the reader unable to ask the question they started with.
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent?.includes('Adjust?'))
+        ?.click();
+      await Promise.resolve();
+    });
+    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent === 'Default');
+    expect(unpin).toBeDefined();
+    await act(async () => {
+      unpin?.click();
+      await Promise.resolve();
+    });
+
+    const sent = await calculate();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
+  });
+
   it('omits the serving mode from a summary for a goal without one', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
 
