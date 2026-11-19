@@ -439,6 +439,13 @@ test('Recommend submits the deployment view the control shows', async ({ page })
   // summary must report what was returned rather than what was asked for.
   await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
   await expect(page.getByText('The last run returned an aggregated recommendation instead.')).toBeVisible()
+
+  // Pressing the pressed view clears it, and the next request narrows nothing.
+  await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
+  await expect(page.getByText(/Deployment view: service default/)).toBeVisible()
+  const cleared = await calculate()
+  expect(cleared).not.toHaveProperty('mode')
+  expect(cleared).not.toHaveProperty('fabric')
 })
 
 test('KV cache submits selected capacity inputs and renders the mocked result', async ({ page }) => {

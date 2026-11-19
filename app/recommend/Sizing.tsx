@@ -510,6 +510,28 @@ export default function Sizing() {
     if (primaryResult || isLoading || frontier.status !== 'idle') setInputsDirty(true);
   };
 
+  // Clearing a pinned view must narrow nothing, the fabric included: a
+  // remembered "None" is the aggregate-only choice being left behind, and
+  // keeping it would disable Disaggregated behind a selector this state hides.
+  const clearServingMode = () => {
+    if (networkFabric === '') setNetworkFabric(null);
+    setServingModeChoice(null);
+    markInputsDirty();
+  };
+
+  // Pressing the pressed view clears it, so two buttons cover the unpinned
+  // default without a third control. A pinned view the form cannot honour
+  // still clears: a choice the reader made is theirs to take back.
+  const toggleServingMode = (mode: 'agg' | 'disagg') => {
+    if (servingModeChoice === mode) {
+      clearServingMode();
+      return;
+    }
+    if (mode === 'disagg' && !disaggSelectable) return;
+    setServingModeChoice(mode);
+    markInputsDirty();
+  };
+
   const handleSequenceLengthChange = (
     raw: string,
     setInput: (value: string) => void,
@@ -1305,27 +1327,10 @@ export default function Sizing() {
                 <span role="group" aria-label="Deployment view" style={{ display: 'contents' }}>
                   <Button
                     className="gc-preset-button"
-                    variant={servingModeChoice == null ? 'secondary' : 'tertiary'}
-                    size="sm"
-                    aria-pressed={servingModeChoice == null}
-                    onClick={() => {
-                      // Default narrows nothing, the fabric included. A
-                      // remembered "None" belongs to the aggregate-only view
-                      // being left; keeping it would also leave Disaggregated
-                      // disabled behind a selector this state hides.
-                      if (networkFabric === '') setNetworkFabric(null);
-                      setServingModeChoice(null);
-                      markInputsDirty();
-                    }}
-                  >
-                    Default
-                  </Button>
-                  <Button
-                    className="gc-preset-button"
                     variant={servingModeChoice === 'agg' ? 'secondary' : 'tertiary'}
                     size="sm"
                     aria-pressed={servingModeChoice === 'agg'}
-                    onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
+                    onClick={() => toggleServingMode('agg')}
                   >
                     Aggregated
                   </Button>
@@ -1334,12 +1339,10 @@ export default function Sizing() {
                     variant={servingModeChoice === 'disagg' ? 'secondary' : 'tertiary'}
                     size="sm"
                     aria-pressed={servingModeChoice === 'disagg'}
-                    isDisabled={!disaggSelectable}
-                    onClick={() => {
-                      if (!disaggSelectable) return;
-                      setServingModeChoice('disagg');
-                      markInputsDirty();
-                    }}
+                    // A pinned view stays pressable so its own press can clear
+                    // it, even while the form cannot submit that view.
+                    isDisabled={!disaggSelectable && servingModeChoice !== 'disagg'}
+                    onClick={() => toggleServingMode('disagg')}
                   >
                     Disaggregated
                   </Button>
@@ -1348,6 +1351,11 @@ export default function Sizing() {
               {!aggregateOnlyGoal && servingModeChoice == null && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
                   The service picks the deployment that answers the workload and reports it with the result.
+                </span>
+              )}
+              {!aggregateOnlyGoal && servingModeChoice != null && (
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
+                  Press the selected view again to let the service choose.
                 </span>
               )}
               {!aggregateOnlyGoal && disaggregatedView && (

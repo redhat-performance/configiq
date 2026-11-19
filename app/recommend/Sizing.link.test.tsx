@@ -299,6 +299,29 @@ async function mountFabricView(search: string) {
   await mountAt(search);
 }
 
+/**
+ * Press a deployment view in the expanded panel.
+ *
+ * Pressing the pressed view is the only way back to the unpinned default, so
+ * every clear-control test goes through this.
+ */
+async function pressView(label: 'Aggregated' | 'Disaggregated') {
+  await act(async () => {
+    Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Adjust?'))
+      ?.click();
+    await Promise.resolve();
+  });
+  const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
+  const button = Array.from(view?.querySelectorAll('button') ?? [])
+    .find(candidate => candidate.textContent === label);
+  expect(button).toBeDefined();
+  await act(async () => {
+    button?.click();
+    await Promise.resolve();
+  });
+}
+
 async function selectDisaggregated() {
   await act(async () => {
     Array.from(container.querySelectorAll('button'))
@@ -310,6 +333,8 @@ async function selectDisaggregated() {
     .find(button => button.textContent === 'Disaggregated');
   expect(disaggregated).toBeDefined();
   expect(disaggregated?.hasAttribute('disabled')).toBe(false);
+  // Pressing a pressed view clears it, so only press when it is not pinned.
+  if (disaggregated?.getAttribute('aria-pressed') === 'true') return;
   await act(async () => {
     disaggregated?.click();
     await Promise.resolve();
@@ -457,26 +482,15 @@ describe('recommend sizing shared views', () => {
   });
 
   it('keeps Disaggregated reachable after clearing an aggregate-only fabric', async () => {
-    // Choosing "None" remembers an explicit aggregate-only fabric. Returning to
-    // Default must not strand that value: Default hides the selector, so a
+    // Choosing "None" remembers an explicit aggregate-only fabric. Clearing the
+    // pin must not strand that value: the default hides the selector, so a
     // remembered "None" would disable Disaggregated with no way back to it.
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
     expect((await calculate()).mode).toBe('agg');
 
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
-    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
-    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent === 'Default');
-    await act(async () => {
-      unpin?.click();
-      await Promise.resolve();
-    });
+    await pressView('Aggregated');
 
+    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
     const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
       .find(button => button.textContent === 'Disaggregated');
     expect(disaggregated?.hasAttribute('disabled')).toBe(false);
@@ -486,15 +500,29 @@ describe('recommend sizing shared views', () => {
     expect(sent.fabric).toBeUndefined();
   });
 
-  it('returns to the service default when the pinned view is cleared', async () => {
+  it('returns to the service default when the pinned view is pressed again', async () => {
     await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&fabric=ib-400g',
     );
     expect((await calculate()).mode).toBe('disagg');
 
-    // "Default" must be reachable again: a control that can only pin a view
-    // leaves the reader unable to ask the question they started with.
+    // The unpinned default must stay reachable: pressing the pressed view is
+    // the only way back, so it has to clear rather than re-pin.
+    await pressView('Disaggregated');
+
+    const sent = await calculate();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
+  });
+
+  it('clears a pinned view the form cannot submit', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg',
+    );
+
     await act(async () => {
       Array.from(container.querySelectorAll('button'))
         .find(button => button.textContent?.includes('Adjust?'))
@@ -502,11 +530,14 @@ describe('recommend sizing shared views', () => {
       await Promise.resolve();
     });
     const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
-    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent === 'Default');
-    expect(unpin).toBeDefined();
+    const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent === 'Disaggregated');
+    // The held view cannot be submitted, but the press that clears it must
+    // stay available: dropping your own choice cannot depend on making
+    // another one first.
+    expect(disaggregated?.hasAttribute('disabled')).toBe(false);
     await act(async () => {
-      unpin?.click();
+      disaggregated?.click();
       await Promise.resolve();
     });
 
