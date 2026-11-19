@@ -102,6 +102,10 @@ const FixedDeploymentChart = dynamic(() => import('./FixedDeploymentChart'), {
 /**
  * The link's own starting points. A field left at one of these is omitted from
  * a generated link, so the recipient falls back to the same value.
+ *
+ * `prefix` is deliberately not one of them. Links written before the
+ * system-prompt default left it out and meant 0, so every generated link states
+ * it explicitly and an opened link without it applies 0 (`absent` below).
  */
 const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
   monthlyInputTokens: DEFAULT_HYBRID_WORKLOAD.monthlyInputTokens,
@@ -111,7 +115,6 @@ const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
   ttft: 1000,
   tpot: 30,
   concurrency: 1,
-  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
   hours: 730,
   peak: 1,
   billingMode: 'scale-to-zero',
@@ -679,6 +682,8 @@ export default function HybridSavings() {
     // Nothing is persisted and no calculation is triggered.
     ready: hydrated && assumptionsHydrated && !catalogLoading,
     defaults: HYBRID_LINK_DEFAULTS,
+    // A link that predates the system-prompt default described a cold request.
+    absent: { prefix: 0 },
     provenance: {
       simulator: simulator || undefined,
       backend: inferenceBackend,

@@ -51,6 +51,15 @@ export type MoeQuantMode = (typeof MOE_QUANT_MODES)[number];
 /** The scheme a model starts on; a link omits it rather than restating it. */
 export const DEFAULT_MOE_QUANT_MODE = MOE_QUANT_MODES[0];
 
+/**
+ * The largest per-user request count the page accepts and a link carries.
+ *
+ * One bound for both, so a count the form shows can always be shared: the
+ * handler stores anything above it as unset rather than letting a link drop a
+ * value the page still displays.
+ */
+export const MAX_REQUESTS_PER_LOAD_UNIT = 1_000_000;
+
 const FIELDS = {
   model: modelPath,
   system: systemId,
@@ -72,7 +81,7 @@ const FIELDS = {
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
   // How many requests each concurrency slot sends against the same cached
   // prefix. Absent means the simulator runs one total request.
-  requestsPerLoadUnit: positiveInt(1_000_000),
+  requestsPerLoadUnit: positiveInt(MAX_REQUESTS_PER_LOAD_UNIT),
   maxNumSeqs: positiveInt(1_000_000),
   // The manual vLLM override panel. A view that pins chunked prefill is a
   // different view from one that leaves the backend to choose, so the choice

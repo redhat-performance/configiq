@@ -226,8 +226,9 @@ def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
             ),
         )
     # A disaggregated estimate renders each pool with its own context length,
-    # so the prefix has to fit both of them.
-    if getattr(req, "mode", "agg") == "disagg":
+    # so the prefix has to fit both of them. A sizing search with no mode may
+    # still evaluate P/D candidates, so a supplied pool limit counts there too.
+    if getattr(req, "mode", "agg") != "agg":
         for field_name in ("prefill_max_seq_len", "decode_max_seq_len"):
             limit = getattr(req, field_name, None)
             if limit is not None and req.prefix > limit:

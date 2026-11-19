@@ -2283,6 +2283,23 @@ class TestPrefixValidation:
             "prefix must not exceed max_seq_len"
         )
 
+    def test_recommend_checks_pool_limits_when_the_mode_is_omitted(self):
+        # No mode means the search may still evaluate P/D candidates, so a pool
+        # limit the request supplies is a context the prefix must fit.
+        response = client.post(
+            "/recommend",
+            json={
+                **VALID_PARETO_BODY,
+                "prefix": 1024,
+                "prefill_max_seq_len": 512,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed prefill_max_seq_len"
+        )
+
     def test_predict_rejects_a_prefix_longer_than_isl(self):
         response = client.post(
             "/predict", json={**VALID_ESTIMATE_BODY, "prefix": 5000}

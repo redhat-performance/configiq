@@ -263,6 +263,15 @@ async function mountAt(search: string) {
   });
 }
 
+async function expandRequestInputs() {
+  await act(async () => {
+    Array.from(container.querySelectorAll('button'))
+      .find(button => (button.textContent ?? '').startsWith('Adjust?'))
+      ?.click();
+    await Promise.resolve();
+  });
+}
+
 async function calculate(): Promise<RecommendParams> {
   const button = Array.from(container.querySelectorAll('button'))
     .find(candidate => candidate.textContent === 'Calculate');
@@ -753,19 +762,72 @@ describe('recommend sizing shared views', () => {
     expect(pressed).not.toContain('Default');
   });
 
-  it('sends the default system-prompt prefix', async () => {
+  it('sends the prefix a shared link states', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&prefix=200');
+
+    expect((await calculate()).prefix).toBe(200);
+    // A warm assumption is always stated, so the recipient cannot confuse it
+    // with an older link that left the field out.
+    expect(shareUrl.getUrl?.() ?? '').toContain('prefix=200');
+  });
+
+  it('reads a link that omits the prefix as a cold request', async () => {
+    // Links written before the system-prompt default left the field out and
+    // meant 0, so the recipient must not inherit the new 200-token default.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    expect((await calculate()).prefix).toBe(0);
+    expect(shareUrl.getUrl?.() ?? '').toContain('prefix=0');
+  });
+
+  it('keeps the system-prompt prefix on an unlinked page', async () => {
+    await mountAt('');
 
     expect((await calculate()).prefix).toBe(200);
   });
 
-  it('blocks sizing when the default prefix cannot fit the input length', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=128');
+  it('blocks sizing when the shared prefix cannot fit the input length', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=128&prefix=200');
+    await expandRequestInputs();
 
     expect(container.textContent).toContain('Shared prefix cannot exceed');
+    // The visible error is the input's description, not just nearby text.
+    const prefix = container.querySelector('[aria-describedby="recommend-shared-prefix-error"]');
+    expect(prefix).not.toBeNull();
+    expect(prefix?.getAttribute('aria-invalid')).toBe('true');
+    expect(container.querySelector('#recommend-shared-prefix-error')?.textContent)
+      .toContain('Shared prefix cannot exceed');
     const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Calculate');
     expect(calculate?.disabled).toBe(true);
+  });
+
+  it('checks the prefix against the pool limits a disaggregated view sends', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&prefillMaxSeqLen=128&prefix=200',
+    );
+    await expandRequestInputs();
+
+    const calculateButton = () => Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Calculate');
+    expect(container.querySelector('[aria-describedby="recommend-shared-prefix-error"]')).not.toBeNull();
+    expect(calculateButton()?.disabled).toBe(true);
+
+    // The remembered pool limit stops applying when the view goes back to
+    // aggregated, and the request stops sending it.
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Aggregated')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[aria-describedby="recommend-shared-prefix-error"]')).toBeNull();
+    expect(calculateButton()?.disabled).toBe(false);
+
+    const sent = await calculate();
+    expect(sent.mode).toBe('agg');
+    expect(sent.prefill_max_seq_len).toBeUndefined();
   });
 
   it('drops the workload selection when a sequence length is cleared', async () => {

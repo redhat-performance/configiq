@@ -53,6 +53,7 @@ import { useSearchParams } from 'next/navigation';
 import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
   DEFAULT_MOE_QUANT_MODE,
+  MAX_REQUESTS_PER_LOAD_UNIT,
   buildPredictLink,
   parsePredictLink,
   predictLink,
@@ -69,6 +70,10 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 /**
  * The link's own starting points. A field left at one of these is omitted from
  * a generated link, so the recipient falls back to the same value.
+ *
+ * `prefix` is deliberately not one of them. Links written before the
+ * system-prompt default left it out and meant 0, so every generated link states
+ * it explicitly and an opened link without it applies 0 (`absent` below).
  */
 const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
   isl: 2048,
@@ -79,7 +84,6 @@ const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
   pp: 1,
   weightPrecision: 'FP16',
   kvPrecision: 'FP16',
-  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
   prefillTp: 1,
   prefillPp: 1,
   prefillWorkers: 1,
@@ -564,7 +568,9 @@ export default function Performance() {
     const digits = raw.replace(/[^0-9]/g, '');
     setRequestsPerLoadUnitInput(digits);
     const n = parseInt(digits, 10);
-    setRequestsPerLoadUnit(digits === '' || isNaN(n) || n < 1 ? null : n);
+    setRequestsPerLoadUnit(
+      digits === '' || isNaN(n) || n < 1 || n > MAX_REQUESTS_PER_LOAD_UNIT ? null : n,
+    );
     markInputsDirty();
   };
 
@@ -770,6 +776,8 @@ export default function Performance() {
     // URL values change page state only; they never overwrite saved settings.
     ready: hydrated && gpuReady,
     defaults: PREDICT_LINK_DEFAULTS,
+    // A link that predates the system-prompt default described a cold request.
+    absent: { prefix: 0 },
     provenance: {
       backend: inferenceBackend,
       backendVersion: backendVersion || undefined,

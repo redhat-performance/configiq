@@ -60,6 +60,10 @@ const DEFAULT_DEMAND_RATE = 10;
 /**
  * The link's own starting points. A field left at one of these is omitted from
  * a generated link, so the recipient falls back to the same value.
+ *
+ * `prefix` is deliberately not one of them. Links written before the
+ * system-prompt default left it out and meant 0, so every generated link states
+ * it explicitly and an opened link without it applies 0 (`absent` below).
  */
 const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
   goal: 'demand',
@@ -69,7 +73,6 @@ const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
   ttft: 1000,
   tpot: 30,
   demandRate: DEFAULT_DEMAND_RATE,
-  prefix: DEFAULT_WORKLOAD.prefix ?? 0,
 };
 
 /** Match a retained request back to the sizing goal that produced it. */
@@ -487,9 +490,18 @@ export default function Sizing() {
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
-  // A shared prefix is part of the input, so it cannot outgrow either the
-  // prompt or a stated context limit. The service rejects both combinations.
-  const invalidPrefix = prefix > isl || (maxSeqLen != null && prefix > maxSeqLen);
+  // A shared prefix is part of the input, so it cannot outgrow the prompt, a
+  // stated context limit, or a pool limit the disaggregated request sends. The
+  // service rejects these combinations; the form mirrors them so Calculate
+  // cannot submit one. A remembered pool limit is ignored unless the request
+  // submits it.
+  const invalidPrefix =
+    prefix > isl ||
+    (maxSeqLen != null && prefix > maxSeqLen) ||
+    (disaggregatedView && (
+      (prefillMaxSeqLen != null && prefix > prefillMaxSeqLen) ||
+      (decodeMaxSeqLen != null && prefix > decodeMaxSeqLen)
+    ));
   const invalidTTFT = ttftInput === '' || !Number.isFinite(Number(ttftInput)) || Number(ttftInput) <= 0;
   const invalidTpot = tpotInput === '' || !Number.isFinite(Number(tpotInput)) || Number(tpotInput) <= 0;
   const invalidConcurrency = concurrencyInput === '' || parseInt(concurrencyInput, 10) < 1;
@@ -865,6 +877,8 @@ export default function Sizing() {
     fields: linkFields,
     ready: hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
     defaults: RECOMMEND_LINK_DEFAULTS,
+    // A link that predates the system-prompt default described a cold request.
+    absent: { prefix: 0 },
     provenance: {
       simulator: simulator || undefined,
       backend: inferenceBackend,
@@ -1462,10 +1476,15 @@ export default function Sizing() {
                   value={prefixInput}
                   onChange={e => handlePrefixChange(e.target.value)}
                   aria-invalid={invalidPrefix}
+                  aria-describedby={invalidPrefix ? 'recommend-shared-prefix-error' : undefined}
                   min={0}
                 />
                 {invalidPrefix && (
-                  <div className={styles.helperText} style={{ color: '#c9190b' }}>
+                  <div
+                    id="recommend-shared-prefix-error"
+                    className={styles.helperText}
+                    style={{ color: '#c9190b' }}
+                  >
                     Shared prefix cannot exceed the input length or context limit.
                   </div>
                 )}

@@ -927,8 +927,44 @@ describe('performance page parameter defaults', () => {
       .not.toHaveProperty('requests_per_load_unit');
   });
 
-  it('sends the default system-prompt prefix', async () => {
+  it('sends the prefix a shared link states', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&prefix=200');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ prefix: 200 });
+  });
+
+  it('reads a link that omits the prefix as a cold request', async () => {
+    // Links written before the system-prompt default left the field out and
+    // meant 0, so the recipient must not inherit the new 200-token default.
     await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // A cold request is the API default, so the page leaves the field out
+    // instead of sending the 200-token system prompt the page starts with.
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0].prefix)
+      .toBeUndefined();
+  });
+
+  it('keeps the system-prompt prefix on an unlinked page', async () => {
+    await mountAt('');
 
     await act(async () => {
       Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
@@ -944,7 +980,7 @@ describe('performance page parameter defaults', () => {
   });
 
   it('blocks sizing when the shared prefix exceeds the input length', async () => {
-    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128');
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128&prefix=200');
 
     const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent === 'Calculate');
@@ -975,6 +1011,27 @@ describe('performance page parameter defaults', () => {
 
     expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
       .toMatchObject({ requests_per_load_unit: 4 });
+  });
+
+  it('refuses a per-user request count above the link limit', async () => {
+    // A value the link cannot carry must not become a request the page still
+    // submits: the form treats it as invalid instead.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      const reuse = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(reuse, '1000001');
+      reuse.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')
+      ?.getAttribute('aria-invalid')).toBe('true');
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(true);
+    expect(fetchEstimateAsInferenceResult).not.toHaveBeenCalled();
   });
 
   it('keeps current values visible on collapsed assumption rows', async () => {
