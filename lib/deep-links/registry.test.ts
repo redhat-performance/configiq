@@ -137,8 +137,8 @@ describe('golden links', () => {
       prefix: 512,
       maxSeqLen: 32768,
       // A disaggregated view carries per-pool limits and the fabric that makes
-      // those pools searchable. Only a simulator that models P/D through a
-      // fabric exports one, so this view is BLIS's.
+      // those pools searchable. Only a simulator that reports the fabric
+      // capability exports one, so this view uses the fixture that reports it.
       servingMode: 'disagg',
       prefillMaxSeqLen: 8192,
       decodeMaxSeqLen: 24576,

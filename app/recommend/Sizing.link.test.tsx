@@ -69,9 +69,9 @@ const versionSupport = vi.hoisted(() => ({
   blis: {} as Record<string, { disaggregated: boolean }>,
 }));
 
-// Real AISimulate models prefill/decode without an inter-node fabric and
-// reports no fabrics; BLIS needs one. The fixture starts from that shape, and
-// the fabric-specific tests opt into the capability explicitly.
+// A simulator's fabric capability is catalog data, so the fixture keeps it in
+// one place: the default shape claims no fabric, and the fabric-specific tests
+// opt into the capability they exercise.
 const aisimulateFabric = vi.hoisted(() => ({
   required: false,
   networks: [] as string[],
@@ -286,14 +286,13 @@ async function pareto(): Promise<RecommendParams> {
 }
 
 /**
- * Give the AISimulate-labelled fixture the fabric capability a P/D simulator
- * has. Production AISimulate reports none, so a test that exercises the fabric
- * control must ask for this shape explicitly.
+ * Mount a view for a simulator whose catalog reports that it models P/D through
+ * an inter-node fabric. The fixture that declares the capability is selected
+ * here, so the fabric tests exercise the control rather than assume it.
  */
-function requireFabric() {
-  aisimulateFabric.required = true;
-  aisimulateFabric.networks = ['ib-400g'];
-  aisimulateFabric.defaultNetwork = 'ib-400g';
+async function mountFabricView(search: string) {
+  settings.simulator = 'blis';
+  await mountAt(search);
 }
 
 async function selectDisaggregated() {
@@ -340,8 +339,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('restores disaggregated serving and its fabric from a shared link', async () => {
-    requireFabric();
-    await mountAt(
+    await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&fabric=ib-400g',
     );
@@ -353,8 +351,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('forwards the named fabric for disaggregated serving', async () => {
-    requireFabric();
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
 
     await selectDisaggregated();
     expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
@@ -364,11 +361,10 @@ describe('recommend sizing shared views', () => {
   });
 
   it('searches prefill/decode by default for a latency link that names a fabric', async () => {
-    requireFabric();
     // The link predates the serving-mode field. Its named fabric described the
     // P/D search the page made before the control existed, so the default must
     // keep searching that topology instead of silently narrowing to aggregated.
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
 
     expect(container.querySelector('#recommend-network-fabric')).not.toBeNull();
     const sizing = await calculate();
@@ -380,8 +376,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('honours an explicitly aggregated link even when it names a fabric', async () => {
-    requireFabric();
-    await mountAt(
+    await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=agg&fabric=ib-400g',
     );
@@ -400,11 +395,10 @@ describe('recommend sizing shared views', () => {
   });
 
   it('shares the fabric the request submits, not one it merely remembers', async () => {
-    requireFabric();
     // The remembered fabric name stays selected when the view is aggregated,
     // but the request sends an explicit null. A link that exported the name
     // would describe a P/D topology the recipient would inherit.
-    await mountAt(
+    await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=agg&fabric=ib-400g',
     );
@@ -476,10 +470,9 @@ describe('recommend sizing shared views', () => {
   });
 
   it('asks for aggregate-only candidates when the link says "no fabric"', async () => {
-    requireFabric();
     // A "no fabric" choice is not an omission: it must reach the API as an
     // explicit null rather than falling back to the simulator's default fabric.
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
 
     const sizing = await calculate();
     expect(sizing.fabric).toBeNull();
@@ -488,8 +481,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('leaves the fabric to the simulator when the request omits one', async () => {
-    requireFabric();
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
+    await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     await selectDisaggregated();
     const sent = await calculate();
@@ -498,9 +490,8 @@ describe('recommend sizing shared views', () => {
   });
 
   it('sends no fabric when the simulator models P/D without one', async () => {
-    // AISimulate sizes prefill/decode without an inter-node fabric, so the
-    // control stays hidden and the request must not claim a topology it has no
-    // way to model.
+    // With no fabric capability in the catalog, the control stays hidden and
+    // the request must not claim a topology the simulator cannot model.
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
@@ -515,7 +506,6 @@ describe('recommend sizing shared views', () => {
   });
 
   it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
-    requireFabric();
     versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
     versionSupport.blis['0.9.0'] = { disaggregated: true };
     await mountAt(
@@ -524,9 +514,12 @@ describe('recommend sizing shared views', () => {
     );
 
     // The reader's simulator cannot model prefill/decode, so the link's mode
-    // stays held and the form stays aggregated until they accept.
+    // stays held and the form stays aggregated until they accept. The held
+    // view's backend reports no fabric, so the aggregate request names none.
     expect(container.querySelector('#recommend-network-fabric')).toBeNull();
-    expect((await calculate()).fabric).toBeNull();
+    const heldSizing = await calculate();
+    expect(heldSizing.fabric).toBeUndefined();
+    expect(heldSizing.mode).toBe('agg');
 
     await acceptSharedSimulator();
 
