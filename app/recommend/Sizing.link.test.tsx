@@ -447,6 +447,9 @@ describe('recommend sizing shared views', () => {
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     const url = shareUrl.getUrl?.() ?? '';
+    // Assert a real link first: every check below is an omission, which an
+    // empty string would satisfy whether or not sharing works at all.
+    expect(url.startsWith('/recommend?')).toBe(true);
     expect(url).not.toContain('servingMode=');
     expect(url).not.toContain('fabric=');
     expect(url).not.toContain('prefillMaxSeqLen=');
