@@ -1936,6 +1936,16 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         config["mode"],
     ))
     feasible = feasible[:request.top_n]
+    if include_disagg and not any(candidate.mode == "disagg" for candidate in evaluated):
+        # A fabric was named, so the grid intended to compare P/D, but it
+        # stopped (a full top-N of aggregate shapes, or a spent budget) before
+        # reaching one. Say so rather than leaving an aggregate-only answer
+        # unexplained.
+        for config in feasible:
+            config["warnings"].append(
+                "BLIS stopped before evaluating a P/D candidate; the search covered "
+                "aggregated deployments only."
+            )
     return BlisRecommendation(
         configs=feasible,
         provenance=_provenance(resolved, request.model_path, request.system),
