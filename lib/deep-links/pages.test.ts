@@ -103,8 +103,8 @@ describe('page link contracts', () => {
   });
 
   it('never puts a simulator in a KV cache link', () => {
-    // The calculator is AISimulate-only by contract, so a simulator parameter
-    // would imply a choice the page does not offer.
+    // The calculator has no simulator choice, so a simulator parameter would
+    // imply a choice the page does not offer.
     const built = kvCacheLink.build({
       model: 'Qwen/Qwen3-32B',
       system: 'h200_sxm',

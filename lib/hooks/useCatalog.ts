@@ -57,9 +57,9 @@ export interface BackendOption {
   /** Per-system defaults — the only safe source for a system-specific fraction. */
   systemDefaults: Record<string, SystemDefault>
   /**
-   * What each engine version can express, when the simulator reports it. BLIS
-   * models disaggregation and `max_model_len: auto` per vLLM release, so a
-   * client must not offer a topology the selected release cannot run.
+   * What each engine version can express, when the simulator reports it. A
+   * release can model disaggregation and `max_model_len: auto`, so a client must
+   * not offer a topology the selected release cannot run.
    */
   versionSupport: Record<string, EngineVersionSupport>
   /**

@@ -71,8 +71,8 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         networks: ['ib-400g'],
         defaultNetwork: 'ib-400g',
         models: ['Qwen/Qwen2.5-7B-Instruct', 'settings/default-model'],
-        // BLIS deliberately lacks h100_sxm: it exercises a shared link whose
-        // system the recipient's current simulator does not offer.
+        // This catalog deliberately lacks h100_sxm: it exercises a shared link
+        // whose system the recipient's current simulator does not offer.
         systems: ['h200_sxm'],
         backends: [{
           id: 'vllm',

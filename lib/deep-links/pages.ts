@@ -71,9 +71,9 @@ export const MEMORY_FRACTION_KINDS = ['of_total', 'of_free'] as const;
 export type MemoryFractionKind = (typeof MEMORY_FRACTION_KINDS)[number];
 
 /**
- * The KV cache calculator is AISimulate-only by contract, so its link carries
- * the backend but never a simulator: adding one would imply a choice the page
- * does not offer. The backend pair is provenance read from settings and applied
+ * The KV cache calculator has no simulator choice, so its link carries the
+ * backend but never a simulator: adding one would imply a choice the page does
+ * not offer. The backend pair is provenance read from settings and applied
  * for the session, not a pair of controls the page edits.
  */
 export const kvCacheLink = withBackendProvenance(defineLink('/kv-cache', {
