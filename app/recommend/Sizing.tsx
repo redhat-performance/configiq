@@ -904,9 +904,7 @@ export default function Sizing() {
         aggregateOnlyGoal,
         disaggSupported,
         selectedNetworkFabric,
-        // A retained sweep searched both deployment modes, so the current
-        // mode is not the one it submitted.
-        params.pareto ? undefined : servingMode,
+        servingMode,
       ),
       servingMode,
     });
@@ -920,15 +918,15 @@ export default function Sizing() {
       : 'min_gpus';
 
   // One builder for both buttons: a Pareto sweep is the same request minus the
-  // mode, with a fabric that does not follow the page's current mode. Building
-  // it separately let the two paths drift on every field added here.
+  // mode. Both read the same fabric, so the control, the sweep, and the copied
+  // link describe one topology. Building them separately let the paths drift.
   const buildRecommendParams = ({ pareto = false }: { pareto?: boolean } = {}): RecommendParams => {
     const fabric = resolveSearchFabric(
       fabricRequired,
       aggregateOnlyGoal,
       disaggSupported,
       selectedNetworkFabric,
-      pareto ? undefined : servingMode,
+      servingMode,
     );
     return {
       model_path: model,
@@ -1103,7 +1101,7 @@ export default function Sizing() {
                 ? networkFabric === null && defaultNetworkFabric
                   ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
                   : 'The simulator searches aggregate and P/D candidates using this fabric.'
-                : `Aggregated sizing sends no fabric. A Pareto frontier still compares both deployments with ${selectedNetworkFabric || 'no fabric'}.`}
+                : 'The aggregated view sends no fabric, so sizing and the Pareto frontier both ask for aggregated candidates only.'}
             </div>
           </div>
         )}
@@ -1568,7 +1566,7 @@ export default function Sizing() {
           <div style={{ fontSize: 13, color: '#3c3f42' }}>
             {primaryResult.searchSummary && (
               <span>
-                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.searchSummary.modes_searched?.join(' + ') ?? primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
+                Search: {primaryResult.searchSummary.strategy.replaceAll('_', ' ')} · {primaryResult.simulator} · tested {primaryResult.searchSummary.evaluated_configurations ?? primaryResult.searchSummary.evaluated_gpus.length} configurations across {primaryResult.searchSummary.evaluated_gpus.join(', ') || 'none'} GPUs · ceiling {primaryResult.searchSummary.effective_max_gpus} (configured {primaryResult.searchSummary.configured_max_gpus}, hardware {primaryResult.searchSummary.hardware_max_gpus}) · {primaryResult.searchSummary.time_budget_seconds}s{primaryResult.searchSummary.budget_exhausted ? ' time budget reached' : ''}.
               </span>
             )}
             {primaryResult.sweep?.windowMinGpus != null && primaryResult.sweep.windowMaxGpus != null && (
@@ -2073,5 +2071,13 @@ function sweepCoverageLabel(sweep: RecommendSweepMeta): string {
   const range = min === max ? `${min} GPU${min === 1 ? '' : 's'}` : `${min}–${max} GPUs`
   const evaluated = sweep.evaluated ?? 0
   const budget = sweep.budgetExhausted ? ' · time budget reached' : ''
-  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}`
+  // Report the deployments the run actually covered. The form's deployment
+  // view is an input, not a promise: a search can recommend an aggregated
+  // deployment after also evaluating P/D, or stop before reaching it.
+  const modes = sweep.modesSearched?.length
+    ? ` · searched ${sweep.modesSearched
+        .map(mode => (mode === 'disagg' ? 'disaggregated' : 'aggregated'))
+        .join(' and ')}`
+    : ''
+  return `Searched ${range} · ${evaluated} configuration${evaluated === 1 ? '' : 's'} evaluated${budget}${modes}`
 }

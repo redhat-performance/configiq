@@ -286,7 +286,7 @@ describe('resolveSearchFabric', () => {
   it('omits the fabric for aggregate-only goals', () => {
     expect(resolveSearchFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
     // A sweep over an aggregate-only goal omits it too.
-    expect(resolveSearchFabric(true, true, true, 'roce-200g')).toBeUndefined()
+    expect(resolveSearchFabric(true, true, true, 'roce-200g', 'disagg')).toBeUndefined()
   })
 
   it('keeps a selected fabric when disaggregated serving supports it', () => {
@@ -303,11 +303,11 @@ describe('resolveSearchFabric', () => {
     expect(resolveSearchFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
   })
 
-  it('keeps the selected fabric for a sweep, whose mode does not narrow it', () => {
-    // An omitted serving mode describes a sweep over both deployment modes.
-    expect(resolveSearchFabric(true, false, true, 'roce-200g')).toBe('roce-200g')
-    expect(resolveSearchFabric(true, false, true, null)).toBeNull()
-    expect(resolveSearchFabric(true, false, true, '')).toBeNull()
-    expect(resolveSearchFabric(true, false, false, 'roce-200g')).toBeNull()
+  it('keeps a selected fabric for a disaggregated sweep', () => {
+    // The Pareto frontier reads the same view, so a P/D view names its fabric.
+    expect(resolveSearchFabric(true, false, true, 'roce-200g', 'disagg')).toBe('roce-200g')
+    expect(resolveSearchFabric(true, false, true, null, 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, true, '', 'disagg')).toBeNull()
+    expect(resolveSearchFabric(true, false, false, 'roce-200g', 'disagg')).toBeNull()
   })
 })

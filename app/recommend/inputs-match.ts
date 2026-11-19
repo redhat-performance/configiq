@@ -59,18 +59,19 @@ export interface CurrentRecommendInputs {
  * - `undefined` — omit it. An aggregate-only goal makes no topology claim, and
  *   a backend that models no fabric has nothing to name.
  * - `null` — ask the service for aggregate candidates only. A backend that
- *   cannot model prefill/decode, or an explicitly aggregated serving mode,
- *   cannot use a fabric.
- * - a name — the topology the search should model. An omitted `servingMode`
- *   describes a sweep: it searches both deployment modes, so the page's own
- *   mode does not narrow it.
+ *   cannot model prefill/decode, or an explicitly aggregated view, cannot use a
+ *   fabric.
+ * - a name — the topology the search should model.
+ *
+ * Both actions read the same deployment view, so the control, the payload, and
+ * the copied link cannot describe different topologies.
  */
 export function resolveSearchFabric(
   fabricRequired: boolean,
   aggregateOnlyGoal: boolean,
   disaggSupported: boolean,
   selectedFabric: string | null,
-  servingMode?: 'agg' | 'disagg',
+  servingMode: 'agg' | 'disagg',
 ): string | null | undefined {
   if (!fabricRequired || aggregateOnlyGoal) return undefined
   if (!disaggSupported || servingMode === 'agg') return null

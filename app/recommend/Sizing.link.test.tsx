@@ -69,10 +69,14 @@ const versionSupport = vi.hoisted(() => ({
   blis: {} as Record<string, { disaggregated: boolean }>,
 }));
 
-// Real AISimulate models prefill/decode without an inter-node fabric; BLIS
-// needs one. The default fixture keeps the fabric-requiring shape so the other
-// tests can exercise the control, and a test flips this to cover AISimulate.
-const catalogFlags = vi.hoisted(() => ({ aisimulateRequiresFabric: true }));
+// Real AISimulate models prefill/decode without an inter-node fabric and
+// reports no fabrics; BLIS needs one. The fixture starts from that shape, and
+// the fabric-specific tests opt into the capability explicitly.
+const aisimulateFabric = vi.hoisted(() => ({
+  required: false,
+  networks: [] as string[],
+  defaultNetwork: null as string | null,
+}));
 
 vi.mock('@/lib/hooks/useCatalog', () => {
   const buildCatalog = () => {
@@ -91,7 +95,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
   };
   const aisimulateBackend = {
     ...backend,
-    disaggregationRequiresFabric: catalogFlags.aisimulateRequiresFabric,
+    disaggregationRequiresFabric: aisimulateFabric.required,
     versionSupport: versionSupport.aisimulate,
   };
   const blisBackend = { ...backend, versionSupport: versionSupport.blis };
@@ -116,8 +120,8 @@ vi.mock('@/lib/hooks/useCatalog', () => {
         recommendSearch: 'single',
         modelsExhaustive: true,
         modelSpecs: new Map(),
-        networks: ['ib-400g'],
-        defaultNetwork: 'ib-400g',
+        networks: aisimulateFabric.networks,
+        defaultNetwork: aisimulateFabric.defaultNetwork,
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm'],
         backends: [aisimulateBackend],
@@ -225,7 +229,9 @@ beforeEach(() => {
     for (const version of Object.keys(support)) delete support[version];
   }
   recommendState.isLoading = false;
-  catalogFlags.aisimulateRequiresFabric = true;
+  aisimulateFabric.required = false;
+  aisimulateFabric.networks = [];
+  aisimulateFabric.defaultNetwork = null;
   settings.simulator = 'aisimulate';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -279,6 +285,17 @@ async function pareto(): Promise<RecommendParams> {
   return calls[calls.length - 1][0] as RecommendParams;
 }
 
+/**
+ * Give the AISimulate-labelled fixture the fabric capability a P/D simulator
+ * has. Production AISimulate reports none, so a test that exercises the fabric
+ * control must ask for this shape explicitly.
+ */
+function requireFabric() {
+  aisimulateFabric.required = true;
+  aisimulateFabric.networks = ['ib-400g'];
+  aisimulateFabric.defaultNetwork = 'ib-400g';
+}
+
 async function selectDisaggregated() {
   await act(async () => {
     Array.from(container.querySelectorAll('button'))
@@ -323,6 +340,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('restores disaggregated serving and its fabric from a shared link', async () => {
+    requireFabric();
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&fabric=ib-400g',
@@ -335,6 +353,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('forwards the named fabric for disaggregated serving', async () => {
+    requireFabric();
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=ib-400g');
 
     await selectDisaggregated();
@@ -345,6 +364,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('searches prefill/decode by default for a latency link that names a fabric', async () => {
+    requireFabric();
     // The link predates the serving-mode field. Its named fabric described the
     // P/D search the page made before the control existed, so the default must
     // keep searching that topology instead of silently narrowing to aggregated.
@@ -360,6 +380,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('honours an explicitly aggregated link even when it names a fabric', async () => {
+    requireFabric();
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=agg&fabric=ib-400g',
@@ -371,14 +392,15 @@ describe('recommend sizing shared views', () => {
     expect(sizing.fabric).toBeNull();
     expect(sizing.mode).toBe('agg');
 
-    // A sweep is not narrowed by the page's mode: it still names the fabric,
-    // and it omits the mode the service rejects.
+    // The frontier reads the same view: an aggregated view asks for aggregate
+    // candidates only, and the mode itself is omitted (the sweep rejects it).
     const sweep = await pareto();
-    expect(sweep.fabric).toBe('ib-400g');
+    expect(sweep.fabric).toBeNull();
     expect(sweep.mode).toBeUndefined();
   });
 
   it('shares the fabric the request submits, not one it merely remembers', async () => {
+    requireFabric();
     // The remembered fabric name stays selected when the view is aggregated,
     // but the request sends an explicit null. A link that exported the name
     // would describe a P/D topology the recipient would inherit.
@@ -454,6 +476,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('asks for aggregate-only candidates when the link says "no fabric"', async () => {
+    requireFabric();
     // A "no fabric" choice is not an omission: it must reach the API as an
     // explicit null rather than falling back to the simulator's default fabric.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
@@ -465,6 +488,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('leaves the fabric to the simulator when the request omits one', async () => {
+    requireFabric();
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     await selectDisaggregated();
@@ -477,7 +501,6 @@ describe('recommend sizing shared views', () => {
     // AISimulate sizes prefill/decode without an inter-node fabric, so the
     // control stays hidden and the request must not claim a topology it has no
     // way to model.
-    catalogFlags.aisimulateRequiresFabric = false;
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&prefillMaxSeqLen=8192&decodeMaxSeqLen=4096',
@@ -492,6 +515,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
+    requireFabric();
     versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
     versionSupport.blis['0.9.0'] = { disaggregated: true };
     await mountAt(
