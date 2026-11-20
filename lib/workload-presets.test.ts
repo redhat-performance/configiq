@@ -38,8 +38,13 @@ describe('workload presets', () => {
     expect(matchWorkloadPresetByTokens(presets, 16896)).toBe(presets[1])
   })
 
-  it('keeps every shipped prefix inside its input length', () => {
+  it('gives every shipped preset a shared-prefix assumption', () => {
+    // #236 asks for a sane prefix on every preset. A preset that leaves the
+    // field out is sized as a cold request, so a new preset must state one
+    // rather than inherit that silence. The values themselves are product
+    // config and change deliberately; only the assumption is an invariant.
     for (const preset of [DEFAULT_WORKLOAD, ...appConfig.workloadPresets]) {
+      expect(preset.prefix).toBeDefined()
       expect(preset.prefix ?? 0).toBeGreaterThanOrEqual(0)
       expect(preset.prefix ?? 0).toBeLessThanOrEqual(preset.isl)
     }
