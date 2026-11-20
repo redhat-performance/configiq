@@ -47,6 +47,7 @@ PUBLIC_CURVE_FIELDS = (
     "max_num_seqs", "max_num_batched_tokens", "gpu_memory_utilization",
     "chunked_prefill_enabled", "moe_num_experts", "moe_top_k",
     "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2",
+    "runtime_args", "env_vars", "guidellm_version",
 )
 NUMERIC_COLUMNS = {
     "isl", "osl", "tp", "pp", "dp", "ep", "cp", "tp_prefill", "tp_decode",

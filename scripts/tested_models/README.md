@@ -42,13 +42,19 @@ and `turn_index` distinguish rows. Compare and classifier training consume
 summary rows only. Where private source variants have the same published
 settings and concurrency, only the newest run is kept. These fields do not
 establish equality of unrecorded effective vLLM settings. Two explicit ROCm
-AITER switches and the SiTUv2 MoE mode are extracted from `env_vars`; raw environment values and paths
-are not published. Run IDs, UUIDs, MLflow IDs, timestamps, raw runtime
-arguments, and other administrative fields are dropped before parquet is written.
+AITER switches and the SiTUv2 MoE mode are also extracted into separate columns.
+The `runtime_args` and `env_vars` columns are searchable JSON strings containing
+recorded settings with reviewed scalar values. Settings with unreviewed or unsafe
+values, such as paths or credentials, and unrelated environment variables are
+omitted. These columns are part of configuration identity. They do not capture
+defaults that the source did not record. Run IDs, UUIDs, MLflow IDs, timestamps,
+raw argument and environment values, and other administrative fields are dropped
+before parquet is written. The recorded `guidellm_version` is retained so
+benchmark rows show which workload generator version produced them.
 Additional serving fields (`pp`, `dp`, `tp_prefill`, `tp_decode`,
 `moe_tp_size`, `moe_ep_size`, and `enable_expert_parallel`) are retained only
 when explicitly recorded in source columns or runtime arguments; missing
-values remain null. Raw runtime arguments are never published.
+values remain null.
 The publisher rejects missing concurrency or `turn_index` and duplicate
 combinations of published configuration fields, concurrency, and turn index.
 A row reduction in any published pair

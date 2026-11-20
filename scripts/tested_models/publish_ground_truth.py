@@ -55,7 +55,11 @@ settings were identical. Compare and classifier training use summary rows only.
 - License: CC BY 4.0
 
 The dataset excludes run IDs, UUIDs, MLflow identifiers, timestamps, raw runtime
-arguments, internal endpoints, and other administrative metadata. `manifest.json`
+arguments and environment values, internal endpoints, and other administrative metadata.
+The `runtime_args` and `env_vars` JSON columns retain recorded settings with
+reviewed scalar values; settings with unreviewed or unsafe values are omitted.
+The recorded GuideLLM version is retained for workload provenance.
+`manifest.json`
 records pair identity, row count, columns, and checksums. This dataset provides
 benchmark observations, not performance guarantees, and is supplied without warranty.
 """
@@ -76,6 +80,7 @@ def _schema() -> dict:
             "kv_quantization", "spec_decoding", "request_type", "turns",
             "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe",
             "vllm_rocm_use_aiter_moe_situv2",
+            "runtime_args", "env_vars", "guidellm_version",
         ],
         "measurement_families": ["throughput", "request rate", "TTFT", "TPOT", "ITL", "request latency", "reliability"],
     }

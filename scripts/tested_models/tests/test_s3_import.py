@@ -94,6 +94,7 @@ def test_import_keeps_newest_summary_per_recorded_configuration(tmp_path) -> Non
         "model": "org/model", "accelerator": "H200", "version": "vLLM-0.31.0",
         "TP": "1", "prompt toks": "8192", "output toks": "1024",
         "prefix_caching": "yes", "runtime_args": "max-num-batched-tokens=8192",
+        "guidellm_version": "0.8.1",
         "env_vars": "",
         "turns": "5", "request_type": "/v1/chat/completions",
     }
@@ -121,11 +122,14 @@ def test_import_keeps_newest_summary_per_recorded_configuration(tmp_path) -> Non
     assert manifest["published_rows"] == 4
     assert sorted(frame["ttft_median"].tolist()) == [40, 80, 80, 90]
     assert frame["max_num_batched_tokens"].tolist() == [8192, 8192, 8192, 8192]
+    assert set(frame["guidellm_version"]) == {"0.8.1"}
     assert set(frame["vllm_rocm_use_aiter"].dropna()) == {"1"}
     identity = [field for field in import_s3_ground_truth.PUBLIC_CURVE_FIELDS if field in frame]
     assert not frame.duplicated([*identity, "concurrency", "turn_index"]).any()
     assert frame["turn_index"].notna().sum() == 1
-    assert not {"uuid", "guidellm_start_time_ms", "runtime_args", "env_vars"} & set(frame)
+    assert json.loads(frame.loc[0, "runtime_args"]) == {"max-num-batched-tokens": "8192"}
+    assert set(frame["env_vars"].map(json.loads).map(tuple)) == {(), ("VLLM_ROCM_USE_AITER",)}
+    assert not {"uuid", "guidellm_start_time_ms"} & set(frame)
 
     # A private source variant may disappear at the next refresh without
     # changing the published configuration fields.
@@ -181,6 +185,28 @@ def test_import_keeps_distinct_parallel_serving_configurations(tmp_path) -> None
     assert set(frame["tp_decode"]) == {4}
     assert set(frame["moe_tp_size"]) == {2}
     assert set(frame["moe_ep_size"]) == {2}
+
+
+def test_import_keeps_distinct_recorded_runtime_options(tmp_path) -> None:
+    csv_path = tmp_path / "aggregate.csv"
+    config_path = tmp_path / "config.json"
+    _write_config(config_path, ["org/model"])
+    base = {
+        "model": "org/model", "accelerator": "H200", "version": "vLLM-0.31.0",
+        "TP": "1", "intended concurrency": "8", "guidellm_start_time_ms": "1000",
+    }
+    _write_csv(csv_path, [
+        {**base, "runtime_args": "uvicorn-log-level=info"},
+        {**base, "runtime_args": "uvicorn-log-level=debug"},
+    ])
+
+    manifest = import_s3_ground_truth.import_csv(
+        csv_path, config_path, tmp_path / "datasets", tmp_path / "manifest.json"
+    )
+    frame = pd.read_parquet(tmp_path / "datasets/org_model__h200.parquet")
+
+    assert manifest["published_rows"] == 2
+    assert {json.loads(value)["uvicorn-log-level"] for value in frame["runtime_args"]} == {"info", "debug"}
 
 
 def test_backend_name_prefers_productized_stack_labels() -> None:
