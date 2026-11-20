@@ -490,6 +490,12 @@ export default function BenchmarkComparisonPage() {
           title: 'InferenceX measurements unavailable',
           message: `Red Hat benchmark data remains available. ${data.inferencexError}`,
         })
+      } else if (requestedKey && nextConfiguration?.key !== requestedKey) {
+        setNotice({
+          variant: 'warning',
+          title: 'Linked configuration is no longer available',
+          message: 'The measured dataset has changed since this link was created. Review the selected runtime configuration before comparing runs.',
+        })
       } else if ((data.adjustments?.length ?? 0) > 0 || data.versionFallback) {
         const reasons = [
           ...(data.adjustments ?? []).map(adjustment => adjustment.reason),
@@ -983,7 +989,7 @@ export default function BenchmarkComparisonPage() {
             <div className={styles.sourceBadges}>
               {source && <div className={styles.sourceBadge}>
                 <a href={source.url} target="_blank" rel="noreferrer">Benchmark data from Red Hat · Hugging Face</a>
-                <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
+                <span>{source.rowCount.toLocaleString('en-US')} summary and per-turn rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
               </div>}
               {inferencexSource && <div className={styles.sourceBadge}>
                 {isHttpsUrl(inferencexSource.url)

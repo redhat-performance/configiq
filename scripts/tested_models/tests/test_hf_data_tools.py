@@ -198,6 +198,7 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path, version:
     datasets.mkdir()
     frame = pd.DataFrame([{
         "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "concurrency": 1, "turn_index": None,
         "version": version, "backend": "vllm", "backend_version": version,
     }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
@@ -220,6 +221,59 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path, version:
     assert (output / "schema.json").is_file()
 
 
+@pytest.mark.parametrize(("concurrencies", "message"), [
+    ([1, 1], "repeated published settings, concurrency, and turn rows"),
+    ([None, 2], "requires nonblank concurrency"),
+])
+def test_publish_requires_unique_published_settings(
+    tmp_path, concurrencies: list[int | None], message: str,
+) -> None:
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    rows = [{
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.31.0", "backend": "vllm", "backend_version": "vLLM-0.31.0",
+        "concurrency": concurrency, "turn_index": None,
+    } for concurrency in concurrencies]
+    frame = pd.DataFrame(rows)
+    frame.to_parquet(datasets / "model__h200.parquet", index=False)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "pairs": [{
+        "id": "model__h200", "model_id": "org/model", "accelerator": "H200",
+        "records": len(frame), "columns": list(frame.columns),
+    }]}))
+
+    with pytest.raises(ValueError, match=message):
+        publish_ground_truth.prepare(manifest, datasets, tmp_path / "output")
+
+
+def test_publish_keeps_summary_and_distinct_turn_rows(tmp_path) -> None:
+    datasets = tmp_path / "datasets"
+    datasets.mkdir()
+    common = {
+        "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "version": "vLLM-0.31.0", "backend": "vllm", "backend_version": "vLLM-0.31.0",
+        "concurrency": 8,
+    }
+    frame = pd.DataFrame([{**common, "turn_index": turn} for turn in (None, 0, 1)])
+    frame.to_parquet(datasets / "model__h200.parquet", index=False)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": 1, "pairs": [{
+        "id": "model__h200", "model_id": "org/model", "accelerator": "H200",
+        "records": 3, "columns": list(frame.columns),
+    }]}))
+
+    prepared = publish_ground_truth.prepare(manifest, datasets, tmp_path / "output")
+    assert prepared["pairs"][0]["records"] == 3
+
+
+def test_publish_detects_pair_row_reduction_even_when_total_grows() -> None:
+    old = {"pairs": [{"id": "one", "records": 12}, {"id": "two", "records": 5}]}
+    new = {"pairs": [{"id": "one", "records": 10}, {"id": "two", "records": 20}]}
+    assert publish_ground_truth._row_reductions(new, old) == [("one", 12, 10)]
+    assert publish_ground_truth._row_reductions(old, new) == [("two", 20, 5)]
+
+
 @pytest.mark.parametrize(("version", "backend", "backend_version", "message"), [
     ("RHAIIS-3.5", "rhaiis", "RHAIIS-3.5", "non-upstream vLLM version"),
     ("vLLM-0.24.0", "rhaiis", "vLLM-0.24.0", "non-vLLM backend"),
@@ -237,6 +291,7 @@ def test_publish_rejects_non_upstream_pair_before_replacing_output(
     marker.write_text("keep")
     frame = pd.DataFrame([{
         "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "concurrency": 1, "turn_index": None,
         "version": version, "backend": backend, "backend_version": backend_version,
     }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)
@@ -317,6 +372,7 @@ def test_publish_validates_all_pairs_before_replacing_output(tmp_path) -> None:
     marker.write_text("keep")
     frame = pd.DataFrame([{
         "model_id": "org/model", "accelerator": "H200", "pair_id": "model__h200",
+        "concurrency": 1, "turn_index": None,
         "version": "vLLM-0.24.0", "backend": "vllm", "backend_version": "vLLM-0.24.0",
     }])
     frame.to_parquet(datasets / "model__h200.parquet", index=False)

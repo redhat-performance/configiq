@@ -34,6 +34,9 @@ def read_manifest(manifest_path: Path) -> list[pd.DataFrame]:
         if not path.is_absolute():
             path = manifest_path.parent.parent.parent / path
         frame = pd.read_parquet(path)
+        if "turn_index" in frame:
+            # Train on whole-run summaries; turn-level observations remain in HF.
+            frame = frame.loc[frame["turn_index"].isna()].copy()
         frame["pair_id"] = pair["id"]
         frame["model_id"] = frame.get("model_id", pair["model_id"])
         frame["accelerator"] = frame.get("accelerator", pair.get("accelerator", "unknown"))

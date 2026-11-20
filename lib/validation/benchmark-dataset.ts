@@ -130,6 +130,17 @@ const CONFIGURATION_FIELDS = [
   'prefix_count',
   'max_seq_len',
   'max_num_seqs',
+  'max_num_batched_tokens',
+  'pp',
+  'dp',
+  'ep',
+  'cp',
+  'moe_tp_size',
+  'moe_ep_size',
+  'enable_expert_parallel',
+  'vllm_rocm_use_aiter',
+  'vllm_rocm_use_aiter_moe',
+  'vllm_rocm_use_aiter_moe_situv2',
   'gpu_memory_utilization',
   'chunked_prefill_enabled',
   'spec_decoding',
@@ -228,6 +239,19 @@ function configurationLabel(values: DatasetConfiguration): string {
   if (values.prefix_count) labels.push(`${values.prefix_count} prefixes`)
   if (values.max_seq_len) labels.push(`max sequence ${values.max_seq_len}`)
   if (values.max_num_seqs) labels.push(`max sequences ${values.max_num_seqs}`)
+  if (values.max_num_batched_tokens) labels.push(`max batched tokens ${values.max_num_batched_tokens}`)
+  if (values.pp) labels.push(`PP ${values.pp}`)
+  if (values.dp) labels.push(`DP ${values.dp}`)
+  if (values.ep) labels.push(`EP ${values.ep}`)
+  if (values.cp) labels.push(`CP ${values.cp}`)
+  if (values.tp_prefill) labels.push(`prefill TP ${values.tp_prefill}`)
+  if (values.tp_decode) labels.push(`decode TP ${values.tp_decode}`)
+  if (values.moe_tp_size) labels.push(`MoE TP ${values.moe_tp_size}`)
+  if (values.moe_ep_size) labels.push(`MoE EP ${values.moe_ep_size}`)
+  if (values.enable_expert_parallel) labels.push(`expert parallel ${values.enable_expert_parallel}`)
+  if (values.vllm_rocm_use_aiter) labels.push(`ROCm AITER ${values.vllm_rocm_use_aiter}`)
+  if (values.vllm_rocm_use_aiter_moe) labels.push(`ROCm AITER MoE ${values.vllm_rocm_use_aiter_moe}`)
+  if (values.vllm_rocm_use_aiter_moe_situv2) labels.push(`ROCm AITER MoE SITU v2 ${values.vllm_rocm_use_aiter_moe_situv2}`)
   if (values.gpu_memory_utilization) labels.push(`GPU memory ${values.gpu_memory_utilization}`)
   if (values.chunked_prefill_enabled) labels.push(`chunked prefill ${values.chunked_prefill_enabled}`)
   if (values.spec_decoding) labels.push(`speculative decoding ${values.spec_decoding}`)
@@ -357,6 +381,11 @@ export async function getBenchmarkDataset(refresh = false): Promise<DatasetCache
   } finally {
     if (inFlightDataset === pending) inFlightDataset = null
   }
+}
+
+/** A missing turn_index is a whole-run summary (including older HF revisions). */
+export function isSummaryBenchmarkRow(row: DatasetRow): boolean {
+  return row.turn_index == null || String(row.turn_index).trim() === ''
 }
 
 export function parseBenchmarkFilters(searchParams: URLSearchParams): BenchmarkFilters {

@@ -5,7 +5,21 @@ import sys
 
 import pandas as pd
 import split_dataset
-from stage5_common import feature_matrix, normalize_backend_version, normalize_features
+from stage5_common import feature_matrix, normalize_backend_version, normalize_features, read_manifest
+
+
+def test_training_reads_only_whole_run_summaries(tmp_path) -> None:
+    source = tmp_path / "pair.parquet"
+    pd.DataFrame([
+        {"model_id": "model", "accelerator": "H200", "concurrency": 8, "turn_index": None, "ttft_median": 100},
+        {"model_id": "model", "accelerator": "H200", "concurrency": 8, "turn_index": 0, "ttft_median": 900},
+    ]).to_parquet(source, index=False)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": "model__h200", "model_id": "model", "path": str(source)}]}))
+
+    [frame] = read_manifest(manifest)
+    assert len(frame) == 1
+    assert frame["ttft_median"].iloc[0] == 100
 
 
 def test_split_is_deterministic_and_keeps_configuration_groups_together(tmp_path, monkeypatch) -> None:

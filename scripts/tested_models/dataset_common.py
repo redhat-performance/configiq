@@ -32,7 +32,8 @@ SENSITIVE_VALUE_PATTERN = re.compile(
 )
 CLASSIFICATION_COLUMNS = {
     "model", "model_id", "accelerator", "pair_id", "version", "backend", "backend_version",
-    "tp", "pp", "dp", "ep", "cp", "isl", "osl", "concurrency",
+    "tp", "pp", "dp", "ep", "cp", "tp_prefill", "tp_decode",
+    "moe_tp_size", "moe_ep_size", "enable_expert_parallel", "isl", "osl", "concurrency",
     "measured concurrency", "measured rps", "output_tok/sec", "total_tok/sec",
     "prompt_token_count_mean", "prompt_token_count_p99", "output_token_count_mean",
     "output_token_count_p99", "ttft_median", "ttft_p95", "ttft_p1", "ttft_p999",
@@ -40,10 +41,82 @@ CLASSIFICATION_COLUMNS = {
     "tpot_p1", "itl_median", "itl_p95", "itl_p99", "itl_p999", "itl_p1", "itl_mean",
     "request_latency_median", "request_latency_min", "request_latency_max",
     "successful_requests", "errored_requests", "gpu_memory_utilization", "max_num_seqs",
-    "chunked_prefill_enabled", "prefix_caching", "turns", "prefix_tokens", "prefix_count",
+    "max_num_batched_tokens",
+    "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2",
+    "chunked_prefill_enabled", "prefix_caching", "turns", "turn_index", "prefix_tokens", "prefix_count",
     "request_type", "spec_decoding", "precision", "weight_quantization", "kv_quantization",
     "moe_num_experts", "moe_top_k", "max_seq_len",
+    "runtime_args", "env_vars", "guidellm_version",
 }
+
+# Public values require review because these source fields may also contain
+# credentials, hostnames, or local paths. Unreviewed or unsafe entries are
+# omitted rather than publishing values that cannot be used to reproduce a run.
+PUBLIC_RUNTIME_VALUE_KEYS = {
+    "tensor-parallel-size", "trust-remote-code", "gpu-memory-utilization",
+    "no-enable-log-requests", "uvicorn-log-level", "enable-prefix-caching",
+    "no-enable-prefix-caching", "kv-cache-dtype", "reasoning-parser",
+    "tool-call-parser", "enable-auto-tool-choice", "max-model-len",
+    "disable-log-requests", "tokenizer-mode", "dtype", "moe-backend",
+    "max-num-batched-tokens", "max-num-seqs", "max-cudagraph-capture-size",
+    "AMDGCN_USE_BUFFER_OPS", "max_num_seqs", "attention-backend",
+    "block-size", "performance-mode", "optimization-level",
+    "mm-encoder-tp-mode", "prefix_caching", "enable-expert-parallel",
+    "VLLM_ROCM_USE_AITER_TRITON_ROPE", "VLLM_ROCM_QUICK_REDUCE_QUANTIZATION",
+    "VLLM_ROCM_USE_AITER",
+}
+PUBLIC_ENV_VALUE_KEYS = {
+    "VLLM_ROCM_USE_AITER", "VLLM_ROCM_USE_AITER_MOE",
+    "VLLM_ROCM_USE_AITER_MOE_SITUV2",
+}
+SETTING_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,99}\Z")
+SETTING_VALUE_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,40}\Z")
+GUIDELLM_VERSION_PATTERN = re.compile(r"v?\d+(?:\.\d+){1,3}[A-Za-z0-9_.+-]{0,40}\Z")
+RUNTIME_PAIR_PATTERN = re.compile(
+    r"(?:^|[;\s])(?:--)?([A-Za-z_][A-Za-z0-9_-]*)\s*(?:=|:)\s*([^;\s]+)"
+)
+def _public_setting_value(name: str, value: object, allowed: set[str]) -> str | None:
+    text = str(value)
+    if name not in allowed or not SETTING_VALUE_PATTERN.fullmatch(text):
+        return None
+    return text
+
+
+def _public_runtime_args(raw: str) -> str:
+    """Keep only recorded options with reviewed, simple public values."""
+    values: dict[str, str] = {}
+    for match in RUNTIME_PAIR_PATTERN.finditer(raw):
+        name, value = match.groups()
+        if SETTING_NAME_PATTERN.fullmatch(name):
+            public_value = _public_setting_value(name, value, PUBLIC_RUNTIME_VALUE_KEYS)
+            if public_value is not None:
+                values[name] = public_value
+    for name in re.findall(r"(?:^|[;\s])--([A-Za-z_][A-Za-z0-9_-]*)(?=\s|;|$)", raw):
+        if SETTING_NAME_PATTERN.fullmatch(name):
+            public_value = _public_setting_value(name, "true", PUBLIC_RUNTIME_VALUE_KEYS)
+            if public_value is not None:
+                values.setdefault(name, public_value)
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+
+
+def _public_env_vars(raw: str) -> str:
+    """Keep recorded vLLM-related settings with reviewed, safe values."""
+    try:
+        source = json.loads(raw or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("env_vars is not valid JSON") from error
+    if not isinstance(source, dict):
+        raise TypeError("env_vars must be a JSON object")
+    values: dict[str, str] = {}
+    for name, value in source.items():
+        if not isinstance(name, str) or not SETTING_NAME_PATTERN.fullmatch(name):
+            continue
+        if not name.startswith(("VLLM_", "FLASHINFER_")):
+            continue
+        public_value = _public_setting_value(name, value, PUBLIC_ENV_VALUE_KEYS)
+        if public_value is not None:
+            values[name] = public_value
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 
 def resolve_dataset_repo_id(cli_value: str | None) -> str:
@@ -65,6 +138,53 @@ def _runtime_value(text: str, *names: str) -> str | None:
         if match:
             return match.group(1).strip("'")
     return None
+
+
+def _env_flags(text: str) -> dict[str, str | None]:
+    """Expose only explicit, non-sensitive vLLM ROCm kernel settings."""
+    names = {
+        "VLLM_ROCM_USE_AITER": "vllm_rocm_use_aiter",
+        "VLLM_ROCM_USE_AITER_MOE": "vllm_rocm_use_aiter_moe",
+    }
+    try:
+        source = json.loads(text or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("env_vars is not valid JSON") from error
+    if not isinstance(source, dict):
+        raise TypeError("env_vars must be a JSON object")
+    result = {}
+    for source_name, public_name in names.items():
+        value = source.get(source_name)
+        if value is None:
+            result[public_name] = None
+        elif str(value).lower() in ("1", "true"):
+            result[public_name] = "1"
+        elif str(value).lower() in ("0", "false"):
+            result[public_name] = "0"
+        else:
+            raise ValueError(f"unsupported value for {source_name}")
+    situv2 = source.get("VLLM_ROCM_USE_AITER_MOE_SITUV2")
+    if situv2 is None:
+        result["vllm_rocm_use_aiter_moe_situv2"] = None
+    else:
+        mode = str(situv2).strip().lower()
+        if mode in ("true", "false"):
+            mode = "1" if mode == "true" else "0"
+        if mode not in {"0", "1", "auto", "a4w4", "a8w4", "a16w4"}:
+            raise ValueError("unsupported value for VLLM_ROCM_USE_AITER_MOE_SITUV2")
+        result["vllm_rocm_use_aiter_moe_situv2"] = mode
+    return result
+
+
+def _explicit_bool(value: Any) -> str | None:
+    if value is None or pd.isna(value) or str(value).strip() == "":
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in ("1", "true", "yes"):
+        return "1"
+    if normalized in ("0", "false", "no"):
+        return "0"
+    raise ValueError(f"unsupported explicit boolean value: {value!r}")
 
 
 def _backend_name(version: Any) -> str:
@@ -135,6 +255,12 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     frame = frame.rename(
         columns={
             "TP": "tp",
+            "PP": "pp",
+            "DP": "dp",
+            "EP": "ep",
+            "CP": "cp",
+            "TP_prefill": "tp_prefill",
+            "TP_decode": "tp_decode",
             "intended concurrency": "concurrency",
             "prompt toks": "isl",
             "output toks": "osl",
@@ -148,6 +274,14 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     runtime_aliases = {
         "gpu_memory_utilization": ("gpu-memory-utilization", "gpu_memory_utilization"),
         "max_num_seqs": ("max-num-seqs", "max_num_seqs"),
+        "max_num_batched_tokens": ("max-num-batched-tokens", "max_num_batched_tokens"),
+        "pp": ("pipeline-parallel-size", "pipeline_parallel_size"),
+        "dp": ("data-parallel-size", "data_parallel_size"),
+        "tp_prefill": ("tp-prefill", "tp_prefill", "prefill-tp-size", "prefill_tp_size", "prefill-tensor-parallel-size"),
+        "tp_decode": ("tp-decode", "tp_decode", "decode-tp-size", "decode_tp_size", "decode-tensor-parallel-size"),
+        "moe_tp_size": ("moe-tp-size", "moe_tp_size"),
+        "moe_ep_size": ("moe-ep-size", "moe_ep_size"),
+        "enable_expert_parallel": ("enable-expert-parallel", "enable_expert_parallel"),
         "max_seq_len": ("max-model-len", "max_model_len"),
         "chunked_prefill_enabled": ("enable-chunked-prefill", "enable_chunked_prefill"),
         "precision": ("dtype", "precision"),
@@ -155,8 +289,26 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
         "kv_quantization": ("kv-cache-dtype", "kv-quantization"),
     }
     for column, names in runtime_aliases.items():
+        parsed = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
         if column not in frame:
-            frame[column] = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+            frame[column] = parsed
+        elif column in {"pp", "dp", "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel"}:
+            recorded = frame[column].replace("", None)
+            frame[column] = recorded.combine_first(parsed)
+    frame["runtime_args"] = runtime.map(_public_runtime_args)
+    frame["enable_expert_parallel"] = frame["enable_expert_parallel"].map(_explicit_bool)
+    env_raw = frame.get("env_vars", pd.Series("", index=frame.index)).fillna("").astype(str)
+    if "env_vars" in frame:
+        flags = env_raw.map(_env_flags)
+        for column in ("vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2"):
+            frame[column] = flags.map(lambda value, name=column: value[name])
+    frame["env_vars"] = env_raw.map(_public_env_vars)
+    if "guidellm_version" in frame:
+        versions = frame["guidellm_version"].fillna("").astype(str).str.strip()
+        invalid = versions.ne("") & ~versions.map(lambda value: bool(GUIDELLM_VERSION_PATTERN.fullmatch(value)))
+        if invalid.any():
+            raise ValueError("guidellm_version is not a public version string")
+        frame["guidellm_version"] = versions.replace("", None)
     for column in ("weight_quantization", "kv_quantization"):
         if column in frame:
             frame[column] = frame[column].map(

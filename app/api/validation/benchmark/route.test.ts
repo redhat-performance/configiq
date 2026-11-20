@@ -79,6 +79,23 @@ describe('GET /api/validation/benchmark', () => {
     expect(body.inferencexVersion).toBeNull()
   })
 
+  it('uses whole-run summaries and ignores per-turn detail in comparisons', async () => {
+    vi.mocked(dataset.getBenchmarkDataset).mockResolvedValueOnce({
+      rows: [internal, { ...internal, turn_index: 0, ttft_median: 900 }],
+      source: {
+        id: 'internal', url: 'https://example.com/bench', revision: null,
+        lastModified: null, loadedAt: '2026-10-20', rowCount: 2,
+      },
+      expiresAt: Infinity,
+    })
+
+    const response = await GET(requestFor(internal))
+    const body = await response.json()
+    expect(body.matchedRows).toBe(1)
+    expect(body.benchmarkPoints).toHaveLength(1)
+    expect(body.benchmarkPoints[0].ttftSeconds).toBe(0.1)
+  })
+
   it('returns only InferenceX measurements for an InferenceX configuration', async () => {
     const response = await GET(requestFor(inferencex))
     const body = await response.json()
