@@ -48,7 +48,12 @@ actually chose; when a field is omitted the service resolves it.
 objectives have their own requirements, described in the OpenAPI spec.
 
 `POST /predict` requires a model, a GPU system, and explicit parallelism. It
-does not search: it evaluates the configuration you give it.
+does not search: it evaluates the configuration you give it. It also accepts
+`prefix`, the leading tokens of `isl` shared by every request, and
+`requests_per_load_unit`, the simulated requests per concurrency slot. Omitting
+the request count simulates one request in total; setting it simulates
+`max(1, round(batch_size × value))` requests. `/recommend` accepts `prefix` but
+not `requests_per_load_unit`.
 
 `POST /memory` requires `model_path` and `system`. It is an AISimulate
 capability; a simulator that does not model memory rejects the request rather

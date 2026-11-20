@@ -59,6 +59,28 @@ concurrency) today. It does not infer a workload from a use-case description.
   explicit output budget. Keep Coding distinct from Deep Research, and Batch
   Summarization distinct from Synthetic Data Gen.
 
+## Shared prefixes and repeated requests
+
+A shared prefix is input every request starts with, usually a system prompt. It
+is part of the input length, not tokens added on top: 1,000 shared tokens at a
+4,000-token input leave 3,000 uncached tokens. It cannot exceed the input
+length.
+
+The Performance page has two related controls:
+
+- **Shared prefix tokens** says how much of the input is shared. The simulator
+  computes that part once and reuses it, which is what prefix caching reflects.
+- **Requests per user** says how many requests each concurrent user sends. A run
+  simulates concurrent users × requests per user requests, and every request
+  after the first can reuse the prefix. Leave the field empty to simulate one
+  request in total. That is not the same as one request per user, and it is not
+  the same as setting the field to 1.
+
+`POST /predict` takes both `prefix` and `requests_per_load_unit`.
+`POST /recommend` takes `prefix` and credits it when sizing capacity, but not a
+request count: it sizes from demand rather than replaying a fixed number of
+requests. `/memory` takes neither.
+
 ## Sizing multiple workloads
 
 - Size one workload per call. There is no mixed-workload endpoint. Run
