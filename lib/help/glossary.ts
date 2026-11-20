@@ -155,8 +155,13 @@ const ENTRIES = {
   },
   prefix: {
     title: 'Shared prefix tokens',
-    body: 'Number of tokens shared across multiple requests (e.g., a system prompt). When prefix caching is enabled, these tokens are computed once and reused, saving memory and compute.',
+    body: 'Number of tokens shared across multiple requests (e.g., a system prompt). A prefix is part of the input length, not extra: 1,000 prefix at 4,000 input means 3,000 uncached tokens, and it cannot exceed the input length. When prefix caching is enabled, these tokens are computed once and reused, saving memory and compute.',
     tags: ['system prompt', 'prefix'],
+  },
+  requestsPerUser: {
+    title: 'Requests per user',
+    body: 'How many requests each concurrent user sends during the run. Total simulated requests are concurrent users × this value, and requests after the first can reuse the shared prefix when one is set. Leave it empty to simulate a single request in total — not one per user.',
+    tags: ['requests', 'per user', 'reuse', 'load unit'],
   },
   prefixCache: {
     title: 'Prefix-cache hit rate',

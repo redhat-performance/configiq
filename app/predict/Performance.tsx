@@ -23,6 +23,7 @@ import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
 import { TourButton } from '@/components/help/TourButton';
 import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import type { GlossaryId } from '@/lib/help/glossary';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
 import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
 import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
@@ -161,7 +162,7 @@ function parsePerfPhase(p: PerfPhaseInput) {
 interface AccordionField {
   label: string;
   value: string | number;
-  term?: string;
+  term?: GlossaryId;
   readonly?: boolean;
   type?: 'number' | 'select' | 'range';
   invalid?: boolean;
@@ -1477,15 +1478,14 @@ export default function Performance() {
           term: 'prefix',
           type: 'number' as const,
           invalid: invalidPrefix,
-          help: 'A cached system prompt shared by every request. It is part of the input length and cannot exceed it.',
           onChange: (val: string) => handlePrefixChange(val)
         },
         {
           label: 'Requests per user',
           value: requestsPerLoadUnitInput,
+          term: 'requestsPerUser',
           type: 'number' as const,
           invalid: invalidRequestsPerLoadUnit,
-          help: 'How many requests each concurrent user sends. Requests after the first can reuse the shared prefix when one is set. Leave empty to simulate one request across all users.',
           error: `Enter a count from 1 to ${MAX_REQUESTS_PER_LOAD_UNIT.toLocaleString('en-US')}, or leave it empty.`,
           errorId: 'predict-requests-per-user-error',
           onChange: (val: string) => handleRequestsPerLoadUnitChange(val)
@@ -2642,7 +2642,7 @@ export default function Performance() {
               return (
               <div key={f.label} className={styles.accField}>
                 <label className={styles.accFieldLabel}>
-                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                  {f.label}{f.term ? <Term k={f.term} /> : null}
                 </label>
                 {f.readonly ? (
                   <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
