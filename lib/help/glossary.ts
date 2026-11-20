@@ -193,6 +193,16 @@ const ENTRIES = {
     body: 'Quantization strategy for Mixture-of-Experts models. W4A16 MXFP4 = 4-bit weights, 16-bit activations (best quality, H100+). W4A8 = 4-bit weights, 8-bit activations (~2× faster on B200, lower quality). CUTLASS = H100-optimized kernel. TRT-LLM = B200 TensorRT-LLM variant.',
     tags: ['mixture of experts', 'quantization'],
   },
+  moeExpertParallel: {
+    title: 'MoE expert parallel (EP)',
+    body: 'How many GPUs the model\'s experts are split across. In a mixture-of-experts model, expert parallelism puts different experts on different GPUs so the full expert set does not have to fit on one device. The simulator requires attention TP × attention data parallel × context parallel to equal MoE TP × MoE EP.',
+    tags: ['mixture of experts', 'expert parallel', 'ep'],
+  },
+  moeTensorParallel: {
+    title: 'MoE tensor parallel (ETP)',
+    body: 'Tensor parallelism applied to the MoE layers. It can differ from attention TP so expert weights are split across a different number of GPUs. The simulator requires attention TP × attention data parallel × context parallel to equal MoE TP × MoE EP.',
+    tags: ['mixture of experts', 'tensor parallel', 'etp'],
+  },
   gpuUtil: {
     title: 'GPU memory utilization',
     body: 'Fraction of each GPU\'s memory available to the backend for weights and KV cache. AISim maps this generic value to the selected backend and uses a backend-specific default when left on auto.',
