@@ -23,6 +23,7 @@ import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
 import { TourButton } from '@/components/help/TourButton';
 import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import type { GlossaryId } from '@/lib/help/glossary';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
 import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
 import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
@@ -161,7 +162,7 @@ function parsePerfPhase(p: PerfPhaseInput) {
 interface AccordionField {
   label: string;
   value: string | number;
-  term?: string;
+  term?: GlossaryId;
   readonly?: boolean;
   type?: 'number' | 'select' | 'range';
   invalid?: boolean;
@@ -177,7 +178,27 @@ interface AccordionField {
   step?: number;
   rangeValue?: number;
   spacer?: boolean;
-  onChange?: (value: string | number) => void;
+  // Method syntax keeps the handlers assignable while the field is built: a
+  // text field's `(value: string)` handler is narrower than the union the
+  // range branch passes. The field is still checked against the section type.
+  onChange?(value: string | number): void;
+}
+
+/**
+ * One assumption section. Declared so the field literals below are checked
+ * where they are built: an untyped array widened `term` to `string`, and the
+ * cast at the render site then accepted any key.
+ */
+interface AccordionSection {
+  id: string;
+  title: string;
+  summary: Array<{ k: string; v: string }>;
+  fields: AccordionField[];
+  badge?: string;
+  badgeColor?: string;
+  hasOverride?: boolean;
+  isOverridden?: boolean;
+  onOverrideToggle?: () => void;
 }
 
 export default function Performance() {
@@ -1422,7 +1443,7 @@ export default function Performance() {
   const validationWarnings = getValidationWarnings();
 
   // Build accordion sections dynamically from current state
-  const buildAccordionSections = () => {
+  const buildAccordionSections = (): AccordionSection[] => {
     const spec = modelSpecs.get(model);
     // Check both catalog metadata and the nested HF text config for MoE.
     const isMoeModel = detectMoe(spec, hfConfig);
@@ -1477,15 +1498,14 @@ export default function Performance() {
           term: 'prefix',
           type: 'number' as const,
           invalid: invalidPrefix,
-          help: 'A cached system prompt shared by every request. It is part of the input length and cannot exceed it.',
           onChange: (val: string) => handlePrefixChange(val)
         },
         {
           label: 'Requests per user',
           value: requestsPerLoadUnitInput,
+          term: 'requestsPerUser',
           type: 'number' as const,
           invalid: invalidRequestsPerLoadUnit,
-          help: 'How many requests each concurrent user sends. Requests after the first can reuse the shared prefix when one is set. Leave empty to simulate one request across all users.',
           error: `Enter a count from 1 to ${MAX_REQUESTS_PER_LOAD_UNIT.toLocaleString('en-US')}, or leave it empty.`,
           errorId: 'predict-requests-per-user-error',
           onChange: (val: string) => handleRequestsPerLoadUnitChange(val)
@@ -1511,7 +1531,7 @@ export default function Performance() {
           invalid: invalidMaxSeqLen,
           onChange: (val: string) => handleSequenceLengthChange(val, setMaxSeqLenInput, setMaxSeqLen),
         },
-        ...(servingMode === 'disagg' ? [
+        ...(servingMode === 'disagg' ? ([
           {
             label: 'Prefill length (tokens)',
             value: prefillMaxSeqLenInput,
@@ -1530,7 +1550,7 @@ export default function Performance() {
             invalid: invalidDecodeMaxSeqLen,
             onChange: (val: string) => handleSequenceLengthChange(val, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
           },
-        ] : []),
+        ] satisfies AccordionField[]) : []),
       ],
     },
     {
@@ -1574,7 +1594,7 @@ export default function Performance() {
             }
           }
         },
-        ...(isMoeModel ? [{
+        ...(isMoeModel ? ([{
           label: 'MoE quantization',
           value: testMoeQuantMode,
           type: 'select' as const,
@@ -1593,7 +1613,7 @@ export default function Performance() {
             }
           },
           help: 'W4A16: best quality, H100+. W4A8: ~2× faster on B200. CUTLASS: H100-optimized. TRT-LLM: B200 TRT-LLM variant.'
-        }] : []),
+        }] satisfies AccordionField[]) : []),
         {
           label: 'GPU memory utilization',
           value: effectiveGpuMemoryUtilization != null ? `${(effectiveGpuMemoryUtilization * 100).toFixed(1)}%` : 'auto',
@@ -1651,7 +1671,7 @@ export default function Performance() {
             { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, invalid: decodeCfg.workers === '' || parseInt(decodeCfg.workers, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
             { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, invalid: decodeCfg.batch === '' || parseInt(decodeCfg.batch, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
             { label: '', value: '', readonly: true, spacer: true },
-          ]
+          ] satisfies AccordionField[]
         : [
             {
               label: 'Tensor parallel size (TP)',
@@ -1691,14 +1711,14 @@ export default function Performance() {
                     placeholder: 'Auto (TP)',
                     onChange: (val: string) => handleMoeEtpSizeChange(val),
                   },
-                ]
+                ] satisfies AccordionField[]
               : []),
             {
               label: 'Total GPUs',
               value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
               readonly: true,
             },
-          ],
+          ] satisfies AccordionField[],
     },
     {
       id: 'serving',
@@ -2642,7 +2662,7 @@ export default function Performance() {
               return (
               <div key={f.label} className={styles.accField}>
                 <label className={styles.accFieldLabel}>
-                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                  {f.label}{f.term ? <Term k={f.term} /> : null}
                 </label>
                 {f.readonly ? (
                   <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
@@ -2801,7 +2821,7 @@ export default function Performance() {
                     )}
                     {sec.fields.length > 0 && (
                       <div className={sec.id === 'parallel' || sec.id === 'workload' ? styles.accGrid5 : styles.accGrid}>
-                        {(sec.fields as AccordionField[]).map(renderField)}
+                        {sec.fields.map(renderField)}
                       </div>
                     )}
                   </div>
@@ -2838,7 +2858,7 @@ export default function Performance() {
                               </div>
                             )}
                             <div className={styles.accGrid}>
-                              {(sec.fields as AccordionField[]).map(renderField)}
+                              {sec.fields.map(renderField)}
                             </div>
                           </div>
                         </AccordionContent>

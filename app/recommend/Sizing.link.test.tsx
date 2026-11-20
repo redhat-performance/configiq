@@ -782,6 +782,24 @@ describe('recommend sizing shared views', () => {
     expect(pressed).not.toContain('Default');
   });
 
+  it('applies the input length, output length, and prefix a workload preset states', async () => {
+    // RAG changes all three fields from the page's starting shape, so this
+    // fails if the chip stops writing any one of them. The Default chip is a
+    // reset handler rather than a preset, and its values match the start, so
+    // clicking it would prove neither the handler nor the three writes.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'RAG / Search')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    const sent = await calculate();
+    expect(sent).toMatchObject({ isl: 16384, osl: 512, prefix: 2000 });
+  });
+
   it('sends the prefix a shared link states', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&prefix=200');
 

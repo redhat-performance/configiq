@@ -993,6 +993,19 @@ describe('performance page parameter defaults', () => {
     expect(calculate?.disabled).toBe(true);
   });
 
+  it('explains both workload fields in a popover instead of below the input', async () => {
+    // The definitions belong in the "?" beside each label. Freeform help under
+    // the input pushes the controls apart and is easy to miss; the popover is
+    // the only place a reader looks for an explanation.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    expect(container.querySelector('[data-term="prefix"]')).not.toBeNull();
+    expect(container.querySelector('[data-term="requestsPerUser"]')).not.toBeNull();
+
+    expect(container.textContent).not.toContain('A cached system prompt shared by every request.');
+    expect(container.textContent).not.toContain('Leave empty to simulate one request across all users.');
+  });
+
   it('forwards an explicit per-user request count', async () => {
     await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
 

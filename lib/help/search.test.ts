@@ -142,4 +142,14 @@ describe('help search', () => {
     expect(routeLabel('/predict')).toBe('Predict performance');
     expect(routeLabel('/unknown-route')).toBe('/unknown-route');
   });
+
+  it('answers what a request count is and where to set it', () => {
+    // The glossary defines the term; the control entry says which page owns it.
+    // A reader searching the phrase needs both halves in one result list.
+    const index = buildHelpIndex(docs);
+    const results = searchHelp('requests per user', index, '/predict');
+
+    expect(results.some((result) => result.id === 'glossary/requestsPerUser')).toBe(true);
+    expect(results.some((result) => result.id === 'control/predict-requests-per-user')).toBe(true);
+  });
 });
