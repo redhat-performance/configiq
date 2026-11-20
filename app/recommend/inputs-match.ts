@@ -60,11 +60,11 @@ export interface CurrentRecommendInputs {
  * contract gives the field:
  *
  * - `undefined` — omit it. An aggregate-only goal makes no topology claim, and
- *   a backend that models no fabric has nothing to name, and an unpinned view
+ *   a backend that models no fabric has nothing to name, and an unpinned mode
  *   leaves the fabric to the service's documented default so it can search
  *   either deployment.
  * - `null` — ask the service for aggregate candidates only. A backend that
- *   cannot model prefill/decode, or an explicitly aggregated view, cannot use a
+ *   cannot model prefill/decode, or an explicitly aggregated mode, cannot use a
  *   fabric.
  * - a name — the topology the search should model.
  *
@@ -79,7 +79,7 @@ export function resolveSearchFabric(
   servingMode: 'agg' | 'disagg' | null,
 ): string | null | undefined {
   if (!fabricRequired || aggregateOnlyGoal) return undefined
-  // No pinned view: naming a fabric here would settle the deployment the page
+  // No pinned mode: naming a fabric here would settle the deployment the page
   // deliberately left to the service.
   if (servingMode == null) return undefined
   if (!disaggSupported || servingMode === 'agg') return null

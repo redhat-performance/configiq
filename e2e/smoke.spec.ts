@@ -425,7 +425,7 @@ test('Recommend submits the serving mode the control shows', async ({ page }) =>
   await page.getByRole('button', { name: 'Aggregated', exact: true }).click()
   const aggregated = await calculate()
   expect(aggregated).toMatchObject({ mode: 'agg', objective: 'min_gpus' })
-  // An aggregated view has no pools to limit and must not claim a topology.
+  // An aggregated mode has no pools to limit and must not claim a topology.
   expect(aggregated).not.toHaveProperty('prefill_max_seq_len')
   expect(aggregated).not.toHaveProperty('decode_max_seq_len')
   await expect(page.getByText(/Serving mode: aggregated/)).toBeVisible()
@@ -440,7 +440,7 @@ test('Recommend submits the serving mode the control shows', async ({ page }) =>
   await expect(page.getByText(/Serving mode: aggregated/)).toBeVisible()
   await expect(page.getByText('The last run returned an aggregated recommendation instead.')).toBeVisible()
 
-  // Pressing the pressed view clears it, and the next request narrows nothing.
+  // Pressing the selected mode clears it, and the next request narrows nothing.
   await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
   await expect(page.getByText(/Serving mode: service default/)).toBeVisible()
   const cleared = await calculate()

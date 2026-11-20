@@ -263,7 +263,16 @@ async function mountAt(search: string) {
   });
 }
 
+/**
+ * Open the customize panel, once.
+ *
+ * The panel toggles on every press, so a test that opens it before pressing a
+ * control must not open it twice. Every helper below goes through this.
+ */
 async function expandRequestInputs() {
+  const isOpen = Array.from(container.querySelectorAll('label'))
+    .some(label => (label.textContent ?? '').includes('Avg input tokens (ISL)'));
+  if (isOpen) return;
   await act(async () => {
     Array.from(container.querySelectorAll('button'))
       .find(button => (button.textContent ?? '').startsWith('Adjust?'))
@@ -311,16 +320,11 @@ async function mountFabricView(search: string) {
 /**
  * Press a serving mode in the expanded panel.
  *
- * Pressing the pressed view is the only way back to the unpinned default, so
+ * Pressing the selected mode is the only way back to the unpinned default, so
  * every clear-control test goes through this.
  */
 async function pressView(label: 'Aggregated' | 'Disaggregated') {
-  await act(async () => {
-    Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent?.includes('Adjust?'))
-      ?.click();
-    await Promise.resolve();
-  });
+  await expandRequestInputs();
   const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
   const button = Array.from(view?.querySelectorAll('button') ?? [])
     .find(candidate => candidate.textContent === label);
@@ -332,17 +336,12 @@ async function pressView(label: 'Aggregated' | 'Disaggregated') {
 }
 
 async function selectDisaggregated() {
-  await act(async () => {
-    Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent?.includes('Adjust?'))
-      ?.click();
-    await Promise.resolve();
-  });
+  await expandRequestInputs();
   const disaggregated = Array.from(container.querySelectorAll('button'))
     .find(button => button.textContent === 'Disaggregated');
   expect(disaggregated).toBeDefined();
   expect(disaggregated?.hasAttribute('disabled')).toBe(false);
-  // Pressing a pressed view clears it, so only press when it is not pinned.
+  // Pressing the selected mode clears it, so only press when it is not pinned.
   if (disaggregated?.getAttribute('aria-pressed') === 'true') return;
   await act(async () => {
     disaggregated?.click();
@@ -425,7 +424,7 @@ describe('recommend sizing shared views', () => {
     expect(sizing.fabric).toBeNull();
     expect(sizing.mode).toBe('agg');
 
-    // The frontier reads the same view: an aggregated view asks for aggregate
+    // The frontier reads the same mode: an aggregated mode asks for aggregate
     // candidates only, and the mode itself is omitted (the sweep rejects it).
     const sweep = await pareto();
     expect(sweep.fabric).toBeNull();
@@ -474,8 +473,8 @@ describe('recommend sizing shared views', () => {
     expect(sweep.fabric).toBeUndefined();
   });
 
-  it('leaves the serving mode out of a link while no view is pinned', async () => {
-    // A link describes the request it would reproduce. An unpinned view sends
+  it('leaves the serving mode out of a link while no mode is pinned', async () => {
+    // A link describes the request it would reproduce. An unpinned mode sends
     // no mode and no fabric, so a link that named either would make the
     // recipient answer a different question.
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
@@ -509,14 +508,14 @@ describe('recommend sizing shared views', () => {
     expect(sent.fabric).toBeUndefined();
   });
 
-  it('returns to the service default when the pinned view is pressed again', async () => {
+  it('returns to the service default when the pinned mode is pressed again', async () => {
     await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&fabric=ib-400g',
     );
     expect((await calculate()).mode).toBe('disagg');
 
-    // The unpinned default must stay reachable: pressing the pressed view is
+    // The unpinned default must stay reachable: pressing the selected mode is
     // the only way back, so it has to clear rather than re-pin.
     await pressView('Disaggregated');
 
@@ -525,23 +524,18 @@ describe('recommend sizing shared views', () => {
     expect(sent.fabric).toBeUndefined();
   });
 
-  it('clears a pinned view the form cannot submit', async () => {
+  it('clears a pinned mode the form cannot submit', async () => {
     versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg',
     );
 
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
+    await expandRequestInputs();
     const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
     const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
       .find(button => button.textContent === 'Disaggregated');
-    // The held view cannot be submitted, but the press that clears it must
+    // The held mode cannot be submitted, but the press that clears it must
     // stay available: dropping your own choice cannot depend on making
     // another one first.
     expect(disaggregated?.hasAttribute('disabled')).toBe(false);
@@ -564,12 +558,7 @@ describe('recommend sizing shared views', () => {
   it('does not offer a serving mode for a demand link', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
 
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
+    await expandRequestInputs();
 
     // The simulator reports the deployment that sustains the rate, so the page
     // must not claim one, and the request must not narrow the search.
@@ -833,7 +822,7 @@ describe('recommend sizing shared views', () => {
     expect(calculate?.disabled).toBe(true);
   });
 
-  it('checks the prefix against the pool limits a disaggregated view sends', async () => {
+  it('checks the prefix against the pool limits a disaggregated mode sends', async () => {
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&prefillMaxSeqLen=128&prefix=200',
@@ -867,13 +856,7 @@ describe('recommend sizing shared views', () => {
     // the form no longer states.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
 
-    const adjust = Array.from(container.querySelectorAll('button'))
-      .find(button => (button.textContent ?? '').startsWith('Adjust?'));
-    expect(adjust).toBeDefined();
-    await act(async () => {
-      adjust?.click();
-      await Promise.resolve();
-    });
+    await expandRequestInputs();
 
     const label = Array.from(container.querySelectorAll('label'))
       .find(candidate => (candidate.textContent ?? '').includes('Avg input tokens (ISL)'));
@@ -894,20 +877,10 @@ describe('recommend sizing shared views', () => {
 
   it('describes the capacity options the catalog reports', async () => {
     const search = '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity';
-    // The deployment-view block sits in the expandable input panel, so open it
+    // The serving-mode block sits in the expandable input panel, so open it
     // once; it stays open across the remount below.
-    const expand = async () => {
-      const adjust = Array.from(container.querySelectorAll('button'))
-        .find(button => (button.textContent ?? '').startsWith('Adjust?'));
-      if (adjust == null) return;
-      await act(async () => {
-        adjust.click();
-        await Promise.resolve();
-      });
-    };
-
     await mountAt(search);
-    await expand();
+    await expandRequestInputs();
     expect(container.textContent).toContain(
       'reports the aggregated deployments that hold the target',
     );

@@ -534,7 +534,7 @@ export default function Sizing() {
     markInputsDirty();
   };
 
-  // Pressing the pressed view clears it, so two buttons cover the unpinned
+  // Pressing the selected mode clears it, so two buttons cover the unpinned
   // default without a third control. A pinned mode the form cannot honour
   // still clears: a choice the reader made is theirs to take back.
   const toggleServingMode = (mode: 'agg' | 'disagg') => {
