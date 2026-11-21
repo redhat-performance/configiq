@@ -6,6 +6,7 @@ import type {
   CandidateViews,
   FrontierSweep,
 } from '../types/pareto'
+import { parseDebugRecord, type DebugRecord } from '../debug/types'
 
 const CANDIDATE_STATUSES: ReadonlySet<string> = new Set([
   'feasible',
@@ -132,6 +133,7 @@ export function parseFrontierBody(
   candidates: Candidate[]
   views: CandidateViews | null
   sweep: FrontierSweep | null
+  debug: DebugRecord | null
 } | null {
   if (!isRecord(value)) return null
   const simulator = typeof value.simulator === 'string' && value.simulator.trim().length > 0
@@ -147,6 +149,7 @@ export function parseFrontierBody(
       : [],
     views: parseViews(value.views),
     sweep: parseSweep(value.sweep),
+    debug: parseDebugRecord(value.debug),
   }
 }
 
