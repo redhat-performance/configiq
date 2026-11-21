@@ -63,6 +63,10 @@ ARG BLIS_COMMIT=""
 # stage. Redeclare it here to compare that image's tag with the reported
 # release: the footer must never name a different version than the binary.
 ARG BLIS_IMAGE
+# The data pins are ARGs of their own stages; redeclare them so a replay record
+# can name them alongside the image it was run in.
+ARG BLIS_CATALOG_COMMIT=676326ec6c708e91ec4981bd6b03922a7fe60512
+ARG BLIS_REGISTRY_COMMIT=7f6662d7188dc3dc873a37623e1f7bbfe1d6081b
 RUN image_ref="${BLIS_IMAGE%%@*}" \
     && image_tag="${image_ref##*:}" \
     && image_version="${image_tag#v}" \
@@ -88,12 +92,20 @@ COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
 # BLIS reads the catalog from a flag the wrapper supplies and the registry has
 # no environment fallback, so both paths are explicit. There is no build-time
 # support manifest: the API reads the catalog directly.
+#
+# The image digest and the two data commits are reported as part of a replay
+# record, so a recorded command names the exact build and data it was run
+# against. They are identity, not configuration: nothing reads them to decide
+# behaviour.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BLIS_VERSION=${BLIS_VERSION} \
     BLIS_COMMIT=${BLIS_COMMIT} \
     BLIS_CATALOG=/opt/blis/catalog \
     BLIS_REGISTRY=/opt/blis/registry \
+    BLIS_IMAGE=${BLIS_IMAGE} \
+    BLIS_CATALOG_COMMIT=${BLIS_CATALOG_COMMIT} \
+    BLIS_REGISTRY_COMMIT=${BLIS_REGISTRY_COMMIT} \
     PATH=/opt/venv/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
