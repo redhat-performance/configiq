@@ -2,27 +2,139 @@
 
 import * as React from 'react';
 import styles from './DebugPanel.module.css';
+import type { DebugPane, DebugRun } from '@/lib/debug/types';
 
 interface DebugPanelProps {
-  request: Record<string, unknown> | Record<string, unknown>[] | null;
-  response: Record<string, unknown> | Record<string, unknown>[] | null;
-  status: number | null;
-  duration: number | null;
+  /** Runs to show, in display order. An empty list hides the panel. */
+  runs: DebugRun[];
+  status?: number | null;
+  duration?: number | null;
+  endpoint?: string;
   open: boolean;
   onToggle: (open: boolean) => void;
-  endpoint?: string;
+}
+
+const COPY_FEEDBACK_MS = 1500;
+
+interface TabStripProps {
+  idPrefix: string;
+  label: string;
+  items: { id: string; label: string }[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  variant: 'run' | 'group' | 'artifact';
+}
+
+/** A tablist with arrow/Home/End movement, rendered only when it can switch. */
+function TabStrip({
+  idPrefix,
+  label,
+  items,
+  activeId,
+  onSelect,
+  variant,
+}: TabStripProps) {
+  if (items.length < 2) return null;
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const index = items.findIndex(item => item.id === activeId);
+    if (index < 0) return;
+
+    const next =
+      event.key === 'ArrowRight' ? items[(index + 1) % items.length]
+        : event.key === 'ArrowLeft' ? items[(index - 1 + items.length) % items.length]
+          : event.key === 'Home' ? items[0]
+            : event.key === 'End' ? items[items.length - 1]
+              : null;
+    if (!next) return;
+
+    event.preventDefault();
+    onSelect(next.id);
+    const buttons = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="tab"]'),
+    );
+    buttons.find(button => button.dataset.tabId === next.id)?.focus();
+  };
+
+  return (
+    <div
+      role="tablist"
+      aria-label={label}
+      className={`${styles.tabStrip} ${styles[`tabStrip_${variant}`] ?? ''}`}
+      onKeyDown={handleKeyDown}
+    >
+      {items.map(item => {
+        const selected = item.id === activeId;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            id={`${idPrefix}-tab-${item.id}`}
+            aria-selected={selected}
+            aria-controls={`${idPrefix}-panel-${item.id}`}
+            tabIndex={selected ? 0 : -1}
+            data-tab-id={item.id}
+            className={`${styles.tab} ${selected ? styles.tabSelected : ''}`}
+            onClick={() => onSelect(item.id)}
+          >
+            {item.label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function DebugPanel({
-  request,
-  response,
-  status,
-  duration,
+  runs,
+  status = null,
+  duration = null,
+  endpoint,
   open,
   onToggle,
-  endpoint,
 }: DebugPanelProps) {
-  if (!request && !response) return null;
+  const baseId = React.useId();
+  const [runId, setRunId] = React.useState<string | null>(null);
+  const [groupId, setGroupId] = React.useState<string | null>(null);
+  const [paneId, setPaneId] = React.useState<string | null>(null);
+  const [copiedId, setCopiedId] = React.useState<string | null>(null);
+  const copyTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
+
+  if (runs.length === 0) return null;
+
+  // A new result replaces the runs, so an id that no longer exists falls back
+  // to the first run rather than rendering an empty panel.
+  const run = runs.find(candidate => candidate.id === runId) ?? runs[0];
+  const groups = Array.from(new Set(
+    run.panes
+      .map(pane => pane.group)
+      .filter((group): group is string => typeof group === 'string' && group !== ''),
+  ));
+  const group = groups.find(candidate => candidate === groupId) ?? groups[0] ?? null;
+  const panes = group === null
+    ? run.panes
+    : run.panes.filter(pane => pane.group === group);
+  const pane = panes.find(candidate => candidate.id === paneId) ?? panes[0];
+
+  const copy = async (target: DebugPane) => {
+    try {
+      await navigator.clipboard?.writeText(target.contents);
+      setCopiedId(target.id);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopiedId(null), COPY_FEEDBACK_MS);
+    } catch {
+      // A denied clipboard leaves the pane readable, which is the fallback.
+    }
+  };
+
+  const hasTabStrip = panes.length > 1;
+  const activeTabId = hasTabStrip && pane ? `${baseId}-artifact-tab-${pane.id}` : undefined;
+  const activePanelId = hasTabStrip && pane ? `${baseId}-artifact-panel-${pane.id}` : undefined;
 
   return (
     <div className={styles.debugSection}>
@@ -32,34 +144,86 @@ export function DebugPanel({
         onClick={() => onToggle(!open)}
         aria-expanded={open}
       >
-        <span className={styles.debugToggleIcon}>{open ? '▾' : '▸'}</span>
+        <span className={styles.debugToggleIcon} aria-hidden="true">{open ? '▾' : '▸'}</span>
         Debug panel
+        {endpoint && <span className={styles.debugEndpoint}>{endpoint}</span>}
         {status !== null && (
           <span className={`${styles.debugStatusBadge} ${status >= 200 && status < 300 ? styles.debugStatusOk : styles.debugStatusErr}`}>
             {status}
           </span>
         )}
         {duration !== null && (
-          <span className={styles.debugDuration}>{duration}ms</span>
+          <span className={styles.debugDuration}>{duration} ms</span>
         )}
       </button>
+
       {open && (
         <div className={styles.debugBody}>
-          <div className={styles.debugPane}>
-            <div className={styles.debugPaneHeader}>Request → {endpoint || 'POST'}</div>
-            <pre className={styles.debugPre}>
-              {JSON.stringify(request, null, 2)}
-            </pre>
+          {run.notes && run.notes.length > 0 && (
+            <ul className={styles.debugNotes}>
+              {run.notes.map(note => <li key={note}>{note}</li>)}
+            </ul>
+          )}
+
+          <TabStrip
+            idPrefix={`${baseId}-run`}
+            label="Debug runs"
+            variant="run"
+            items={runs.map(item => ({ id: item.id, label: item.badge ? `${item.label} · ${item.badge}` : item.label }))}
+            activeId={run.id}
+            onSelect={(id) => {
+              setRunId(id);
+              setGroupId(null);
+              setPaneId(null);
+            }}
+          />
+
+          <TabStrip
+            idPrefix={`${baseId}-group`}
+            label="Artifact groups"
+            variant="group"
+            items={groups.map(item => ({ id: item, label: item }))}
+            activeId={group}
+            onSelect={(id) => {
+              setGroupId(id);
+              setPaneId(null);
+            }}
+          />
+
+          <div className={styles.paneHeader}>
+            <TabStrip
+              idPrefix={`${baseId}-artifact`}
+              label="Artifacts"
+              variant="artifact"
+              items={panes.map(item => ({ id: item.id, label: item.label }))}
+              activeId={pane?.id ?? null}
+              onSelect={setPaneId}
+            />
+            {pane && (
+              <div className={styles.paneActions}>
+                <span className={styles.paneLanguage}>{pane.language}</span>
+                <button
+                  type="button"
+                  className={styles.copyButton}
+                  onClick={() => copy(pane)}
+                  aria-label={`Copy ${pane.label}`}
+                >
+                  {copiedId === pane.id ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            )}
           </div>
-          <div className={styles.debugPane}>
-            <div className={styles.debugPaneHeader}>
-              Response
-              {status !== null && ` (${status})`}
+
+          {pane && (
+            <div
+              role="tabpanel"
+              id={activePanelId}
+              aria-labelledby={activeTabId}
+              className={styles.paneBody}
+            >
+              <pre className={styles.debugPre}>{pane.contents}</pre>
             </div>
-            <pre className={styles.debugPre}>
-              {response ? JSON.stringify(response, null, 2) : '(no response)'}
-            </pre>
-          </div>
+          )}
         </div>
       )}
     </div>
