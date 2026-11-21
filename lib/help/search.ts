@@ -70,7 +70,6 @@ export const ROUTE_LABELS: Record<string, string> = {
   '/recommend': 'Recommend sizing',
   '/kv-cache': 'KV cache calculator',
   '/gpu-explorer': 'GPU explorer',
-  '/compare': 'Compare',
   '/validation/compare': 'Benchmark comparison',
   '/hybrid-savings': 'Hybrid savings',
   '/cluster-cost': 'Cluster cost',

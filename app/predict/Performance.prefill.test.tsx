@@ -179,7 +179,6 @@ vi.mock('./performanceHelpers', () => ({
   useCountUp: (value: number) => value,
 }));
 vi.mock('@/components/ProductTour', () => ({ ProductTour: () => null }));
-vi.mock('./SaveEstimateModal', () => ({ SaveEstimateModal: () => null }));
 vi.mock('@/components/GpuChipLoader/GpuChipLoader', () => ({ GpuChipLoader: () => null }));
 vi.mock('@/components/ui/InfoStrip', () => ({
   InfoStrip: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
@@ -281,10 +280,7 @@ beforeEach(() => {
   });
   writeText.mockClear();
   vi.stubGlobal('localStorage', {
-    getItem: vi.fn((key: string) => {
-      if (key.includes('saved-estimates')) return '[]';
-      return 'seen';
-    }),
+    getItem: vi.fn(() => 'seen'),
     setItem: vi.fn(),
     removeItem: vi.fn(),
     clear: vi.fn(),
@@ -394,6 +390,34 @@ describe('performance page widget handoff', () => {
     expect(container.querySelector('[data-term="ttft"]')).not.toBeNull();
     expect(container.querySelector('[data-term="concurrent"]')).not.toBeNull();
     expect(container.querySelector('[data-term="tpot"]')).not.toBeNull();
+  });
+
+  it('offers no estimate export actions after a calculation', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    // The result view carries the numbers only. Copying a request, a CLI
+    // command, a sheet, or saving a local estimate are not result controls:
+    // request replay belongs to the debug panel.
+    const labels = Array.from(container.querySelectorAll('button'))
+      .map(button => button.textContent ?? '');
+    for (const removed of [
+      'Copy API request',
+      'Copy CLI command',
+      'Export to Sheets',
+      'Save estimate',
+    ]) {
+      expect(labels.some(label => label.startsWith(removed)), removed).toBe(false);
+    }
+    expect(container.querySelector('a[href="/compare"]')).toBeNull();
   });
 
   it('forwards the selected network fabric for BLIS disaggregated predictions', async () => {

@@ -31,7 +31,6 @@ import {
   RouteIcon,
   CogIcon,
   DatabaseIcon,
-  ListIcon,
   ChartLineIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getShortCommit } from "@/lib/version";
@@ -202,12 +201,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/gpu-explorer"
               isActive={pathname === "/gpu-explorer"}
             />
-            {false && <NavItemWithIcon
-              icon={ListIcon}
-              label="Compare"
-              href="/compare"
-              isActive={pathname === "/compare"}
-            />}
             {false && <NavItemWithIcon
               icon={HistoryIcon}
               label="History"
