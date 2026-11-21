@@ -115,6 +115,15 @@ Retrying the frontier panel re-runs both halves. When the sizing half fails, the
 sweep still displays and no recommendation is marked; when the sweep fails, a
 successful sizing result stays on the page.
 
+Each evaluated candidate carries its own recorded command and input files in the
+response's replay record, tagged with the candidate identifier. A candidate row
+copies that command as a self-contained script, so the row's figures can be
+reproduced on a machine with the simulator installed. The Debug panel's Replay
+run lists the request-level commands; per-candidate commands are reproduced from
+their candidate row instead of appearing in that list. A row the service did not
+record a command for, including a row projected from the sizing response, says
+so rather than copying a different command.
+
 The contract below is what the UI and service rely on.
 
 ### Availability
