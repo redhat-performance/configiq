@@ -119,8 +119,8 @@ export interface EstimateWithDebug {
 /**
  * Build the /api/predict body for an adapter input.
  *
- * Exported so replay surfaces (the debug panel and "Copy API request") use the
- * exact payload that is submitted instead of reconstructing it.
+ * Exported so replay surfaces and tests use the exact payload that
+ * `fetchEstimateAsInferenceResult` submits instead of reconstructing it.
  */
 export function buildPredictRequestBody(input: EstimateAdapterInput): Record<string, unknown> {
   const body: Record<string, unknown> = {
