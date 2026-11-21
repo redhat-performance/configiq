@@ -24,6 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
+import { RECOMMENDED_CANDIDATE_ID } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -49,6 +50,7 @@ type AxisMode = 'throughput_per_user' | 'ttft';
 const C_FRONTIER = '#0066cc';
 const C_FEASIBLE = '#009596';
 const C_SELECTED = '#f0ab00';
+const C_RECOMMENDED = '#5752d1';
 
 const FEASIBLE_STATUSES = new Set(['feasible']);
 
@@ -122,7 +124,15 @@ function fmtThousands(n: number | null): string {
 
 function candidateLabel(candidate: Candidate): string {
   const role = xpydLabel(candidate) ?? (candidate.mode === 'disagg' ? 'disagg' : 'agg');
-  return `${role} · ${candidate.used_gpus ?? '?'} GPU`;
+  const label = `${role} · ${candidate.used_gpus ?? '?'} GPU`;
+  return candidate.recommended ? `${label} · recommended` : label;
+}
+
+/** The display name for a row; a projected row has no sweep identifier. */
+function candidateName(candidate: Candidate): string {
+  return candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+    ? 'Sizing recommendation'
+    : formatCandidateId(candidate.candidate_id);
 }
 
 function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
@@ -256,8 +266,24 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
         {feasibleOff.length > 0 && (
           <ChartScatter
             data={feasibleOff}
-            size={6}
-            style={{ data: { fill: C_FEASIBLE, stroke: '#fff', strokeWidth: 1 } }}
+            size={(args: { datum?: ChartPoint }) => {
+              const candidate = args.datum?.candidate;
+              if (candidate == null) return 6;
+              if (candidate.candidate_id === selectedId) return 10;
+              return candidate.recommended ? 9 : 6;
+            }}
+            style={{
+              data: {
+                fill: (args: { datum?: ChartPoint }) => {
+                  const candidate = args.datum?.candidate;
+                  if (candidate == null) return C_FEASIBLE;
+                  if (candidate.candidate_id === selectedId) return C_SELECTED;
+                  return candidate.recommended ? C_RECOMMENDED : C_FEASIBLE;
+                },
+                stroke: '#fff',
+                strokeWidth: 1,
+              },
+            }}
             events={[{ target: 'data', eventHandlers: { onClick: handlePointClick } }]}
           />
         )}
@@ -265,13 +291,20 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
         {frontierPoints.length > 0 && (
           <ChartScatter
             data={frontierPoints}
-            size={(args: { datum?: ChartPoint }) =>
-              selectedId === args.datum?.candidate.candidate_id ? 10 : 8
-            }
+            size={(args: { datum?: ChartPoint }) => {
+              const candidate = args.datum?.candidate;
+              if (candidate == null) return 8;
+              if (candidate.candidate_id === selectedId) return 10;
+              return candidate.recommended ? 9 : 8;
+            }}
             style={{
               data: {
-                fill: (args: { datum?: ChartPoint }) =>
-                  selectedId === args.datum?.candidate.candidate_id ? C_SELECTED : C_FRONTIER,
+                fill: (args: { datum?: ChartPoint }) => {
+                  const candidate = args.datum?.candidate;
+                  if (candidate == null) return C_FRONTIER;
+                  if (candidate.candidate_id === selectedId) return C_SELECTED;
+                  return candidate.recommended ? C_RECOMMENDED : C_FRONTIER;
+                },
                 stroke: '#fff',
                 strokeWidth: 2,
               },
@@ -284,6 +317,9 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
       <div className={styles.legend}>
         <LegendDot color={C_FRONTIER} label="Pareto frontier" />
         <LegendDot color={C_FEASIBLE} label="Feasible" />
+        {feasiblePoints.some(point => point.candidate.recommended) && (
+          <LegendDot color={C_RECOMMENDED} label="Recommended configuration" />
+        )}
         <span className={styles.legendItem}>
           <span className={styles.legendSelected} style={{ background: C_SELECTED }} />
           <span>Selected</span>
@@ -352,8 +388,11 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
                       onSelect(candidate.candidate_id);
                     }}
                   >
-                    {formatCandidateId(candidate.candidate_id)}
+                    {candidateName(candidate)}
                     {onFrontier && <Label isCompact color="blue" className={styles.frontierLabel}>frontier</Label>}
+                    {candidate.recommended && candidate.candidate_id !== RECOMMENDED_CANDIDATE_ID && (
+                      <Label isCompact color="purple" className={styles.frontierLabel}>recommended</Label>
+                    )}
                   </button>
                 </td>
                 <td>
@@ -390,7 +429,12 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
     <dl className={styles.detail}>
       <div>
         <dt>Candidate</dt>
-        <dd>{formatCandidateId(candidate.candidate_id)}</dd>
+        <dd>
+          {candidateName(candidate)}
+          {candidate.recommended && candidate.candidate_id !== RECOMMENDED_CANDIDATE_ID && (
+            <Label isCompact color="purple" className={styles.frontierLabel}>recommended</Label>
+          )}
+        </dd>
       </div>
       <div>
         <dt>Topology</dt>
@@ -422,7 +466,13 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
       </div>
       <div>
         <dt>P/D transfer</dt>
-        <dd>{candidate.transfer_delay_modeled ? 'modeled' : 'not modeled'}</dd>
+        <dd>
+          {candidate.transfer_delay_modeled
+            ? 'modeled'
+            : candidate.recommended && candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+              ? 'not reported'
+              : 'not modeled'}
+        </dd>
       </div>
     </dl>
   );
@@ -470,7 +520,11 @@ export function FrontierPanel({
 
   React.useEffect(() => {
     if (selectedId != null && candidates.some(candidate => candidate.candidate_id === selectedId)) return;
+    // Lead with the configuration the user was just recommended, so the row
+    // they came to see is the one inspected first. Fall back to a frontier
+    // point, then to anything feasible.
     const next =
+      feasible.find(candidate => candidate.recommended)?.candidate_id ??
       [...frontierIds].find(id => feasible.some(candidate => candidate.candidate_id === id)) ??
       feasible[0]?.candidate_id ??
       null;
