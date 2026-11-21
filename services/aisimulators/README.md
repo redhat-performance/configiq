@@ -23,6 +23,10 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
 | GET | `/simulators` | Simulator identity, label, description, version, and revision |
 
+`/recommend`, `/predict`, and `/estimate` accept an `include` query parameter for
+optional sections (`config`, `memory`, `debug`); `/memory` accepts `debug`. See
+[Replay artifacts](#replay-artifacts-includedebug) for `debug`.
+
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 
 ## Run with the container (recommended)
@@ -91,6 +95,46 @@ fall-through to another branch.
 `POST /memory` is an AISimulate capability. A request that names a simulator
 without a memory capability (currently BLIS) returns 422 instead of borrowing
 AISimulate's answer.
+
+## Replay artifacts (`include=debug`)
+
+`POST /recommend`, `POST /predict`, `POST /estimate`, and `POST /memory` accept
+`include=debug`. The response then carries a `debug` record of what the request
+executed: a command line per run, the input files that command reads, and the
+simulator releases and data revisions the run was made against. The record is
+meant to be reproducible outside ConfigIQ — write the files to a directory and
+run the command, or run the record's `script` (`run.sh`), on a machine with the
+pinned simulators installed.
+
+The record travels inline in the response rather than being fetched by id. The
+service runs more than one worker process, so a later request has no guarantee of
+reaching the worker that made a record; an id-addressed store would answer 404
+for a record that exists.
+
+What a command means:
+
+| Simulator | `execution` | Meaning |
+|---|---|---|
+| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. Runtime paths are read from `BLIS_BINARY`, `BLIS_CATALOG`, and `BLIS_REGISTRY`, so the command does not name this image's layout. |
+| AISimulate | `in_process` | An equivalent CLI invocation, `aisimulate predict -c <file>` or `aisimulate recommend -c <file>`. The service calls the Python API directly, so the command repeats the same work rather than the same process. |
+| AISimulate (memory) | `in_process` | A Python snippet calling `estimate_kv_cache`. The memory model has no CLI verb. |
+
+`debug: null` is a real answer, not an error: recording is best-effort so a
+simulation never fails because its description could not be built. It means the
+request has no single command of its own — a `concurrency_capacity`
+recommendation is an enumeration over the search space, not one invocation — or
+that the artifacts exceeded the size cap (`AISIMULATORS_REPLAY_MAX_BYTES`,
+default 2 MiB). Over the cap, per-candidate commands are dropped first and the
+record says how many, because the command that produced the answer is what
+explains the answer.
+
+Each Pareto candidate's recorded invocation carries that candidate's
+`candidate_id`, so a candidate row copies its own command instead of the sweep's.
+`script` leaves candidate invocations out: running every candidate is not the
+sweep. A record holds at most 512 invocations, and a version-fallback attempt
+that failed is dropped from it — the record describes the run that produced the
+answer, not the ones that did not.
+
 
 ## AISimulate backend versions
 
