@@ -64,6 +64,8 @@ import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { buildPredictEntry } from '@/lib/comparison/predict-entry';
 
 /**
  * The link's own starting points. A field left at one of these is omitted from
@@ -1178,6 +1180,39 @@ export default function Performance() {
     null;
   const realMonthlyCostForDisplay = realMonthlyCost ?? 0;
 
+  // A saved comparison is a result snapshot, so it is only offered while the
+  // displayed result still matches the inputs that produced it.
+  const comparisonDisabledReason = isCalculating
+    ? 'A calculation is running; save when it finishes.'
+    : testResult == null
+      ? 'Run a calculation first; there is no result to save.'
+      : inputsDirty
+        ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
+        : null;
+
+  const buildComparisonEntry = () => {
+    if (testResult == null || isCalculating || inputsDirty) return null;
+    return buildPredictEntry({
+      link: shared.build(),
+      model,
+      system: gpu,
+      systemLabel: currentCatalogGpu?.label ?? gpu,
+      backend: inferenceBackend || null,
+      backendVersion: backendVersion || null,
+      workload: {
+        isl: testISL,
+        osl: testOSL,
+        concurrency: testConcurrentUsers,
+        weightPrecision: testWeightPrecision,
+        kvPrecision: testKVCachePrecision,
+      },
+      gpus: realGpuCount,
+      cloudRatePerHour: gpuPricePerHour,
+      hardwareCostUsd: catalogGpuForPricing?.hardware_cost_usd ?? null,
+      result: testResult,
+    });
+  };
+
   const gpus = useCountUp(realGpuCount);
   const weight = useCountUp(realWeightGB);
   const kv = useCountUp(realKVPerReqMB);
@@ -1587,6 +1622,10 @@ export default function Performance() {
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <CopyLinkButton getUrl={shared.build} />
+            <SaveToComparisonButton
+              buildEntry={buildComparisonEntry}
+              disabledReason={comparisonDisabledReason}
+            />
             <TourButton />
           </div>
         </div>
