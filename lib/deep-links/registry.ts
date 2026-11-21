@@ -86,15 +86,6 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     },
   },
   {
-    path: '/compare',
-    name: 'Saved estimates',
-    sharedView: {
-      kind: 'none',
-      reason:
-        'it compares estimates saved in this browser; there is no server-side view for a link to name',
-    },
-  },
-  {
     path: '/routing',
     name: 'Routing economics',
     sharedView: {
