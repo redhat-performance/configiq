@@ -21,6 +21,7 @@ import styles from './Performance.module.css';
 import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
 import { TourButton } from '@/components/help/TourButton';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import { exchangeRuns } from '@/lib/debug/types';
 import type { GlossaryId } from '@/lib/help/glossary';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
 import { fetchEstimateAsInferenceResult, EstimateError, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
@@ -2634,8 +2635,7 @@ export default function Performance() {
 
       {/* Debug panel */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}
