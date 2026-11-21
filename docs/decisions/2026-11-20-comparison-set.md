@@ -64,10 +64,10 @@ action bar, not `@patternfly/react-table`. The table is the comparison; its
 cells need explicit alignment, measurement units, and delta styling that the
 generic table component does not express without overriding most of it.
 
-`/compare` is registered in the shared-view registry and its route labels, with
-a link contract for the fields it shares. Entries added from a result page carry
-the same link contract, so a comparison row can reopen the view that produced
-it.
+`/compare` is registered in the shared-view registry and its route labels, but it
+has no view of its own to share: the set is browser-local, so a link cannot name
+it. Each entry instead carries the shared-view link of the result page that
+produced it, so a comparison row can reopen the view behind its figures.
 
 ## Consequences
 

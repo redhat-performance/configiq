@@ -1,0 +1,32 @@
+/* Save-to-comparison control in a result page header. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Makes the tooltip's focus target match the button it explains. */
+.disabled {
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.disabled:focus-visible {
+  outline: 2px solid var(--gc-link, #0066cc);
+  outline-offset: 2px;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  font: 400 12.5px var(--gc-font-sans, "Red Hat Text", system-ui, sans-serif);
+  color: var(--gc-text-2, #3c3f42);
+}
+
+.status a {
+  color: var(--gc-link, #0066cc);
+}

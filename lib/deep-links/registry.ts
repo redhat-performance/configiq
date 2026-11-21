@@ -72,6 +72,15 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     sharedView: { kind: 'link', fields: Object.keys(validationCompareLink.fields) },
   },
   {
+    path: '/compare',
+    name: 'Compare results',
+    sharedView: {
+      kind: 'none',
+      reason:
+        'it renders the result snapshots saved in this browser; each entry carries the link of the page that produced it, and the set itself has no URL',
+    },
+  },
+  {
     path: '/',
     name: 'Home',
     sharedView: { kind: 'none', reason: 'the landing page links to the tools and holds no inputs' },
