@@ -1195,7 +1195,7 @@ export default function Sizing() {
           </div>
         )}
 
-        {/* Calculate and Pareto are alternative actions, not a chain. */}
+        {/* Pareto runs the sizing recommendation and the sweep together. */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }} data-tour="calculate">
           <Button
             variant="secondary"
@@ -2155,7 +2155,7 @@ export default function Sizing() {
         />
       )}
 
-      {/* ─── Pareto frontier (standalone action, exclusive of the sizing result) ─── */}
+      {/* ─── Pareto frontier (sweep plus the sizing recommendation collated in) ─── */}
       {runMode === 'pareto' && (
         <FrontierPanel
           state={frontier}

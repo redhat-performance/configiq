@@ -76,6 +76,12 @@ export interface Candidate {
   transfer_delay_modeled: boolean
   provenance_sources: string[]
   simulator: SimulatorId
+  /**
+   * Set on the row that represents this run's sizing recommendation. The row is
+   * either the sweep candidate with the same deployment or a row projected from
+   * the sizing result, so it is never listed twice.
+   */
+  recommended?: boolean
 }
 
 export interface CandidateViews {

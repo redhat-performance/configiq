@@ -89,12 +89,32 @@ destination_missing` shows up in **TTFT / e2e latency**, not in steady-state
 not cleanly in `mean_ttst_ms`. Use `mean_e2e_latency_ms` / `mean_ttft_ms` as the
 transfer-sensitive signal.
 
-## ConfigIQ standalone-sweep contract
+## ConfigIQ Pareto contract
 
-The Pareto frontier is a standalone action, not a companion scan. `Pareto
-frontier` and `Calculate` are alternative buttons: either action replaces the
-other's result, and retrying re-runs only the active action. The contract below
-is what the UI and service rely on.
+The Pareto action answers two questions for one workload. It submits the sizing
+recommendation and the frontier sweep concurrently and keeps both answers:
+
+- the **sizing recommendation** (`objective=min_gpus`, or the visible goal's
+  objective) names the configuration to deploy;
+- the **sweep** (`objective=pareto`) reports how that workload trades
+  throughput per user against throughput per GPU.
+
+The sizing recommendation is collated into the sweep's candidate list. When the
+sweep evaluated the same deployment (same mode, GPU count, and parallelism
+widths), that row is marked as the recommendation. Otherwise the recommendation
+is added as a row projected from the sizing response, using the GPU count,
+topology, latency, and throughput the response reported. Either way it appears
+once in the chart and once in the list, and its numbers are the sizing
+response's numbers rather than a second prediction. A sizing response that does
+not report per-user or per-GPU throughput lists the recommendation without
+plotting a point rather than plotting zero.
+
+`Calculate` remains a sizing-only action and clears a displayed frontier.
+Retrying the frontier panel re-runs both halves. When the sizing half fails, the
+sweep still displays and no recommendation is marked; when the sweep fails, a
+successful sizing result stays on the page.
+
+The contract below is what the UI and service rely on.
 
 ### Availability
 
@@ -256,15 +276,17 @@ unmet. `demand.window_seconds` reports that same arrival window.
 
 ### Timing
 
-A sweep is the only request in flight for the Pareto action, so it must fit the
-gateway timeout on its own. The auto window keeps the search near the model's
-fit floor, which materially reduces sparse curves and timeout noise compared
-with a one-GPU-to-ceiling sweep. Measured wall times against the deployed
-service (then at `aisimulators.dev`) for 0.6B/8B/32B sweeps over 1–16 GPUs were
-20–29 seconds with 20/20 feasible candidates; a Qwen3-235B-A22B sweep from its
-4-GPU floor over 4–16 GPUs took 21 seconds with 10 aggregated and 10
-disaggregated candidates. The frontend shows elapsed time and the gateway limit
-while the sweep runs, and a timeout degrades only the frontier panel.
+The sizing recommendation and the sweep are separate requests in flight
+together, so each must fit the gateway timeout on its own; the action is
+bounded by the slower of the two rather than their sum. The auto window keeps
+the search near the model's fit floor, which materially reduces sparse curves
+and timeout noise compared with a one-GPU-to-ceiling sweep. Measured wall times
+against the deployed service (then at `aisimulators.dev`) for 0.6B/8B/32B
+sweeps over 1–16 GPUs were 20–29 seconds with 20/20 feasible candidates; a
+Qwen3-235B-A22B sweep from its 4-GPU floor over 4–16 GPUs took 21 seconds with
+10 aggregated and 10 disaggregated candidates. The frontend shows elapsed time
+and the gateway limit while the sweep runs, and a timeout degrades only the
+frontier panel; a failed sizing half leaves a successful frontier on screen.
 
 ## Conclusion
 
