@@ -277,11 +277,13 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     const t0 = performance.now();
 
     void fetchFrontier(requestBody, controller.signal)
-      .then(({ candidates, views, sweep }) => {
+      .then(({ candidates, views, sweep, debug }) => {
         if (controller.signal.aborted) return;
         setFrontier({ status: 'ready', candidates, views, sweep });
         setDebugStatus(200);
-        setDebugResponse({ candidates, views, sweep });
+        // Keep the replay record with the payload the panel reads, so it can
+        // show the commands that reproduce the sweep beside the response.
+        setDebugResponse({ candidates, views, sweep, debug });
         setDebugDuration(Math.round(performance.now() - t0));
       })
       .catch((err: unknown) => {
