@@ -328,6 +328,44 @@ describe('RecommendContext action modes', () => {
     expect(latest.frontier.candidates[0].recommended).toBe(true)
   })
 
+  it('keeps the sweep replay record with the frontier it describes', async () => {
+    const debug = {
+      endpoint: '/recommend',
+      simulator: 'aisimulate',
+      execution: 'in_process',
+      created_at: 1_730_000_000,
+      versions: {},
+      selection: null,
+      notes: [],
+      invocations: [{
+        id: 'candidate-1',
+        label: 'Candidate c1',
+        command: 'aisimulate predict -c c1.yaml',
+        execution: 'in_process',
+        group: null,
+        candidate_id: 'candidate-000001',
+        notes: [],
+        files: [],
+      }],
+      script: null,
+    }
+    vi.mocked(fetchFrontier).mockResolvedValueOnce({
+      candidates: [],
+      views: null,
+      sweep: null,
+      debug,
+    })
+    await render()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await flush()
+    })
+
+    if (latest.frontier.status !== 'ready') throw new Error('expected a ready frontier')
+    expect(latest.frontier.replay).toEqual(debug)
+  })
+
   it('sends one Pareto sweep request with no GPU-window bounds', async () => {
     await render()
 

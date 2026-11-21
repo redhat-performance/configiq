@@ -334,6 +334,9 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
           candidates: response.candidates,
           views: response.views,
           sweep: response.sweep,
+          // Each evaluated candidate carries its own command, so the frontier
+          // rows can copy the one that produced their figures.
+          replay: response.debug,
         });
         // Keep the replay record with the payload the panel reads, so it can
         // show the commands that reproduce each half beside the responses.
