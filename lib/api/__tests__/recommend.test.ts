@@ -662,7 +662,41 @@ describe('callRecommend', () => {
 
     await callRecommend(VALID_REQUEST)
 
-    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory')
+    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory,debug')
+  })
+
+  it('keeps the replay record the API returned beside the result', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      simulator: 'aisimulate',
+      debug: {
+        endpoint: '/recommend',
+        simulator: 'aisimulate',
+        execution: 'in_process',
+        created_at: 1730000000,
+        versions: { aisimulate: '0.14.0' },
+        selection: '4 GPUs, agg',
+        notes: [],
+        invocations: [{
+          id: 'recommend',
+          label: 'Recommendation',
+          command: 'aisimulate recommend -c recommend.yaml',
+          execution: 'in_process',
+          group: null,
+          candidate_id: null,
+          notes: [],
+          files: [{ path: 'recommend.yaml', contents: 'engine: {}\n' }],
+        }],
+        script: '#!/usr/bin/env bash\naisimulate recommend -c recommend.yaml\n',
+      },
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.debug?.invocations[0].command).toBe('aisimulate recommend -c recommend.yaml')
+    expect(result.debug?.script).toContain('aisimulate recommend')
   })
 
   it('normalizes native memory breakdown bytes when the candidate has no memory metric', async () => {
@@ -1336,6 +1370,9 @@ describe('callPareto', () => {
     })
 
     expect(result.status).toBe('completed')
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://aisimulators.dev/recommend?include=debug',
+    )
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
     expect(body.objective).toBe('pareto')
     expect(body.simulator).toBe('aisimulate')
@@ -1378,6 +1415,38 @@ describe('callPareto', () => {
     })
     expect(result.views?.pareto_front).toEqual(['candidate-000001'])
     expect(result.sweep).toMatchObject({ evaluated: 1, windowMaxGpus: 32, strictSla: true })
+  })
+
+  it('keeps the replay record that reproduces the sweep', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...PARETO_EXTERNAL_RESPONSE,
+      debug: {
+        endpoint: '/recommend',
+        simulator: 'aisimulate',
+        execution: 'in_process',
+        created_at: 1730000000,
+        versions: { aisimulate: '0.14.0' },
+        selection: '1 candidate on the frontier',
+        notes: [],
+        invocations: [{
+          id: 'recommend',
+          label: 'GPU window 1-32',
+          command: 'aisimulate recommend -c window.yaml',
+          execution: 'in_process',
+          group: 'Search windows',
+          candidate_id: null,
+          notes: [],
+          files: [{ path: 'window.yaml', contents: 'engine: {}\n' }],
+        }],
+        script: '#!/usr/bin/env bash\naisimulate recommend -c window.yaml\n',
+      },
+    }))
+
+    const result = await callPareto({ ...VALID_REQUEST, objective: 'pareto' })
+
+    if (result.status !== 'completed') throw new Error('expected a Pareto result')
+    expect(result.debug?.invocations[0].group).toBe('Search windows')
+    expect(result.debug?.script).toContain('aisimulate recommend')
   })
 
   it('keeps a single-search sweep inside the gateway timeout', async () => {

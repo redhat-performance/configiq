@@ -1,5 +1,6 @@
 import type { KvCacheCalcRequest } from './schemas'
 import { gatewayTimeoutSeconds } from './timeout'
+import { parseDebugRecord, type DebugRecord } from '../debug/types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -20,6 +21,8 @@ export interface KvCacheCalcResult {
   gpuCapacity: {
     totalBytes: number
   }
+  /** Commands and input files that reproduce this estimate, when the API sent them. */
+  debug?: DebugRecord | null
   metadata: {
     simulator: 'aisimulate'
     modelPath: string
@@ -100,7 +103,7 @@ export async function callKvCacheCalc(
 
   let response: Response
   try {
-    response = await fetch(`${baseUrl}/memory`, {
+    response = await fetch(`${baseUrl}/memory?include=debug`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -159,6 +162,7 @@ export async function callKvCacheCalc(
     gpuCapacity: {
       totalBytes: asNumber(rawData.total_gpu_capacity_bytes, 0),
     },
+    debug: parseDebugRecord(rawData.debug),
     metadata: {
       simulator: 'aisimulate',
       modelPath: request.model_path,

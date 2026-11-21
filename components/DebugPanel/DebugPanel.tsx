@@ -116,9 +116,15 @@ export function DebugPanel({
       .filter((group): group is string => typeof group === 'string' && group !== ''),
   ));
   const group = groups.find(candidate => candidate === groupId) ?? groups[0] ?? null;
+  // A group only partitions the artifacts that belong to one. Ungrouped panes,
+  // such as the run script and the version pins, describe the whole run and stay
+  // visible behind every group tab.
   const panes = group === null
     ? run.panes
-    : run.panes.filter(pane => pane.group === group);
+    : [
+        ...run.panes.filter(pane => pane.group === group),
+        ...run.panes.filter(pane => pane.group === undefined),
+      ];
   const pane = panes.find(candidate => candidate.id === paneId) ?? panes[0];
 
   const copy = async (target: DebugPane) => {

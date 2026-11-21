@@ -135,7 +135,40 @@ describe('callKvCacheCalc', () => {
 
     await callKvCacheCalc(VALID_REQUEST)
 
-    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/memory')
+    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/memory?include=debug')
+  })
+
+  it('keeps the replay snippet the API returned beside the estimate', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      debug: {
+        endpoint: '/memory',
+        simulator: 'aisimulate',
+        execution: 'in_process',
+        created_at: 1730000000,
+        versions: { aisimulate: '0.14.0' },
+        selection: null,
+        notes: [],
+        invocations: [{
+          id: 'memory-estimate',
+          label: 'Memory estimate',
+          command: 'python memory-estimate.py',
+          execution: 'in_process',
+          group: null,
+          candidate_id: null,
+          notes: [],
+          files: [{ path: 'memory-estimate.py', contents: 'estimate_kv_cache()\n' }],
+        }],
+        script: '#!/usr/bin/env bash\npython memory-estimate.py\n',
+      },
+    }))
+
+    const result = await callKvCacheCalc(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.debug?.invocations[0].command).toBe('python memory-estimate.py')
+    expect(result.debug?.invocations[0].files[0].contents).toContain('estimate_kv_cache')
   })
 
   it('sends correct fields without credentials', async () => {

@@ -193,7 +193,7 @@ export async function fetchEstimateAsInferenceResult(
   const body = buildPredictRequestBody(input)
 
   const startTime = performance.now()
-  const res = await fetch('/api/predict?include=config,memory', {
+  const res = await fetch('/api/predict?include=config,memory,debug', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
