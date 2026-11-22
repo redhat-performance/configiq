@@ -8,8 +8,8 @@
 // the deployed build does not send yet.
 //
 // Outputs (for GITHUB_OUTPUT): commit, version.
-// Leave `commit` empty when the deployment does not report a usable SHA so the
-// workflow can fall back to the triggering ref.
+// Exits non-zero when the deployment does not report a usable commit, so a
+// workflow never falls back to testing a different revision.
 
 import { appendFileSync } from 'node:fs'
 
@@ -44,7 +44,11 @@ if (body == null || typeof body !== 'object') {
 const reportedCommit = typeof body.gitCommit === 'string' ? body.gitCommit : ''
 const version = typeof body.version === 'string' ? body.version : 'unknown'
 const commit = /^[0-9a-f]{40}$/.test(reportedCommit) ? reportedCommit : ''
-const shortCommit = commit ? commit.substring(0, 7) : reportedCommit || 'unknown'
+if (!commit) {
+  console.error(`${baseUrl}/api/version does not report a valid git commit. Deploy a build that reports its commit.`)
+  process.exit(1)
+}
+const shortCommit = commit.substring(0, 7)
 
 console.log(`Deployed ${baseUrl}: ${version} (${shortCommit})`)
 
@@ -59,14 +63,16 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     `- Host: ${baseUrl}`,
     `- Version: ${version}`,
     `- Commit: ${shortCommit}`,
-    `- Test checkout: ${commit || 'falling back to the triggering ref'}`,
     '',
   ].join('\n'))
 }
 
 const expected = process.env.EXPECTED_COMMIT
-if (!commit) {
-  console.log('::warning::The deployment does not report a git commit; falling back to the triggering ref. Specs may not match the deployed build.')
-} else if (expected && expected !== commit) {
-  console.log(`::notice::This run is pinned to the deployed commit ${shortCommit}, not ${expected.substring(0, 7)}.`)
+if (expected && expected !== commit) {
+  const message = `The deployment is serving ${shortCommit}, not ${expected.substring(0, 7)}`
+  if (process.env.REQUIRE_MATCH === '1') {
+    console.error(`${message}. Refusing to run tests against a different revision.`)
+    process.exit(1)
+  }
+  console.log(`::notice::${message}. This run is pinned to the deployed commit.`)
 }

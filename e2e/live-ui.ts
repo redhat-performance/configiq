@@ -62,6 +62,19 @@ export type RecommendScenario =
   | { action: 'sizing'; goal: 'demand'; concurrency?: never }
   | { action: 'pareto'; goal: 'latency' | 'demand'; concurrency?: never }
 
+/**
+ * `requireSuccess` turns an API error into a test failure.
+ *
+ * The scheduled matrices accept an API error when the UI renders the matching
+ * error state, because some model/GPU pairings are expected to be unsupported.
+ * The deployment sanity suite sets it: a release that cannot produce a result
+ * for the one sampled pairing per model is broken, and reporting that as pass
+ * would make the suite meaningless.
+ */
+export interface CaseOptions {
+  requireSuccess?: boolean
+}
+
 export const goalLabels = { latency: 'Latency SLO', demand: 'Throughput demand', capacity: 'Concurrency capacity' } as const
 
 function predictErrorTitle(code?: string): string {
@@ -148,6 +161,7 @@ export async function checkPredict(
   systemId: string,
   concurrency: ConcurrencyPreset,
   parallelism: number,
+  options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
   await verifyDeployedPreset(page, model, workload, concurrency)
@@ -198,6 +212,10 @@ export async function checkPredict(
 
   if (!response.ok() || result.status === 'failed') {
     const errorCode = result.error?.code ?? 'AISIM_NO_CONFIGURATION'
+    if (options.requireSuccess) {
+      const detail = result.error?.message ?? result.detail
+      throw new Error(`Predict did not complete for ${model} on ${systemId}: ${errorCode}${detail ? ` — ${detail}` : ''}`)
+    }
     await expect(page.getByText(predictErrorTitle(errorCode), { exact: true })).toBeVisible()
     if (!['OOM', 'AUTH_REQUIRED', 'MODEL_NOT_FOUND', 'AISIM_TIMEOUT'].includes(errorCode)) {
       const errorMessage = result.error?.message ?? result.detail ?? 'AISimulators prediction failed'
@@ -247,6 +265,7 @@ export async function checkKvCache(
   systemId: string,
   concurrency: ConcurrencyPreset,
   parallelism: number,
+  options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
   await verifyDeployedPreset(page, model, workload, concurrency)
@@ -289,6 +308,10 @@ export async function checkKvCache(
   if (savedVersion) expect(body.backend_version).toBe(savedVersion)
   else expect(body).not.toHaveProperty('backend_version')
   if (!response.ok() || result.status !== 'completed') {
+    if (options.requireSuccess) {
+      const detail = result.error?.message ?? `HTTP ${response.status()}`
+      throw new Error(`KV cache calculation did not complete for ${model} on ${systemId}: ${detail}`)
+    }
     if (result.error?.message) {
       await expect(page.getByText(result.error.message, { exact: true })).toBeVisible()
     } else {
@@ -352,6 +375,7 @@ export async function checkRecommend(
   workload: WorkloadPreset,
   systemId: string,
   scenario: RecommendScenario,
+  options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
   await verifyDeployedPreset(page, model, workload, scenario.concurrency)
@@ -446,6 +470,9 @@ export async function checkRecommend(
     const frontier = page.getByRole('region', { name: 'Pareto frontier' })
     await expect(frontier).toBeVisible()
     if (!response.ok()) {
+      if (options.requireSuccess) {
+        throw new Error(`Pareto sweep failed for ${model} on ${systemId}: ${formatApiError(result, `HTTP ${response.status()}`)}`)
+      }
       await expect(frontier.getByText(formatApiError(result, `Pareto sweep failed (${response.status()})`), { exact: true })).toBeVisible()
       return
     }
@@ -476,6 +503,11 @@ export async function checkRecommend(
   const result = await capturedRecommendation(page)
   await saveJson(testInfo, 'recommend-live-response.json', result)
   if (!response.ok() || result.status !== 'completed') {
+    if (options.requireSuccess) {
+      const code = result.error?.code ?? `HTTP ${response.status()}`
+      const detail = result.error?.message
+      throw new Error(`Recommend sizing did not complete for ${model} on ${systemId}: ${code}${detail ? ` — ${detail}` : ''}`)
+    }
     await expect(page.getByText(recommendErrorTitle(result.error?.code), { exact: true })).toBeVisible()
     if (result.error?.message && ['AISIM_NO_CONFIGURATION', 'SIMULATOR_MISMATCH'].includes(result.error.code ?? '')) {
       await expect(page.locator('[class*="errorMsg"]')).toHaveText(result.error.message)

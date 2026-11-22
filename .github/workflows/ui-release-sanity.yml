@@ -1,11 +1,11 @@
 name: Release sanity (configiq.io)
 
+# The heavy tested-model matrices run against configiq.dev. This workflow keeps
+# the release-tracking host to a small, sequential sanity check so production
+# sees only light load.
+
 on:
   workflow_dispatch:
-    inputs:
-      ref:
-        description: Commit or tag to test (defaults to the deployed build)
-        required: false
   schedule:
     - cron: '0 6 * * 6'
       timezone: 'America/New_York'
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          ref: ${{ inputs.ref || needs.preflight.outputs.commit || github.sha }}
+          ref: ${{ needs.preflight.outputs.commit }}
 
       - name: Show target build
         run: echo "Testing $(git rev-parse --short HEAD) ($(git describe --tags --always)) on $PLAYWRIGHT_BASE_URL"
@@ -52,10 +52,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20.19.0
-          cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verify the deployment still serves the preflight build
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+          REQUIRE_MATCH: '1'
+        run: node scripts/check-deployed-version.mjs
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

@@ -66,17 +66,18 @@ Local scheduled runs use rotation zero by default. Set `PLAYWRIGHT_MATRIX_ROTATI
 To split a manual run across machines, run one shard number per machine:
 
 ```bash
-npm run test:e2e:scheduled:full -- --shard=1/12
+PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:scheduled:full -- --shard=1/12
 ```
 
 All three live workflows first resolve the deployed commit from
 `/api/version` and check out that commit, so the specs match the code being
-tested. The preflight also reports when the triggering ref and the deployed
-commit differ.
+tested. Each shard repeats the check before running, and a deployment whose
+reported commit changes mid-run fails instead of mixing two builds. The
+preflight reports when the triggering ref and the deployed commit differ.
 
 - The **dev nightly** workflow runs at 2:00 a.m. every day in `America/New_York` and can also be started manually. It targets `https://configiq.dev` (the `:dev` images) and splits the 470 sampled cases into six Playwright shards, with at most three shard jobs at a time; each job runs two browser workers.
 - The **dev weekly** workflow runs at 8:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.dev` and splits the full 2,900 scheduled cases into 12 Playwright shards, with at most three shard jobs at a time.
-- The **release sanity** workflow runs at 6:00 a.m. Saturday in `America/New_York` and can also be started manually with an optional `ref` input. It targets `https://configiq.io` (the `:latest` images) and runs the 33 sanity cases in one job with a single browser worker so the production service sees only light, sequential load.
+- The **release sanity** workflow runs at 6:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.io` (the `:latest` images) and runs the 33 sanity cases in one job with a single browser worker so the production service sees only light, sequential load. Unlike the matrices, it requires each case to complete: an API error fails the run instead of being accepted as an unsupported pairing. The one exception is a model whose Hugging Face repository is gated for the deployment; that case still checks that the API's error reaches the UI, and the report marks it `known-unavailable`.
 
 Each dev shard has a six-hour timeout and CI retries; the release sanity job has a one-hour timeout. A local scheduled run uses the same selection without sharding. The local Playwright process drives the deployed UI; it does not start a local ConfigIQ server or API.
 
