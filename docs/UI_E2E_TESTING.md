@@ -20,7 +20,7 @@ that reports no build metadata fails the preflight with one clear message
 instead of thousands of assertion differences.
 
 - Workload presets set ISL, OSL, and a shared prefix. Predict and KV cache send each concurrency preset as `batch_size` and `max_batch_size` respectively; KV cache sends `max_num_tokens = isl + osl`. These are test inputs for memory estimation, not a claim that the KV page implements the same workload semantics as Predict or Recommend.
-- Recommend compares GPU count, memory, and the goal-specific result tile with the current API response. Throughput-demand requests carry an arrival rate instead of concurrency; capacity requests have no latency target. Pareto sweeps carry neither an arrival rate nor concurrency, and the tests compare the rendered candidate table or error with the response. Capacity and Pareto cases check that the control is unavailable and skip the API comparison when the selected simulator does not advertise that capability.
+- Recommend compares GPU count, memory, and the goal-specific result tile with the current API response. Throughput-demand requests carry an arrival rate instead of concurrency; capacity requests have no latency target. Pareto sweeps carry neither an arrival rate nor concurrency, and the tests compare the rendered candidate table or error with the response. Capacity and Pareto cases check that the control is unavailable and skip the API comparison when the deployed catalog does not advertise that capability. The release sanity suite fails instead of skipping, because a release that drops a capability is a regression.
 - When browser settings explicitly contain a backend version, the tests check that the UI sends that version. Otherwise, they check that the request omits `backend_version` so the API can resolve its default. The live tests do not pin a version such as `0.27.1`.
 - The larger tested models use fixed TP and EP test inputs entered through the parallelism controls. Some model/GPU combinations may be unsupported or need different topology settings; the tests check that the UI displays the API's error state for these cases. The test inputs are not sizing formulas or recommendations.
 
@@ -71,15 +71,18 @@ PLAYWRIGHT_BASE_URL=https://configiq.dev npm run test:e2e:scheduled:full -- --sh
 
 All three live workflows first resolve the deployed commit from
 `/api/version` and check out that commit, so the specs match the code being
-tested. Each shard repeats the check before running, and a deployment whose
-reported commit changes mid-run fails instead of mixing two builds. The
+tested. Each shard repeats the check before running and again after the tests,
+so a deployment that moves during a shard fails instead of mixing two builds.
+The final check runs even when a case fails, so a mid-run deployment change is
+named as the cause rather than leaving its assertion failures to explain it. A
+deployment that changes and reverts between the two checks is not detected. The
 preflight reports when the triggering ref and the deployed commit differ.
 
 - The **dev nightly** workflow runs at 2:00 a.m. every day in `America/New_York` and can also be started manually. It targets `https://configiq.dev` (the `:dev` images) and splits the 470 sampled cases into six Playwright shards, with at most three shard jobs at a time; each job runs two browser workers.
 - The **dev weekly** workflow runs at 8:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.dev` and splits the full 2,900 scheduled cases into 12 Playwright shards, with at most three shard jobs at a time.
 - The **release sanity** workflow runs at 6:00 a.m. Saturday in `America/New_York` and can also be started manually. It targets `https://configiq.io` (the `:latest` images) and runs the 33 sanity cases in one job with a single browser worker so the production service sees only light, sequential load. Unlike the matrices, it requires each case to complete: an API error fails the run instead of being accepted as an unsupported pairing. The one exception is a model whose Hugging Face repository is gated for the deployment; that case still checks that the API's error reaches the UI, and the report marks it `known-unavailable`.
 
-Each dev shard has a six-hour timeout and CI retries; the release sanity job has a one-hour timeout. A local scheduled run uses the same selection without sharding. The local Playwright process drives the deployed UI; it does not start a local ConfigIQ server or API.
+Each nightly shard has a three-hour timeout, each weekly shard six hours, and the release sanity job one hour; every job retries a failed test once in CI. A local scheduled run uses the same selection without sharding. The local Playwright process drives the deployed UI; it does not start a local ConfigIQ server or API.
 
 ## When a case fails
 

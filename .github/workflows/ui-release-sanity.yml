@@ -69,6 +69,15 @@ jobs:
       - name: Test one workload on one GPU per approved model
         run: npm run test:e2e:sanity -- --workers=1
 
+      # Runs even when a case fails, so a deployment that moved during the run
+      # is reported as the cause rather than the assertions it invalidated.
+      - name: Confirm the deployment still serves the tested build
+        if: always()
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+          REQUIRE_MATCH: '1'
+        run: node scripts/check-deployed-version.mjs
+
       - name: Upload UI test diagnostics
         if: always()
         uses: actions/upload-artifact@v4

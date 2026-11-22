@@ -412,7 +412,10 @@ export async function checkRecommend(
   const goalButton = page.getByRole('button', { name: goalLabels[scenario.goal], exact: true })
   if (scenario.goal === 'capacity' && !objectives.includes('concurrency_capacity')) {
     await expect(goalButton).toHaveCount(0)
-    test.skip(true, 'AISimulators catalog does not offer concurrency-capacity sizing')
+    if (options.requireSuccess) {
+      throw new Error(`The deployed catalog does not offer concurrency-capacity sizing for ${model} on ${systemId}, which this suite requires`)
+    }
+    test.skip(true, 'The deployed catalog does not offer concurrency-capacity sizing')
   }
   await goalButton.click()
   await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -420,7 +423,10 @@ export async function checkRecommend(
   const action = page.getByRole('button', { name: scenario.action === 'pareto' ? 'Pareto frontier' : 'Calculate', exact: true })
   if (scenario.action === 'pareto' && !objectives.includes('pareto')) {
     await expect(action).toBeDisabled()
-    test.skip(true, 'AISimulators catalog does not offer Pareto sweeps')
+    if (options.requireSuccess) {
+      throw new Error(`The deployed catalog does not offer Pareto sweeps for ${model} on ${systemId}, which this suite requires`)
+    }
+    test.skip(true, 'The deployed catalog does not offer Pareto sweeps')
   }
   await expect(action).toBeEnabled()
   const responsePromise = page.waitForResponse(
