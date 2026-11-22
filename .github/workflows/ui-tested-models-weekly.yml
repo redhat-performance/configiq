@@ -1,18 +1,37 @@
-name: Tested-model UI regression
+name: Tested-model UI regression on dev (weekly full)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 6'
+    - cron: '0 8 * * 6'
       timezone: 'America/New_York'
 
 permissions:
   contents: read
 
 jobs:
-  tested-models:
-    name: Test deployed UI and AISimulators (shard ${{ matrix.shard }}/12)
+  preflight:
+    name: Resolve deployed dev build
     if: github.repository == 'redhat-performance/configiq'
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read deployed build
+        id: build
+        env:
+          PLAYWRIGHT_BASE_URL: https://configiq.dev
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: node scripts/check-deployed-version.mjs
+
+  tested-models:
+    name: Test dev UI and AISimulators (full, shard ${{ matrix.shard }}/12)
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
@@ -21,13 +40,14 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     env:
-      PLAYWRIGHT_BASE_URL: https://configiq.io
+      PLAYWRIGHT_BASE_URL: https://configiq.dev
       PLAYWRIGHT_MATRIX_ROTATION: ${{ github.run_number }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -41,13 +61,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Test Predict, KV cache, and Recommend sizing
-        run: npm run test:e2e:weekly -- --shard=${{ matrix.shard }}/12
+        run: npm run test:e2e:scheduled:full -- --shard=${{ matrix.shard }}/12
 
       - name: Upload UI test diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tested-model-ui-${{ github.run_id }}-${{ matrix.shard }}
+          name: tested-model-ui-dev-full-${{ github.run_id }}-${{ matrix.shard }}
           path: |
             test-results/
             playwright-report/

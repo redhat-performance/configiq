@@ -28,6 +28,7 @@ export const baselineConcurrencyPreset: ConcurrencyPreset = (() => {
   return preset
 })()
 
+export const sampledMatrix = process.env.PLAYWRIGHT_MATRIX_SAMPLE === '1'
 export const scheduledMatrix = process.env.PLAYWRIGHT_MATRIX_MODE === 'scheduled'
 const rotation = Number(process.env.PLAYWRIGHT_MATRIX_ROTATION ?? '0')
 if (!Number.isSafeInteger(rotation) || rotation < 0) {
@@ -37,10 +38,13 @@ if (!Number.isSafeInteger(rotation) || rotation < 0) {
 // Throughput demand has a request-rate input instead of a concurrency preset.
 export const matrixDemandRate = 10
 
-// Keep the nightly dev run small while exercising all tested models and workloads.
-// The selected systems produced completed responses in the prior live report,
-// except Nemotron Ultra, which still needs a successful live pairing confirmed.
-const nightlySystemByModel: Record<string, (typeof coveredSystems)[number]> = {
+// One selected GPU per model keeps the sampled dev run and the deployment
+// sanity run small while still exercising every tested model. The selected
+// systems produced completed responses in the prior live report, except
+// Nemotron Ultra, which still needs a successful live pairing confirmed.
+export type CoveredSystem = (typeof coveredSystems)[number]
+
+export const sampledSystemByModel: Record<string, CoveredSystem> = {
   'google/gemma-4-31B-it': 'h200_sxm',
   'RedHatAI/gemma-4-26B-A4B-it': 'h100_sxm',
   'RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic': 'h100_sxm',
@@ -53,14 +57,18 @@ const nightlySystemByModel: Record<string, (typeof coveredSystems)[number]> = {
   'moonshotai/Kimi-K3': 'gb200',
 }
 
-export function systemsForModel(model: string): readonly (typeof coveredSystems)[number][] {
-  if (process.env.PLAYWRIGHT_NIGHTLY_SAMPLE !== '1') return coveredSystems
-  const system = nightlySystemByModel[model]
-  if (!system) throw new Error(`No nightly GPU system selected for tested model ${model}`)
-  return [system]
+export function sampledSystemForModel(model: string): CoveredSystem {
+  const system = sampledSystemByModel[model]
+  if (!system) throw new Error(`No sampled GPU system selected for tested model ${model}`)
+  return system
 }
 
-type SystemId = (typeof coveredSystems)[number]
+export function systemsForModel(model: string): readonly CoveredSystem[] {
+  if (!sampledMatrix) return coveredSystems
+  return [sampledSystemForModel(model)]
+}
+
+type SystemId = CoveredSystem
 
 export interface MatrixCoordinates {
   workload: WorkloadPreset

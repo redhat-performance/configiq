@@ -1,0 +1,76 @@
+name: Release sanity (configiq.io)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or tag to test (defaults to the deployed build)
+        required: false
+  schedule:
+    - cron: '0 6 * * 6'
+      timezone: 'America/New_York'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Resolve deployed release build
+    if: github.repository == 'redhat-performance/configiq'
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read deployed build
+        id: build
+        env:
+          PLAYWRIGHT_BASE_URL: https://configiq.io
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: node scripts/check-deployed-version.mjs
+
+  sanity:
+    name: Test release UI and AISimulators
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PLAYWRIGHT_BASE_URL: https://configiq.io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || needs.preflight.outputs.commit || github.sha }}
+
+      - name: Show target build
+        run: echo "Testing $(git rev-parse --short HEAD) ($(git describe --tags --always)) on $PLAYWRIGHT_BASE_URL"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # One worker keeps the production service under light, sequential load.
+      - name: Test one workload on one GPU per approved model
+        run: npm run test:e2e:sanity -- --workers=1
+
+      - name: Upload UI test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sanity-ui-${{ github.run_id }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -62,6 +62,7 @@ app/                    # Next.js App Router pages
     estimate/           # POST — compatibility alias for predict
     hf-config/          # GET — Hugging Face model config lookup
     health/             # GET — health check
+    version/            # GET — build version and commit for e2e preflight
     costings/           # Proxies for the aicostings pricing service
     metrics/             # GET — application metrics
 components/

@@ -167,6 +167,12 @@ quadlets + nginx on IBM Cloud VMs). The `.dev` hosts follow `:dev`; the `.io`
 hosts follow `:latest`. The Triton quadlet is pinned to an immutable GHCR
 digest, and the same image digest is used by the K2 prefetch script.
 
+Every image exposes `GET /api/version` with the version and git commit it was
+built from. The live e2e workflows read it and check out that commit before
+running, so the tests describe the deployed build rather than a branch head.
+After deploying a release, trigger the **Release sanity (configiq.io)**
+workflow; the daily and weekly full matrices run against `.dev` by design.
+
 To pull an image manually:
 
 **Production** (`:latest`):
