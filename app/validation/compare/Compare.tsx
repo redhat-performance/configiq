@@ -414,6 +414,7 @@ export default function BenchmarkComparisonPage() {
   const [isResolving, setIsResolving] = React.useState(true)
   const [isComparing, setIsComparing] = React.useState(false)
   const [notice, setNotice] = React.useState<Notice | null>(null)
+  const [linkedConfigurationMissing, setLinkedConfigurationMissing] = React.useState(false)
   const [overrideAssumptions, setOverrideAssumptions] = React.useState(false)
   const [assumptionInputs, setAssumptionInputs] = React.useState<PredictionAssumptions | null>(null)
   const [assumptionsOpen, setAssumptionsOpen] = React.useState(false)
@@ -444,6 +445,7 @@ export default function BenchmarkComparisonPage() {
     const currentRequest = requestId.current + 1
     requestId.current = currentRequest
     setIsResolving(true)
+    setLinkedConfigurationMissing(false)
     try {
       const params = buildResolveParams(next, inferenceBackend, backendVersion)
       const response = await fetch(`/api/validation/benchmark?${params.toString()}`, { cache: 'no-store' })
@@ -471,6 +473,7 @@ export default function BenchmarkComparisonPage() {
       const nextConfiguration = selectConfiguration(configurations, requestedKey, previous)
       configurationRef.current = nextConfiguration
       setConfigurationKey(nextConfiguration?.key ?? '')
+      setLinkedConfigurationMissing(Boolean(requestedKey && nextConfiguration?.key !== requestedKey))
 
       if (data.unavailable) {
         setNotice({
@@ -489,12 +492,6 @@ export default function BenchmarkComparisonPage() {
           variant: 'warning',
           title: 'InferenceX measurements unavailable',
           message: `Red Hat benchmark data remains available. ${data.inferencexError}`,
-        })
-      } else if (requestedKey && nextConfiguration?.key !== requestedKey) {
-        setNotice({
-          variant: 'warning',
-          title: 'Linked configuration is no longer available',
-          message: 'The measured dataset has changed since this link was created. Review the selected runtime configuration before comparing runs.',
         })
       } else if ((data.adjustments?.length ?? 0) > 0 || data.versionFallback) {
         const reasons = [
@@ -1024,6 +1021,11 @@ export default function BenchmarkComparisonPage() {
           {notice.variant === 'danger' && !source && !inferencexSource && (
             <Button variant="link" onClick={() => void resolve(selection)}>Retry dataset load</Button>
           )}
+        </Alert>
+      )}
+      {linkedConfigurationMissing && !isResolving && (
+        <Alert variant="warning" isInline title="Linked configuration is no longer available" className={styles.notice}>
+          <p>The measured dataset has changed since this link was created. Review the selected runtime configuration before comparing runs.</p>
         </Alert>
       )}
 

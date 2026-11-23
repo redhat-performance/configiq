@@ -62,6 +62,7 @@ PUBLIC_RUNTIME_VALUE_KEYS = {
     "AMDGCN_USE_BUFFER_OPS", "max_num_seqs", "attention-backend",
     "block-size", "performance-mode", "optimization-level",
     "mm-encoder-tp-mode", "prefix_caching", "enable-expert-parallel",
+    "enable-chunked-prefill",
     "VLLM_ROCM_USE_AITER_TRITON_ROPE", "VLLM_ROCM_QUICK_REDUCE_QUANTIZATION",
     "VLLM_ROCM_USE_AITER",
 }
@@ -72,9 +73,33 @@ PUBLIC_ENV_VALUE_KEYS = {
 SETTING_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,99}\Z")
 SETTING_VALUE_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,40}\Z")
 GUIDELLM_VERSION_PATTERN = re.compile(r"v?\d+(?:\.\d+){1,3}[A-Za-z0-9_.+-]{0,40}\Z")
-RUNTIME_PAIR_PATTERN = re.compile(
-    r"(?:^|[;\s])(?:--)?([A-Za-z_][A-Za-z0-9_-]*)\s*(?:=|:)\s*([^;\s]+)"
+RUNTIME_OPTION_PATTERN = re.compile(
+    r"(?:^|[;\s])(?:"
+    r"(?:--)?(?P<assigned_name>[A-Za-z_][A-Za-z0-9_-]*)\s*(?:=|:)\s*(?P<assigned_value>[^;\s]+)"
+    r"|--(?P<cli_name>[A-Za-z_][A-Za-z0-9_-]*)(?:[ \t]+(?P<cli_value>(?!--)[^;\s]+))?"
+    r")"
 )
+BOOLEAN_RUNTIME_KEYS = {
+    "no-enable-log-requests", "enable-prefix-caching", "no-enable-prefix-caching",
+    "disable-log-requests", "enable-auto-tool-choice", "enable-expert-parallel",
+    "enable-chunked-prefill", "trust-remote-code",
+}
+
+
+def _parse_runtime_args(raw: str) -> dict[str, str]:
+    """Read recorded assignments, CLI values, and known standalone switches."""
+    values: dict[str, str] = {}
+    for match in RUNTIME_OPTION_PATTERN.finditer(raw):
+        name = match.group("assigned_name") or match.group("cli_name")
+        value = match.group("assigned_value") or match.group("cli_value")
+        if value is None:
+            if name in BOOLEAN_RUNTIME_KEYS:
+                values[name] = "true"
+        else:
+            values[name] = value.strip("'\"")
+    return values
+
+
 def _public_setting_value(name: str, value: object, allowed: set[str]) -> str | None:
     text = str(value)
     if name not in allowed or not SETTING_VALUE_PATTERN.fullmatch(text):
@@ -82,21 +107,15 @@ def _public_setting_value(name: str, value: object, allowed: set[str]) -> str | 
     return text
 
 
-def _public_runtime_args(raw: str) -> str:
+def _public_runtime_args(values: dict[str, str]) -> str:
     """Keep only recorded options with reviewed, simple public values."""
-    values: dict[str, str] = {}
-    for match in RUNTIME_PAIR_PATTERN.finditer(raw):
-        name, value = match.groups()
-        if SETTING_NAME_PATTERN.fullmatch(name):
-            public_value = _public_setting_value(name, value, PUBLIC_RUNTIME_VALUE_KEYS)
-            if public_value is not None:
-                values[name] = public_value
-    for name in re.findall(r"(?:^|[;\s])--([A-Za-z_][A-Za-z0-9_-]*)(?=\s|;|$)", raw):
-        if SETTING_NAME_PATTERN.fullmatch(name):
-            public_value = _public_setting_value(name, "true", PUBLIC_RUNTIME_VALUE_KEYS)
-            if public_value is not None:
-                values.setdefault(name, public_value)
-    return json.dumps(values, sort_keys=True, separators=(",", ":"))
+    public = {
+        name: public_value
+        for name, value in values.items()
+        if SETTING_NAME_PATTERN.fullmatch(name)
+        if (public_value := _public_setting_value(name, value, PUBLIC_RUNTIME_VALUE_KEYS)) is not None
+    }
+    return json.dumps(public, sort_keys=True, separators=(",", ":"))
 
 
 def _public_env_vars(raw: str) -> str:
@@ -132,11 +151,11 @@ def resolve_dataset_repo_id(cli_value: str | None) -> str:
     return DEFAULT_DATASET_REPO
 
 
-def _runtime_value(text: str, *names: str) -> str | None:
+def _runtime_value(values: dict[str, str], *names: str) -> str | None:
+    normalized = {name.lower(): value for name, value in values.items()}
     for name in names:
-        match = re.search(rf"(?:^|[;\s])(?:--)?{re.escape(name)}\s*(?:=|:)\s*([^;\s]+)", text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip("'")
+        if value := normalized.get(name.lower()):
+            return value
     return None
 
 
@@ -268,6 +287,7 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
     )
 
     runtime = frame.get("runtime_args", pd.Series("", index=frame.index)).fillna("").astype(str)
+    parsed_runtime = runtime.map(_parse_runtime_args)
     backend = frame.get("backend", frame.get("version", pd.Series("unknown", index=frame.index)))
     frame["backend"] = backend.map(_backend_name)
     frame["backend_version"] = frame.get("version", pd.Series("unknown", index=frame.index))
@@ -289,13 +309,13 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
         "kv_quantization": ("kv-cache-dtype", "kv-quantization"),
     }
     for column, names in runtime_aliases.items():
-        parsed = runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
+        parsed = parsed_runtime.map(lambda value, aliases=names: _runtime_value(value, *aliases))
         if column not in frame:
             frame[column] = parsed
-        elif column in {"pp", "dp", "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel"}:
+        else:
             recorded = frame[column].replace("", None)
             frame[column] = recorded.combine_first(parsed)
-    frame["runtime_args"] = runtime.map(_public_runtime_args)
+    frame["runtime_args"] = parsed_runtime.map(_public_runtime_args)
     frame["enable_expert_parallel"] = frame["enable_expert_parallel"].map(_explicit_bool)
     env_raw = frame.get("env_vars", pd.Series("", index=frame.index)).fillna("").astype(str)
     if "env_vars" in frame:

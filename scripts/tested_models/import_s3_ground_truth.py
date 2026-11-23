@@ -24,12 +24,12 @@ from dataset_common import (
 
 REQUIRED_COLUMNS = {"model", "accelerator", "version"}
 # These source fields describe the recorded workload and serving setup. Raw
-# runtime arguments, environment, and image tags are used only while selecting
-# runs; none of them are copied into the public Parquet files.
+# runtime arguments and environment values distinguish source runs; only
+# reviewed settings from them enter the public Parquet files.
 SOURCE_CURVE_FIELDS = (
     "model", "accelerator", "version", "prompt toks", "output toks", "TP", "DP",
     "PP", "EP", "CP", "TP_prefill", "TP_decode", "tp_prefill", "tp_decode",
-    "moe_tp_size", "moe_ep_size", "enable_expert_parallel",
+    "moe_tp_size", "moe_ep_size", "enable_expert_parallel", "moe_num_experts", "moe_top_k",
     "backend", "backend_version", "precision",
     "weight_quantization", "kv_quantization", "max_num_seqs",
     "max_num_batched_tokens", "max_model_len", "max_seq_len",

@@ -209,6 +209,57 @@ def test_import_keeps_distinct_recorded_runtime_options(tmp_path) -> None:
     assert {json.loads(value)["uvicorn-log-level"] for value in frame["runtime_args"]} == {"info", "debug"}
 
 
+def test_import_keeps_distinct_cli_limits_when_csv_cells_are_blank(tmp_path) -> None:
+    csv_path = tmp_path / "aggregate.csv"
+    config_path = tmp_path / "config.json"
+    _write_config(config_path, ["org/model"])
+    base = {
+        "model": "org/model", "accelerator": "H200", "version": "vLLM-0.31.0",
+        "TP": "1", "intended concurrency": "8", "max_num_seqs": "",
+        "max_num_batched_tokens": "", "guidellm_start_time_ms": "1000",
+    }
+    _write_csv(csv_path, [
+        {**base, "runtime_args": "--max-num-seqs 32 --max-num-batched-tokens 8192"},
+        {**base, "runtime_args": "--max-num-seqs 64 --max-num-batched-tokens 8192"},
+        {**base, "runtime_args": "--max-num-seqs 64 --max-num-batched-tokens 16384"},
+    ])
+
+    manifest = import_s3_ground_truth.import_csv(
+        csv_path, config_path, tmp_path / "datasets", tmp_path / "manifest.json"
+    )
+    frame = pd.read_parquet(tmp_path / "datasets/org_model__h200.parquet")
+
+    assert manifest["published_rows"] == 3
+    assert set(zip(frame["max_num_seqs"], frame["max_num_batched_tokens"])) == {
+        ("32", 8192), ("64", 8192), ("64", 16384),
+    }
+
+
+def test_import_keeps_distinct_moe_settings(tmp_path) -> None:
+    csv_path = tmp_path / "aggregate.csv"
+    config_path = tmp_path / "config.json"
+    _write_config(config_path, ["org/model"])
+    base = {
+        "model": "org/model", "accelerator": "H200", "version": "vLLM-0.31.0",
+        "TP": "1", "intended concurrency": "8", "guidellm_start_time_ms": "1000",
+    }
+    _write_csv(csv_path, [
+        {**base, "moe_num_experts": "8", "moe_top_k": "2"},
+        {**base, "moe_num_experts": "8", "moe_top_k": "4"},
+        {**base, "moe_num_experts": "16", "moe_top_k": "4"},
+    ])
+
+    manifest = import_s3_ground_truth.import_csv(
+        csv_path, config_path, tmp_path / "datasets", tmp_path / "manifest.json"
+    )
+    frame = pd.read_parquet(tmp_path / "datasets/org_model__h200.parquet")
+
+    assert manifest["published_rows"] == 3
+    assert set(zip(frame["moe_num_experts"], frame["moe_top_k"])) == {
+        ("8", "2"), ("8", "4"), ("16", "4"),
+    }
+
+
 def test_backend_name_prefers_productized_stack_labels() -> None:
     assert _backend_name("RHAIIS-3.2-vLLM-0.9.0") == "rhaiis"
     assert _backend_name("vLLM-0.10.2") == "vllm"

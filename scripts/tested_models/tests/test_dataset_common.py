@@ -65,6 +65,37 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
     }
 
 
+def test_normalize_rows_reads_cli_values_without_turning_them_into_switches() -> None:
+    frame = normalize_rows([
+        {
+            "model": "org/model", "version": "vLLM-0.31.0",
+            "max_num_seqs": "", "max_num_batched_tokens": "",
+            "gpu_memory_utilization": "0.9",
+            "runtime_args": (
+                "--max-num-seqs 32 --max-num-batched-tokens 8192 "
+                "--gpu-memory-utilization 0.8 --enable-prefix-caching "
+                "--enable-expert-parallel"
+            ),
+        },
+        {
+            "model": "org/model", "version": "vLLM-0.31.0",
+            "runtime_args": "--max-num-seqs --enable-prefix-caching",
+        },
+    ], "org/model", "H200")
+
+    assert frame.loc[0, "max_num_seqs"] == "32"
+    assert frame.loc[0, "max_num_batched_tokens"] == "8192"
+    assert frame.loc[0, "gpu_memory_utilization"] == "0.9"
+    assert frame.loc[0, "enable_expert_parallel"] == "1"
+    assert json.loads(frame.loc[0, "runtime_args"]) == {
+        "max-num-seqs": "32", "max-num-batched-tokens": "8192",
+        "gpu-memory-utilization": "0.8", "enable-prefix-caching": "true",
+        "enable-expert-parallel": "true",
+    }
+    assert pd.isna(frame.loc[1, "max_num_seqs"])
+    assert json.loads(frame.loc[1, "runtime_args"]) == {"enable-prefix-caching": "true"}
+
+
 def test_normalize_rows_keeps_explicit_serving_parallelism() -> None:
     frame = normalize_rows([
         {
