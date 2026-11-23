@@ -260,6 +260,33 @@
   font-weight: 600;
 }
 
+/* ---------- review action ---------- */
+
+.reviewRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.modalNote {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0 0 12px;
+}
+
+.yamlPre {
+  font-family: var(--gc-font-mono);
+  font-size: var(--gc-fs-detail);
+  line-height: 1.6;
+  color: var(--gc-text);
+  background: var(--gc-bg-2, #f5f5f5);
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 0;
+  overflow-x: auto;
+  max-height: 60vh;
+}
+
 /* ---------- served load, details, disclaimer ---------- */
 
 .servedRow {

@@ -19,8 +19,10 @@ import { getAppConfig } from '@/lib/app-config'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets'
-import { buildDeployParams, pickDeployDefaults } from './deploy-request'
+import { buildDeployParams, pickDeployDefaults, type DeployFormState } from './deploy-request'
+import { buildDeployYaml } from './deploy-yaml'
 import { AnswerCard } from './AnswerCard'
+import { DeployYamlModal } from './DeployYamlModal'
 import styles from './deploy.module.css'
 
 /**
@@ -44,6 +46,7 @@ export function Deploy() {
   const [tpotTarget, setTpotTarget] = React.useState('30')
   const [gpusFree, setGpusFree] = React.useState('8')
   const [workloadKey, setWorkloadKey] = React.useState<string | null>(null)
+  const [reviewOpen, setReviewOpen] = React.useState(false)
 
   const presets = React.useMemo<WorkloadPreset[]>(
     () => workloadPresetOptions(getAppConfig().workloadPresets),
@@ -63,21 +66,23 @@ export function Deploy() {
     [tested.pairs, model],
   )
 
+  const currentForm = React.useCallback((overrides?: { model?: string; systemId?: string }): DeployFormState => ({
+    model: overrides?.model ?? model,
+    systemId: overrides?.systemId ?? systemId,
+    workload,
+    loadUnit,
+    loadValue: Number(load) || 0,
+    ttftTarget: Number(ttftTarget) || 0,
+    tpotTarget: Number(tpotTarget) || 0,
+    gpusFree: Number(gpusFree) || 0,
+    backend: settings.inferenceBackend,
+    backendVersion: settings.backendVersion || undefined,
+    simulator: settings.simulator,
+  }), [model, systemId, workload, loadUnit, load, ttftTarget, tpotTarget, gpusFree, settings.inferenceBackend, settings.backendVersion, settings.simulator])
+
   const run = React.useCallback((overrides?: { model?: string; systemId?: string }) => {
-    startSizing(buildDeployParams({
-      model: overrides?.model ?? model,
-      systemId: overrides?.systemId ?? systemId,
-      workload,
-      loadUnit,
-      loadValue: Number(load) || 0,
-      ttftTarget: Number(ttftTarget) || 0,
-      tpotTarget: Number(tpotTarget) || 0,
-      gpusFree: Number(gpusFree) || 0,
-      backend: settings.inferenceBackend,
-      backendVersion: settings.backendVersion || undefined,
-      simulator: settings.simulator,
-    }))
-  }, [startSizing, model, systemId, workload, loadUnit, load, ttftTarget, tpotTarget, gpusFree, settings.inferenceBackend, settings.backendVersion, settings.simulator])
+    startSizing(buildDeployParams(currentForm(overrides)))
+  }, [startSizing, currentForm])
 
   // First load runs automatically with defaults (docs/07 §4.1); edits after
   // that never auto-run — the Recommend button is for re-runs.
@@ -208,6 +213,7 @@ export function Deploy() {
               tpotTarget={Number(tpotTarget) || 0}
               gpusFree={Number(gpusFree) || 0}
               loadUnit={loadUnit}
+              onReview={() => setReviewOpen(true)}
             />
           )}
           {!isLoading && !result && error && errorCode === 'AISIM_NO_CONFIGURATION' && (
@@ -233,6 +239,14 @@ export function Deploy() {
           )}
         </section>
       </div>
+
+      {result && (
+        <DeployYamlModal
+          isOpen={reviewOpen}
+          onClose={() => setReviewOpen(false)}
+          yaml={buildDeployYaml(currentForm(), result)}
+        />
+      )}
     </div>
   )
 }

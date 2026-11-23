@@ -121,6 +121,31 @@ async function setLoadValue(value: string) {
   });
 }
 
+function resultFixture() {
+  return {
+    requestId: 'req-42',
+    status: 'completed' as const,
+    simulator: 'aisimulate',
+    mode: 'agg' as const,
+    recommendation: {
+      gpusNeeded: 8, gpusPerReplica: 8, totalGpus: 8, replicasNeeded: 1,
+      tensorParallelSize: 8, pipelineParallelSize: 1, dataParallelSize: 1,
+      contextParallelSize: 1, moeTensorParallelSize: null, moeExpertParallelSize: null,
+      batchSize: null,
+    },
+    phases: { prefill: null, decode: null, encode: null },
+    performance: { ttftLatencyMs: 251, tpotMs: 6.9, requestLatencyMs: 7100, concurrency: 64 },
+    throughput: { tokensPerSecond: 4400, tokensPerSecondPerGpu: 550, tokensPerSecondPerUser: 68 },
+    memory: { value: 120, unit: 'GB' as const, breakdown: null },
+    memoryAvailable: true,
+    metadata: {
+      modelPath: 'Qwen/Qwen3-8B', system: 'h200_sxm', inputTokens: 1024,
+      outputTokens: 1024, targetTtftMs: null, durationMs: 4000,
+    },
+    warnings: [],
+  };
+}
+
 describe('Deploy page', () => {
   it('auto-runs once with the validated default model and its tested system', async () => {
     await renderPage();
@@ -174,6 +199,19 @@ describe('Deploy page', () => {
     expect(retry).not.toBeUndefined();
     await act(async () => { retry!.click(); });
     expect(startSizing).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens the review panel with the LLMInferenceService YAML', async () => {
+    recommendState.result = resultFixture();
+    await renderPage();
+    const review = [...host.querySelectorAll('button')].find(b => b.textContent === 'Review and deploy');
+    expect(review).not.toBeUndefined();
+    await act(async () => { review!.click(); });
+    // PatternFly Modal portals to document.body, outside the mount host.
+    expect(document.body.textContent).toContain('kind: LLMInferenceService');
+    expect(document.body.textContent).toContain('inference.redhat.com/objectives');
+    expect(document.body.textContent).toContain('concurrentRequests: 64');
+    expect(document.body.textContent).toContain('Preview only');
   });
 
   it('renders the input controls', async () => {

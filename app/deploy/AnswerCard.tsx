@@ -1,5 +1,6 @@
 'use client'
 
+import { Button } from '@patternfly/react-core'
 import type { RecommendResult } from '@/lib/api/recommend'
 import { latencyVerdict, servedLoadLabel, topologySummary } from './answer-format'
 import styles from './deploy.module.css'
@@ -16,12 +17,14 @@ export function AnswerCard({
   tpotTarget,
   gpusFree,
   loadUnit,
+  onReview,
 }: {
   result: RecommendResult
   ttftTarget: number
   tpotTarget: number
   gpusFree: number
   loadUnit: 'users' | 'rps'
+  onReview?: () => void
 }) {
   const needed = result.recommendation.gpusNeeded
   const fits = needed <= gpusFree
@@ -64,6 +67,12 @@ export function AnswerCard({
             ? <>Serves <strong>{formatServed(served.value)} concurrent users</strong>.</>
             : <>Serves <strong>{formatServed(served.value)} {served.unit}</strong>.</>}
       </p>
+
+      {onReview && (
+        <div className={styles.reviewRow}>
+          <Button variant="primary" onClick={onReview}>Review and deploy</Button>
+        </div>
+      )}
 
       <details className={styles.answerDetails}>
         <summary>Deployment details</summary>
