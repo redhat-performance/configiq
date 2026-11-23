@@ -6,6 +6,7 @@ import {
   RECOMMENDED_CANDIDATE_ID,
   candidateForRecommendation,
   collateRecommendation,
+  isSizingProjection,
   resolveSelection,
 } from './recommendation'
 
@@ -160,6 +161,19 @@ describe('candidateForRecommendation', () => {
   })
 })
 
+describe('isSizingProjection', () => {
+  it('recognizes the projected row and the matched sweep row', () => {
+    expect(isSizingProjection(candidateForRecommendation(result()))).toBe(true)
+
+    const matched = collateRecommendation([candidate()], result())[0]
+    expect(isSizingProjection(matched)).toBe(true)
+  })
+
+  it('does not treat an evaluated sweep row as a sizing projection', () => {
+    expect(isSizingProjection(candidate())).toBe(false)
+  })
+})
+
 describe('collateRecommendation', () => {
   it('leaves the sweep untouched when the sizing half produced no result', () => {
     const candidates = [candidate()]
@@ -187,6 +201,9 @@ describe('collateRecommendation', () => {
       throughput_per_user: 14,
       throughput_per_gpu: 225,
     })
+    // The matched row keeps the sweep id, so provenance is what marks it as a
+    // sizing projection rather than an evaluated candidate.
+    expect(isSizingProjection(collated[0])).toBe(true)
   })
 
   it('matches a sweep row whose expert widths are the same', () => {
@@ -266,6 +283,7 @@ describe('collateRecommendation', () => {
 describe('resolveSelection', () => {
   const first = candidate({ candidate_id: 'first' })
   const second = candidate({ candidate_id: 'second' })
+  const failedRow = candidate({ candidate_id: 'failed', status: 'timed_out' })
   const recommended = candidate({
     candidate_id: RECOMMENDED_CANDIDATE_ID,
     recommended: true,
@@ -273,28 +291,36 @@ describe('resolveSelection', () => {
   const frontier = new Set(['first', 'second'])
 
   it('keeps a row the user selected when the recommendation arrives', () => {
-    expect(resolveSelection('first', [first, second, recommended], frontier, true)).toBe('first')
+    expect(
+      resolveSelection('first', [first, second, recommended], [first, second, recommended], frontier, true),
+    ).toBe('first')
   })
 
   it('replaces an automatic selection with a late recommendation', () => {
-    expect(resolveSelection('first', [first, second, recommended], frontier, false)).toBe(
-      RECOMMENDED_CANDIDATE_ID,
-    )
+    expect(
+      resolveSelection('first', [first, second, recommended], [first, second, recommended], frontier, false),
+    ).toBe(RECOMMENDED_CANDIDATE_ID)
   })
 
   it('keeps an automatic selection when there is no recommendation', () => {
-    expect(resolveSelection('first', [first, second], frontier, false)).toBe('first')
+    expect(resolveSelection('first', [first, second], [first, second], frontier, false)).toBe('first')
+  })
+
+  it('keeps a failed row the user selected from the disclosure', () => {
+    expect(
+      resolveSelection('failed', [first, failedRow, recommended], [first, recommended], frontier, true),
+    ).toBe('failed')
   })
 
   it('re-selects when the selected row disappeared', () => {
-    expect(resolveSelection('gone', [recommended], frontier, true)).toBe(
+    expect(resolveSelection('gone', [recommended], [recommended], frontier, true)).toBe(
       RECOMMENDED_CANDIDATE_ID,
     )
   })
 
   it('falls back to a frontier point, then to any feasible row', () => {
-    expect(resolveSelection(null, [first, second], new Set(['second']), false)).toBe('second')
-    expect(resolveSelection(null, [second], new Set(), false)).toBe('second')
-    expect(resolveSelection(null, [], new Set(), false)).toBeNull()
+    expect(resolveSelection(null, [first, second], [first, second], new Set(['second']), false)).toBe('second')
+    expect(resolveSelection(null, [second], [second], new Set(), false)).toBe('second')
+    expect(resolveSelection(null, [], [], new Set(), false)).toBeNull()
   })
 })

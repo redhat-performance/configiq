@@ -8,6 +8,18 @@ import type { Candidate, CandidateTopology } from '../types/pareto'
  */
 export const RECOMMENDED_CANDIDATE_ID = 'sizing-recommendation'
 
+/** Provenance marker on a row whose numbers came from the sizing result. */
+const SIZING_PROVENANCE = 'sizing recommendation'
+
+/**
+ * True when a row describes the sizing recommendation rather than a sweep
+ * measurement. A matched row keeps the sweep's candidate id, so provenance is
+ * the only reliable signal: the id of a projected row is not.
+ */
+export function isSizingProjection(candidate: Candidate): boolean {
+  return candidate.provenance_sources.includes(SIZING_PROVENANCE)
+}
+
 function dimension(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
@@ -86,7 +98,7 @@ export function candidateForRecommendation(result: RecommendResult): Candidate {
     // The sizing response does not report whether it modeled a P/D transfer.
     // The detail view says that instead of presenting false as a measurement.
     transfer_delay_modeled: false,
-    provenance_sources: ['sizing recommendation'],
+    provenance_sources: [SIZING_PROVENANCE],
     simulator: result.simulator,
   }
 }
@@ -175,10 +187,12 @@ export function collateRecommendation(
  * The panel auto-selects the recommendation so the row the user just asked for
  * is inspected first. A recommendation that arrives after the sweep has already
  * picked a row must replace that automatic pick, but it must never replace a
- * row the user selected.
+ * row the user selected — including a failed row picked from the disclosure,
+ * which no fallback would ever choose.
  */
 export function resolveSelection(
   selectedId: string | null,
+  candidates: Candidate[],
   feasible: Candidate[],
   frontierIds: ReadonlySet<string>,
   explicit: boolean,
@@ -187,7 +201,7 @@ export function resolveSelection(
     feasible.find(candidate => candidate.recommended)?.candidate_id ?? null
   const present =
     selectedId != null &&
-    feasible.some(candidate => candidate.candidate_id === selectedId)
+    candidates.some(candidate => candidate.candidate_id === selectedId)
   if (present && (explicit || recommendedId == null || selectedId === recommendedId)) {
     return selectedId
   }

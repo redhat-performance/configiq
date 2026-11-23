@@ -24,7 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
-import { RECOMMENDED_CANDIDATE_ID, resolveSelection } from '@/lib/pareto/recommendation';
+import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -469,7 +469,7 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
         <dd>
           {candidate.transfer_delay_modeled
             ? 'modeled'
-            : candidate.recommended && candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+            : isSizingProjection(candidate)
               ? 'not reported'
               : 'not modeled'}
         </dd>
@@ -527,6 +527,7 @@ export function FrontierPanel({
   React.useEffect(() => {
     const next = resolveSelection(
       selectedId,
+      candidates,
       feasible,
       frontierIds,
       selectionExplicit,
@@ -535,7 +536,7 @@ export function FrontierPanel({
     setSelectedId(next);
     // The panel picked this row; only a later user click makes it explicit.
     setSelectionExplicit(false);
-  }, [feasible, frontierIds, selectedId, selectionExplicit]);
+  }, [candidates, feasible, frontierIds, selectedId, selectionExplicit]);
 
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
