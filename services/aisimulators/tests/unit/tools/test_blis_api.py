@@ -103,14 +103,14 @@ def test_simulators_endpoint_lists_identity_label_description_and_version():
     assert response.status_code == 200
     body = response.json()
     ids = [entry["id"] for entry in body["simulators"]]
-    assert ids == ["aisimulate", "blis"]
-    assert body["default_simulator"] == "aisimulate"
-    assert {entry["label"] for entry in body["simulators"]} == {"AISimulate", "BLIS"}
+    assert ids == ["aisim", "blis"]
+    assert body["default_simulator"] == "aisim"
+    assert {entry["label"] for entry in body["simulators"]} == {"AISim", "BLIS"}
     # The endpoint reports the same installed/built versions the service uses
     # elsewhere, not a literal that can drift from the artifact.
     versions = {entry["id"]: entry["version"] for entry in body["simulators"]}
     assert versions == {
-        "aisimulate": app_module._AISIMULATE_VERSION,
+        "aisim": app_module._AISIMULATE_VERSION,
         "blis": app_module.blis_release(),
     }
     assert all(isinstance(version, str) and version for version in versions.values())
@@ -118,7 +118,7 @@ def test_simulators_endpoint_lists_identity_label_description_and_version():
     # the footer can identify the build rather than only the release.
     revisions = {entry["id"]: entry["revision"] for entry in body["simulators"]}
     assert revisions == {
-        "aisimulate": app_module._AISIMULATE_COMMIT,
+        "aisim": app_module._AISIMULATE_COMMIT,
         "blis": app_module.blis_commit(),
     }
     # Settings explains each simulator from service text, so every entry must
@@ -196,7 +196,7 @@ def test_blis_disagg_requires_an_explicit_fabric():
 def test_network_endpoint_lists_the_requested_simulators_fabrics_and_default():
     with patch("tools.api_service.app.load_catalog", return_value=_catalog()):
         blis = client.get("/networks?simulator=blis")
-        aisimulate = client.get("/networks?simulator=aisimulate")
+        aisim = client.get("/networks?simulator=aisim")
 
     assert blis.status_code == 200
     assert blis.json() == {
@@ -204,15 +204,15 @@ def test_network_endpoint_lists_the_requested_simulators_fabrics_and_default():
         "networks": ["ib-400g", "roce-200g"],
         "default_network": "roce-200g",
     }
-    assert aisimulate.status_code == 200
-    assert aisimulate.json() == {"simulator": "aisimulate", "networks": [], "default_network": None}
+    assert aisim.status_code == 200
+    assert aisim.json() == {"simulator": "aisim", "networks": [], "default_network": None}
 
 
-def test_aisimulate_rejects_blis_fabric_selection():
+def test_aisim_rejects_blis_fabric_selection():
     response = client.post("/recommend", json={**RECOMMEND_BODY, "fabric": "ib-400g"})
 
     assert response.status_code == 422
-    assert "AISimulate does not currently consume" in response.json()["detail"][0]["msg"]
+    assert "AISim does not currently consume" in response.json()["detail"][0]["msg"]
 
 
 def test_blis_predict_unsupported_request_does_not_fall_back():
@@ -587,7 +587,7 @@ def test_blis_recommend_defaults_fabric_from_the_simulator_registry():
     assert aggregate_only.fabric is None
 
 
-def test_blis_recommend_normalizes_fractional_concurrency_like_aisimulate():
+def test_blis_recommend_normalizes_fractional_concurrency_like_aisim():
     outcome = SimpleNamespace(configs=[], search_summary={})
     with patch("tools.api_service.app.run_blis_recommend", return_value=outcome) as run_blis:
         request = app_module.RecommendRequest.model_validate({
@@ -630,10 +630,10 @@ def test_backends_endpoint_reports_simulator_version_and_search_shape():
     }
 
 
-def test_aisimulate_backends_reports_simulator_version_and_windowed_search():
-    body = client.get("/backends?simulator=aisimulate").json()
+def test_aisim_backends_reports_simulator_version_and_windowed_search():
+    body = client.get("/backends?simulator=aisim").json()
 
-    assert body["simulator"] == "aisimulate"
+    assert body["simulator"] == "aisim"
     assert body["simulator_version"]
     assert body["recommend_search"] == "windowed"
     assert set(body["objectives"]) == {
@@ -706,10 +706,10 @@ def test_memory_endpoint_refuses_a_simulator_without_the_memory_capability():
     }
     with patch("tools.api_service.app.estimate_kv_cache", return_value=raw) as estimate_memory:
         blis = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "blis"})
-        aisimulate = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "aisimulate"})
+        aisim = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "aisim"})
 
     assert blis.status_code == 422
     assert "does not provide a KV-cache memory breakdown" in blis.json()["detail"]
-    assert aisimulate.status_code == 200
-    assert aisimulate.json()["simulator"] == "aisimulate"
+    assert aisim.status_code == 200
+    assert aisim.json()["simulator"] == "aisim"
     estimate_memory.assert_called_once()

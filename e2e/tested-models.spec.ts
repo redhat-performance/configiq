@@ -76,7 +76,7 @@ for (const model of appConfig.approvedModels) {
       expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
       await page.addInitScript(() => localStorage.setItem('predict-performance-tour-seen', 'true'))
       await page.goto('/predict')
-      const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+      const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
       await selectModel(page, model, 'predict-performance-model')
       await selectSystem(page, 'predict-performance-gpu', system!.name)
       await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -106,7 +106,7 @@ for (const model of appConfig.approvedModels) {
         model_path: model,
         system: systemId,
         backend: appConfig.defaultBackend,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         tp_size: parallelism,
         isl: workload.isl,
         osl: workload.osl,
@@ -170,7 +170,7 @@ for (const model of appConfig.approvedModels) {
       const system = systems.find(item => item.id === systemId)
       expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
       await page.goto('/kv-cache')
-      const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+      const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
       await selectModel(page, model, 'kv-model')
       await selectSystem(page, 'kv-gpu', system!.name)
       await page.getByRole('button', { name: workload.label, exact: true }).click()

@@ -9,10 +9,10 @@ import {
 function record(overrides: Partial<DebugRecord> = {}): DebugRecord {
   return {
     endpoint: '/predict',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     execution: 'in_process',
     created_at: 1_730_000_000,
-    versions: { aisimulate: '0.14.0', blis: null },
+    versions: { aisim: '0.14.0', blis: null },
     selection: null,
     notes: [],
     invocations: [
@@ -39,10 +39,10 @@ describe('parseDebugRecord', () => {
   it('reads a recorded run and drops its unusable pieces', () => {
     const parsed = parseDebugRecord({
       endpoint: '/predict',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       execution: 'in_process',
       created_at: 1_730_000_000,
-      versions: { aisimulate: '0.14.0', unknown: 7 },
+      versions: { aisim: '0.14.0', unknown: 7 },
       selection: '8 GPUs, agg',
       notes: ['a note', 4],
       invocations: [
@@ -53,7 +53,7 @@ describe('parseDebugRecord', () => {
     })
 
     expect(parsed).not.toBeNull()
-    expect(parsed?.versions).toEqual({ aisimulate: '0.14.0' })
+    expect(parsed?.versions).toEqual({ aisim: '0.14.0' })
     expect(parsed?.notes).toEqual(['a note'])
     expect(parsed?.invocations.map(invocation => invocation.id)).toEqual(['one'])
     expect(parsed?.invocations[0].files).toEqual([])
@@ -76,7 +76,7 @@ describe('replayRuns', () => {
     const [run] = replayRuns(record())
 
     expect(run.id).toBe('replay')
-    expect(run.badge).toBe('aisimulate')
+    expect(run.badge).toBe('aisim')
     expect(run.panes.map(pane => pane.label)).toEqual([
       'Versions',
       'run.sh',
@@ -91,7 +91,7 @@ describe('replayRuns', () => {
     // The version pane is machine-readable rather than a formatted sentence.
     expect(JSON.parse(run.panes[0].contents)).toMatchObject({
       endpoint: '/predict',
-      versions: { aisimulate: '0.14.0' },
+      versions: { aisim: '0.14.0' },
     })
   })
 

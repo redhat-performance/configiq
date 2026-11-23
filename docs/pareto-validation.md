@@ -1,4 +1,4 @@
-# Pareto frontier — AISimulate and BLIS validation
+# Pareto frontier — AISim and BLIS validation
 
 Validation of the `objective=pareto` topology-design feature against the real
 aisimulate SDK (v0.13.0 wheel). The goal was not "does it run" but "are the
@@ -131,7 +131,7 @@ The contract below is what the UI and service rely on.
 
 ### Availability
 
-Both simulators advertise `pareto` in `GET /backends`. AISimulate samples the
+Both simulators advertise `pareto` in `GET /backends`. AISim samples the
 frontier with the SDK. BLIS has no native Pareto command, so the service
 enumerates topology and closed-loop concurrency combinations, runs each through
 BLIS, and computes the non-dominated set itself. Each result reports the
@@ -141,7 +141,7 @@ cross-simulator frontier.
 
 ### Deployment modes
 
-An AISimulate sweep searches both aggregated and disaggregated deployments (when
+An AISim sweep searches both aggregated and disaggregated deployments (when
 the window can hold more than one GPU). A workload may legitimately have no
 feasible disaggregated point; that absence is reported, not hidden. Both modes
 contribute candidates and frontier points when they are feasible.
@@ -154,7 +154,7 @@ restriction, not a measured infeasibility.
 ### Automatic GPU window
 
 The request has no GPU window fields; the service owns the range. For
-AISimulate, a Pareto sweep resolves a model-aware window before sampling:
+AISim, a Pareto sweep resolves a model-aware window before sampling:
 
 - **Floor** — the smallest aggregated worker shape that holds one full-context
   sequence (`min(shape.gpus_per_worker)` from the KV-feasibility enumeration).
@@ -196,7 +196,7 @@ optimization rounds, so it is not the default. The trial budget is split across
 aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
 a per-mode count.
 
-For AISimulate's sampled sweep, `sweep.budget_exhausted` is a wall-clock
+For AISim's sampled sweep, `sweep.budget_exhausted` is a wall-clock
 signal only. Pareto sampling has no wall-clock budget, so trial spend is
 reported by `max_trials` and `evaluated` instead; `evaluated >= max_trials`
 means the trial budget was spent, never that the search enumerated every
@@ -315,7 +315,7 @@ frontier panel; a failed sizing half leaves a successful frontier on screen.
 
 Across model size, MoE sparsity, GPU class, context length, the Pareto trade-off,
 disagg emergence under load, and P/D transfer bandwidth, every output moves the
-way the physics demands. The feature emits genuine, correctly-behaving AISimulate
+way the physics demands. The feature emits genuine, correctly-behaving AISim
 output — not cached or constant values.
 
 ## Note on running heavy sweeps

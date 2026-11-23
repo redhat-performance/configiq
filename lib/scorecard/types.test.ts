@@ -34,7 +34,7 @@ describe('scorecardSummarySchema', () => {
     const parsed = scorecardSummarySchema.safeParse({
       ...summary(),
       coverage: [{
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         source: 'redhat',
         model: 'org/model',
         accelerator: 'H200',
@@ -52,7 +52,7 @@ describe('scorecardSummarySchema', () => {
     const parsed = scorecardSummarySchema.safeParse({
       ...summary(),
       totals: [{
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         source: 'all',
         metric: 'ttft',
         releaseMatch: 'any',
@@ -74,7 +74,7 @@ describe('scorecardSummarySchema', () => {
         accelerator: 'H200',
         workload: '1024/128',
         metric: 'ttft',
-        pair: ['aisimulate'],
+        pair: ['aisim'],
         paired: 1,
         firstWins: 1,
         secondWins: 0,

@@ -12,7 +12,7 @@ function roleParallelism(
 }
 
 /**
- * AISimulate's canonical disagg label: xP:yD = prefill_replicas : decode_replicas.
+ * AISim's canonical disagg label: xP:yD = prefill_replicas : decode_replicas.
  * Returns null for aggregated candidates.
  */
 export function xpydLabel(candidate: Candidate): string | null {

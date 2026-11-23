@@ -31,12 +31,12 @@ describe('buildCoverage', () => {
 
   it('keeps sources and simulators apart', () => {
     const coverage = buildCoverage([
-      point({ simulator: 'aisimulate', source: 'redhat' }),
+      point({ simulator: 'aisim', source: 'redhat' }),
       point({ simulator: 'blis', source: 'inferencex' }),
     ]);
     expect(coverage).toHaveLength(2);
     expect(coverage.map(row => `${row.simulator}:${row.source}`).sort())
-      .toEqual(['aisimulate:redhat', 'blis:inferencex']);
+      .toEqual(['aisim:redhat', 'blis:inferencex']);
   });
 });
 
@@ -114,7 +114,7 @@ describe('buildTotals', () => {
 describe('buildHeadToHead', () => {
   it('uses the metrics pairing rather than comparing aggregates', () => {
     const rows = buildHeadToHead([
-      point({ identity: 'shared', simulator: 'aisimulate' }),
+      point({ identity: 'shared', simulator: 'aisim' }),
       point({ identity: 'shared', simulator: 'blis' }),
     ]);
     expect(rows).toHaveLength(2);

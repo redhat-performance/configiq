@@ -24,7 +24,6 @@ import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
 import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
-import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -1188,14 +1187,14 @@ export default function Sizing() {
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? support.label : 'the selected simulator'}</strong> could not be read,
             so it cannot size workloads. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? support.label : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}

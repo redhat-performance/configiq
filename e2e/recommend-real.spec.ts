@@ -188,7 +188,7 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
     })
     throw error
   }
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
   await selectModel(page, 'adv-model', model)
   await selectSystem(page, 'adv-gpu', system!.name)
   const goalButton = page.getByRole('button', { name: goalLabels[scenario.goal], exact: true })
@@ -216,7 +216,7 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
   expect(request).toMatchObject({
     model_path: model, system: systemId,
     backend: appConfig.defaultBackend,
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     isl: workload.isl, osl: workload.osl,
     objective: scenario.action === 'pareto' ? 'pareto' : scenario.goal === 'latency' ? 'min_gpus' : scenario.goal === 'capacity' ? 'concurrency_capacity' : 'throughput_demand',
     sla_mode: scenario.goal === 'latency' ? 'enforce' : 'none',
@@ -257,7 +257,7 @@ async function checkRecommend(page: Page, testInfo: TestInfo, model: string, wor
     }
     const parsed = parseFrontierBody(result)
     expect(parsed, 'The current API must return a parseable Pareto response').not.toBeNull()
-    expect(parsed!.simulator).toBe('aisimulate')
+    expect(parsed!.simulator).toBe('aisim')
     const feasible = parsed!.candidates.filter(candidate => candidate.status === 'feasible')
     const failed = parsed!.candidates.filter(candidate => candidate.status !== 'feasible')
     if (parsed!.candidates.length === 0) {

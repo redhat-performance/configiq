@@ -178,8 +178,8 @@ describe('mapCatalogResponse', () => {
   it('maps the system specs the GPU picker groups and describes', () => {
     const mapped = mapCatalogResponse({
       simulators: [{
-        id: 'aisimulate',
-        label: 'AISimulate',
+        id: 'aisim',
+        label: 'AISim',
         default: true,
         available: true,
         systems: [{
@@ -215,8 +215,8 @@ describe('mapCatalogResponse', () => {
 
   it('selects the entry flagged default, not merely the first entry', () => {
     const defaultEntry = {
-      id: 'aisimulate',
-      label: 'AISimulate',
+      id: 'aisim',
+      label: 'AISim',
       default: true,
       available: true,
       systems,
@@ -303,8 +303,8 @@ describe('mapCatalogResponse', () => {
     const mapped = mapCatalogResponse({
       simulators: [
         {
-          id: 'aisimulate',
-          label: 'AISimulate',
+          id: 'aisim',
+          label: 'AISim',
           default: true,
           available: true,
           systems,

@@ -436,7 +436,7 @@ def test_disagg_documents_reject_missing_fabric():
         build_documents(request)
 
 
-def test_blis_requires_exact_version_instead_of_resolving_aisimulate_aliases():
+def test_blis_requires_exact_version_instead_of_resolving_aisim_aliases():
     with pytest.raises(BlisUnsupportedRequest, match="exact backend_version"):
         resolve_engine_version("current")
 

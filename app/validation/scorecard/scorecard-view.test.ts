@@ -15,7 +15,7 @@ import {
 
 function total(overrides: Partial<ScorecardTotal> = {}): ScorecardTotal {
   return {
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     source: 'all',
     metric: 'ttft',
     releaseMatch: 'any',
@@ -29,7 +29,7 @@ function total(overrides: Partial<ScorecardTotal> = {}): ScorecardTotal {
 
 function cell(overrides: Partial<ScorecardCell> = {}): ScorecardCell {
   return {
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     source: 'redhat',
     model: 'org/model',
     accelerator: 'H200',
@@ -46,7 +46,7 @@ function cell(overrides: Partial<ScorecardCell> = {}): ScorecardCell {
 
 function coverage(overrides: Partial<ScorecardCoverage> = {}): ScorecardCoverage {
   return {
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     source: 'redhat',
     model: 'org/model',
     accelerator: 'H200',
@@ -72,7 +72,7 @@ describe('selectTotals', () => {
     });
 
     expect(selectTotals(artifact, {
-      simulator: 'aisimulate', source: 'all', metric: 'ttft', releaseMatch: 'any',
+      simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     })).toEqual({
       values: { mape: 0.1, mdape: 0.08, p90: 0.2, bias: -0.03 },
       configurations: 3,
@@ -82,7 +82,7 @@ describe('selectTotals', () => {
 
   it('returns null when the slice has no evidence', () => {
     expect(selectTotals(summary(), {
-      simulator: 'aisimulate', source: 'all', metric: 'ttft', releaseMatch: 'any',
+      simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     })).toBeNull();
   });
 
@@ -94,14 +94,14 @@ describe('selectTotals', () => {
       ],
     });
     expect(selectTotals(artifact, {
-      simulator: 'aisimulate', source: 'redhat', metric: 'ttft', releaseMatch: 'any',
+      simulator: 'aisim', source: 'redhat', metric: 'ttft', releaseMatch: 'any',
     })).toBeNull();
   });
 
   it('fills a missing statistic with NaN so the page renders a dash, not zero', () => {
     const artifact = summary({ totals: [total({ statistic: 'mape' })] });
     const slice = selectTotals(artifact, {
-      simulator: 'aisimulate', source: 'all', metric: 'ttft', releaseMatch: 'any',
+      simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     });
     expect(slice!.values.mdape).toBeNaN();
   });
@@ -114,7 +114,7 @@ describe('sumCoverage', () => {
       coverage({ source: 'inferencex', supported: 4, unsupported: 0, total: 4 }),
       coverage({ releaseMatch: 'matched', supported: 5, unsupported: 0, total: 5 }),
       coverage({ simulator: 'blis', supported: 6, unsupported: 0, total: 6 }),
-    ], { simulator: 'aisimulate', source: 'all', releaseMatch: 'any' });
+    ], { simulator: 'aisim', source: 'all', releaseMatch: 'any' });
 
     expect(counts).toEqual<CoverageCounts>({
       supported: 6,
@@ -129,7 +129,7 @@ describe('sumCoverage', () => {
     const counts = sumCoverage([
       coverage({ source: 'redhat', supported: 2, unsupported: 0, total: 2 }),
       coverage({ source: 'inferencex', supported: 3, unsupported: 0, total: 3 }),
-    ], { simulator: 'aisimulate', source: 'inferencex', releaseMatch: 'any' });
+    ], { simulator: 'aisim', source: 'inferencex', releaseMatch: 'any' });
     expect(counts).toMatchObject({ supported: 3, total: 3 });
   });
 });
@@ -148,7 +148,7 @@ describe('buildMatrix', () => {
   it('puts one row per measured configuration with a column per simulator', () => {
     const artifact = summary({
       cells: [
-        cell({ simulator: 'aisimulate', value: 0.1 }),
+        cell({ simulator: 'aisim', value: 0.1 }),
         cell({
           simulator: 'blis',
           value: 0.2,
@@ -162,7 +162,7 @@ describe('buildMatrix', () => {
     const rows = buildMatrix(artifact, options);
     expect(rows).toHaveLength(2);
     expect(rows[0].model).toBe('org/model');
-    expect(rows[0].values.get('aisimulate')?.value).toBe(0.1);
+    expect(rows[0].values.get('aisim')?.value).toBe(0.1);
     expect(rows[1].values.get('blis')?.value).toBe(0.2);
   });
 
@@ -254,14 +254,14 @@ describe('buildChartRows', () => {
 
   it('keeps one bar per scored configuration, with one value per simulator', () => {
     const rows = matrix(
-      cell({ simulator: 'aisimulate', value: 0.1 }),
+      cell({ simulator: 'aisim', value: 0.1 }),
       cell({ simulator: 'blis', value: 0.2 }),
     );
-    const chart = buildChartRows(rows, ['aisimulate', 'blis'], 12);
+    const chart = buildChartRows(rows, ['aisim', 'blis'], 12);
 
     expect(chart.scored).toBe(1);
     expect(chart.shown).toHaveLength(1);
-    expect(chart.shown[0].values.get('aisimulate')).toBe(0.1);
+    expect(chart.shown[0].values.get('aisim')).toBe(0.1);
     expect(chart.shown[0].values.get('blis')).toBe(0.2);
   });
 
@@ -271,13 +271,13 @@ describe('buildChartRows', () => {
       cell({ model: 'org/big', value: -0.8 }),
       cell({ model: 'org/mid', value: 0.4 }),
     );
-    expect(buildChartRows(rows, ['aisimulate'], 12).shown.map(row => row.label.split(' · ')[0]))
+    expect(buildChartRows(rows, ['aisim'], 12).shown.map(row => row.label.split(' · ')[0]))
       .toEqual(['org/big', 'org/mid', 'org/small']);
   });
 
   it('leaves a configuration with no prediction for a simulator out of that series', () => {
-    const rows = matrix(cell({ simulator: 'aisimulate', value: 0.1 }));
-    const chart = buildChartRows(rows, ['aisimulate', 'blis'], 12);
+    const rows = matrix(cell({ simulator: 'aisim', value: 0.1 }));
+    const chart = buildChartRows(rows, ['aisim', 'blis'], 12);
     expect(chart.shown[0].values.has('blis')).toBe(false);
   });
 
@@ -285,14 +285,14 @@ describe('buildChartRows', () => {
     const rows = matrix(
       ...[0.1, 0.2, 0.3, 0.4].map((value, index) => cell({ model: `org/m${index}`, value })),
     );
-    const chart = buildChartRows(rows, ['aisimulate'], 2);
+    const chart = buildChartRows(rows, ['aisim'], 2);
     expect(chart.scored).toBe(4);
     expect(chart.shown).toHaveLength(2);
   });
 
   it('ignores rows with no value for any requested simulator', () => {
     const rows = matrix(cell({ simulator: 'other', value: 0.1 }));
-    const chart = buildChartRows(rows, ['aisimulate'], 12);
+    const chart = buildChartRows(rows, ['aisim'], 12);
     expect(chart).toEqual({ scored: 0, shown: [] });
   });
 
@@ -301,7 +301,7 @@ describe('buildChartRows', () => {
       cell({ source: 'redhat', value: 0.1 }),
       cell({ source: 'inferencex', value: 0.2 }),
     );
-    const labels = buildChartRows(rows, ['aisimulate'], 12).shown.map(row => row.label);
+    const labels = buildChartRows(rows, ['aisim'], 12).shown.map(row => row.label);
     expect(labels).toEqual([
       'org/model · H200 · 1024/128 · InferenceX',
       'org/model · H200 · 1024/128 · Red Hat',

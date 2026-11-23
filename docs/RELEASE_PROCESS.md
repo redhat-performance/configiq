@@ -49,7 +49,7 @@ The sidebar footer shows:
   short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
 - **Every simulator**: label, version, and git commit, from `GET /simulators`,
   in that endpoint's order. Each simulator reports the commit of the artifact
-  this image runs: AISimulate's comes from the SDK wheel's direct-URL release
+  this image runs: AISim's comes from the SDK wheel's direct-URL release
   tag; BLIS's from the `BLIS_COMMIT` build arg. `revision` is null when the
   artifact does not report a commit, and the footer then shows the version
   only.

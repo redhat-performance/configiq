@@ -219,10 +219,10 @@ describe('golden links', () => {
       peak: 2.5,
       billingMode: 'always-on',
       costLens: 'marginal',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/hybrid-savings?v=1&model=Qwen%2FQwen3-32B&apiModel=Qwen%2FQwen3-32B&monthlyInputTokens=900000000&monthlyOutputTokens=90000000&averageInputTokens=4096&averageOutputTokens=512&ttft=2000&tpot=50&concurrency=32&prefix=512&hours=120&peak=2.5&billingMode=always-on&costLens=marginal&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/hybrid-savings?v=1&model=Qwen%2FQwen3-32B&apiModel=Qwen%2FQwen3-32B&monthlyInputTokens=900000000&monthlyOutputTokens=90000000&averageInputTokens=4096&averageOutputTokens=512&ttft=2000&tpot=50&concurrency=32&prefix=512&hours=120&peak=2.5&billingMode=always-on&costLens=marginal&backend=vllm&backendVersion=0.31.0&simulator=aisim"`);
   });
 
   it('/validation/compare', () => {
@@ -233,10 +233,10 @@ describe('golden links', () => {
       osl: 512,
       tp: 8,
       configurationKey: 'fp8-tp8',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/validation/compare?v=1&model=Qwen%2FQwen3-32B&accelerator=h200_sxm&isl=4096&osl=512&tp=8&configurationKey=fp8-tp8&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+    })).toMatchInlineSnapshot(`"/validation/compare?v=1&model=Qwen%2FQwen3-32B&accelerator=h200_sxm&isl=4096&osl=512&tp=8&configurationKey=fp8-tp8&backend=vllm&backendVersion=0.31.0&simulator=aisim"`);
   });
 
   it('/validation/scorecard', () => {

@@ -17,13 +17,13 @@ const VALID_INPUT: EstimateAdapterInput = {
   batch_size: 32,
   tp_size: 1,
   backend: 'vllm',
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   gpu_memory_utilization: 0.9,
 }
 
 const VALID_RESPONSE = {
   status: 'success',
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   memory_breakdown: {
     weights_bytes: 16_000_000_000,
     kv_cache_bytes: 4_000_000_000,

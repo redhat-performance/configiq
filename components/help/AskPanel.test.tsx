@@ -18,7 +18,7 @@ vi.mock('next/link', () => ({
 }));
 
 vi.mock('@/contexts/SettingsContext', () => ({
-  useSettings: () => ({ simulator: 'aisimulate', inferenceBackend: 'vllm', backendVersion: '0.9.0' }),
+  useSettings: () => ({ simulator: 'aisim', inferenceBackend: 'vllm', backendVersion: '0.9.0' }),
 }));
 
 let root: ReturnType<typeof createRoot>;
@@ -88,7 +88,7 @@ describe('AskPanel', () => {
             status: 'answered',
             answer: 'Set concurrency in the workload section.',
             citations: [{ url: '/docs/overview#c', title: 'Concurrency', section: 'Predict' }],
-            links: [{ label: 'Open Predict performance', href: '/predict?v=1&simulator=aisimulate' }],
+            links: [{ label: 'Open Predict performance', href: '/predict?v=1&simulator=aisim' }],
             evidence: ['Set concurrency in the workload section.'],
             unsupportedNumbers: [],
             model: 'test/model',

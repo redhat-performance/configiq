@@ -90,16 +90,25 @@ describe('page link contracts', () => {
   it('carries provenance on pages that offer a simulator choice', () => {
     const built = hybridSavingsLink.build({
       model: 'Qwen/Qwen3-32B',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: '0.9.0',
     });
     const params = new URLSearchParams(query(built));
 
     expect(params.get('v')).toBe('1');
-    expect(params.get('simulator')).toBe('aisimulate');
+    expect(params.get('simulator')).toBe('aisim');
     expect(params.get('backend')).toBe('vllm');
     expect(params.get('backendVersion')).toBe('0.9.0');
+  });
+
+  it('reads a simulator id from before the rename as the current one', () => {
+    const parsed = recommendLink.parse(
+      '?v=1&model=Qwen%2FQwen3-32B&simulator=aisimulate&backend=vllm',
+    )
+
+    expect(parsed.values.simulator).toBe('aisim');
+    expect(parsed.warnings).toEqual([]);
   });
 
   it('never puts a simulator in a KV cache link', () => {

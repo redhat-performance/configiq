@@ -21,7 +21,7 @@ vi.mock('@/lib/app-config', () => ({
 
 vi.mock('@/lib/hooks/useCatalog', () => ({
   useCatalog: () => ({
-    simulators: [{ id: 'aisimulate', label: 'AISimulate', version: null, default: true }],
+    simulators: [{ id: 'aisim', label: 'AISim', version: null, default: true }],
     isLoading: false,
   }),
 }))
@@ -29,7 +29,7 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
 import { simulatorSupportsBackend, SettingsProvider, useSettings } from './SettingsContext'
 
 const VERSION_KEY = 'settings_backend_version_v2'
-const DEFAULT_SIMULATOR_VERSION_KEY = `${VERSION_KEY}:aisimulate`
+const DEFAULT_SIMULATOR_VERSION_KEY = `${VERSION_KEY}:aisim`
 const LEGACY_VERSION_KEY = 'settings_backend_version'
 const SIMULATOR_KEY = 'settings_simulator'
 
@@ -86,14 +86,14 @@ describe('Backend version persistence', () => {
 
     await render()
 
-    expect(state()).toEqual({ hydrated: true, backendVersion: '0.24.0', simulator: 'aisimulate' })
+    expect(state()).toEqual({ hydrated: true, backendVersion: '0.24.0', simulator: 'aisim' })
   })
 
   it('writes nothing when the user never chose a version', async () => {
     await render()
 
     expect(state().backendVersion).toBe('')
-    expect(state().simulator).toBe('aisimulate')
+    expect(state().simulator).toBe('aisim')
     expect(localStorage.getItem(VERSION_KEY)).toBeNull()
   })
 
@@ -104,7 +104,7 @@ describe('Backend version persistence', () => {
     await render()
 
     expect(state().backendVersion).toBe('')
-    expect(state().simulator).toBe('aisimulate')
+    expect(state().simulator).toBe('aisim')
   })
 
   it('clears the persisted version when the backend changes', async () => {
@@ -114,7 +114,7 @@ describe('Backend version persistence', () => {
     await act(async () => (host.querySelectorAll('button')[1] as HTMLButtonElement).click())
 
     expect(state().backendVersion).toBe('')
-    expect(state().simulator).toBe('aisimulate')
+    expect(state().simulator).toBe('aisim')
     expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('')
   })
 
@@ -124,7 +124,7 @@ describe('Backend version persistence', () => {
     await act(async () => (host.querySelector('button') as HTMLButtonElement).click())
 
     expect(state().backendVersion).toBe('0.24.0')
-    expect(state().simulator).toBe('aisimulate')
+    expect(state().simulator).toBe('aisim')
     expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('0.24.0')
   })
 
@@ -132,6 +132,12 @@ describe('Backend version persistence', () => {
     localStorage.setItem(SIMULATOR_KEY, 'blis')
     await render()
     expect(state().simulator).toBe('blis')
+  })
+
+  it('reads a saved simulator id from before the rename as the current one', async () => {
+    localStorage.setItem(SIMULATOR_KEY, 'aisimulate')
+    await render()
+    expect(state().simulator).toBe('aisim')
   })
 
   it('keeps a persisted simulator instead of silently substituting one', async () => {
@@ -189,7 +195,7 @@ describe('Settings changed while a shared view is open', () => {
 
     await click('Set version')
 
-    expect(state()).toMatchObject({ simulator: 'aisimulate', backendVersion: '0.24.0' })
+    expect(state()).toMatchObject({ simulator: 'aisim', backendVersion: '0.24.0' })
     expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('0.24.0')
     expect(localStorage.getItem(BLIS_VERSION_KEY)).toBeNull()
   })
@@ -200,7 +206,7 @@ describe('Settings changed while a shared view is open', () => {
 
     await click('Set backend')
 
-    expect(state()).toMatchObject({ simulator: 'aisimulate', backendVersion: '' })
+    expect(state()).toMatchObject({ simulator: 'aisim', backendVersion: '' })
     expect(localStorage.getItem(DEFAULT_SIMULATOR_VERSION_KEY)).toBe('')
     expect(localStorage.getItem(BLIS_VERSION_KEY)).toBeNull()
   })
@@ -234,8 +240,8 @@ describe('Simulator/backend compatibility', () => {
     const vllmOnly = { backends: [{ id: 'vllm' }] }
     const allBackends = { backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }] }
 
-    expect(simulatorSupportsBackend('aisimulate', 'vllm', allBackends)).toBe(true)
-    expect(simulatorSupportsBackend('aisimulate', 'sglang', allBackends)).toBe(true)
+    expect(simulatorSupportsBackend('aisim', 'vllm', allBackends)).toBe(true)
+    expect(simulatorSupportsBackend('aisim', 'sglang', allBackends)).toBe(true)
     expect(simulatorSupportsBackend('blis', 'vllm', vllmOnly)).toBe(true)
     expect(simulatorSupportsBackend('blis', 'sglang', vllmOnly)).toBe(false)
     expect(simulatorSupportsBackend('blis', 'tensorrt-llm', vllmOnly)).toBe(false)

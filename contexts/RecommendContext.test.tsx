@@ -80,7 +80,7 @@ const SIZING_PARAMS = {
   sla_mode: 'enforce' as const,
   ttft: 1000,
   target_concurrency: 8,
-  simulator: 'aisimulate' as const,
+  simulator: 'aisim' as const,
 }
 
 describe('RecommendContext request construction', () => {
@@ -120,7 +120,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         fabric: 'roce-200g',
       })
       await Promise.resolve()
@@ -128,7 +128,7 @@ describe('RecommendContext request construction', () => {
 
     const fetchMock = vi.mocked(fetch)
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
-    expect(body.simulator).toBe('aisimulate')
+    expect(body.simulator).toBe('aisim')
     expect(body).toHaveProperty('fabric', 'roce-200g')
   })
 
@@ -144,7 +144,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -165,7 +165,7 @@ describe('RecommendContext request construction', () => {
         osl: 128,
         sla_mode: 'none',
         target_request_rate: 12.5,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -193,7 +193,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'none',
         objective: 'concurrency_capacity',
         target_concurrency: 64,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -378,7 +378,7 @@ describe('RecommendContext action modes', () => {
     expect(frontier).toHaveBeenCalledTimes(1)
     const [request] = frontier.mock.calls[0]
     expect(request).toMatchObject({
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       objective: 'pareto',
       sla_mode: 'enforce',
       ttft: 1000,
@@ -414,7 +414,7 @@ describe('RecommendContext action modes', () => {
     expect(request).not.toHaveProperty('request_latency')
   })
 
-  it('keeps the caller-selected simulator instead of substituting AISimulate', async () => {
+  it('keeps the caller-selected simulator instead of substituting AISim', async () => {
     await render()
 
     await act(async () => {

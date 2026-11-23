@@ -38,7 +38,6 @@ import {
 import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useCatalog } from "@/lib/hooks/useCatalog";
-import { simulatorDisplayLabel } from "@/lib/simulator-labels";
 import { PageTourProvider } from "@/components/help/PageTourProvider";
 import { HelpMenu } from "@/components/help/HelpMenu";
 
@@ -298,7 +297,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>ConfigIQ {getVersionString()} · {getShortCommit()}</div>
           {simulators.map(simulator => (
             <div key={simulator.id} style={{ fontSize: '10px', marginTop: '2px' }}>
-              {simulatorDisplayLabel(simulator.id, simulator.label)} {simulator.version ?? 'version unavailable'}
+              {simulator.label} {simulator.version ?? 'version unavailable'}
               {simulator.revision ? ` · ${simulator.revision.slice(0, 7)}` : ''}
             </div>
           ))}

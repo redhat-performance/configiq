@@ -38,7 +38,6 @@ import {
 } from '@/lib/hooks/useCatalog'
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
-import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import { backendDisplayLabel } from '@/lib/backend-labels'
 import {
   comparisonRequestsPerLoadUnit,
@@ -328,7 +327,7 @@ function simulatorPlans({
     const support = simulatorSupport[simulator.id]
     const plan = (skipReason: string, backend: BackendOption | null = null): SimulatorPlan => ({
       simulator: simulator.id,
-      label: simulatorDisplayLabel(simulator.id, support?.label ?? simulator.label),
+      label: support?.label ?? simulator.label,
       backend,
       version: null,
       requiresFabric: false,
@@ -369,7 +368,7 @@ function simulatorPlans({
 
     return {
       simulator: simulator.id,
-      label: simulatorDisplayLabel(simulator.id, support.label),
+      label: support.label,
       backend,
       version: matchedVersion,
       requiresFabric: backend.disaggregationRequiresFabric,

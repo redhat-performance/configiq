@@ -163,7 +163,7 @@ describe('ComparisonPreview', () => {
           benchmark={benchmark}
           inferencex={[{ ...benchmark[0], ttftSeconds: 0.11 }]}
           series={[
-            { ...series[0], simulator: 'aisimulate', label: 'AISimulate' },
+            { ...series[0], simulator: 'aisim', label: 'AISim' },
             series[0],
           ]}
         />,
@@ -175,11 +175,11 @@ describe('ComparisonPreview', () => {
       ?.style.color
 
     // Red Hat red is readable on the striped header; InferenceX orange,
-    // AISimulate green, and BLIS blue use darker shades of the same hue that
+    // AISim green, and BLIS blue use darker shades of the same hue that
     // still clear 4.5:1 there.
     expect(headerColor('Red Hat')).toBe('#c9190b')
     expect(headerColor('InferenceX')).toBe('#9e4a00')
-    expect(headerColor('AISimulate')).toBe('#4a6e00')
+    expect(headerColor('AISim')).toBe('#4a6e00')
     expect(headerColor('BLIS')).toBe('#0043ce')
     expect(headerColor('Δ BLIS')).toBe('#0043ce')
     // The row selector stays neutral.
@@ -209,8 +209,8 @@ describe('selectConcurrencyTicks', () => {
 })
 
 describe('predictionColor', () => {
-  it('uses the NVIDIA green for AISimulate', () => {
-    expect(predictionColor('aisimulate', 0)).toBe('#76b900')
+  it('uses the NVIDIA green for AISim', () => {
+    expect(predictionColor('aisim', 0)).toBe('#76b900')
   })
 
   it('uses the IBM blue for BLIS', () => {
@@ -227,13 +227,13 @@ describe('predictionColor', () => {
         <ComparisonPreview
           benchmark={benchmark}
           inferencex={[]}
-          series={[{ ...series[0], simulator: 'aisimulate', label: 'AISimulate' }, series[0]]}
+          series={[{ ...series[0], simulator: 'aisim', label: 'AISim' }, series[0]]}
         />,
       )
     })
 
     const stroke = (name: string) => host.querySelector(`[data-line="${name}"]`)?.getAttribute('data-stroke')
-    expect(stroke('aisimulate-line')).toBe('#76b900')
+    expect(stroke('aisim-line')).toBe('#76b900')
     expect(stroke('blis-line')).toBe('#0f62fe')
   })
 })

@@ -4,8 +4,8 @@ import { expect, test, type Page } from '@playwright/test'
 const smokeCatalog = {
   timeoutSeconds: 1,
   simulators: [{
-    id: 'aisimulate',
-    label: 'AISimulate',
+    id: 'aisim',
+    label: 'AISim',
     default: true,
     available: true,
     models: ['smoke/model'],
@@ -147,7 +147,7 @@ function inputNearLabel(page: Page, labelText: string) {
 const recommendResponse = {
   requestId: 'smoke-recommend',
   status: 'completed',
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   mode: 'agg',
   recommendation: {
     gpusNeeded: 2,
@@ -196,7 +196,7 @@ test.beforeEach(async ({ page }) => {
     if (window.location.origin === 'null') return
     if (localStorage.getItem('settings_default_model') === null) localStorage.setItem('settings_default_model', 'smoke/model')
     if (localStorage.getItem('settings_default_system') === null) localStorage.setItem('settings_default_system', 'smoke-gpu')
-    if (localStorage.getItem('settings_simulator') === null) localStorage.setItem('settings_simulator', 'aisimulate')
+    if (localStorage.getItem('settings_simulator') === null) localStorage.setItem('settings_simulator', 'aisim')
     if (localStorage.getItem('settings_inference_backend') === null) localStorage.setItem('settings_inference_backend', 'vllm')
     if (localStorage.getItem('hf_token') === null) localStorage.setItem('hf_token', 'hf_initial_smoke_token')
   })
@@ -311,7 +311,7 @@ test('Settings enforces and persists simulator and backend selections', async ({
 
   const simulator = page.locator('#settings-simulator')
   const backend = page.locator('#settings-backend')
-  await expect(simulator).toHaveValue('aisimulate')
+  await expect(simulator).toHaveValue('aisim')
   await expect(backend.locator('option[value="sglang"]')).toBeDisabled()
 
   await simulator.selectOption('blis')
@@ -334,7 +334,7 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   const api = await stubApi(page, {
     '/api/predict': {
       status: 'success',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       memory_breakdown: {
         weights_bytes: 16 * 1_073_741_824,
         kv_cache_bytes: 2 * 1_073_741_824,
@@ -370,7 +370,7 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   expect(api.posts['/api/predict']).toMatchObject({
     model_path: 'smoke/model',
     system: 'smoke-gpu',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     backend: 'vllm',
     isl: 768,
     osl: 96,
@@ -467,7 +467,7 @@ test('Recommend submits selected workload inputs and renders the mocked sizing r
   expect(api.posts['/api/recommend']).toMatchObject({
     model_path: 'smoke/model',
     system: 'smoke-gpu',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     backend: 'vllm',
     isl: 768,
     osl: 96,
@@ -552,7 +552,7 @@ test('KV cache submits selected capacity inputs and renders the mocked result', 
         totalBytes: 85_899_345_920,
       },
       metadata: {
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         modelPath: 'smoke/model',
         backend: 'vllm',
         backendVersion: null,

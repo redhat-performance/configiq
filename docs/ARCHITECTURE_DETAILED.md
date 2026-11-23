@@ -75,7 +75,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 3. Streaming clients request `text/event-stream`; the route emits one
    `completed` event. The service owns the GPU search window for both
    simulators, so the browser never replays windows or forwards candidate
-   bounds. AISimulate resolves its fit floor and a wide first window
+   bounds. AISim resolves its fit floor and a wide first window
    server-side, refines below a feasible candidate and grows after a
    no-candidate window under one request-wide time budget; BLIS performs one
    bounded aggregate TP search, plus a bounded P/D grid when a fabric is
@@ -104,7 +104,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
    `/simulators` failed or returned no valid descriptors while its unscoped
    catalogue succeeded. The response shape alone does not prove the upstream
    predates `/simulators`. The network list supplies fabrics for BLIS P/D
-   predictions; AISimulate does not consume it. This same-origin response shape
+   predictions; AISim does not consume it. This same-origin response shape
    ships with the frontend that reads it. When one ConfigIQ instance uses
    another's `/api/catalog` as its gateway, upgrade the downstream reader
    first: the newer route accepts an older upstream's legacy lists, but an

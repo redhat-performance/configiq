@@ -98,7 +98,7 @@ def _installed_aisimulate_version() -> str | None:
             return distribution_version(name)
         except Exception:
             logger.debug("No installed distribution metadata for %s", name, exc_info=True)
-    logger.warning("Could not determine the installed AISimulate SDK version")
+    logger.warning("Could not determine the installed AISim SDK version")
     return None
 
 
@@ -145,18 +145,18 @@ _AISIMULATE_COMMIT = _installed_aisimulate_commit()
 # and must not hard-code an ID.
 _SIMULATORS: tuple[dict[str, Any], ...] = (
     {
-        "id": "aisimulate",
-        "label": "AISimulate",
-        "description": "Analytical sizing powered by the AISimulate SDK; prices the full GPU and model catalogue.",
+        "id": "aisim",
+        "label": "AISim",
+        "description": "Analytical sizing powered by the AISim SDK; prices the full GPU and model catalogue.",
         "default": True,
         "version": _AISIMULATE_VERSION,
         "revision": _AISIMULATE_COMMIT,
         "recommend_search": "windowed",
         "networks": False,
-        # /memory is an AISimulate capability; a simulator that does not model
+        # /memory is an AISim capability; a simulator that does not model
         # a KV-cache breakdown must refuse the request, not borrow the answer.
         "memory": True,
-        # AISimulate's P/D search takes no inter-node fabric, so a caller needs
+        # AISim's P/D search takes no inter-node fabric, so a caller needs
         # no topology input before asking for one. This same flag tells a client
         # whether it must collect a fabric and tells request validation whether
         # "disagg" names a search this simulator can run without one.
@@ -334,7 +334,7 @@ class RecommendRequest(BaseModel):
     fabric: str | None = Field(
         default=None,
         min_length=1,
-        description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISimulate does not consume this field.",
+        description="Inter-node fabric for P/D candidates. BLIS defaults to roce-200g; explicit null searches aggregate candidates only. BLIS concurrency-capacity sizing is aggregate-only and rejects an explicit non-null fabric. AISim does not consume this field.",
     )
     mode: Literal["agg", "disagg"] | None = Field(
         default=None,
@@ -374,14 +374,14 @@ class RecommendRequest(BaseModel):
         default=None,
         gt=0,
         description=(
-            "P/D KV transfer bandwidth to model when objective='pareto' with AISimulate. "
-            "Omit (or send null) to apply AISimulate's default: no modeled P/D transfer delay. "
+            "P/D KV transfer bandwidth to model when objective='pareto' with AISim. "
+            "Omit (or send null) to apply AISim's default: no modeled P/D transfer delay. "
             "Omission is not a fabric default; set this only when the topology assumption is "
             "intentional. BLIS rejects this field and models transfer through the selected fabric."
         ),
     )
     model_config = {"populate_by_name": True}
-    simulator: str = Field(default="aisimulate", description="Simulator to use. Discover supported values from GET /simulators.")
+    simulator: str = Field(default="aisim", description="Simulator to use. Discover supported values from GET /simulators.")
 
     @model_validator(mode="after")
     def validate_request(self):
@@ -608,16 +608,16 @@ class EstimateRequest(BaseModel):
     fabric: str | None = Field(
         default=None,
         min_length=1,
-        description="Inter-node fabric for P/D transfer. BLIS uses this field; AISimulate does not consume it.",
+        description="Inter-node fabric for P/D transfer. BLIS uses this field; AISim does not consume it.",
     )
 
     model_config = {"populate_by_name": True}
-    simulator: str = Field(default="aisimulate", description="Simulator to use. Discover supported values from GET /simulators.")
+    simulator: str = Field(default="aisim", description="Simulator to use. Discover supported values from GET /simulators.")
 
     @model_validator(mode="after")
-    def reject_aisimulate_fabric(self):
-        if self.simulator == "aisimulate" and self.fabric is not None:
-            raise ValueError("AISimulate does not currently consume a network-fabric selection")
+    def reject_aisim_fabric(self):
+        if self.simulator == "aisim" and self.fabric is not None:
+            raise ValueError("AISim does not currently consume a network-fabric selection")
         return self
 
 
@@ -684,7 +684,7 @@ class SimulatorProvenance(BaseModel):
 class CandidateResponse(BaseModel):
     """One candidate from a Pareto sweep.
 
-    AISimulate copies the SDK candidate record verbatim. BLIS candidates are
+    AISim copies the SDK candidate record verbatim. BLIS candidates are
     built by the service from its own measured run and use the same shape. In
     both cases nothing is synthesized: unsupported detail stays unavailable.
     `topology` follows the shared keys (`deployment_mode`, `tp`, `pp`,
@@ -700,7 +700,7 @@ class CandidateResponse(BaseModel):
     objectives: dict[str, float] | None = None
     transfer_delay_modeled: bool = False
     provenance_sources: list[str] = Field(default_factory=list)
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
 
 
 class CandidateViews(BaseModel):
@@ -724,14 +724,14 @@ class DemandOutcome(BaseModel):
     completed_requests: int | None = None
     evaluated_configurations: int | None = None
     best_observed_rps: float | None = None
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
 
 
 class CapacityOutcome(BaseModel):
     """Memory-residency outcome of a concurrency-capacity sizing run.
 
     Capacity is decided by the selected simulator's capacity answer for the
-    deployment, not by a replay: AISimulate derives it from weights plus a
+    deployment, not by a replay: AISim derives it from weights plus a
     KV-cache estimate, BLIS reads the engine's reported KV pool. For a
     disaggregated option the decode pool holds the resident sequences and the
     prefill pool only holds one transiently. The performance fields on the
@@ -776,7 +776,7 @@ class CapacityOutcome(BaseModel):
     decode_replicas: int | None = None
     prefill_gpus: int | None = None
     decode_gpus: int | None = None
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
 
 
 class SweepMeta(BaseModel):
@@ -803,7 +803,7 @@ class SweepMeta(BaseModel):
     window_max_gpus: int | None = None
     #: The configured candidate ceiling and the ceiling the selected search
     #: actually used. A simulator hardware limit can make the effective value
-    #: lower than the configured one; an AISimulate fit floor that needs
+    #: lower than the configured one; an AISim fit floor that needs
     #: headroom can make it higher.
     configured_max_gpus: int | None = None
     effective_max_gpus: int | None = None
@@ -852,7 +852,7 @@ class RecommendConfig(BaseModel):
     prefill_config: WorkerConfig | None = None
     decode_config: WorkerConfig | None = None
     mode: str = "agg"
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
     provenance: SimulatorProvenance | None = None
     warnings: list[str] = Field(default_factory=list)
 
@@ -927,7 +927,7 @@ class ReplayRecordResponse(BaseModel):
 class RecommendResponse(BaseModel):
     configs: list[RecommendConfig]
     chosen_mode: str
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
     search_summary: dict[str, Any] | None = None
     candidates: list[CandidateResponse] = Field(default_factory=list)
     views: CandidateViews | None = None
@@ -967,7 +967,7 @@ class EstimateResponse(BaseModel):
     mode: str = "agg"
     prefill_config: WorkerConfig | None = None
     decode_config: WorkerConfig | None = None
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
     provenance: SimulatorProvenance | None = None
     memory_unavailable_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -1004,7 +1004,7 @@ class MemoryRequest(BaseModel):
         "Leave null to let the service resolve the model from HuggingFace.",
     )
     simulator: str = Field(
-        default="aisimulate",
+        default="aisim",
         description="Simulator to use. Only simulators that report a memory capability accept this endpoint.",
     )
 
@@ -1019,7 +1019,7 @@ class MemoryResponse(BaseModel):
     source: str
     memory_breakdown: MemoryBreakdown
     tolerance_adjusted: dict[str, Any] | None = None
-    simulator: str = "aisimulate"
+    simulator: str = "aisim"
     #: Present only when the request asked for `include=debug`: the snippet that
     #: reproduces this estimate, with the pins it was computed against.
     debug: ReplayRecordResponse | None = None
@@ -1485,7 +1485,7 @@ def _aisimulate_search_modes(
     req: RecommendRequest,
     window: tuple[int, int],
 ) -> list[Literal["agg", "disagg"]]:
-    """Deployment modes one AISimulate GPU window searches.
+    """Deployment modes one AISim GPU window searches.
 
     A one-GPU total window cannot contain a disaggregated deployment: it needs
     at least one prefill and one decode GPU. An aggregated serving mode searches
@@ -1633,7 +1633,7 @@ def _aisimulate_recommendation_config(
         "mode": {"choices": modes},
         "workers": workers,
     }
-    # Omission means AISimulate models no P/D transfer delay. Only add the
+    # Omission means AISim models no P/D transfer delay. Only add the
     # engine block when the caller explicitly chose a bandwidth; never invent a
     # fabric default.
     if is_pareto and req.kv_transfer_bandwidth_gb_per_second is not None:
@@ -1725,7 +1725,7 @@ def _resolve_moe_widths(
 ) -> tuple[int, int]:
     """Resolve the FFN/expert width pair for one worker role.
 
-    AISimulate requires ``tp * attention_dp * cp == moe_tp * moe_ep`` for every
+    AISim requires ``tp * attention_dp * cp == moe_tp * moe_ep`` for every
     model family that can host MoE layers, including dense variants of those
     families (dense Gemma 4 is one). Treating two omitted widths as ``1 x 1``
     therefore fails at any attention width greater than one.
@@ -2287,7 +2287,7 @@ def _demand_outcome(
             if best_observed_rps is not None
             else (round(achieved, 3) if achieved is not None else None)
         ),
-        simulator="aisimulate",
+        simulator="aisim",
     )
 
 
@@ -3394,7 +3394,7 @@ def _capacity_prediction(
             requests_per_load_unit=_demand_requests_per_load_unit(),
             database_mode=req.database_mode,
             gpu_memory_utilization=_backend_memory_fraction(req.backend, backend_version),
-            simulator="aisimulate",
+            simulator="aisim",
         )
     else:
         replicas = candidate.replicas
@@ -3420,7 +3420,7 @@ def _capacity_prediction(
             requests_per_load_unit=_demand_requests_per_load_unit(),
             database_mode=req.database_mode,
             gpu_memory_utilization=_backend_memory_fraction(req.backend, backend_version),
-            simulator="aisimulate",
+            simulator="aisim",
         )
     try:
         return _run_aisimulate_prediction(prediction_req, set()), None
@@ -3489,7 +3489,7 @@ def _capacity_config(
         gemm=str(gemm) if gemm is not None else None,
         kvcache=str(kvcache) if kvcache is not None else None,
         mode="agg",
-        simulator="aisimulate",
+        simulator="aisim",
     )
 
 
@@ -3560,7 +3560,7 @@ def _capacity_disagg_config(
             batch_size=decode_batch,
             backend_version=backend_version,
         ),
-        simulator="aisimulate",
+        simulator="aisim",
     )
 
 
@@ -3630,7 +3630,7 @@ def _capacity_option_outcome(
         "exhaustive": True,
         "performance_available": prediction is not None,
         "performance_unavailable_reason": unavailable_reason,
-        "simulator": "aisimulate",
+        "simulator": "aisim",
     }
     if isinstance(candidate, _DisaggCapacityCandidate):
         return CapacityOutcome(
@@ -4405,7 +4405,7 @@ _UNSERVABLE_MESSAGE = re.compile(
 )
 
 #: A replay that reaches a compute shape the selected performance data never
-#: measured. The runner wraps these in "AISimulate replay failed: engine error:
+#: measured. The runner wraps these in "AISim replay failed: engine error:
 #: ...", so they are matched by text (and by exception type) rather than class.
 #: This is a coverage gap for this model/version, not a service failure: a 500
 #: told users the API was down when another backend_version would have worked.
@@ -4600,7 +4600,7 @@ def _replay_versions() -> dict[str, str | None]:
     Values this deployment cannot report stay null instead of being guessed.
     """
     return {
-        "aisimulate": _installed_aisimulate_version(),
+        "aisim": _installed_aisimulate_version(),
         "aisimulate_commit": _installed_aisimulate_commit(),
         "blis": blis_release(),
         "blis_commit": blis_commit(),
@@ -4719,7 +4719,7 @@ app.add_middleware(
 
 
 def _blis_backends() -> dict[str, Any]:
-    """BLIS backend/version support, in the same shape as the AISimulate branch.
+    """BLIS backend/version support, in the same shape as the AISim branch.
 
     BLIS versions are properties of the BLIS release, not of a GPU system, and BLIS
     takes no version-scoped memory fraction from the SDK. ``systems`` and
@@ -4743,7 +4743,7 @@ def _blis_backends() -> dict[str, Any]:
                 "id": "vllm",
                 "aisimulate_id": "vllm",
                 "versions": list(MODELED_ENGINE_VERSIONS),
-                # A literal, not AISimulate's `current` alias: BLIS refuses aliases.
+                # A literal, not AISim's `current` alias: BLIS refuses aliases.
                 "default_version": DEFAULT_ENGINE_VERSION,
                 "memory_fraction": None,
                 "memory_fraction_kind": "of_total",
@@ -4837,19 +4837,19 @@ def get_backends(
                 }
                 for system, version in system_defaults.items()
             },
-            # AISimulate's P/D search takes no fabric; no extra input is needed.
-            "disaggregation_requires_fabric": _simulator_entry("aisimulate")[
+            # AISim's P/D search takes no fabric; no extra input is needed.
+            "disaggregation_requires_fabric": _simulator_entry("aisim")[
                 "disaggregation_requires_fabric"
             ],
             # Capacity runs can compare aggregated and disaggregated options.
             "capacity_options": {"disaggregated": True},
         })
     return {
-        "simulator": "aisimulate",
-        "simulator_version": _simulator_entry("aisimulate")["version"],
-        # AISimulate answers a recommendation with a stream of progressively
+        "simulator": "aisim",
+        "simulator_version": _simulator_entry("aisim")["version"],
+        # AISim answers a recommendation with a stream of progressively
         # larger GPU windows, which the client renders as it arrives.
-        "recommend_search": _simulator_entry("aisimulate")["recommend_search"],
+        "recommend_search": _simulator_entry("aisim")["recommend_search"],
         # The sizing goals this simulator can answer. A client gates its goal
         # selector on this list instead of on the simulator's name.
         "objectives": ["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"],
@@ -4912,7 +4912,7 @@ def post_recommend(
             try:
                 # Capacity is an enumeration, not one invocation: its probes are
                 # not a replay anyone would run, so the record stays empty here
-                # as it does for the AISimulate capacity branch.
+                # as it does for the AISim capacity branch.
                 captured = None if req.objective == "concurrency_capacity" else recorder
                 with capture_into(captured):
                     outcome = _blis_recommend(req)
@@ -5292,7 +5292,7 @@ def post_recommend(
     return RecommendResponse(
         configs=configs,
         chosen_mode=chosen_mode,
-        simulator="aisimulate",
+        simulator="aisim",
         candidates=candidate_responses,
         views=pareto_views,
         demand=demand,
@@ -5466,7 +5466,7 @@ def post_predict(
     d_moe_tp = req.decode_moe_tp_size or req.moe_tp_size
     d_moe_ep = req.decode_moe_ep_size or req.moe_ep_size
 
-    if req.simulator == "aisimulate":
+    if req.simulator == "aisim":
         # Resolve the width pair the API asks the simulator to use, so the
         # response reports exactly the layout that was evaluated.
         p_moe_tp, p_moe_ep = _resolve_moe_widths(p_tp, req.attention_dp_size, p_moe_tp, p_moe_ep)
@@ -5763,7 +5763,7 @@ def get_models(
     includes = _parse_include(include)
     # `model_catalog_complete` tells a client whether the list above is the
     # complete set this simulator can price. BLIS resolves models only through
-    # its catalog; AISimulate also resolves arbitrary Hugging Face models, so a
+    # its catalog; AISim also resolves arbitrary Hugging Face models, so a
     # model absent from its list is not necessarily unsupported.
     if simulator == "blis":
         try:

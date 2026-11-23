@@ -1,5 +1,5 @@
 import { backendDisplayLabel } from '../backend-labels'
-import { simulatorDisplayLabel } from '../simulator-labels'
+import { normalizeSimulatorLabel } from '../simulator-ids'
 import type { ComparisonEntry } from './types'
 
 export type ComparisonSection = 'deployment' | 'performance' | 'memory' | 'cost'
@@ -106,7 +106,7 @@ export function modeLabel(entry: ComparisonEntry): string {
 }
 
 export function simulatorLabel(entry: ComparisonEntry): string {
-  return simulatorDisplayLabel(entry.simulator, entry.simulator)
+  return normalizeSimulatorLabel(entry.simulator, entry.simulator)
 }
 
 export function formatNumber(value: number, digits = 1): string {

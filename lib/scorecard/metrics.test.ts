@@ -118,13 +118,13 @@ describe('headToHead', () => {
   it('compares only levels both simulators predicted', () => {
     const shared = point({ identity: 'shared', configurationKey: 'A' });
     const rows = headToHead([
-      { ...shared, simulator: 'aisimulate', predicted: { ttftMs: 110, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
+      { ...shared, simulator: 'aisim', predicted: { ttftMs: 110, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
       { ...shared, simulator: 'blis', predicted: { ttftMs: 120, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
     ]);
 
     const ttft = rows.find(row => row.metric === 'ttft');
     expect(ttft).toBeDefined();
-    expect(ttft!.pair).toEqual(['aisimulate', 'blis']);
+    expect(ttft!.pair).toEqual(['aisim', 'blis']);
     expect(ttft!.paired).toBe(1);
     expect(ttft!.firstWins).toBe(1);
     expect(ttft!.secondWins).toBe(0);
@@ -135,7 +135,7 @@ describe('headToHead', () => {
 
   it('does not compare across different measured levels', () => {
     const rows = headToHead([
-      point({ identity: 'level-1', simulator: 'aisimulate' }),
+      point({ identity: 'level-1', simulator: 'aisim' }),
       point({ identity: 'level-2', simulator: 'blis' }),
     ]);
     expect(rows).toEqual([]);
@@ -144,7 +144,7 @@ describe('headToHead', () => {
   it('ignores a simulator that did not answer', () => {
     const shared = point({ identity: 'shared' });
     const rows = headToHead([
-      { ...shared, simulator: 'aisimulate' },
+      { ...shared, simulator: 'aisim' },
       { ...shared, simulator: 'blis', status: 'inconclusive', predicted: null, reason: 'timed out' },
     ]);
     expect(rows).toEqual([]);
@@ -153,7 +153,7 @@ describe('headToHead', () => {
   it('counts an equal error as a tie', () => {
     const shared = point({ identity: 'shared' });
     const rows = headToHead([
-      { ...shared, simulator: 'aisimulate' },
+      { ...shared, simulator: 'aisim' },
       { ...shared, simulator: 'blis' },
     ]);
     const ttft = rows.find(row => row.metric === 'ttft');

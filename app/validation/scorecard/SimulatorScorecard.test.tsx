@@ -132,7 +132,7 @@ const headToHeadRow: ScorecardHeadToHead = {
   accelerator: 'H200',
   workload: '1024/128',
   metric: 'ttft',
-  pair: ['aisimulate', 'blis'],
+  pair: ['aisim', 'blis'],
   paired: 2,
   firstWins: 1,
   secondWins: 1,
@@ -144,8 +144,8 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
   return summary({
     simulators: [
       {
-        id: 'aisimulate',
-        label: 'AISimulate',
+        id: 'aisim',
+        label: 'AISim',
         version: '0.14.0',
         revision: 'deadbeef',
         available: true,
@@ -159,15 +159,15 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
       },
     ],
     totals: [
-      ...totalsFor('aisimulate', { mape: 0.123, mdape: 0.1, p90: 0.2, bias: -0.05 }),
+      ...totalsFor('aisim', { mape: 0.123, mdape: 0.1, p90: 0.2, bias: -0.05 }),
       ...totalsFor('blis', { mape: 0.2, mdape: 0.18, p90: 0.3, bias: 0.02 }),
       // TPOT is the page default, so the fixture carries its totals too.
-      ...totalsFor('aisimulate', { mape: 0.15, mdape: 0.11, p90: 0.25, bias: -0.04 }, { metric: 'tpot' }),
+      ...totalsFor('aisim', { mape: 0.15, mdape: 0.11, p90: 0.25, bias: -0.04 }, { metric: 'tpot' }),
       ...totalsFor('blis', { mape: 0.22, mdape: 0.19, p90: 0.31, bias: 0.03 }, { metric: 'tpot' }),
       // A distinct ttft/mape/redhat slice the link test can select; ttft and
       // mape are not the page defaults, so the link has to carry them.
       {
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         source: 'redhat',
         metric: 'ttft',
         releaseMatch: 'any',
@@ -177,7 +177,7 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
         points: 1,
       },
     ],
-    coverage: [coverageFor('aisimulate'), coverageFor('blis', { supported: 1 })],
+    coverage: [coverageFor('aisim'), coverageFor('blis', { supported: 1 })],
     datasets: [
       {
         source: 'redhat',
@@ -193,9 +193,9 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
       },
     ],
     cells: [
-      cellFor('aisimulate', { value: 0.1 }),
+      cellFor('aisim', { value: 0.1 }),
       cellFor('blis', { value: 0.2 }),
-      cellFor('aisimulate', { metric: 'tpot', statistic: 'mdape', value: 0.33 }),
+      cellFor('aisim', { metric: 'tpot', statistic: 'mdape', value: 0.33 }),
     ],
     headToHead: [
       headToHeadRow,
@@ -268,7 +268,7 @@ describe('Simulator scorecard page', () => {
     await mount(published());
 
     expect(container.querySelector('h1')?.textContent).toBe('Simulator scorecard');
-    expect(container.textContent).toContain('AISimulate');
+    expect(container.textContent).toContain('AISim');
     expect(container.textContent).toContain('BLIS');
     // The default slice is TPOT, and the headline is MdAPE: 0.11 and 0.19,
     // rendered as percentages rather than as fractions.
@@ -287,7 +287,7 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).toContain('Predicted');
     expect(container.textContent).toContain('Unsupported');
     expect(container.textContent).toContain('Ineligible');
-    // 3 of 4 predicted for AISimulate.
+    // 3 of 4 predicted for AISim.
     expect(container.textContent).toContain('3 (75%)');
   });
 
@@ -336,7 +336,7 @@ describe('Simulator scorecard page', () => {
   it('compares simulators only on levels both predicted', async () => {
     await mount(published());
     expect(container.textContent).toContain('Head to head');
-    expect(container.textContent).toContain('AISimulate vs BLIS');
+    expect(container.textContent).toContain('AISim vs BLIS');
     // One win each: an even outcome bar, described for assistive tech. The
     // default TPOT slice carries the same result as TTFT in this fixture.
     expect(container.querySelector('[aria-label*="won 1 of 2 paired levels"]')).not.toBeNull();
@@ -351,7 +351,7 @@ describe('Simulator scorecard page', () => {
   it('enables the like-for-release view once matched totals exist', async () => {
     await mount(published({
       totals: [
-        ...totalsFor('aisimulate', { mape: 0.123, mdape: 0.1, p90: 0.2, bias: -0.05 }, { releaseMatch: 'matched' }),
+        ...totalsFor('aisim', { mape: 0.123, mdape: 0.1, p90: 0.2, bias: -0.05 }, { releaseMatch: 'matched' }),
       ],
     }));
     expect(button('Like for release')?.disabled).toBe(false);
@@ -386,7 +386,7 @@ describe('Simulator scorecard page', () => {
     // The page imports no settings hook. If it did, this mount would fail on
     // the missing provider rather than render every published simulator.
     await mount(published());
-    expect(container.textContent).toContain('AISimulate');
+    expect(container.textContent).toContain('AISim');
     expect(container.textContent).toContain('BLIS');
   });
 });

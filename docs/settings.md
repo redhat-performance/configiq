@@ -33,7 +33,7 @@ how you reproduce a specific engine release.
 Tools do not offer their own backend or version picker. They read the pair from
 Settings and report it read-only next to the values they do own, with a link
 back to this section. That keeps one effective pair across the app instead of
-per-page copies that could disagree — and it avoids saving an AISimulate
+per-page copies that could disagree — and it avoids saving an AISim
 version pin under another simulator, where the key would mean something else.
 
 A shared link still records the backend pair that produced its numbers. Opening

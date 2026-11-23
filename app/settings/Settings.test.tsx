@@ -31,7 +31,7 @@ beforeEach(() => {
     hfToken: '',
     backendVersion: '',
     inferenceBackend: 'vllm',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     costingsEnabled: false,
     preferredCloudProvider: null,
     pricingSource: 'merged',

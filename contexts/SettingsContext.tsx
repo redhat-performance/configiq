@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { loadAppConfig } from '@/lib/app-config';
 import { useCatalog } from '@/lib/hooks/useCatalog';
+import { normalizeSimulatorId } from '@/lib/simulator-ids';
 
 export type InferenceBackend = 'vllm' | 'tensorrt-llm' | 'sglang';
 
@@ -59,7 +60,7 @@ const STORAGE_KEYS = {
 } as const;
 
 /**
- * A version pin means something different in each simulator (an AISimulate
+ * A version pin means something different in each simulator (an AISim
  * namespace vs. a literal engine release), so it is stored per simulator.
  * On load, the default simulator migrates the legacy unsuffixed key to its
  * scoped key.
@@ -166,9 +167,12 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // The simulator id is an open string discovered from the service; keep
       // whatever was saved. An unknown or retired id surfaces the API's
       // explicit error instead of being silently replaced with another
-      // simulator here.
-      const savedSimulator = localStorage.getItem(STORAGE_KEYS.simulator);
-      setSimulatorChoiceState(savedSimulator ?? NO_SIMULATOR);
+      // simulator here. The one exception is an id this app itself renamed:
+      // reading it as the current id is a data migration, not a substitution.
+      const savedSimulator = normalizeSimulatorId(
+        localStorage.getItem(STORAGE_KEYS.simulator) ?? '',
+      );
+      setSimulatorChoiceState(savedSimulator);
 
       // The legacy unsuffixed key only ever held the default simulator's pin,
       // so migrate it to the simulator this profile actually resolves to.
