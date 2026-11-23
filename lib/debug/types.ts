@@ -25,7 +25,8 @@ export interface DebugPane {
   contents: string
   /**
    * Optional sub-tab this artifact belongs to: a serving pool, a candidate, a
-   * search window. Panes that share a group render behind one group tab.
+   * search window. Panes that share a group render behind one group tab;
+   * ungrouped panes stay visible whichever group is selected.
    */
   group?: string
 }

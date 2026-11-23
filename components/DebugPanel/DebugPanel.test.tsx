@@ -174,9 +174,31 @@ describe('DebugPanel', () => {
     const panel = host.querySelector('[role="tabpanel"]');
     expect(document.getElementById(panel?.getAttribute('aria-labelledby') ?? '')).toBe(tab('Request'));
 
+    // The second run has one pane, so the pane label names the panel instead.
     await click(tab('Pareto sweep'));
-    expect(document.getElementById(host.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby') ?? '')).toBeNull();
+    const single = host.querySelector('[role="tabpanel"]');
+    expect(single?.getAttribute('aria-labelledby')).toBeNull();
+    expect(single?.getAttribute('aria-label')).toBe('Command');
     expect(host.querySelector('pre')?.textContent).toBe('blis run');
+  });
+
+  it('keeps ungrouped artifacts reachable from every group', async () => {
+    await render([{
+      id: 'kv',
+      label: 'KV cache',
+      panes: [
+        { id: 'prefill', label: 'Prefill request', language: 'json', group: 'Prefill', contents: '{"role":"prefill"}' },
+        { id: 'decode', label: 'Decode request', language: 'json', group: 'Decode', contents: '{"role":"decode"}' },
+        { id: 'script', label: 'run.sh', language: 'shell', contents: 'aisimulate run' },
+      ],
+    }]);
+
+    // The script describes the whole run, so it survives every group switch.
+    for (const group of ['Prefill', 'Decode']) {
+      await click(tab(group));
+      await click(tab('run.sh'));
+      expect(host.querySelector('pre')?.textContent).toBe('aisimulate run');
+    }
   });
 
   it('does not claim a copy when the clipboard is unavailable', async () => {
