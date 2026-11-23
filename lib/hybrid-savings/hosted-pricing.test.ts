@@ -71,6 +71,36 @@ describe('hosted pricing resolution', () => {
     expect(hostedPriceForWorkload(fee)).toBeNull() // Cannot price requests without their shape.
   })
 
+  it('applies unsorted input and cache overrides in feed order, including split thresholds', () => {
+    const offer: FrontierModel = { ...pricedModel('owner/model', 'OpenRouter', 1, 2), source: 'openrouter', billing: {
+      ...billing, overrides: [
+        { min_prompt_tokens: 2000, input_per_million: 5, input_cache_read_per_million: 0.5, input_cache_write_per_million: 6 },
+        { min_prompt_tokens: 1000, input_cache_read_per_million: 0.3 },
+        { min_prompt_tokens: 1000, input_per_million: 3, input_cache_write_per_million: 4 },
+      ],
+    } }
+    const longShape = { ...shape, averageInputTokens: 3000 }
+    expect(hostedPriceForWorkload(offer, longShape)).toMatchObject({
+      inputPerMillion: 3, cacheReadPerMillion: 0.3, cacheWritePerMillion: 4,
+    })
+    expect(hostedTokenUsageCost(offer, 1_000_000, 0, longShape, {
+      readTokens: 500_000, writeTokens: 250_000,
+    })).toBeCloseTo(1.9)
+  })
+
+  it('does not move interleaved cache-only or text overrides to a threshold’s first position', () => {
+    const offer = { ...pricedModel('owner/model', 'OpenRouter', 1, 2), billing: {
+      ...billing, overrides: [
+        { min_prompt_tokens: 2000, input_per_million: 5 },
+        { min_prompt_tokens: 1000, input_per_million: 3, input_cache_write_per_million: 4 },
+        { min_prompt_tokens: 2000, input_cache_read_per_million: 0.5 },
+      ],
+    } }
+    expect(hostedPriceForWorkload(offer, { ...shape, averageInputTokens: 3000 })).toMatchObject({
+      inputPerMillion: 3, cacheReadPerMillion: 0.5, cacheWritePerMillion: 4,
+    })
+  })
+
   it('uses representative prompt length, strict thresholds and ordered partial overrides', () => {
     const offer = { ...pricedModel('owner/model', 'A', 1, 2), billing: { ...billing, overrides: [
       { min_prompt_tokens: 1000, input_per_million: 3 },

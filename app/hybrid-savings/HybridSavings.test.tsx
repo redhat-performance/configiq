@@ -521,6 +521,7 @@ describe('Hybrid page composition', () => {
     await editNumber('hybrid-hosted-cache-read', '1000000000')
     await editNumber('hybrid-hosted-cache-write', '200000000')
     expect(costs()[0]).not.toBe(uncached[0])
+    expect(host.textContent).toContain('Token rates / 1M$0.1 input · $0.2 output · standard uncached text')
     expect(costs().slice(1)).toEqual(uncached.slice(1))
     expect(host.querySelector<HTMLInputElement>('#hybrid-input-tokens')!.value).toBe('2,400,000,000')
     await editNumber('hybrid-hosted-cache-read', '2300000000')
@@ -1382,6 +1383,26 @@ describe('Hybrid page composition', () => {
     expect(host.textContent).not.toContain('Hardware sizing partially completed')
     const requests = vi.mocked(fetch).mock.calls.map(([, init]) => init!.body)
     expect(requests.slice(2)).toEqual(requests.slice(0, 2))
+  })
+
+  it('can retry a partial run with unchanged inputs even when both hardware cards have prices', async () => {
+    const catalog = vi.mocked(useCatalog)()
+    vi.mocked(useCatalog).mockReturnValue({ ...catalog, gpuOptions: [
+      ...catalog.gpuOptions, { ...catalog.gpuOptions[0], label: 'Other GPU', systemId: 'other' },
+    ] })
+    vi.mocked(readRecommendStream).mockResolvedValueOnce(sizing).mockResolvedValueOnce({
+      status: 'failed', requestId: 'timeout', error: { code: 'AISIM_TIMEOUT', message: 'Timed out' },
+    })
+
+    await render(); await click('Calculate')
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).not.toBeNull()
+    expect(host.textContent).toContain('1 of 2 GPU systems did not return usable results')
+    const initial = vi.mocked(fetch).mock.calls.map(([, init]) => init!.body)
+    expect(initial).toHaveLength(2)
+    await click('Retry sizing')
+    expect(vi.mocked(fetch).mock.calls.slice(2).map(([, init]) => init!.body)).toEqual(initial)
+    expect(host.textContent).not.toContain('Hardware sizing partially completed')
   })
 
   it('explains why sizing cannot start when the catalog has no matching hardware', async () => {

@@ -1683,6 +1683,8 @@ class TestRunMinGpusWindows:
         clock = [0.0]
         monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "1024")
+        monkeypatch.setenv("MIN_GPUS_PARALLELISM", "4")
+        monkeypatch.setenv("MIN_GPUS_CANDIDATE_TIMEOUT_S", "30")
         shape = app_module._CapacityShape(tp=8, dp=1, moe_tp=8, moe_ep=1, per_rank_tokens=65536)
         monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **kw: [shape])
         windows = []
@@ -1697,6 +1699,7 @@ class TestRunMinGpusWindows:
                 return self._result(gpus, evaluated=1)
             assert kwargs["max_trials_override"] == 2
             assert kwargs["parallelism_override"] == 2
+            assert kwargs["candidate_timeout_override"] == 10  # Two serial trials with retries and response headroom.
             if small_result == "error":
                 raise RuntimeError("missing performance data for smaller deployment")
             if small_result == "resource_limit":
@@ -1716,6 +1719,29 @@ class TestRunMinGpusWindows:
         assert verified_probe.used_gpus == gpus
         assert sweep.window_max_gpus == gpus
         assert sweep.budget_exhausted == (small_result == "timeout")
+
+    def test_returns_verified_probe_without_refining_when_serial_waves_would_not_fit(self, monkeypatch):
+        req = self._request().model_copy(update={"target_concurrency": 10, "isl": 45000})
+        shape = _capacity_shape(tp=8, per_rank_tokens=65536)
+        clock = [0.0]
+        monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **kw: [shape])
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "1024")
+        monkeypatch.setenv("MIN_GPUS_CANDIDATE_TIMEOUT_S", "30")
+
+        def fake(request, *, window, replicated_probe=None, **kwargs):
+            assert replicated_probe is not None, "optional refinement should not start"
+            assert window == (80, 80)
+            clock[0] = 36  # 34 s left: two trials need 30 s with retries, plus 5 s of headroom.
+            return self._result(80, evaluated=1)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        result, sweep, verified_probe = app_module._run_min_gpus_windows(req, deadline=70)
+
+        assert result.selected_candidates[0] is verified_probe
+        assert verified_probe.used_gpus == 80
+        assert sweep.max_trials == sweep.evaluated == 1
+        assert sweep.budget_exhausted
 
     def test_small_worker_uses_normal_ladder_when_replicas_fit_first_two_windows(self, monkeypatch):
         req = self._request().model_copy(update={"target_concurrency": 25})

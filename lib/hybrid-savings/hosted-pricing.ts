@@ -201,25 +201,29 @@ export function hostedPriceForWorkload(
   if ((maxInput != null && input > maxInput) ||
       (model.max_output_tokens != null && output > model.max_output_tokens) ||
       (maxContext != null && input + output > maxContext)) return null
+  // Keep the provider's order, with strictly exceeded thresholds. A provider
+  // may publish the input tariff and its same-threshold cache rates separately.
+  const matchedTiers = (model.billing?.overrides ?? []).filter(tier => input > tier.min_prompt_tokens)
   const cacheTiers = new Map<number, NonNullable<FrontierModel['billing']>['overrides'][number]>()
-  for (const tier of model.billing?.overrides ?? []) {
-    // OpenRouter's threshold is strictly greater than, not greater-or-equal.
-    if (input <= tier.min_prompt_tokens) continue
+  for (const tier of matchedTiers) {
     cacheTiers.set(tier.min_prompt_tokens, { ...cacheTiers.get(tier.min_prompt_tokens), ...tier })
+  }
+  let ambiguousWrite = !!model.billing?.cache_write_variant
+  for (const tier of matchedTiers) {
     price.inputPerMillion = tier.input_per_million ?? price.inputPerMillion
     price.outputPerMillion = tier.output_per_million ?? price.outputPerMillion
     price.requestPerRequest = tier.request_price ?? price.requestPerRequest
-  }
-  let ambiguousWrite = !!model.billing?.cache_write_variant
-  for (const tier of [...cacheTiers.values()].sort((a, b) => a.min_prompt_tokens - b.min_prompt_tokens)) {
-    // A long-context input tier may change cache rates too. Don't carry base
-    // cache rates into it without an explicit tariff for that tier.
-    if (tier.input_per_million !== undefined || tier.input_cache_read_per_million !== undefined) {
-      price.cacheReadPerMillion = tier.input_cache_read_per_million
+    // A new input tariff can invalidate the previous cache rates. Carry only
+    // those explicitly published for its threshold; apply cache-only changes
+    // at their own positions without moving any text tariff out of feed order.
+    const changesInput = tier.input_per_million !== undefined
+    const cache = changesInput ? cacheTiers.get(tier.min_prompt_tokens) : tier
+    if (changesInput || cache?.input_cache_read_per_million !== undefined) {
+      price.cacheReadPerMillion = cache?.input_cache_read_per_million
     }
     ambiguousWrite ||= !!tier.cache_write_variant
-    if (tier.input_per_million !== undefined || tier.input_cache_write_per_million !== undefined || ambiguousWrite) {
-      price.cacheWritePerMillion = ambiguousWrite ? undefined : tier.input_cache_write_per_million
+    if (changesInput || cache?.input_cache_write_per_million !== undefined || ambiguousWrite) {
+      price.cacheWritePerMillion = ambiguousWrite ? undefined : cache?.input_cache_write_per_million
     }
   }
   return price

@@ -74,6 +74,8 @@ paths:
           (`MIN_GPUS_MAX_TRIALS`/`MIN_GPUS_PARALLELISM`/
           `MIN_GPUS_CANDIDATE_TIMEOUT_S`). After a passing probe, optional
           refinement uses one trial per available serving mode per window.
+          It budgets for serial trials and resource retries and skips the
+          window when too little time remains, keeping the verified result.
           The whole search shares one
           wall-clock budget (`MIN_GPUS_SEARCH_BUDGET_S`, default 180 seconds)
           across fit discovery, every window, and every backend-version

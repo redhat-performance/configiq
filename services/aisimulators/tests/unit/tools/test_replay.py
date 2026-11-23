@@ -602,7 +602,8 @@ def test_a_skipped_min_gpu_window_leaves_no_command(monkeypatch):
         )
 
     monkeypatch.setattr(app_module, "_max_candidate_gpus", lambda: 32)
-    monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **k: 1)
+    shape = app_module._CapacityShape(tp=1, dp=1, moe_tp=1, moe_ep=1, per_rank_tokens=65536)
+    monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **k: [shape])
     monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
     with capture_into(recorder):
@@ -610,3 +611,44 @@ def test_a_skipped_min_gpu_window_leaves_no_command(monkeypatch):
 
     record = recorder.build()
     assert [invocation.label for invocation in record.invocations] == ["GPU window 17-32"]
+
+
+@pytest.mark.parametrize("failure", ["probe", "refinement", "resource_limit"])
+def test_min_gpu_replay_keeps_only_the_successful_attempt_after_a_suppressed_error(monkeypatch, failure):
+    from aisimulate.resources import ResourceLimitError
+
+    recorder = _recorder(endpoint="/recommend")
+    req = app_module.RecommendRequest(
+        model_path="Qwen/Qwen3-32B", system="h200_sxm", backend="vllm",
+        objective="min_gpus", sla_mode="enforce", target_concurrency=10,
+        isl=45000, osl=300, ttft=3000, tpot=30,
+    )
+    shape = app_module._CapacityShape(tp=8, dp=1, moe_tp=8, moe_ep=1, per_rank_tokens=65536)
+    monkeypatch.setattr(app_module, "_max_candidate_gpus", lambda: 128)
+    monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **k: [shape])
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setenv("MIN_GPUS_CANDIDATE_TIMEOUT_S", "30")
+    attempts = []
+
+    def fake(req, *, window, replicated_probe=None, **kwargs):
+        label = "Replicated probe" if replicated_probe else "Ordinary GPU window"
+        attempts.append(label)
+        recorder.prediction({"engine": {"window": list(window)}}, label=label)
+        if replicated_probe and failure == "probe" or not replicated_probe and failure == "refinement":
+            raise RuntimeError("missing performance data")
+        if not replicated_probe and failure == "resource_limit":
+            raise ResourceLimitError("not enough host memory")
+        return SimpleNamespace(
+            candidates=[], counts=None, provenance=None,
+            selected_candidates=[SimpleNamespace(used_gpus=80 if replicated_probe else 8)],
+        )
+
+    monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+    with capture_into(recorder):
+        result, _, _ = app_module._run_min_gpus_windows(req, deadline=90)
+
+    assert attempts == ["Replicated probe", "Ordinary GPU window"]
+    winning_label = "Ordinary GPU window" if failure == "probe" else "Replicated probe"
+    assert result.selected_candidates[0].used_gpus == (8 if failure == "probe" else 80)
+    assert [item.label for item in recorder.build().invocations] == [winning_label]

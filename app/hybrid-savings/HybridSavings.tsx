@@ -713,7 +713,7 @@ export default function HybridSavings() {
     : null
   const canCalculate = !isSizing && sizingBlockedReason === null
   const currentSizingError = isStale ? null : sizingError
-  const incompleteHardware = hasCurrentSizingRun && !isSizing && !currentSizingError && failedSystems > 0 && (!rentedOption || !ownedOption)
+  const incompleteHardware = hasCurrentSizingRun && !isSizing && !currentSizingError && failedSystems > 0
   const hardwareAction = canCalculate
     ? <Button type="button" variant="secondary" size="sm" onClick={() => runSizing(true)}>Retry sizing</Button>
     : undefined
@@ -1219,7 +1219,7 @@ export default function HybridSavings() {
                 <div><dt>Hosted prices</dt><dd>Live aicostings feed · {pricingSource}</dd></div>
               {hostedModel && <>
                   <div><dt>Selected API model</dt><dd>{hostedModel.id}</dd></div>
-                  <div><dt>Token rates / 1M</dt><dd>${formatter.format(hostedPrice?.inputPerMillion ?? 0)} input · ${formatter.format(hostedPrice?.outputPerMillion ?? 0)} output · {cachePricingApplied ? 'cache-adjusted text' : 'standard uncached text'}{hostedPrice?.requestPerRequest ? ` + $${hostedPrice.requestPerRequest}/request` : ''}</dd></div>
+                  <div><dt>Token rates / 1M</dt><dd>${formatter.format(hostedPrice?.inputPerMillion ?? 0)} input · ${formatter.format(hostedPrice?.outputPerMillion ?? 0)} output · standard uncached text{hostedPrice?.requestPerRequest ? ` + $${hostedPrice.requestPerRequest}/request` : ''}</dd></div>
                   <div><dt>Selected pricing source</dt><dd>{hostedPricingSource(hostedModel)}</dd></div>
                   <div><dt>Offer updated</dt><dd>{collectionDate(hostedModel.updated_at)}</dd></div>
                 </>}

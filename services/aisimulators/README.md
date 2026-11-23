@@ -345,9 +345,11 @@ or when the prompt exceeds the sweep's 32,768-token runtime batch limit. It
 requires a memory-feasible worker shape and at least two replicas within the
 GPU ceiling. It uses the same workload and SLA; a passing probe gives the
 search a verified upper bound and limits optional refinement to one trial per
-available serving mode in each subsequent window. A failed
-probe does not replace ordinary sizing. If a smaller layout is not verified
-within the remaining budget, the passing result still stands.
+available serving mode in each subsequent window. Optional refinement keeps
+response headroom, budgets for serial trials and resource retries, and skips
+the window if too little time remains. This is not a hard cancellation deadline
+for the SDK. A failed probe does not replace ordinary sizing. If a smaller
+layout is not verified within the remaining budget, the passing result still stands.
 If the smallest verified result is disaggregated and the request permits
 alternatives (`top_n > 1`), `aggregated_fallback` exposes the passing aggregate
 probe so a caller can check single-server offer compatibility separately.

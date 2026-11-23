@@ -1271,6 +1271,9 @@ _MIN_GPUS_MAX_TRIALS = 32
 _MIN_GPUS_PARALLELISM = 4
 #: Per-candidate replay timeout for one min_gpus window.
 _MIN_GPUS_CANDIDATE_TIMEOUT_S = 30
+#: The pinned SDK's resource scheduler retries a candidate at most twice.
+#: Budget three serial waves per trial when refining an already verified probe.
+_REFINEMENT_WAVES_PER_TRIAL = 3
 #: Runtime envelope the SDK sweep uses when deciding whether a shape can hold
 #: one sequence: engine `max_num_tokens` / `max_num_seqs` log-range defaults and
 #: SGLang's lower memory fraction. Fit-floor discovery must use the same
@@ -2545,6 +2548,7 @@ def _run_min_gpus_windows(
             run_id = window_run_id or run_id
         return candidate_gpus
 
+    recorder = active_recorder()
     if (req.target_concurrency or 0) > 1 and req.target_request_rate is None and req.mode != "disagg":
         probe = _replicated_latency_probe(req, fit_shapes, ceiling=ceiling, first_window_max=upper)
         remaining = deadline - time.monotonic()
@@ -2552,6 +2556,7 @@ def _run_min_gpus_windows(
             probe_window = (probe.total_gpus, probe.total_gpus)
             attempted.append(probe_window)
             offered_trials += 1
+            mark = recorder.checkpoint() if recorder is not None else 0
             try:
                 probe_result = _run_aisimulate_recommendation(
                     req,
@@ -2564,48 +2569,54 @@ def _run_min_gpus_windows(
             except Exception as exc:
                 # This topology may lack data even when the ordinary search can
                 # simulate a different one on the requested backend version.
+                if recorder is not None:
+                    recorder.rollback(mark)
                 resource_limited = resource_limited or isinstance(exc, ResourceLimitError)
                 logger.info("Replicated latency probe on %s did not finish: %s", req.system, exc)
             else:
                 if record_window(probe_result, ["agg"]) is not None:
                     verified_probe = probe_result.selected_candidates[0]
 
-    recorder = active_recorder()
     while lower <= upper <= ceiling:
         if best_gpus is not None:
             upper = min(upper, best_gpus - 1)
             if upper < lower:
                 break
-        # A replica probe already supplies an answer. Avoid starting another
-        # expensive replay near the deadline merely to refine that answer.
-        window_reserve = 3 * _MIN_GPUS_MIN_WINDOW_S if verified_probe is not None else _MIN_GPUS_MIN_WINDOW_S
-        if attempted and deadline - time.monotonic() < window_reserve:
+        remaining = deadline - time.monotonic()
+        if attempted and remaining < _MIN_GPUS_MIN_WINDOW_S:
             budget_exhausted = True
             break
-        remaining = max(1.0, deadline - time.monotonic())
+        remaining = max(1.0, remaining)
         window_max_trials, window_parallelism, candidate_timeout = (
             _recommendation_trial_budget(req.objective, upper)
         )
         if verified_probe is not None:
-            # SDK resource admission can serialize nominally parallel workers.
-            # Limit each optional improvement window to one trial per enabled
-            # mode so it cannot delay a verified large result by several waves.
+            # Resource admission may serialize nominally parallel trials and
+            # restart interrupted waves. Don't spend the verified result's
+            # response headroom assuming those waves will run in parallel.
             window_max_trials = len(_aisimulate_search_modes(req, (lower, upper)))
             window_parallelism = min(window_parallelism, window_max_trials)
+            available = remaining - _MIN_GPUS_MIN_WINDOW_S
+            waves = window_max_trials * _REFINEMENT_WAVES_PER_TRIAL
+            window_timeout = min(candidate_timeout, int(available // waves))
+            if window_timeout < min(candidate_timeout, _MIN_GPUS_MIN_WINDOW_S):
+                budget_exhausted = True
+                break
+            window_trials = window_max_trials
+        else:
+            # Honour this window's own trial budget when time allows. The
+            # per-wave timeout absorbs the remaining time rather than shrinking
+            # the sample count on a pessimistic replay assumption.
+            waves = max(1, math.ceil(window_max_trials / window_parallelism))
+            window_timeout = max(1, min(candidate_timeout, int(remaining // waves)))
+            window_trials = max(
+                1,
+                min(
+                    window_max_trials,
+                    max(1, int(remaining // window_timeout)) * window_parallelism,
+                ),
+            )
         attempted.append((lower, upper))
-        # Honour this window's own trial budget when time allows. The per-wave
-        # timeout absorbs the remaining time rather than shrinking the sample
-        # count, so a wide window is not under-sampled by a pessimistic
-        # worst-case replay assumption.
-        waves = max(1, math.ceil(window_max_trials / window_parallelism))
-        window_timeout = max(1, min(candidate_timeout, int(remaining // waves)))
-        window_trials = max(
-            1,
-            min(
-                window_max_trials,
-                max(1, int(remaining // window_timeout)) * window_parallelism,
-            ),
-        )
         offered_trials += window_trials
         mark = recorder.checkpoint() if recorder is not None else 0
         try:
@@ -2617,6 +2628,8 @@ def _run_min_gpus_windows(
                 candidate_timeout_override=window_timeout,
             )
         except ResourceLimitError as exc:
+            if recorder is not None:
+                recorder.rollback(mark)
             resource_limited = True
             logger.info("Sizing on %s reached an execution-host resource limit: %s", req.system, exc)
             break
@@ -2625,6 +2638,8 @@ def _run_min_gpus_windows(
             # nothing was verified yet, other errors must reach version fallback.
             if not _is_no_viable_config(exc):
                 if result is not None:
+                    if recorder is not None:
+                        recorder.rollback(mark)
                     logger.info("Smaller GPU window on %s did not finish: %s", req.system, exc)
                     break
                 raise
