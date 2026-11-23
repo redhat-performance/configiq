@@ -13,11 +13,15 @@ import {
 } from '@patternfly/react-core'
 import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox'
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
-import { useRecommend } from '@/contexts/RecommendContext'
+import { FrontierPanel } from '@/components/frontier/FrontierPanel'
+import { useRecommend, type RecommendParams } from '@/contexts/RecommendContext'
 import { useSettings } from '@/contexts/SettingsContext'
 import { getAppConfig } from '@/lib/app-config'
+import { buildFrontierRequest, fetchFrontier } from '@/lib/api/pareto'
+import { baseRequestPayload } from '@/lib/api/recommend'
 import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
+import type { FrontierState } from '@/lib/types/pareto'
 import { workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets'
 import { buildDeployParams, pickDeployDefaults, type DeployFormState } from './deploy-request'
 import { buildDeployYaml } from './deploy-yaml'
@@ -80,9 +84,38 @@ export function Deploy() {
     simulator: settings.simulator,
   }), [model, systemId, workload, loadUnit, load, ttftTarget, tpotTarget, gpusFree, settings.inferenceBackend, settings.backendVersion, settings.simulator])
 
+  // The frontier is evidence, not the answer (docs/07 §4.3): it runs on its
+  // own request, independent of the sizing call, so the answer renders without
+  // waiting for it. The shared RecommendContext models sizing and Pareto as
+  // alternatives (startPareto clears the sizing result), which is right for
+  // /recommend and wrong here — so the sweep runs from page-local state.
+  const [frontier, setFrontier] = React.useState<FrontierState>({ status: 'idle' })
+  const frontierAbortRef = React.useRef<AbortController | null>(null)
+  const startFrontier = React.useCallback((params: RecommendParams) => {
+    frontierAbortRef.current?.abort()
+    const controller = new AbortController()
+    frontierAbortRef.current = controller
+    setFrontier({ status: 'loading' })
+    void fetchFrontier(buildFrontierRequest(baseRequestPayload(params)), controller.signal)
+      .then(response => {
+        if (controller.signal.aborted) return
+        setFrontier({ status: 'ready', ...response })
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return
+        setFrontier({
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Pareto sweep failed',
+        })
+      })
+  }, [])
+  React.useEffect(() => () => frontierAbortRef.current?.abort(), [])
+
   const run = React.useCallback((overrides?: { model?: string; systemId?: string }) => {
-    startSizing(buildDeployParams(currentForm(overrides)))
-  }, [startSizing, currentForm])
+    const params = buildDeployParams(currentForm(overrides))
+    startSizing(params)
+    startFrontier(params)
+  }, [startSizing, currentForm, startFrontier])
 
   // First load runs automatically with defaults (docs/07 §4.1); edits after
   // that never auto-run — the Recommend button is for re-runs.
@@ -237,6 +270,12 @@ export function Deploy() {
               <p>The recommendation appears here.</p>
             </div>
           )}
+
+          <FrontierPanel
+            state={frontier}
+            gpuLabel={catalog.gpuOptions.find(gpu => gpu.systemId === systemId)?.label ?? systemId}
+            onRetry={() => startFrontier(buildDeployParams(currentForm()))}
+          />
         </section>
       </div>
 

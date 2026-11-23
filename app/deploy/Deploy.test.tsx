@@ -5,10 +5,18 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const startSizing = vi.hoisted(() => vi.fn());
+const fetchFrontier = vi.hoisted(() => vi.fn());
 const recommendState = vi.hoisted(() => ({
   result: null as unknown,
   error: null as string | null,
   errorCode: null as string | null,
+}));
+
+// Keep the real buildFrontierRequest (it strips load targets from a sweep);
+// only the network call is mocked.
+vi.mock('@/lib/api/pareto', async importOriginal => ({
+  ...(await importOriginal<typeof import('@/lib/api/pareto')>()),
+  fetchFrontier,
 }));
 
 vi.mock('@/contexts/RecommendContext', () => ({
@@ -94,6 +102,8 @@ beforeEach(() => {
   document.body.appendChild(host);
   root = createRoot(host);
   startSizing.mockClear();
+  fetchFrontier.mockReset();
+  fetchFrontier.mockResolvedValue({ candidates: [], views: null, sweep: null });
   recommendState.result = null;
   recommendState.error = null;
   recommendState.errorCode = null;
@@ -158,6 +168,24 @@ describe('Deploy page', () => {
     expect(params.target_concurrency).toBe(64);
   });
 
+  it('fires the Pareto sweep alongside the answer, without the load target', async () => {
+    await renderPage();
+    expect(fetchFrontier).toHaveBeenCalledTimes(1);
+    const payload = fetchFrontier.mock.calls[0][0];
+    expect(payload.objective).toBe('pareto');
+    expect(payload.model_path).toBe('Qwen/Qwen3-8B');
+    // A sweep drives its own load; the answer's target is not a bound on it.
+    expect(payload).not.toHaveProperty('target_concurrency');
+    expect(payload).not.toHaveProperty('target_request_rate');
+    expect(payload.sla_mode).toBe('none');
+  });
+
+  it('renders the frontier panel once the sweep resolves, below the answer', async () => {
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+    expect(host.textContent).toContain('Pareto frontier');
+  });
+
   it('does not auto-run again when inputs change', async () => {
     await renderPage();
     await setLoadValue('128');
@@ -179,6 +207,7 @@ describe('Deploy page', () => {
     const params = startSizing.mock.calls[1][0];
     expect(params.objective).toBe('throughput_demand');
     expect(params.target_request_rate).toBe(5);
+    expect(fetchFrontier).toHaveBeenCalledTimes(2);
   });
 
   it('shows the no-configuration empty state, distinct from a failure', async () => {
