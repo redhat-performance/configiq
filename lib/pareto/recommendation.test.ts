@@ -8,6 +8,7 @@ import {
   collateRecommendation,
   isSizingProjection,
   resolveSelection,
+  sweepCandidates,
 } from './recommendation'
 
 function result(overrides: Partial<RecommendResult> = {}): RecommendResult {
@@ -322,5 +323,31 @@ describe('resolveSelection', () => {
     expect(resolveSelection(null, [first, second], [first, second], new Set(['second']), false)).toBe('second')
     expect(resolveSelection(null, [second], [second], new Set(), false)).toBe('second')
     expect(resolveSelection(null, [], [], new Set(), false)).toBeNull()
+  })
+})
+
+describe('sweepCandidates', () => {
+  it('drops a standalone sizing row from the sweep coverage input', () => {
+    const collated = collateRecommendation(
+      [
+        candidate({ candidate_id: 'candidate-000001', used_gpus: 8 }),
+        candidate({ candidate_id: 'candidate-000002', used_gpus: 16 }),
+      ],
+      result(),
+    )
+
+    expect(collated).toHaveLength(3)
+    expect(sweepCandidates(collated).map(entry => entry.candidate_id)).toEqual([
+      'candidate-000001',
+      'candidate-000002',
+    ])
+  })
+
+  it('keeps a matched row because the sweep evaluated it', () => {
+    const collated = collateRecommendation([candidate()], result())
+
+    expect(collated).toHaveLength(1)
+    expect(sweepCandidates(collated)).toHaveLength(1)
+    expect(sweepCandidates(collated)[0].candidate_id).toBe('candidate-000001')
   })
 })

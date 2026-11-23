@@ -24,7 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { displayedFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
-import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection } from '@/lib/pareto/recommendation';
+import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection, sweepCandidates } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -539,7 +539,9 @@ export function FrontierPanel({
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
   const statusSummary = React.useMemo(
-    () => describeSweepCoverage(sweep, candidates),
+    // `sweep.evaluated` counts tries, so the added sizing row must not inflate
+    // the feasible count; a matched row is an evaluated try and stays.
+    () => describeSweepCoverage(sweep, sweepCandidates(candidates)),
     [candidates, sweep],
   );
 

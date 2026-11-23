@@ -20,6 +20,18 @@ export function isSizingProjection(candidate: Candidate): boolean {
   return candidate.provenance_sources.includes(SIZING_PROVENANCE)
 }
 
+/**
+ * The sweep's own rows, without a standalone sizing projection. A collated
+ * recommendation that matched a sweep row keeps that row's id and stays in the
+ * list; only the added row was never a sweep attempt, so coverage counts must
+ * not include it.
+ */
+export function sweepCandidates(candidates: Candidate[]): Candidate[] {
+  return candidates.filter(
+    candidate => candidate.candidate_id !== RECOMMENDED_CANDIDATE_ID,
+  )
+}
+
 function dimension(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
