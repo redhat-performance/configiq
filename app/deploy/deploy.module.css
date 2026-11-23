@@ -1,0 +1,354 @@
+/* ============================================================================
+   Deploy page — UI styling
+   Follows docs/DESIGN_SYSTEM.md: --gc-* tokens from app/theme.css, Red Hat
+   Display/Text/Mono, nothing below 11.5px, no body text lighter than
+   --gc-text-2. Numbers use tabular-nums throughout.
+   ============================================================================ */
+
+.page {
+  max-width: 1920px;
+  padding: 24px 32px 64px;
+  font-family: var(--gc-font-sans);
+  color: var(--gc-text);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+/* ---------- header ---------- */
+
+.heading { margin-bottom: 24px; }
+
+.eyebrow {
+  font: 500 var(--gc-fs-label) var(--gc-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gc-text-2);
+  margin: 0 0 6px;
+}
+
+.heading h1 {
+  font-family: var(--gc-font-display);
+  font-size: var(--gc-fs-page-title);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--gc-text);
+  margin: 0 0 4px;
+}
+
+.intro {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0;
+}
+
+/* ---------- layout ---------- */
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 5fr) 7fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 992px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- inputs card ---------- */
+
+.inputsCard {
+  background: var(--gc-bg, #fff);
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 6px;
+}
+
+.cardHead {
+  padding: 18px 20px 0;
+}
+
+.cardHead h2 {
+  font-family: var(--gc-font-display);
+  font-size: var(--gc-fs-card-title);
+  font-weight: 600;
+  color: var(--gc-text);
+  margin: 0;
+}
+
+.cardBody {
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.field { display: grid; gap: 6px; }
+
+.fieldLabel {
+  font: 600 var(--gc-fs-label) var(--gc-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gc-text-2);
+  line-height: 1.2;
+}
+
+.loadRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.loadInput { max-width: 110px; }
+
+.targetGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 480px) {
+  .targetGrid { grid-template-columns: 1fr; }
+}
+
+.runRow {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  border-top: 1px solid var(--gc-border, #d2d2d2);
+  margin-top: 4px;
+}
+
+/* ---------- answer column ---------- */
+
+.pending {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 64px 20px;
+  color: var(--gc-text-2);
+  font-size: var(--gc-fs-body);
+}
+
+.emptyState {
+  background: var(--gc-bg-2, #f5f5f5);
+  border: 1px dashed var(--gc-border-strong, #b8bbbe);
+  border-radius: 6px;
+  padding: 40px 24px;
+  text-align: center;
+}
+
+.emptyState h3 {
+  font-family: var(--gc-font-display);
+  font-size: var(--gc-fs-card-title);
+  font-weight: 600;
+  color: var(--gc-text);
+  margin: 0 0 6px;
+}
+
+.emptyState p {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0;
+}
+
+/* ---------- answer card ---------- */
+
+.answerCard {
+  background: var(--gc-bg, #fff);
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-left: 3px solid var(--gc-success, #3e8635);
+  border-radius: 6px;
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+/* The failure state is structural, not decorative: the accent says the
+   deployment does not fit before a single word is read. */
+.answerOver {
+  border-left-color: var(--gc-danger, #c9190b);
+}
+
+.answerHead { display: grid; gap: 4px; }
+
+.answerTitle {
+  font-family: var(--gc-font-display);
+  font-size: var(--gc-fs-card-title);
+  font-weight: 600;
+  color: var(--gc-text);
+  margin: 0;
+}
+
+.answerNote {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0;
+}
+
+.answerHeroRow {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.answerHero { display: grid; gap: 2px; }
+
+.heroValue {
+  font-family: var(--gc-font-display);
+  font-size: var(--gc-fs-metric);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--gc-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.heroLabel {
+  font-size: var(--gc-fs-detail);
+  color: var(--gc-text-2);
+}
+
+/* ---------- target chips ---------- */
+
+.targetChips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.targetChip {
+  display: inline-grid;
+  gap: 2px;
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 6px;
+  padding: 8px 12px;
+  min-width: 120px;
+}
+
+.targetOver {
+  background: color-mix(in srgb, var(--gc-warn, #f0ab00) 10%, transparent);
+  border-color: var(--gc-warn, #f0ab00);
+}
+
+.targetLabel {
+  font: 600 var(--gc-fs-caption-min) var(--gc-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gc-text-2);
+}
+
+.targetValue {
+  font-size: var(--gc-fs-body);
+  font-weight: 600;
+  color: var(--gc-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.targetVerdict {
+  font-size: var(--gc-fs-caption-min);
+  color: var(--gc-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.targetOver .targetVerdict {
+  color: var(--gc-warn-text, #8c5b00);
+  font-weight: 600;
+}
+
+.targetChip:not(.targetOver) .targetVerdict {
+  color: var(--gc-success, #3e8635);
+  font-weight: 600;
+}
+
+/* ---------- review action ---------- */
+
+.reviewRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.modalNote {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0 0 12px;
+}
+
+.yamlPre {
+  font-family: var(--gc-font-mono);
+  font-size: var(--gc-fs-detail);
+  line-height: 1.6;
+  color: var(--gc-text);
+  background: var(--gc-bg-2, #f5f5f5);
+  border: 1px solid var(--gc-border, #d2d2d2);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 0;
+  overflow-x: auto;
+  max-height: 60vh;
+}
+
+/* ---------- served load, details, disclaimer ---------- */
+
+.servedRow {
+  font-size: var(--gc-fs-body);
+  color: var(--gc-text-2);
+  margin: 0;
+}
+
+.servedRow strong {
+  color: var(--gc-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.answerDetails {
+  border-top: 1px solid var(--gc-border, #d2d2d2);
+  padding-top: 12px;
+}
+
+.answerDetails summary {
+  font-size: var(--gc-fs-detail);
+  font-weight: 500;
+  color: var(--gc-text-2);
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+
+.answerDetails[open] summary { margin-bottom: 12px; }
+
+.detailList {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 24px;
+  margin: 0;
+}
+
+.detailList dt {
+  font-size: var(--gc-fs-detail);
+  color: var(--gc-text-2);
+}
+
+.detailList dd {
+  font-size: var(--gc-fs-detail);
+  color: var(--gc-text);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.mono { font-family: var(--gc-font-mono); }
+
+.disclaimer {
+  font-size: var(--gc-fs-detail);
+  color: var(--gc-text-2);
+  margin: 0;
+}
+
+/* ---------- a11y ---------- */
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

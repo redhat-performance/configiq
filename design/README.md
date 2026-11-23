@@ -13,6 +13,7 @@ lives in `app/predict/`.
 | `performanceHelpers.tsx` | `FlipTile`, `Sparkline`, `useCountUp`, and `Term` (the "?" glossary popovers). |
 | `performance-prefill.ts` | Query-string handoff used by the embeddable widget. |
 | `preview.html` | **Standalone visual reference** — open in any browser to see the exact target. No build needed. Use this as the source of truth for "does it look right". |
+| `deploy-preview.html` | Same role for the Deploy page (`app/deploy/`): answer-first layout, hero metric, target chips, fit and failure states. |
 
 ## Install
 
