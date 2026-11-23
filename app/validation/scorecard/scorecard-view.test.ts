@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import type { ScorecardCell, ScorecardCoverage, ScorecardTotal } from '@/lib/scorecard/types';
+import type {
+  ScorecardCell,
+  ScorecardCoverage,
+  ScorecardHeadToHead,
+  ScorecardTotal,
+} from '@/lib/scorecard/types';
 import { summary } from '@/lib/scorecard/__fixtures__/points';
 import {
   buildChartRows,
   buildFilterOptions,
+  buildHeadToHeadPairs,
+  buildHeadToHeadSummary,
   buildMatrix,
   emptyReason,
   formatPercent,
@@ -56,6 +63,23 @@ function coverage(overrides: Partial<ScorecardCoverage> = {}): ScorecardCoverage
     inconclusive: 0,
     ineligible: 0,
     total: 3,
+    ...overrides,
+  };
+}
+
+function headToHead(overrides: Partial<ScorecardHeadToHead> = {}): ScorecardHeadToHead {
+  return {
+    source: 'redhat',
+    model: 'org/model',
+    accelerator: 'H200',
+    workload: '1024/128',
+    metric: 'ttft',
+    pair: ['aisim', 'blis'],
+    paired: 2,
+    firstWins: 1,
+    secondWins: 1,
+    ties: 0,
+    medianDeltaPct: 0,
     ...overrides,
   };
 }
@@ -306,6 +330,155 @@ describe('buildChartRows', () => {
       'org/model · H200 · 1024/128 · InferenceX',
       'org/model · H200 · 1024/128 · Red Hat',
     ]);
+  });
+});
+
+describe('buildHeadToHeadPairs', () => {
+  it('lists each pair once with its configurations and paired levels', () => {
+    const pairs = buildHeadToHeadPairs([
+      headToHead({ paired: 3 }),
+      headToHead({ workload: '2048/128', paired: 5 }),
+      headToHead({ pair: ['aisim', 'other'], paired: 2 }),
+    ], { metric: 'ttft', source: 'all' });
+
+    expect(pairs).toEqual([
+      { key: 'aisim|blis', pair: ['aisim', 'blis'], configurations: 2, paired: 8 },
+      { key: 'aisim|other', pair: ['aisim', 'other'], configurations: 1, paired: 2 },
+    ]);
+  });
+
+  it('follows the metric and source selectors', () => {
+    const rows = [
+      headToHead({ metric: 'tpot' }),
+      headToHead({ pair: ['aisim', 'other'], source: 'inferencex' }),
+    ];
+
+    expect(buildHeadToHeadPairs(rows, { metric: 'ttft', source: 'all' }).map(entry => entry.key))
+      .toEqual(['aisim|other']);
+    expect(buildHeadToHeadPairs(rows, { metric: 'tpot', source: 'redhat' }).map(entry => entry.key))
+      .toEqual(['aisim|blis']);
+    expect(buildHeadToHeadPairs(rows, { metric: 'ttft', source: 'inferencex' }).map(entry => entry.key))
+      .toEqual(['aisim|other']);
+  });
+});
+
+describe('buildHeadToHeadSummary', () => {
+  const all = { metric: 'ttft', source: 'all' } as const;
+  const pair: [string, string] = ['aisim', 'blis'];
+  const byModel = { ...all, pair, dimension: 'model' } as const;
+  const byGpu = { ...all, pair, dimension: 'accelerator' } as const;
+
+  it('weights configurations equally rather than pooling their levels', () => {
+    // One level won, ten levels lost: a pooled share would be 1/11 (9%), but
+    // the short sweep and the long sweep are two configurations, so the mean
+    // configuration share is 50%.
+    const rows = [
+      headToHead({ paired: 1, firstWins: 1, secondWins: 0 }),
+      headToHead({ workload: '2048/128', paired: 10, firstWins: 0, secondWins: 10 }),
+    ];
+
+    const result = buildHeadToHeadSummary(rows, byModel);
+
+    expect(result.configurations).toBe(2);
+    expect(result.paired).toBe(11);
+    expect(result.firstShare).toBeCloseTo(0.5);
+    expect(result.secondShare).toBeCloseTo(0.5);
+    expect(result.categories[0].firstShare).toBeCloseTo(0.5);
+  });
+
+  it('draws the candle from the range of configuration shares', () => {
+    const rows = [
+      headToHead({ workload: '128/128', paired: 2, firstWins: 2, secondWins: 0 }),
+      headToHead({ workload: '1024/128', paired: 2, firstWins: 1, secondWins: 1 }),
+      headToHead({ workload: '2048/128', paired: 2, firstWins: 0, secondWins: 2 }),
+    ];
+
+    const [category] = buildHeadToHeadSummary(rows, byModel).categories;
+
+    expect(category.configurations).toBe(3);
+    expect(category.minShare).toBe(0);
+    expect(category.maxShare).toBe(1);
+    expect(category.firstShare).toBeCloseTo(0.5);
+  });
+
+  it('omits the candle when one configuration is the whole category', () => {
+    const [category] = buildHeadToHeadSummary([headToHead()], byModel).categories;
+
+    expect(category.configurations).toBe(1);
+    expect(category.minShare).toBeNull();
+    expect(category.maxShare).toBeNull();
+  });
+
+  it('keeps ties out of both win shares', () => {
+    const [category] = buildHeadToHeadSummary([
+      headToHead({ paired: 4, firstWins: 1, secondWins: 1, ties: 2 }),
+    ], byModel).categories;
+
+    expect(category.ties).toBe(2);
+    expect(category.firstShare).toBe(0.25);
+    expect(category.secondShare).toBe(0.25);
+  });
+
+  it('groups by GPU when asked, using the same configuration-first rule', () => {
+    const rows = [
+      headToHead({ accelerator: 'H200', paired: 1, firstWins: 1, secondWins: 0 }),
+      headToHead({ accelerator: 'H200', workload: '2048/128', paired: 1, firstWins: 0, secondWins: 1 }),
+      headToHead({ accelerator: 'B200', paired: 1, firstWins: 0, secondWins: 1 }),
+    ];
+
+    const result = buildHeadToHeadSummary(rows, byGpu);
+
+    expect(result.categories.map(category => category.label)).toEqual(['H200', 'B200']);
+    expect(result.categories[0].firstShare).toBeCloseTo(0.5);
+    expect(result.categories[1].firstShare).toBe(0);
+  });
+
+  it('puts the categories with the least evidence last', () => {
+    const rows = [
+      headToHead({ model: 'org/thin' }),
+      headToHead({ model: 'org/busy-a' }),
+      headToHead({ model: 'org/busy-a', workload: '2048/128' }),
+      headToHead({ model: 'org/busy-b' }),
+      headToHead({ model: 'org/busy-b', workload: '2048/128' }),
+    ];
+
+    expect(buildHeadToHeadSummary(rows, byModel).categories.map(category => category.label))
+      .toEqual(['org/busy-a', 'org/busy-b', 'org/thin']);
+  });
+
+  it('reports the median gap across configurations', () => {
+    const rows = [
+      headToHead({ workload: '128/128', medianDeltaPct: -30 }),
+      headToHead({ workload: '1024/128', medianDeltaPct: -10 }),
+      headToHead({ workload: '2048/128', medianDeltaPct: -20 }),
+    ];
+
+    expect(buildHeadToHeadSummary(rows, byModel).medianGapPct).toBe(-20);
+  });
+
+  it('filters a source, a metric, and a pair rather than mixing them', () => {
+    const rows = [
+      headToHead(),
+      headToHead({ source: 'inferencex', paired: 2, firstWins: 0, secondWins: 2 }),
+      headToHead({ metric: 'tpot', paired: 2, firstWins: 0, secondWins: 2 }),
+      headToHead({ pair: ['aisim', 'other'], paired: 2, firstWins: 0, secondWins: 2 }),
+    ];
+
+    expect(buildHeadToHeadSummary(rows, { ...byModel, source: 'redhat' }).firstShare).toBe(0.5);
+    expect(buildHeadToHeadSummary(rows, { ...byModel, pair: ['aisim', 'other'] }).firstShare).toBe(0);
+    expect(buildHeadToHeadSummary(rows, { ...byModel, pair: null })).toEqual({
+      categories: [],
+      configurations: 0,
+      paired: 0,
+      ties: 0,
+      firstShare: 0,
+      secondShare: 0,
+      medianGapPct: 0,
+    });
+  });
+
+  it('returns no categories when the pair is absent from the slice', () => {
+    expect(buildHeadToHeadSummary([], byModel).categories).toEqual([]);
   });
 });
 

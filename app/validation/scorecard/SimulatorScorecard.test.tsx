@@ -199,8 +199,45 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
     ],
     headToHead: [
       headToHeadRow,
-      // TPOT is the page default, so head to head must cover it.
+      // TPOT is the page default, so head to head must cover it. The second
+      // org/model configuration gives that category a range; org/other has a
+      // single configuration, and org/inference belongs to the other source.
       { ...headToHeadRow, metric: 'tpot' },
+      {
+        ...headToHeadRow,
+        metric: 'tpot',
+        workload: '2048/128',
+        firstWins: 2,
+        secondWins: 0,
+      },
+      {
+        ...headToHeadRow,
+        metric: 'tpot',
+        model: 'org/other',
+        accelerator: 'B200',
+        paired: 1,
+        firstWins: 0,
+        secondWins: 1,
+        ties: 0,
+      },
+      {
+        ...headToHeadRow,
+        metric: 'tpot',
+        source: 'inferencex',
+        model: 'org/inference',
+        paired: 4,
+        firstWins: 4,
+        secondWins: 0,
+      },
+      // A second pair makes the pair selector a real choice.
+      {
+        ...headToHeadRow,
+        metric: 'tpot',
+        pair: ['aisim', 'other'],
+        paired: 1,
+        firstWins: 0,
+        secondWins: 1,
+      },
     ],
     ...overrides,
   });
@@ -340,6 +377,70 @@ describe('Simulator scorecard page', () => {
     // One win each: an even outcome bar, described for assistive tech. The
     // default TPOT slice carries the same result as TTFT in this fixture.
     expect(container.querySelector('[aria-label*="won 1 of 2 paired levels"]')).not.toBeNull();
+  });
+
+  it('puts win share by model and GPU on the head-to-head tile front', async () => {
+    await mount(published());
+    const card = container.querySelector('[data-flip-card="scorecard-paired"]');
+
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain('Win share by model');
+    expect(card?.textContent).toContain('Win share by GPU');
+    expect(card?.querySelector('[class*="flipFront"] table')).toBeNull();
+
+    const back = card?.querySelector('[class*="flipBack"] table');
+    expect(back).not.toBeNull();
+    expect(back?.textContent).toContain('Source');
+    expect(back?.textContent).toContain('Ties');
+    expect(back?.textContent).toContain('org/model');
+  });
+
+  it('marks a single-configuration category instead of drawing a range', async () => {
+    await mount(published());
+    const card = container.querySelector('[data-flip-card="scorecard-paired"]');
+
+    // org/other is one configuration; org/model is two, so only the second
+    // can carry a candle.
+    expect(card?.textContent).toContain('1 configuration');
+    expect(card?.querySelectorAll('[class*="h2hCandle"]').length).toBeGreaterThan(0);
+  });
+
+  it('applies the benchmark data selector to head to head', async () => {
+    await mount(published());
+    const source = container.querySelector<HTMLSelectElement>('select[aria-label="Benchmark data"]');
+
+    await act(async () => {
+      source!.value = 'inferencex';
+      source!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const card = container.querySelector('[data-flip-card="scorecard-paired"]');
+    expect(card?.textContent).toContain('org/inference');
+    expect(card?.textContent).not.toContain('org/model');
+  });
+
+  it('offers a pair selector only when the snapshot compared more than one pair', async () => {
+    await mount(published());
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Simulator pair"]');
+    expect(select).not.toBeNull();
+    expect([...select!.options].map(option => option.value)).toEqual(['aisim|blis', 'aisim|other']);
+
+    await act(async () => {
+      select!.value = 'aisim|other';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    const card = container.querySelector('[data-flip-card="scorecard-paired"]');
+    expect(card?.textContent).toContain('AISim vs other');
+  });
+
+  it('hides the pair selector when there is one pair', async () => {
+    await mount(published({
+      headToHead: [headToHeadRow, { ...headToHeadRow, metric: 'tpot' }],
+    }));
+
+    expect(container.querySelector('select[aria-label="Simulator pair"]')).toBeNull();
+    expect(container.textContent).toContain('AISim vs BLIS');
   });
 
   it('disables the like-for-release view until a point matched a release', async () => {

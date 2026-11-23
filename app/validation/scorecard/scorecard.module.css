@@ -602,6 +602,7 @@
 
 .table {
   width: 100%;
+  min-width: 640px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -617,6 +618,16 @@
   text-transform: uppercase;
   color: var(--text-2);
   border-bottom: 1px solid var(--border);
+}
+
+.scrollHint {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .scrollHint {
+    display: inline;
+  }
 }
 
 .table thead th {
@@ -721,6 +732,177 @@
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* ── Head to head: split bars with a configuration range ──────────────── */
+
+/*
+ * The head-to-head chart sizes itself from its content, so the front face has
+ * to sit in flow. The back stays an absolute overlay and scrolls inside the
+ * height the chart established.
+ */
+.flipCardAuto {
+  min-height: 0;
+  height: auto;
+}
+
+.flipCardAuto .flipFront {
+  position: relative;
+  inset: auto;
+  padding-bottom: 40px;
+}
+
+.h2hPanels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px 28px;
+  margin-top: 8px;
+}
+
+.h2hPanel {
+  min-width: 0;
+}
+
+.h2hPanelTitle {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.h2hList {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.h2hRow {
+  display: grid;
+  grid-template-columns: minmax(88px, 148px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.h2hLabel {
+  min-width: 0;
+}
+
+.h2hName {
+  display: block;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.h2hThin {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.h2hBarArea {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.h2hTrack {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 56px;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.h2hSegment {
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+/*
+ * A bracket from the lowest to the highest configuration share. It is drawn
+ * over the split bar rather than beside it: the split is the mean, and the
+ * bracket says how much the configurations behind that mean disagree.
+ */
+.h2hCandle {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  height: 10px;
+  transform: translateY(-50%);
+  border-top: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  border-left: 2px solid var(--text);
+  box-sizing: border-box;
+  filter: drop-shadow(0 0 1px #ffffff) drop-shadow(0 0 1px #ffffff);
+  pointer-events: none;
+}
+
+.h2hValue {
+  width: 46px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.h2hCaption {
+  margin: 7px 0 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/*
+ * Ten columns do not fit a phone. Let the table keep its reading order and
+ * scroll sideways rather than squeezing the model name into one letter per
+ * line; the wrapper already scrolls in both directions.
+ */
+.h2hTable {
+  min-width: 1040px;
+}
+
+.h2hTable .modelCell {
+  min-width: 180px;
+}
+
+.candleSwatch {
+  width: 16px;
+  height: 10px;
+  flex-shrink: 0;
+  border-top: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  border-left: 2px solid var(--text);
+  box-sizing: border-box;
+}
+
+.sectionControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sectionControl .controlLabel {
+  margin: 0;
+}
+
+.pairSelect {
+  width: 220px;
 }
 
 /* ── Method notes ─────────────────────────────────────────────────────── */

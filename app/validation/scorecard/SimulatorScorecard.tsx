@@ -32,17 +32,23 @@ import {
   type ScorecardSummary,
 } from '@/lib/scorecard/types';
 import ErrorBarChart, { CHART_ROW_HEIGHT } from './ErrorBarChart';
+import HeadToHeadChart from './HeadToHeadChart';
 import {
   buildChartRows,
   buildFilterOptions,
+  buildHeadToHeadPairs,
+  buildHeadToHeadSummary,
   buildMatrix,
   emptyReason,
   formatPercent,
   formatSignedPercent,
+  selectHeadToHeadRows,
   selectTotals,
   sumCoverage,
   type ChartRows,
   type CoverageCounts,
+  type HeadToHeadPairOption,
+  type HeadToHeadSummary,
   type MatrixRow,
 } from './scorecard-view';
 import styles from './scorecard.module.css';
@@ -111,6 +117,9 @@ export default function SimulatorScorecard() {
   const [model, setModel] = React.useState('');
   const [gpu, setGpu] = React.useState('');
   const [workload, setWorkload] = React.useState('');
+  // A pair key, not the pair itself: the snapshot decides which pairs exist,
+  // and a key that disappears falls back to the first pair in the new slice.
+  const [pairKey, setPairKey] = React.useState<string | null>(null);
 
   React.useEffect(() => setMounted(true), []);
 
@@ -206,9 +215,41 @@ export default function SimulatorScorecard() {
     [summary, metric, statistic, effectiveReleaseMatch, source, model, gpu, workload],
   );
 
-  const headToHead = React.useMemo(
-    () => (summary ? summary.headToHead.filter(row => row.metric === metric) : []),
-    [summary, metric],
+  const headToHeadPairs = React.useMemo(
+    () => (summary ? buildHeadToHeadPairs(summary.headToHead, { metric, source }) : []),
+    [summary, metric, source],
+  );
+
+  const activePair = React.useMemo<HeadToHeadPairOption | null>(() => {
+    if (headToHeadPairs.length === 0) return null;
+    return headToHeadPairs.find(entry => entry.key === pairKey) ?? headToHeadPairs[0];
+  }, [headToHeadPairs, pairKey]);
+
+  const headToHeadRows = React.useMemo(
+    () => (summary && activePair
+      ? selectHeadToHeadRows(summary.headToHead, { metric, source, pair: activePair.pair })
+      : []),
+    [summary, metric, source, activePair],
+  );
+
+  const headToHeadByModel = React.useMemo(
+    () => buildHeadToHeadSummary(headToHeadRows, {
+      metric,
+      source,
+      pair: activePair?.pair ?? null,
+      dimension: 'model',
+    }),
+    [headToHeadRows, metric, source, activePair],
+  );
+
+  const headToHeadByGpu = React.useMemo(
+    () => buildHeadToHeadSummary(headToHeadRows, {
+      metric,
+      source,
+      pair: activePair?.pair ?? null,
+      dimension: 'accelerator',
+    }),
+    [headToHeadRows, metric, source, activePair],
   );
 
   const linkedSimulators = React.useMemo(
@@ -576,19 +617,43 @@ export default function SimulatorScorecard() {
             />
           </section>
 
-          {headToHead.length > 0 && (
-            <section aria-labelledby="scorecard-paired-title">
+          {activePair && (
+            <section aria-labelledby="scorecard-paired-title" data-tour="paired">
               <div className={styles.sectionHead}>
                 <h2 id="scorecard-paired-title">Head to head</h2>
                 <JargonPopover
                   term="Head to head"
-                  explanation="Only the measured levels both simulators predicted, so neither can look better by skipping the hard ones. A win is the closer prediction at that level. The bar shows the share of paired levels each simulator won."
+                  explanation="Only the measured levels both simulators predicted, so neither can look better by skipping the hard ones. A win is the closer prediction at that level. Each bar is the mean win share of a model's or a GPU's measured configurations, so one long sweep cannot outvote one short run. The bracket spans the lowest and highest configuration share; a category with one configuration has no range and says so. Ties count for neither simulator. This paired view spans every release; the Releases choice narrows the error statistics, not these pairs."
                 />
+                {headToHeadPairs.length > 1 && (
+                  <div className={styles.sectionControl}>
+                    <span className={styles.controlLabel}>Pair</span>
+                    <FormSelect
+                      value={activePair.key}
+                      onChange={(_event, value) => setPairKey(String(value))}
+                      aria-label="Simulator pair"
+                      className={styles.pairSelect}
+                    >
+                      {headToHeadPairs.map(entry => (
+                        <FormSelectOption
+                          key={entry.key}
+                          value={entry.key}
+                          label={`${simulatorLabel(entry.pair[0])} vs ${simulatorLabel(entry.pair[1])}`}
+                        />
+                      ))}
+                    </FormSelect>
+                  </div>
+                )}
               </div>
-              <HeadToHeadTable
-                rows={headToHead}
+              <HeadToHeadFlipCard
+                rows={headToHeadRows}
+                byModel={headToHeadByModel}
+                byGpu={headToHeadByGpu}
+                pair={activePair.pair}
                 color={simulatorColor}
                 label={simulatorLabel}
+                formatGap={gap => formatSignedPercent(gap / 100)}
+                source={source}
               />
             </section>
           )}
@@ -717,6 +782,7 @@ function MatrixFlipCard({
             <caption className={styles.tableCaption}>
               {formatCount(matrix.length)} measured configurations
               {filtered ? ' · filtered' : ''}
+              <span className={styles.scrollHint}> · scroll sideways for all columns</span>
             </caption>
             <thead>
               <tr>
@@ -896,55 +962,178 @@ function CoverageBar({ coverage }: { coverage: CoverageCounts }) {
   );
 }
 
-function HeadToHeadTable({
+/**
+ * Head-to-head chart on the front, every paired configuration on the back.
+ *
+ * The front answers "where does one simulator have the edge, and how firm is
+ * it"; the table answers "which measured configurations made that number". The
+ * card sizes itself from the chart, so two panels with different row counts do
+ * not need a hand-computed height.
+ */
+function HeadToHeadFlipCard({
   rows,
+  byModel,
+  byGpu,
+  pair,
   color,
   label,
+  formatGap,
+  source,
 }: {
   rows: ScorecardSummary['headToHead'];
+  byModel: HeadToHeadSummary;
+  byGpu: HeadToHeadSummary;
+  pair: [string, string];
   color: (id: string) => string;
   label: (id: string) => string;
+  formatGap: (pct: number) => string;
+  source: ScorecardSourceFilter;
 }) {
+  const [flipped, setFlipped] = React.useState(false);
+  const frontRef = React.useRef<HTMLDivElement>(null);
+  const backRef = React.useRef<HTMLDivElement>(null);
+  const tableId = 'scorecard-paired-table';
+  const first = { id: pair[0], label: label(pair[0]), color: color(pair[0]) };
+  const second = { id: pair[1], label: label(pair[1]), color: color(pair[1]) };
+
+  React.useEffect(() => {
+    // Only the visible face may receive focus or be read by assistive tech.
+    if (frontRef.current) frontRef.current.inert = flipped;
+    if (backRef.current) backRef.current.inert = !flipped;
+  }, [flipped]);
+
   return (
-    <div className={styles.tableWrap}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th scope="col">Model</th>
-            <th scope="col">GPU</th>
-            <th scope="col">Workload</th>
-            <th scope="col">Pair</th>
-            <th scope="col">Outcome</th>
-            <th scope="col" className={styles.numericCell}>Paired levels</th>
-            <th scope="col" className={styles.numericCell}>First wins</th>
-            <th scope="col" className={styles.numericCell}>Second wins</th>
-            <th scope="col" className={styles.numericCell}>Median gap</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(row => (
-            <tr key={[row.source, row.model, row.accelerator, row.workload, row.metric, ...row.pair].join('|')}>
-              <td className={styles.modelCell}>{row.model}</td>
-              <td>{row.accelerator}</td>
-              <td className={styles.workloadCell}>{row.workload}</td>
-              <td>{label(row.pair[0])} vs {label(row.pair[1])}</td>
-              <td>
-                <OutcomeBar
-                  first={row.pair[0]}
-                  second={row.pair[1]}
-                  firstWins={row.firstWins}
-                  secondWins={row.secondWins}
-                  color={color}
-                />
-              </td>
-              <td className={styles.numericCell}>{formatCount(row.paired)}</td>
-              <td className={styles.numericCell}>{formatCount(row.firstWins)}</td>
-              <td className={styles.numericCell}>{formatCount(row.secondWins)}</td>
-              <td className={styles.numericCell}>{formatSignedPercent(row.medianDeltaPct / 100)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div
+      className={`${styles.flipCard} ${styles.flipCardAuto} ${flipped ? styles.flipped : ''}`}
+      data-flip-card="scorecard-paired"
+      onClick={event => {
+        const target = event.target as HTMLElement;
+        // Keep tables and their controls interactive without flipping back.
+        if (target.closest('table, button, a, input, select, textarea')) return;
+        setFlipped(value => !value);
+      }}
+    >
+      <div ref={frontRef} className={`${styles.flipFace} ${styles.flipFront}`} aria-hidden={flipped}>
+        <div className={styles.chartHead}>
+          <div>
+            <h3>Win share by model and GPU</h3>
+            <p className={styles.chartHint}>
+              Only levels both simulators predicted; each category is the mean of its measured
+              configurations.
+            </p>
+          </div>
+          <span className={styles.chartUnit}>Higher is closer</span>
+        </div>
+        <ul className={styles.chartLegend} aria-label="Chart legend">
+          <li>
+            <span className={styles.chartSwatch} style={{ background: first.color }} aria-hidden="true" />
+            {first.label}
+          </li>
+          <li>
+            <span className={styles.chartSwatch} style={{ background: second.color }} aria-hidden="true" />
+            {second.label}
+          </li>
+          <li>
+            <span className={styles.candleSwatch} aria-hidden="true" />
+            Configuration range
+          </li>
+        </ul>
+        <div className={styles.h2hPanels}>
+          <HeadToHeadChart
+            title="Win share by model"
+            summary={byModel}
+            first={first}
+            second={second}
+            formatGap={formatGap}
+          />
+          <HeadToHeadChart
+            title="Win share by GPU"
+            summary={byGpu}
+            first={first}
+            second={second}
+            formatGap={formatGap}
+          />
+        </div>
+        <button
+          type="button"
+          className={styles.flipButton}
+          aria-expanded={flipped}
+          aria-controls={tableId}
+          onClick={() => setFlipped(true)}
+        >
+          <span aria-hidden="true">↻ </span>table
+        </button>
+      </div>
+
+      <div ref={backRef} id={tableId} className={`${styles.flipFace} ${styles.flipBack}`} aria-hidden={!flipped}>
+        <div className={styles.backHead}>
+          <div>
+            <h3>Every paired configuration</h3>
+            <p className={styles.chartHint}>
+              {first.label} vs {second.label}
+              {source === 'all' ? '' : ` · ${SOURCE_LABELS[source]}`}
+            </p>
+          </div>
+          <button
+            type="button"
+            className={styles.flipButton}
+            aria-expanded={flipped}
+            aria-controls={tableId}
+            onClick={() => setFlipped(false)}
+          >
+            <span aria-hidden="true">↻ </span>chart
+          </button>
+        </div>
+        <div className={`${styles.tableWrap} ${styles.tableWrapFill}`}>
+          <table className={`${styles.table} ${styles.h2hTable}`}>
+            <caption className={styles.tableCaption}>
+              {formatCount(rows.length)} measured {rows.length === 1 ? 'configuration' : 'configurations'}
+              <span className={styles.scrollHint}> · scroll sideways for all columns</span>
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Source</th>
+                <th scope="col">Model</th>
+                <th scope="col">GPU</th>
+                <th scope="col">Workload</th>
+                <th scope="col">Outcome</th>
+                <th scope="col" className={styles.numericCell}>Paired levels</th>
+                <th scope="col" className={styles.numericCell}>{first.label} wins</th>
+                <th scope="col" className={styles.numericCell}>{second.label} wins</th>
+                <th scope="col" className={styles.numericCell}>Ties</th>
+                <th scope="col" className={styles.numericCell}>Median gap</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr key={[row.source, row.model, row.accelerator, row.workload, row.metric, ...row.pair].join('|')}>
+                  <td className={styles.mutedCell}>{row.source === 'inferencex' ? 'InferenceX' : 'Red Hat'}</td>
+                  <td className={styles.modelCell}>{row.model}</td>
+                  <td>{row.accelerator}</td>
+                  <td className={styles.workloadCell}>{row.workload}</td>
+                  <td>
+                    <OutcomeBar
+                      first={first}
+                      second={second}
+                      firstWins={row.firstWins}
+                      secondWins={row.secondWins}
+                      ties={row.ties}
+                    />
+                  </td>
+                  <td className={styles.numericCell}>{formatCount(row.paired)}</td>
+                  <td className={styles.numericCell}>{formatCount(row.firstWins)}</td>
+                  <td className={styles.numericCell}>{formatCount(row.secondWins)}</td>
+                  <td className={styles.numericCell}>{formatCount(row.ties)}</td>
+                  <td className={styles.numericCell}>{formatSignedPercent(row.medianDeltaPct / 100)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.length === 0 && (
+            <p className={styles.emptyRows}>No paired configuration in this view.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -954,41 +1143,47 @@ function HeadToHeadTable({
  *
  * The counts are already in adjacent columns for exact reading; the bar is the
  * at-a-glance form, colored with the same positional series colors as the
- * scorecard tiles and chart.
+ * scorecard tiles and chart. Ties stay unfilled rather than being awarded to
+ * either simulator.
  */
 function OutcomeBar({
   first,
   second,
   firstWins,
   secondWins,
-  color,
+  ties,
 }: {
-  first: string;
-  second: string;
+  first: { id: string; label: string; color: string };
+  second: { id: string; label: string; color: string };
   firstWins: number;
   secondWins: number;
-  color: (id: string) => string;
+  ties: number;
 }) {
-  const total = firstWins + secondWins;
+  const total = firstWins + secondWins + ties;
   if (total === 0) return <span className={styles.mutedCell}>—</span>;
   const firstShare = (firstWins / total) * 100;
+  const secondShare = (secondWins / total) * 100;
 
   return (
     <div
       className={styles.outcomeBar}
       role="img"
-      aria-label={`${first} won ${formatCount(firstWins)} of ${formatCount(total)} paired levels; ${second} won ${formatCount(secondWins)}`}
+      aria-label={[
+        `${first.label} won ${formatCount(firstWins)} of ${formatCount(total)} paired levels`,
+        `${second.label} won ${formatCount(secondWins)}`,
+        ties > 0 ? `${formatCount(ties)} tied` : null,
+      ].filter(Boolean).join('; ')}
     >
       {firstWins > 0 && (
         <span
           className={styles.outcomeSegment}
-          style={{ width: `${firstShare}%`, background: color(first) }}
+          style={{ width: `${firstShare}%`, background: first.color }}
         />
       )}
       {secondWins > 0 && (
         <span
           className={styles.outcomeSegment}
-          style={{ width: `${100 - firstShare}%`, background: color(second) }}
+          style={{ width: `${secondShare}%`, background: second.color }}
         />
       )}
     </div>

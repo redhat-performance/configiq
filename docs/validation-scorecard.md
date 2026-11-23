@@ -107,16 +107,37 @@ not answer, the point is `inconclusive` and the reason is published.
 ## Head to head
 
 Comparing two independent MAPEs over different coverage is not a comparison: the
-simulator that skipped the hard points would look better. The head-to-head table
+simulator that skipped the hard points would look better. The head-to-head view
 uses only the measured levels **both** simulators predicted, and reports how many
 those were.
+
+A row in the artifact is one measured configuration (source, model, GPU, workload)
+for one simulator pair. It carries the number of paired concurrency levels, the
+wins for each simulator, the ties, and the median gap between their errors. A tie
+is equality to six decimal places of relative error; it counts for neither
+simulator and stays visible as its own count.
+
+The page shows the paired view by model and by GPU. Each row in those panels is
+one configuration, and a category's share is the mean of its configuration win
+shares — one configuration, one vote — not the pooled level count. A run swept at
+twelve concurrency levels must not outvote one swept at three. The bracket spans
+the lowest and highest configuration share, so a category whose mean hides a
+wide spread looks different from one where every configuration agreed. A
+category with a single configuration has no range to draw and says
+`1 configuration` instead.
+
+The **Benchmark data** selector applies to this view. The release selector does
+not: the paired rows are built from every level both simulators predicted, across
+releases, because the published paired view carries no release slice. The pair
+selector appears only when the snapshot contains more than one simulator pair.
 
 ## Narrowing the view
 
 The model, GPU, and workload dropdowns are filled from the values present in the
 selected slice, so a choice always names something the snapshot contains. They
-narrow the error chart and its table; they do **not** change the headline tiles.
-The artifact publishes totals pooled over every configuration and nothing
+narrow the error chart and its table; they do **not** change the headline tiles,
+and they do not narrow head to head, which has its own by-model and by-GPU
+panels. The artifact publishes totals pooled over every configuration and nothing
 finer, so a per-model or per-GPU total would have to be recomputed in the
 browser, from a different population than the published one. The page says this
 in place rather than letting a filtered table sit under totals that look

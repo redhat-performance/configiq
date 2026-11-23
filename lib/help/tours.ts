@@ -329,7 +329,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="agreement"]',
         title: 'Agreement by simulator',
         description:
-          'Each simulator gets a score. MAPE is the headline, with MdAPE, p90, and bias beside it, plus a coverage bar counting every attempt.',
+          'Each simulator gets a score. MdAPE is the headline, with MAPE, p90, and bias beside it, plus a coverage bar counting every attempt.',
         position: 'bottom',
       },
       {
@@ -337,6 +337,13 @@ export const HELP_TOURS: HelpTour[] = [
         title: 'Where the error sits',
         description:
           'The chart ranks the measured configurations with the largest error. Click the tile for the full table, including rows the chart leaves out.',
+        position: 'top',
+      },
+      {
+        target: '[data-tour="paired"]',
+        title: 'Head to head',
+        description:
+          'Only levels both simulators predicted. Each bar is the mean win share of a model or GPU across its configurations, and the bracket shows how far those configurations range.',
         position: 'top',
       },
     ],
