@@ -395,7 +395,7 @@ test('Recommend submits selected workload inputs and renders the mocked sizing r
   await expect(page.getByTestId('recommend-peak-memory')).toContainText('24')
 })
 
-test('Recommend submits the deployment view the control shows', async ({ page }) => {
+test('Recommend submits the serving mode the control shows', async ({ page }) => {
   const api = await stubApi(page, { '/api/recommend': recommendResponse })
   await page.goto('/recommend')
   await selectModel(page, 'adv-model')
@@ -414,31 +414,38 @@ test('Recommend submits the deployment view the control shows', async ({ page })
 
   // Untouched, the page pins no view: it must not narrow the search, so the
   // service picks the deployment. Before a run the summary claims no view.
-  await expect(page.getByText(/Deployment view: service default/)).toBeVisible()
+  await expect(page.getByText(/Serving mode: service default/)).toBeVisible()
   const untouched = await calculate()
   expect(untouched).toMatchObject({ objective: 'min_gpus' })
   expect(untouched).not.toHaveProperty('mode')
   // The mocked service answered with an aggregated recommendation, so the
   // summary reports the deployment that was served.
-  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+  await expect(page.getByText(/Serving mode: aggregated/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Aggregated', exact: true }).click()
   const aggregated = await calculate()
   expect(aggregated).toMatchObject({ mode: 'agg', objective: 'min_gpus' })
-  // An aggregated view has no pools to limit and must not claim a topology.
+  // An aggregated mode has no pools to limit and must not claim a topology.
   expect(aggregated).not.toHaveProperty('prefill_max_seq_len')
   expect(aggregated).not.toHaveProperty('decode_max_seq_len')
-  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+  await expect(page.getByText(/Serving mode: aggregated/)).toBeVisible()
 
   await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
   // Before the run the summary states the view the next request pins.
-  await expect(page.getByText(/Deployment view: disaggregated/)).toBeVisible()
+  await expect(page.getByText(/Serving mode: disaggregated/)).toBeVisible()
   expect((await calculate())).toMatchObject({ mode: 'disagg', objective: 'min_gpus' })
-  await expect(page.getByText('Prefill and decode have separate inputs in this view.')).toBeVisible()
+  await expect(page.getByText('Separate prefill and decode inputs.')).toBeVisible()
   // The mocked service answers with an aggregated recommendation, so the
   // summary must report what was returned rather than what was asked for.
-  await expect(page.getByText(/Deployment view: aggregated/)).toBeVisible()
+  await expect(page.getByText(/Serving mode: aggregated/)).toBeVisible()
   await expect(page.getByText('The last run returned an aggregated recommendation instead.')).toBeVisible()
+
+  // Pressing the selected mode clears it, and the next request narrows nothing.
+  await page.getByRole('button', { name: 'Disaggregated', exact: true }).click()
+  await expect(page.getByText(/Serving mode: service default/)).toBeVisible()
+  const cleared = await calculate()
+  expect(cleared).not.toHaveProperty('mode')
+  expect(cleared).not.toHaveProperty('fabric')
 })
 
 test('KV cache submits selected capacity inputs and renders the mocked result', async ({ page }) => {

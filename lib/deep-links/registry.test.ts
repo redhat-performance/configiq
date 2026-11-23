@@ -103,6 +103,7 @@ describe('golden links', () => {
       weightPrecision: 'FP8',
       kvPrecision: 'FP8',
       prefix: 512,
+      requestsPerLoadUnit: 4,
       maxNumSeqs: 256,
       chunkedPrefill: 'on',
       gpuMemUtil: 0.9,
@@ -121,7 +122,7 @@ describe('golden links', () => {
       simulator: 'blis',
       backend: 'vllm',
       backendVersion: '0.31.0',
-    })).toMatchInlineSnapshot(`"/predict?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&isl=4096&osl=512&concurrency=32&backend=vllm&backendVersion=0.31.0&simulator=blis&servingMode=disagg&fabric=ib-400g&tp=8&pp=1&weightPrecision=FP8&kvPrecision=FP8&prefix=512&maxNumSeqs=256&chunkedPrefill=on&gpuMemUtil=0.9&moeTp=1&moeEp=8&moePrecision=w4a16_mxfp4&prefillTp=4&prefillPp=1&prefillWorkers=2&prefillBatch=16&decodeTp=8&decodePp=1&decodeWorkers=4&decodeBatch=256"`);
+    })).toMatchInlineSnapshot(`"/predict?v=1&model=Qwen%2FQwen3-32B&system=h200_sxm&isl=4096&osl=512&concurrency=32&backend=vllm&backendVersion=0.31.0&simulator=blis&servingMode=disagg&fabric=ib-400g&tp=8&pp=1&weightPrecision=FP8&kvPrecision=FP8&prefix=512&requestsPerLoadUnit=4&maxNumSeqs=256&chunkedPrefill=on&gpuMemUtil=0.9&moeTp=1&moeEp=8&moePrecision=w4a16_mxfp4&prefillTp=4&prefillPp=1&prefillWorkers=2&prefillBatch=16&decodeTp=8&decodePp=1&decodeWorkers=4&decodeBatch=256"`);
   });
 
   it('/recommend', () => {

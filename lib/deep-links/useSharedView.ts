@@ -12,10 +12,19 @@ export interface SharedViewOptions<F extends LinkFieldMap, B extends keyof F> {
   ready: boolean;
   /** The page's own starting values, so a link describes the view. */
   defaults?: LinkValues<F>;
+  /**
+   * Values a field takes when an opened link does not name it.
+   *
+   * A field whose page default has moved must keep the meaning absence had in
+   * links that were already shared: applying the recipient's new default would
+   * state a value the link never described. Pages that rely on this encode the
+   * field in every link they build, so only older links leave it out.
+   */
+  absent?: LinkValues<F>;
   /** Values this page always sends but does not own as state (provenance). */
   provenance?: Partial<LinkValues<F>>;
   /** Runs after a link's values are applied: mark a retained result stale, etc. */
-  onApplied?: () => void;
+  onApplied?: (values: LinkValues<F>) => void;
 }
 
 export interface SharedView<F extends LinkFieldMap> extends DeepLinkState<F> {
@@ -41,10 +50,23 @@ export function useSharedView<F extends LinkFieldMap, B extends keyof F>(
   fields.current = options.fields;
   const applied = React.useRef(onApplied);
   applied.current = onApplied;
+  const absent = React.useRef(options.absent);
+  absent.current = options.absent;
 
   const state = useDeepLink(link, ready, (values) => {
-    applyLinkValues(values, fields.current);
-    applied.current?.();
+    const fill = absent.current;
+    if (fill) {
+      // An opened link states every field it means to change; a field it leaves
+      // out keeps the meaning absence had when the link was written.
+      const merged = { ...fill } as Record<string, unknown>;
+      for (const [key, value] of Object.entries(values)) merged[key] = value;
+      applyLinkValues(merged as LinkValues<F>, fields.current);
+    } else {
+      applyLinkValues(values, fields.current);
+    }
+    // The hook's caller sees what the link itself stated, not the absence fill,
+    // so a field the link omits can be reported as unaddressed.
+    applied.current?.(values);
   });
 
   const build = React.useCallback(

@@ -1,10 +1,13 @@
 import type { Candidate, CandidateViews, FrontierSweep } from '../types/pareto'
+import type { DebugRecord } from '../debug/types'
 import { formatApiError, parseFrontierBody } from '../pareto/parse'
 
 export interface FrontierResponse {
   candidates: Candidate[]
   views: CandidateViews | null
   sweep: FrontierSweep | null
+  /** Commands and input files that reproduce the sweep, when the API sent them. */
+  debug: DebugRecord | null
 }
 
 /** A failed Pareto request, carrying the status and body for the Debug panel. */

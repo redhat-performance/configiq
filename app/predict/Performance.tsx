@@ -9,7 +9,6 @@ import {
   Label,
   Accordion, AccordionItem, AccordionToggle, AccordionContent,
 } from '@patternfly/react-core';
-import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
 import MemoryIcon from '@patternfly/react-icons/dist/esm/icons/memory-icon';
@@ -21,11 +20,11 @@ import EyeSlashIcon from '@patternfly/react-icons/dist/esm/icons/eye-slash-icon'
 import styles from './Performance.module.css';
 import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
 import { TourButton } from '@/components/help/TourButton';
-import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import { exchangeRuns } from '@/lib/debug/types';
+import type { GlossaryId } from '@/lib/help/glossary';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
-import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
-import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
+import { fetchEstimateAsInferenceResult, EstimateError, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { WarningPanel } from '@/components/ui/WarningPanel';
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
@@ -48,11 +47,11 @@ import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurr
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
-import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
+import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
   DEFAULT_MOE_QUANT_MODE,
+  MAX_REQUESTS_PER_LOAD_UNIT,
   buildPredictLink,
   parsePredictLink,
   predictLink,
@@ -69,6 +68,10 @@ import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 /**
  * The link's own starting points. A field left at one of these is omitted from
  * a generated link, so the recipient falls back to the same value.
+ *
+ * `prefix` is deliberately not one of them. Links written before the
+ * system-prompt default left it out and meant 0, so every generated link states
+ * it explicitly and an opened link without it applies 0 (`absent` below).
  */
 const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
   isl: 2048,
@@ -79,7 +82,6 @@ const PREDICT_LINK_DEFAULTS: PredictLinkValues = {
   pp: 1,
   weightPrecision: 'FP16',
   kvPrecision: 'FP16',
-  prefix: 0,
   prefillTp: 1,
   prefillPp: 1,
   prefillWorkers: 1,
@@ -157,19 +159,43 @@ function parsePerfPhase(p: PerfPhaseInput) {
 interface AccordionField {
   label: string;
   value: string | number;
-  term?: string;
+  term?: GlossaryId;
   readonly?: boolean;
   type?: 'number' | 'select' | 'range';
   invalid?: boolean;
   placeholder?: string;
   help?: string;
+  /** A correction shown instead of the help text while `invalid` is set. */
+  error?: string;
+  /** Id of `error`, so the input describes the correction rather than sitting beside it. */
+  errorId?: string;
   options?: Array<string | { value: string; label: string }>;
   min?: number;
   max?: number;
   step?: number;
   rangeValue?: number;
   spacer?: boolean;
-  onChange?: (value: string | number) => void;
+  // Method syntax keeps the handlers assignable while the field is built: a
+  // text field's `(value: string)` handler is narrower than the union the
+  // range branch passes. The field is still checked against the section type.
+  onChange?(value: string | number): void;
+}
+
+/**
+ * One assumption section. Declared so the field literals below are checked
+ * where they are built: an untyped array widened `term` to `string`, and the
+ * cast at the render site then accepted any key.
+ */
+interface AccordionSection {
+  id: string;
+  title: string;
+  summary: Array<{ k: string; v: string }>;
+  fields: AccordionField[];
+  badge?: string;
+  badgeColor?: string;
+  hasOverride?: boolean;
+  isOverridden?: boolean;
+  onOverrideToggle?: () => void;
 }
 
 export default function Performance() {
@@ -408,12 +434,6 @@ export default function Performance() {
     ?? systemMemoryFraction(backendOptions?.find(backend => backend.id === inferenceBackend), gpu)
     ?? null;
 
-  // Save estimate modal
-  const [showSaveModal, setShowSaveModal] = React.useState(false);
-  const [savedCount, setSavedCount] = React.useState(0);
-  const [showToast, setShowToast] = React.useState(false);
-  const [toastMessage, setToastMessage] = React.useState('');
-
   // Interactive controls
   const [testConcurrentUsers, setTestConcurrentUsers] = React.useState(1);
   const [testISL, setTestISL] = React.useState(2048);
@@ -421,7 +441,9 @@ export default function Performance() {
   const [maxSeqLen, setMaxSeqLen] = React.useState<number | null>(null);
   const [prefillMaxSeqLen, setPrefillMaxSeqLen] = React.useState<number | null>(null);
   const [decodeMaxSeqLen, setDecodeMaxSeqLen] = React.useState<number | null>(null);
-  const [testPrefix, setTestPrefix] = React.useState(0);
+  const [testPrefix, setTestPrefix] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0);
+  // Empty means the request omits it: the simulator runs one total request.
+  const [requestsPerLoadUnit, setRequestsPerLoadUnit] = React.useState<number | null>(null);
   const [testTpSize, setTestTpSize] = React.useState(1);
   const effectiveContextLimit = servingPolicyOverride && servingManualContextLimit !== null
     ? servingManualContextLimit
@@ -460,7 +482,8 @@ export default function Performance() {
   const [prefillMaxSeqLenInput, setPrefillMaxSeqLenInput] = React.useState('');
   const [decodeMaxSeqLenInput, setDecodeMaxSeqLenInput] = React.useState('');
   const [concurrentUsersInput, setConcurrentUsersInput] = React.useState('1');
-  const [prefixInput, setPrefixInput] = React.useState('0');
+  const [prefixInput, setPrefixInput] = React.useState(String(DEFAULT_WORKLOAD.prefix ?? 0));
+  const [requestsPerLoadUnitInput, setRequestsPerLoadUnitInput] = React.useState('');
   const [tpSizeInput, setTpSizeInput] = React.useState('1');
   const [ppSizeInput, setPpSizeInput] = React.useState('1');
   const [moeEpSizeInput, setMoeEpSizeInput] = React.useState('');
@@ -468,7 +491,18 @@ export default function Performance() {
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
+  // A shared prefix is part of the input, so it cannot outgrow either the
+  // prompt or the context limits the request sends. The service rejects these
+  // combinations; the form mirrors them so Calculate cannot submit one.
+  const prefixPoolLimits = servingMode === 'disagg'
+    ? [prefillMaxSeqLen, decodeMaxSeqLen].filter((value): value is number => value != null)
+    : [];
+  const invalidPrefix =
+    testPrefix > testISL ||
+    (effectiveContextLimit != null && testPrefix > effectiveContextLimit) ||
+    prefixPoolLimits.some(limit => testPrefix > limit);
   const invalidUsers = concurrentUsersInput === '' || parseInt(concurrentUsersInput, 10) < 1;
+  const invalidRequestsPerLoadUnit = requestsPerLoadUnitInput !== '' && requestsPerLoadUnit === null;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
   const invalidPhase = (p: PerfPhaseInput) =>
@@ -546,6 +580,16 @@ export default function Performance() {
     markInputsDirty();
   };
 
+  const handleRequestsPerLoadUnitChange = (raw: string) => {
+    const digits = raw.replace(/[^0-9]/g, '');
+    setRequestsPerLoadUnitInput(digits);
+    const n = parseInt(digits, 10);
+    setRequestsPerLoadUnit(
+      digits === '' || isNaN(n) || n < 1 || n > MAX_REQUESTS_PER_LOAD_UNIT ? null : n,
+    );
+    markInputsDirty();
+  };
+
   const handleMoeEpSizeChange = (raw: string) => {
     const digits = raw.replace(/[^0-9]/g, '');
     setMoeEpSizeInput(digits);
@@ -581,13 +625,16 @@ export default function Performance() {
         workloadPresetOptions(getAppConfig().workloadPresets),
         testISL,
         testOSL,
+        testPrefix,
       )?.key ?? '');
   const calcGenRef = React.useRef(0);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'prefix'>) => {
     calcGenRef.current += 1;
     setTestISL(p.isl); setIslInput(String(p.isl));
     setTestOSL(p.osl); setOslInput(String(p.osl));
+    const presetPrefix = p.prefix ?? 0;
+    setTestPrefix(presetPrefix); setPrefixInput(String(presetPrefix));
     setTestResult(null);
     setTestClassifierInput(null)
     setIsCalculating(false);
@@ -672,6 +719,12 @@ export default function Performance() {
         read: () => parseInt(prefixInput, 10) || 0,
         write: (value) => handlePrefixChange(String(value)),
       },
+      requestsPerLoadUnit: {
+        // Empty is a real choice (one cold request), so an unset control is
+        // omitted rather than sent as a default.
+        read: () => requestsPerLoadUnit ?? undefined,
+        write: (value) => handleRequestsPerLoadUnitChange(String(value)),
+      },
       // A pinned max_num_seqs, chunked-prefill choice, and memory fraction
       // belong to an override panel the model/GPU reset clears, so they are
       // parked for that reset to carry out rather than written in place.
@@ -739,13 +792,24 @@ export default function Performance() {
     // URL values change page state only; they never overwrite saved settings.
     ready: hydrated && gpuReady,
     defaults: PREDICT_LINK_DEFAULTS,
+    // A link that predates the system-prompt default described a cold request.
+    absent: { prefix: 0 },
     provenance: {
       backend: inferenceBackend,
       backendVersion: backendVersion || undefined,
       simulator: simulator || undefined,
     },
-    // A retained result no longer matches the form the link just described.
-    onApplied: markInputsDirty,
+    // A retained result no longer matches the form the link described, and a
+    // count the link does not state is unset rather than whatever this page
+    // was showing: omission means one total request, so keeping 4 would
+    // submit a reuse the link never asked for.
+    onApplied: (values) => {
+      if (!('requestsPerLoadUnit' in values)) {
+        setRequestsPerLoadUnit(null);
+        setRequestsPerLoadUnitInput('');
+      }
+      markInputsDirty();
+    },
   });
 
   // Provenance is applied separately: a differing simulator is never switched
@@ -865,6 +929,8 @@ export default function Performance() {
           pp_size: testPpSize,
           backend: inferenceBackend,
           prefix: testPrefix > 0 ? testPrefix : undefined,
+          // Omitted means the simulator runs one total request.
+          ...(requestsPerLoadUnit != null ? { requests_per_load_unit: requestsPerLoadUnit } : {}),
           vram_gb: currentCatalogGpu?.vramGb ?? null,
           backend_version: backendVersion || undefined,
           hf_model_config: needsHfConfig(model, catalogModels) ? (hfConfig as Record<string, unknown> | null) : null,
@@ -1117,236 +1183,6 @@ export default function Performance() {
   const kv = useCountUp(realKVPerReqMB);
   const cost = useCountUp(realMonthlyCostForDisplay);
 
-  // Load saved count on mount
-  React.useEffect(() => {
-    setSavedCount(getSavedEstimateCount());
-  }, []);
-
-  // Generate auto name for save
-  const generateAutoName = () => {
-    const modelName = model.split('/').pop() || model;
-    const gpuName = gpu.replace('NVIDIA ', '').replace('AMD ', '');
-    return `${modelName} · ${gpuName} · ${testConcurrentUsers} users`;
-  };
-
-  const handleSaveEstimate = (data: { name: string; tags: string; notes: string }) => {
-    if (!testResult || !catalogGpuForPricing || gpuPricePerHour == null) return;
-
-    const kvPerUserGB = (testResult.memory_analysis.kv_cache_used_gb || 0) / testConcurrentUsers;
-    const kvMBPerToken = (kvPerUserGB * 1000) / (testISL + testOSL);
-
-    saveEstimate({
-      name: data.name,
-      tags: data.tags,
-      notes: data.notes,
-      model,
-      gpu,
-      inputs: {
-        isl: testISL,
-        osl: testOSL,
-        concurrentUsers: testConcurrentUsers,
-        weightPrecision: testWeightPrecision,
-        kvCachePrecision: testKVCachePrecision,
-      },
-      results: {
-        gpusRequired: realGpuCount,
-        tpSize: testResult.memory_analysis.tp_size,
-        ppSize: testResult.parallelism_strategy.pp_size,
-        replicas: testResult.memory_analysis.replicas,
-        weightMemoryGB: testResult.memory_analysis.weight_gb,
-        kvCachePerUserGB: kvPerUserGB,
-        kvCacheTotalGB: testResult.memory_analysis.kv_cache_used_gb || 0,
-        kvCacheMBPerToken: kvMBPerToken,
-        kvCategory: testResult.memory_analysis.kv_category || 'KV-1',
-        kvCategoryLabel: testResult.memory_analysis.kv_category_label || 'Standard Dense',
-        cloudCostMonthly: realMonthlyCost ?? 0,
-        cloudCost5Year: (realMonthlyCost ?? 0) * 60,
-        selfHostedCostMonthly: (catalogGpuForPricing.hardware_cost_usd * realGpuCount) / AMORT_MONTHS_5YR,
-        selfHostedCost5Year: catalogGpuForPricing.hardware_cost_usd * realGpuCount,
-      },
-    });
-
-    setSavedCount(getSavedEstimateCount());
-    setToastMessage('saved');
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 5000);
-  };
-
-  // Build the /api/predict request body from current form state and GPU-specific values
-  const modelNeedsHfConfig = needsHfConfig(model, catalogModels);
-  const currentGpuVramGb = currentCatalogGpu?.vramGb ?? null;
-  const buildEstimateRequestBody = React.useCallback(() => {
-    const spec = modelSpecs.get(model);
-    const isMoe = detectMoe(spec, hfConfig);
-
-    const input: EstimateAdapterInput = {
-      model_path: model || '(select model)',
-      system: gpu || '(select GPU)',
-      backend: inferenceBackend,
-      simulator,
-      isl: testISL,
-      osl: testOSL,
-      batch_size: testConcurrentUsers,
-      tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
-      pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
-      vram_gb: currentGpuVramGb,
-      ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
-      ...(servingMode === 'disagg' && prefillMaxSeqLen != null && { prefill_max_seq_len: prefillMaxSeqLen }),
-      ...(servingMode === 'disagg' && decodeMaxSeqLen != null && { decode_max_seq_len: decodeMaxSeqLen }),
-      ...(gpuMemoryUtilization != null && { gpu_memory_utilization: gpuMemoryUtilization }),
-      ...(vllmOverride && vllmManualMaxNumSeqs != null && { max_num_seqs: vllmManualMaxNumSeqs }),
-      ...(vllmOverride && vllmManualChunkedPrefill != null && { enable_chunked_prefill: vllmManualChunkedPrefill }),
-      ...(testPrefix > 0 && { prefix: testPrefix }),
-      ...(backendVersion && { backend_version: backendVersion }),
-      ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
-      ...(testWeightPrecision === 'INT8' && { gemm_quant_mode: 'int8_wo' }),
-      ...(testWeightPrecision === 'INT4' && { gemm_quant_mode: 'int4_wo' }),
-      ...(testWeightPrecision === 'MXFP4' && { gemm_quant_mode: 'mxfp4' }),
-      ...(testWeightPrecision === 'NVFP4' && { gemm_quant_mode: 'nvfp4' }),
-      ...(testKVCachePrecision === 'FP8' && { kvcache_quant_mode: 'fp8' }),
-      ...(testKVCachePrecision === 'NVFP4' && { kvcache_quant_mode: 'nvfp4' }),
-      hf_model_config: modelNeedsHfConfig
-        ? (hfConfig as Record<string, unknown> | null)
-        : null,
-      moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
-      ...(isMoe && moeEpSizeInput !== '' && { moe_ep_size: testMoeEpSize }),
-      ...(isMoe && moeEtpSizeInput !== '' && { moe_tp_size: testMoeEtpSize }),
-      ...(servingMode === 'disagg' && {
-        mode: 'disagg' as const,
-        fabric: fabricRequired && selectedNetworkFabric ? selectedNetworkFabric : undefined,
-        prefill: parsePerfPhase(prefillCfg),
-        decode: parsePerfPhase(decodeCfg),
-      }),
-    };
-
-    return buildPredictRequestBody(input);
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers,
-    effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization,
-    vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize,
-    testPpSize, currentGpuVramGb, testPrefix, backendVersion, testWeightPrecision,
-    testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig,
-    modelNeedsHfConfig, testMoeQuantMode, testMoeEpSize, testMoeEtpSize,
-    moeEpSizeInput, moeEtpSizeInput, simulator, selectedNetworkFabric, fabricRequired]);
-
-  // Copy API request body to clipboard
-  const handleCopyAPIRequest = async () => {
-    if (!testResult) return;
-
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(buildEstimateRequestBody(), null, 2));
-      setToastMessage('api-copied');
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  // Copy CLI command to clipboard
-  const handleCopyCLICommand = async () => {
-    if (!testResult) return;
-
-    // Only FP16/FP8 are valid --dtype values; quantized modes use --quantization
-    const dtypeValue = testWeightPrecision === 'FP16' ? 'float16' :
-                       testWeightPrecision === 'FP8' ? 'fp8' : 'auto';
-
-    // Map quantization modes: NVFP4 requires modelopt_fp4, others use backend value
-    let quantValue = testResult.vllm_config.quantization;
-    if (testWeightPrecision === 'NVFP4' && (!quantValue || quantValue === 'auto')) {
-      quantValue = 'modelopt_fp4';
-    }
-
-    const quantFlag = (testWeightPrecision === 'INT4' || testWeightPrecision === 'INT8' || testWeightPrecision === 'MXFP4' || testWeightPrecision === 'NVFP4')
-      ? ` \\\n  --quantization ${quantValue}`
-      : '';
-    const cliMemoryFraction = (effectiveGpuMemoryUtilization ?? 0.9).toFixed(3);
-
-    let cliCommand: string;
-    if (isDisagg) {
-      // A single vllm serve can't express disagg; emit one command per pool and
-      // note the KV-transfer connector needed to wire prefill -> decode.
-      const poolCmd = (role: string, ph: EstimatePhase) => {
-        const ppFlag = ph.pp_size > 1 ? ` \\\n  --pipeline-parallel-size ${ph.pp_size}` : '';
-        return `# ${role} pool — ${ph.workers} worker(s), TP${ph.tp_size}${ph.pp_size > 1 ? ` PP${ph.pp_size}` : ''}, batch ${ph.batch_size}\n` +
-          `vllm serve ${model} \\\n` +
-          `  --tensor-parallel-size ${ph.tp_size}${ppFlag} \\\n` +
-          `  --gpu-memory-utilization ${cliMemoryFraction} \\\n` +
-          `  --dtype ${dtypeValue}${quantFlag} \\\n` +
-          `  --kv-cache-dtype ${testKVCachePrecision.toLowerCase()}`;
-      };
-      cliCommand =
-        `# Disaggregated serving: run the prefill and decode pools separately and\n` +
-        `# connect them with a KV-transfer connector (e.g. LMCache / NIXL / Dynamo).\n` +
-        `# Scale each pool to the worker count shown.\n\n` +
-        `${poolCmd('Prefill', disagg.prefill)}\n\n` +
-        `${poolCmd('Decode', disagg.decode)}`;
-    } else {
-      const ppFlag = testResult.parallelism_strategy.pp_size > 1
-        ? ` \\\n  --pipeline-parallel-size ${testResult.parallelism_strategy.pp_size}`
-        : '';
-      cliCommand = `vllm serve ${model} \\
-  --tensor-parallel-size ${testResult.memory_analysis.tp_size}${ppFlag} \\
-  --max-model-len auto \\
-  --gpu-memory-utilization ${cliMemoryFraction} \\
-  --dtype ${dtypeValue}${quantFlag} \\
-  --kv-cache-dtype ${testKVCachePrecision.toLowerCase()} \\
-  --max-num-seqs ${testResult.vllm_config?.max_num_seqs || 256}${testResult.vllm_config?.enable_chunked_prefill ? ' \\\n  --enable-chunked-prefill' : ''}`;
-    }
-
-    try {
-      await navigator.clipboard.writeText(cliCommand);
-      setToastMessage('cli-copied');
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  // Export to Google Sheets (downloads as CSV)
-  const handleExportToSheets = () => {
-    if (!testResult || !catalogGpuForPricing) return;
-
-    // Prepare data in CSV format
-    const headers = [
-      'Model', 'GPU', 'GPUs Required', 'TP Size', 'PP Size', 'Replicas',
-      'ISL', 'OSL', 'Concurrent Users',
-      'Weight Precision', 'KV Cache Precision',
-      'Weight Memory (GB)', 'KV Cache Total (GB)', 'KV Category',
-      'Cloud Cost (Monthly)', 'Cloud Cost (5yr)',
-      'Self-Hosted Cost (Monthly)', 'Self-Hosted Cost (5yr)'
-    ];
-
-    const values = [
-      model, gpu, realGpuCount, testResult.memory_analysis.tp_size, testResult.parallelism_strategy.pp_size, testResult.memory_analysis.replicas,
-      testISL, testOSL, testConcurrentUsers,
-      testWeightPrecision, testKVCachePrecision,
-      testResult.memory_analysis.weight_gb.toFixed(1),
-      (testResult.memory_analysis.kv_cache_used_gb || 0).toFixed(1),
-      testResult.memory_analysis.kv_category_label || 'Standard Dense',
-      `$${(realMonthlyCost ?? 0).toLocaleString()}`, `$${((realMonthlyCost ?? 0) * AMORT_MONTHS_5YR).toLocaleString()}`,
-      `$${((catalogGpuForPricing.hardware_cost_usd * realGpuCount) / AMORT_MONTHS_5YR).toFixed(0)}`,
-      `$${(catalogGpuForPricing.hardware_cost_usd * realGpuCount).toLocaleString()}`
-    ];
-
-    const csvContent = headers.join(',') + '\n' + values.map(v => `"${v}"`).join(',');
-
-    // Download as CSV (can be imported into Google Sheets)
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `configiq-estimate-${Date.now()}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    setToastMessage('exported');
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 3000);
-  };
-
   // Validation warnings for manual overrides
   const getValidationWarnings = (): string[] => {
     const warnings: string[] = [];
@@ -1367,7 +1203,7 @@ export default function Performance() {
   const validationWarnings = getValidationWarnings();
 
   // Build accordion sections dynamically from current state
-  const buildAccordionSections = () => {
+  const buildAccordionSections = (): AccordionSection[] => {
     const spec = modelSpecs.get(model);
     // Check both catalog metadata and the nested HF text config for MoE.
     const isMoeModel = detectMoe(spec, hfConfig);
@@ -1387,6 +1223,9 @@ export default function Performance() {
         { k: 'OSL', v: `${testOSL}` },
         { k: 'users', v: `${testConcurrentUsers}` },
         { k: 'prefix', v: `${testPrefix}` },
+        ...(requestsPerLoadUnit != null
+          ? [{ k: 'requests/user', v: `${requestsPerLoadUnit}` }]
+          : []),
       ],
       fields: [
         {
@@ -1418,8 +1257,18 @@ export default function Performance() {
           value: prefixInput,
           term: 'prefix',
           type: 'number' as const,
-          invalid: false,
+          invalid: invalidPrefix,
           onChange: (val: string) => handlePrefixChange(val)
+        },
+        {
+          label: 'Requests per user',
+          value: requestsPerLoadUnitInput,
+          term: 'requestsPerUser',
+          type: 'number' as const,
+          invalid: invalidRequestsPerLoadUnit,
+          error: `Enter a count from 1 to ${MAX_REQUESTS_PER_LOAD_UNIT.toLocaleString('en-US')}, or leave it empty.`,
+          errorId: 'predict-requests-per-user-error',
+          onChange: (val: string) => handleRequestsPerLoadUnitChange(val)
         },
       ],
     },
@@ -1442,7 +1291,7 @@ export default function Performance() {
           invalid: invalidMaxSeqLen,
           onChange: (val: string) => handleSequenceLengthChange(val, setMaxSeqLenInput, setMaxSeqLen),
         },
-        ...(servingMode === 'disagg' ? [
+        ...(servingMode === 'disagg' ? ([
           {
             label: 'Prefill length (tokens)',
             value: prefillMaxSeqLenInput,
@@ -1461,7 +1310,7 @@ export default function Performance() {
             invalid: invalidDecodeMaxSeqLen,
             onChange: (val: string) => handleSequenceLengthChange(val, setDecodeMaxSeqLenInput, setDecodeMaxSeqLen),
           },
-        ] : []),
+        ] satisfies AccordionField[]) : []),
       ],
     },
     {
@@ -1505,7 +1354,7 @@ export default function Performance() {
             }
           }
         },
-        ...(isMoeModel ? [{
+        ...(isMoeModel ? ([{
           label: 'MoE quantization',
           value: testMoeQuantMode,
           type: 'select' as const,
@@ -1524,7 +1373,7 @@ export default function Performance() {
             }
           },
           help: 'W4A16: best quality, H100+. W4A8: ~2× faster on B200. CUTLASS: H100-optimized. TRT-LLM: B200 TRT-LLM variant.'
-        }] : []),
+        }] satisfies AccordionField[]) : []),
         {
           label: 'GPU memory utilization',
           value: effectiveGpuMemoryUtilization != null ? `${(effectiveGpuMemoryUtilization * 100).toFixed(1)}%` : 'auto',
@@ -1582,7 +1431,7 @@ export default function Performance() {
             { label: 'Decode workers', value: decodeCfg.workers, type: 'number' as const, invalid: decodeCfg.workers === '' || parseInt(decodeCfg.workers, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, workers: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
             { label: 'Decode batch', value: decodeCfg.batch, type: 'number' as const, invalid: decodeCfg.batch === '' || parseInt(decodeCfg.batch, 10) < 1, onChange: (val: string) => { setDecodeCfg(c => ({ ...c, batch: val.replace(/[^0-9]/g, '') })); markInputsDirty(); } },
             { label: '', value: '', readonly: true, spacer: true },
-          ]
+          ] satisfies AccordionField[]
         : [
             {
               label: 'Tensor parallel size (TP)',
@@ -1622,14 +1471,14 @@ export default function Performance() {
                     placeholder: 'Auto (TP)',
                     onChange: (val: string) => handleMoeEtpSizeChange(val),
                   },
-                ]
+                ] satisfies AccordionField[]
               : []),
             {
               label: 'Total GPUs',
               value: testResult ? `${testResult.memory_analysis.tp_size * testResult.memory_analysis.replicas * testResult.parallelism_strategy.pp_size}` : `${parseInt(tpSizeInput || '1') * parseInt(ppSizeInput || '1')}`,
               readonly: true,
             },
-          ],
+          ] satisfies AccordionField[],
     },
     {
       id: 'serving',
@@ -1793,7 +1642,7 @@ export default function Performance() {
           <Button
             variant="primary"
             onClick={() => { setInputsDirty(false); setTestResult(null); setTestClassifierInput(null); setTestError(null); setTestErrorCode(null); setCalcTrigger(t => t + 1); }}
-            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidUsers || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
+            isDisabled={!hydrated || isCalculating || simulatorUnavailable || !gpu || !model || modelUnsupported || catalogLoading || invalidISL || invalidOSL || invalidPrefix || invalidUsers || invalidRequestsPerLoadUnit || invalidParallelism || invalidMaxSeqLen || (servingMode === 'disagg' && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen || !disaggSupported || (fabricRequired && !selectedNetworkFabric)))}
           >
             {isCalculating ? 'Calculating...' : 'Calculate'}
           </Button>
@@ -2573,7 +2422,7 @@ export default function Performance() {
               return (
               <div key={f.label} className={styles.accField}>
                 <label className={styles.accFieldLabel}>
-                  {f.label}{'term' in f && f.term ? <Term k={f.term as any} /> : null}
+                  {f.label}{f.term ? <Term k={f.term} /> : null}
                 </label>
                 {f.readonly ? (
                   <TextInput value={String(f.value)} aria-label={f.label} isDisabled />
@@ -2614,19 +2463,42 @@ export default function Performance() {
                     />
                   </div>
                 ) : f.type === 'number' ? (
-                  <TextInput
-                    value={String(f.value)}
-                    aria-label={f.label}
-                    type="number"
-                    validated={f.invalid ? 'error' : 'default'}
-                    onChange={(_, val) => f.onChange?.(val)}
-                  />
+                  <>
+                    <TextInput
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      type="number"
+                      validated={f.invalid ? 'error' : 'default'}
+                      placeholder={f.placeholder}
+                      aria-describedby={f.invalid && f.error && f.errorId ? f.errorId : undefined}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    />
+                    {f.invalid && f.error && f.errorId ? (
+                      <div
+                        id={f.errorId}
+                        style={{ fontSize: '12px', color: '#c9190b', marginTop: '4px', lineHeight: '1.5' }}
+                      >
+                        {f.error}
+                      </div>
+                    ) : f.help && (
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
                 ) : (
-                  <TextInput
-                    value={String(f.value)}
-                    aria-label={f.label}
-                    onChange={(_, val) => f.onChange?.(val)}
-                  />
+                  <>
+                    <TextInput
+                      value={String(f.value)}
+                      aria-label={f.label}
+                      onChange={(_, val) => f.onChange?.(val)}
+                    />
+                    {f.help && (
+                      <div style={{ fontSize: '12px', color: 'var(--t2)', marginTop: '4px', lineHeight: '1.5' }}>
+                        {f.help}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             );
@@ -2708,8 +2580,8 @@ export default function Performance() {
                       </div>
                     )}
                     {sec.fields.length > 0 && (
-                      <div className={sec.id === 'parallel' ? styles.accGrid5 : styles.accGrid}>
-                        {(sec.fields as AccordionField[]).map(renderField)}
+                      <div className={sec.id === 'parallel' || sec.id === 'workload' ? styles.accGrid5 : styles.accGrid}>
+                        {sec.fields.map(renderField)}
                       </div>
                     )}
                   </div>
@@ -2746,7 +2618,7 @@ export default function Performance() {
                               </div>
                             )}
                             <div className={styles.accGrid}>
-                              {(sec.fields as AccordionField[]).map(renderField)}
+                              {sec.fields.map(renderField)}
                             </div>
                           </div>
                         </AccordionContent>
@@ -2761,85 +2633,9 @@ export default function Performance() {
         </div>
       </div>
 
-      {/* ---------- footer actions ---------- */}
-      <div className={styles.footerRow}>
-        <Button variant="secondary" onClick={handleCopyAPIRequest} isDisabled={!testResult}>
-          Copy API request
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={handleCopyCLICommand}
-          isDisabled={!testResult || (!testResult.memory_available && !isDisagg)}
-          title={!testResult?.memory_available && !isDisagg ? 'The CLI configuration export requires a memory estimate.' : undefined}
-        >
-          Copy CLI command
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={handleExportToSheets}
-          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Export currently supports aggregated results only' : !testResult?.memory_available ? 'Export requires a memory estimate.' : undefined}
-        >
-          Export to Sheets
-        </Button>
-        <span className={styles.footerSpacer} />
-        <Button
-          variant="primary"
-          onClick={() => setShowSaveModal(true)}
-          isDisabled={!testResult || inputsDirty || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Saving currently supports aggregated results only' : !testResult?.memory_available ? 'Saving requires a memory estimate.' : undefined}
-        >
-          Save estimate{savedCount > 0 && ` (${savedCount})`}
-        </Button>
-      </div>
-      {isDisagg && (
-        <div style={{ marginTop: 6, fontSize: '12px', color: '#54585c' }}>
-          Save and export currently support aggregated results only.
-        </div>
-      )}
-
-      {/* Save estimate modal */}
-      <SaveEstimateModal
-        isOpen={showSaveModal}
-        onClose={() => setShowSaveModal(false)}
-        onSave={handleSaveEstimate}
-        defaultName={generateAutoName()}
-      />
-
-      {/* Toast notification */}
-      {showToast && (
-        <div style={{
-          position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          background: '#151515',
-          color: '#fff',
-          padding: '16px 20px',
-          borderRadius: '6px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-          zIndex: 9999,
-          fontFamily: 'var(--font-sans)',
-          fontSize: '14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px'
-        }}>
-          <CheckCircleIcon style={{ color: '#3d7317' }} />
-          <span>
-            {toastMessage === 'saved' && (
-              <>Estimate saved — <Link href="/compare" style={{ color: '#4da6ff', textDecoration: 'underline' }}>view in Compare →</Link></>
-            )}
-            {toastMessage === 'api-copied' && 'API request copied to clipboard'}
-            {toastMessage === 'cli-copied' && 'CLI command copied to clipboard'}
-            {toastMessage === 'exported' && 'CSV file downloaded — import into Google Sheets'}
-          </span>
-        </div>
-      )}
-
       {/* Debug panel */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}

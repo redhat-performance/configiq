@@ -2192,26 +2192,164 @@ class TestCapacityContextTokens:
         )
         assert app_module._capacity_context_tokens(request) == 8192
 
-    def test_falls_back_to_isl_plus_osl_with_no_prefix_credit(self):
+    def test_falls_back_to_isl_plus_osl_and_keeps_the_peak_context(self):
         request = app_module.RecommendRequest.model_validate(
             {**VALID_CAPACITY_BODY, "isl": 2048, "osl": 128, "prefix": 1024}
         )
         assert app_module._capacity_context_tokens(request) == 2176
 
+    @pytest.mark.parametrize(
+        ("prefix", "context", "expected"),
+        [
+            (0, 2176, 0),
+            (1024, 2176, 1024),
+            (2176, 2176, 0),
+            (3000, 2176, 0),
+        ],
+    )
+    def test_prefix_credit_is_stored_once_per_rank_only_when_it_shortens(
+        self, prefix, context, expected
+    ):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "prefix": prefix}
+        )
+        assert app_module._capacity_prefix_credit(request, context) == expected
+
+
+class TestCapacityCandidatePrefixCredit:
+    def test_additional_sequences_need_only_the_suffix(self):
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=1, per_rank_tokens=10_000),
+            replicas=1,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        assert candidate.suffix_tokens == 200
+        # 9,200 free tokens / 200-token suffixes = 46 sequences, not 10.
+        assert candidate.capacity_sequences == 46
+
+    def test_a_pool_smaller_than_the_prefix_holds_nothing(self):
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=1, per_rank_tokens=500),
+            replicas=1,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        assert candidate.capacity_sequences == 0
+
+    def test_replicas_scale_the_prefix_aware_count(self):
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=1, per_rank_tokens=10_000),
+            replicas=3,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        assert candidate.capacity_sequences == 138
+
+    def test_attention_dp_charges_the_prefix_on_every_rank(self):
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, dp=4, per_rank_tokens=10_000),
+            replicas=1,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        # Each of the four ranks caches the 800-token prefix against its own
+        # 10,000-token budget: (10,000 - 800) // 200 = 46 per rank, 184 total.
+        # Charging the prefix once against the pooled 40,000 tokens would
+        # wrongly claim 196.
+        assert candidate.capacity_sequences == 184
+
+
+class TestPrefixValidation:
+    def test_capacity_rejects_a_prefix_longer_than_isl(self):
+        response = client.post(
+            "/recommend", json={**VALID_CAPACITY_BODY, "prefix": 3000}
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == (
+            "prefix must not exceed isl: got prefix=3000 and isl=2048. "
+            "A cached prefix is part of the input, not additional to it."
+        )
+
+    def test_capacity_rejects_a_prefix_longer_than_the_context(self):
+        response = client.post(
+            "/recommend",
+            json={**VALID_CAPACITY_BODY, "prefix": 1024, "max_seq_len": 512},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed max_seq_len"
+        )
+
+    def test_recommend_checks_pool_limits_when_the_mode_is_omitted(self):
+        # No mode means the search may still evaluate P/D candidates, so a pool
+        # limit the request supplies is a context the prefix must fit.
+        response = client.post(
+            "/recommend",
+            json={
+                **VALID_PARETO_BODY,
+                "prefix": 1024,
+                "prefill_max_seq_len": 512,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed prefill_max_seq_len"
+        )
+
+    def test_predict_rejects_a_prefix_longer_than_isl(self):
+        response = client.post(
+            "/predict", json={**VALID_ESTIMATE_BODY, "prefix": 5000}
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith("prefix must not exceed isl")
+
+    def test_predict_rejects_a_prefix_longer_than_the_context(self):
+        response = client.post(
+            "/predict",
+            json={**VALID_ESTIMATE_BODY, "prefix": 1024, "max_seq_len": 512},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed max_seq_len"
+        )
+
+    def test_predict_rejects_a_prefix_longer_than_a_disaggregated_pool(self):
+        response = client.post(
+            "/predict",
+            json={
+                **VALID_ESTIMATE_BODY,
+                "mode": "disagg",
+                "prefix": 1024,
+                "decode_max_seq_len": 512,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"].startswith(
+            "prefix must not exceed decode_max_seq_len"
+        )
+
 
 class TestSelectCapacity:
-    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+    def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=8, prefix=0):
         return app_module._capacity_aggregate_candidates(
             shapes,
             target_concurrency=target,
             context_tokens=context,
             lower_gpus=lower,
             upper_gpus=upper,
+            prefix_tokens=prefix,
         )
 
-    def _select(self, shapes, *, target=100, context=1000, lower=1, upper=8):
+    def _select(self, shapes, *, target=100, context=1000, lower=1, upper=8, prefix=0):
         fitting, best_effort, minimum = self._aggregate(
-            shapes, target=target, context=context, lower=lower, upper=upper
+            shapes, target=target, context=context, lower=lower, upper=upper, prefix=prefix
         )
         selected = app_module._select_capacity_options(
             aggregate_fitting=fitting,
@@ -2295,6 +2433,35 @@ class TestSelectCapacity:
         assert winner.total_gpus == 4
         assert winner.capacity_sequences == 40
         assert minimum == 1
+
+    def test_shared_prefix_reduces_the_replicas_a_target_needs(self):
+        selected, minimum = self._select(
+            [_capacity_shape(tp=1, per_rank_tokens=10_000)],
+            target=100,
+            context=1000,
+            upper=8,
+            prefix=800,
+        )
+        winner = selected[0][1]
+        assert winner.prefix_tokens == 800
+        # 9,200 free tokens hold 46 sequences of the 200-token suffix, so three
+        # replicas reach 138 instead of the ten replicas the full context needs.
+        assert winner.replicas == 3
+        assert winner.capacity_sequences == 138
+        assert minimum == 1
+
+    def test_prefix_does_not_change_the_one_sequence_floor(self):
+        _fitting, _best_effort, minimum = self._aggregate(
+            [_capacity_shape(tp=1, per_rank_tokens=2_100)],
+            target=1,
+            context=2_176,
+            upper=1,
+            prefix=1_000,
+        )
+        # Holding one sequence still costs the full context: prefix (1,000) plus
+        # suffix (1,176) is 2,176, so a 2,100-token pool holds nothing whether or
+        # not a prefix is cached.
+        assert minimum is None
 
     def test_returns_none_when_the_window_cannot_fit_any_shape(self):
         _fitting, _best_effort, minimum = self._aggregate(
@@ -2494,6 +2661,39 @@ class TestCapacityDisaggOutcome:
         assert outcome.per_rank_tokens == 200_000
         assert outcome.fits is True
 
+    def test_outcome_credits_the_shared_prefix_on_the_decode_pool(self):
+        # The decode pool holds resident sequences, so it is the side that
+        # stores the prefix once and charges each additional sequence its suffix.
+        decode = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, per_rank_tokens=200_000),
+            replicas=2,
+            context_tokens=1000,
+            prefix_tokens=800,
+        )
+        candidate = app_module._DisaggCapacityCandidate(
+            prefill=app_module._CapacityCandidate(
+                shape=_capacity_shape(tp=2, per_rank_tokens=100_000),
+                replicas=1,
+                context_tokens=1000,
+            ),
+            decode=decode,
+        )
+        outcome = app_module._capacity_option_outcome(
+            candidate=candidate,
+            context_tokens=1000,
+            target_concurrency=2000,
+            minimum_gpus=2,
+            evaluated_shapes=2,
+            feasible_shapes=2,
+            prediction=MagicMock(),
+            unavailable_reason=None,
+        )
+        # 2 replicas x (200,000 - 800) // 200 = 1,992 of 2,000.
+        assert outcome.shared_prefix_tokens == 800
+        assert outcome.capacity_sequences == 1_992
+        assert outcome.shortfall_sequences == 8
+        assert outcome.shortfall_tokens == 8 * 200
+
     def test_disagg_config_sums_pool_gpus_and_keeps_one_scalable_unit(self):
         request = app_module.RecommendRequest.model_validate(VALID_CAPACITY_BODY)
         config = app_module._capacity_disagg_config(
@@ -2652,6 +2852,22 @@ class TestRunCapacityRecommendation:
         assert config.total_gpus_needed == 4
         assert config.replicas_needed == 4
 
+    def test_shared_prefix_is_reported_and_the_shortfall_uses_the_suffix(self, monkeypatch):
+        _config, capacity, _sweep, _options = self._run(
+            monkeypatch,
+            [_capacity_shape(tp=1, per_rank_tokens=10_000)],
+            prediction=self._available_prediction(),
+            target_concurrency=100,
+            prefix=2_000,
+            max_candidate_gpus=2,
+        )
+        # 2 replicas × 45 suffix sequences = 90 of 100; each missing sequence
+        # needs 2,176 − 2,000 = 176 tokens, not the full context.
+        assert capacity.shared_prefix_tokens == 2_000
+        assert capacity.capacity_sequences == 90
+        assert capacity.shortfall_sequences == 10
+        assert capacity.shortfall_tokens == 10 * 176
+
     def test_performance_gap_keeps_the_capacity_answer_and_adds_a_warning(self, monkeypatch):
         config, capacity, _sweep, options = self._run(
             monkeypatch,
@@ -2734,6 +2950,69 @@ class TestRunCapacityRecommendation:
         assert "1-4 GPUs" in excinfo.value.detail
 
 
+class TestCapacityPredictionPrefix:
+    def test_aggregate_replay_forwards_the_requested_prefix(self, monkeypatch):
+        seen: list[app_module.EstimateRequest] = []
+        monkeypatch.setattr(
+            app_module, "_backend_memory_fraction", lambda *_args, **_kwargs: 0.9
+        )
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, _include: seen.append(req) or MagicMock(),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "prefix": 1024}
+        )
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=1, per_rank_tokens=100_000),
+            replicas=1,
+            context_tokens=2176,
+            prefix_tokens=1024,
+        )
+
+        _prediction, reason = app_module._capacity_prediction(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidate=candidate,
+            target_concurrency=32,
+        )
+
+        assert reason is None
+        assert seen[0].prefix == 1024
+
+    def test_disaggregated_replay_forwards_the_requested_prefix(self, monkeypatch):
+        seen: list[app_module.EstimateRequest] = []
+        monkeypatch.setattr(
+            app_module, "_backend_memory_fraction", lambda *_args, **_kwargs: 0.9
+        )
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, _include: seen.append(req) or MagicMock(),
+        )
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_CAPACITY_BODY, "prefix": 1024}
+        )
+        shape = _capacity_shape(tp=2, per_rank_tokens=100_000)
+        candidate = app_module._DisaggCapacityCandidate(
+            prefill=app_module._CapacityCandidate(shape, 1, 2176),
+            decode=app_module._CapacityCandidate(shape, 2, 2176, 1024),
+        )
+
+        _prediction, reason = app_module._capacity_prediction(
+            request,
+            "Qwen/Qwen3-32B",
+            backend_version="0.24.0",
+            candidate=candidate,
+            target_concurrency=32,
+        )
+
+        assert reason is None
+        assert seen[0].prefix == 1024
+
+
 class TestCapacitySimulationBudget:
     def test_abandoned_simulation_holds_its_process_slot(self, monkeypatch):
         slots = threading.BoundedSemaphore(2)
@@ -2781,6 +3060,7 @@ class TestRecommendCapacityEndpoint:
         capacity = app_module.CapacityOutcome(
             target_concurrency=32,
             context_per_sequence_tokens=2176,
+            shared_prefix_tokens=0,
             capacity_tokens=500_000,
             capacity_sequences=229,
             fits=True,
@@ -2841,6 +3121,7 @@ class TestRecommendCapacityEndpoint:
         capacity = app_module.CapacityOutcome(
             target_concurrency=32,
             context_per_sequence_tokens=2176,
+            shared_prefix_tokens=0,
             capacity_tokens=500_000,
             capacity_sequences=229,
             fits=True,

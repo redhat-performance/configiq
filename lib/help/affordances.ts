@@ -79,6 +79,22 @@ export const HELP_AFFORDANCES: HelpAffordance[] = [
     label: 'Copy a link to this view',
     keywords: ['share', 'link', 'permalink', 'copy'],
   },
+  {
+    id: 'predict-prefix',
+    route: '/predict',
+    doc: 'user-scenarios',
+    anchor: 'shared-prefixes-and-repeated-requests',
+    label: 'Shared prefix tokens',
+    keywords: ['prefix', 'system prompt', 'shared prompt', 'cached tokens', 'reuse'],
+  },
+  {
+    id: 'predict-requests-per-user',
+    route: '/predict',
+    doc: 'user-scenarios',
+    anchor: 'shared-prefixes-and-repeated-requests',
+    label: 'Requests per user',
+    keywords: ['requests per user', 'request count', 'repeated requests', 'simulation length', 'reuse'],
+  },
 
   // ── Recommend ───────────────────────────────���────────────────────────────
   {

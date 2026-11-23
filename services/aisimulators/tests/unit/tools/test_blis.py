@@ -1220,6 +1220,41 @@ def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
     assert result.search_summary["strategy"] == "aggregate_tp_capacity"
 
 
+def test_recommend_capacity_credits_the_shared_prefix_once_per_replica(
+    monkeypatch, catalog
+):
+    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 4}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda _runtime, _run_request, *, timeout_seconds: _result(kv_capacity=10_000),
+    )
+
+    result = blis_service.recommend(_capacity_input(
+        max_candidate_gpus=8,
+        concurrency=80,
+        prefix=2_000,
+    ))
+
+    capacity = result.capacity
+    assert capacity is not None
+    assert capacity.shared_prefix_tokens == 2_000
+    # 8,000 free tokens hold 45 sequences of the 176-token suffix per replica,
+    # so two replicas reach 90. Charging the full context would hold only 4 per
+    # replica, which cannot reach 80 inside this GPU window.
+    assert capacity.capacity_sequences == 90
+    assert capacity.fits is True
+    assert capacity.replicas == 2
+    assert result.configs[0]["total_gpus_needed"] == 2
+
+
 def test_recommend_capacity_rejects_a_request_rate_before_running(monkeypatch, catalog):
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
 

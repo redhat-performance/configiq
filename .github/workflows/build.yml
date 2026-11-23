@@ -22,7 +22,7 @@ jobs:
       # the moment one fails, which shrinks — but does not eliminate — the window
       # where a tag has only some images: each leg pushes independently (push:
       # true), so a leg that finished before the failure has already published.
-      # A corrected rerun republishes all three at the same tag, restoring the set.
+      # A corrected rerun republishes all four at the same tag, restoring the set.
       fail-fast: true
       matrix:
         include:

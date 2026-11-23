@@ -20,6 +20,7 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { WarningPanel } from '@/components/ui/WarningPanel'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
+import { exchangeRuns } from '@/lib/debug/types'
 import { CopyLinkButton } from '@/components/help/CopyLinkButton'
 import { TourButton } from '@/components/help/TourButton'
 import { kvCacheLink, type KvCacheLinkValues, type MemoryFractionKind } from '@/lib/deep-links/pages'
@@ -840,8 +841,7 @@ export default function KvCacheCalc() {
 
       {/* Debug panel */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}

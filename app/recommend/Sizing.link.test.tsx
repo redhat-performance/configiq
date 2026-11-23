@@ -199,8 +199,8 @@ vi.mock('@/lib/app-config', () => ({
     suggestedModelNames: [],
     modelRequestUrl: '',
     workloadPresets: [
-      { key: 'rag', label: 'RAG / Search', isl: 16384, osl: 512 },
-      { key: 'voice', label: 'Voice / Real-time', isl: 512, osl: 128 },
+      { key: 'rag', label: 'RAG / Search', isl: 16384, osl: 512, prefix: 2000 },
+      { key: 'voice', label: 'Voice / Real-time', isl: 512, osl: 128, prefix: 100 },
     ],
     concurrencyPresets: [],
   }),
@@ -263,6 +263,24 @@ async function mountAt(search: string) {
   });
 }
 
+/**
+ * Open the customize panel, once.
+ *
+ * The panel toggles on every press, so a test that opens it before pressing a
+ * control must not open it twice. Every helper below goes through this.
+ */
+async function expandRequestInputs() {
+  const isOpen = Array.from(container.querySelectorAll('label'))
+    .some(label => (label.textContent ?? '').includes('Avg input tokens (ISL)'));
+  if (isOpen) return;
+  await act(async () => {
+    Array.from(container.querySelectorAll('button'))
+      .find(button => (button.textContent ?? '').startsWith('Adjust?'))
+      ?.click();
+    await Promise.resolve();
+  });
+}
+
 async function calculate(): Promise<RecommendParams> {
   const button = Array.from(container.querySelectorAll('button'))
     .find(candidate => candidate.textContent === 'Calculate');
@@ -299,17 +317,32 @@ async function mountFabricView(search: string) {
   await mountAt(search);
 }
 
-async function selectDisaggregated() {
+/**
+ * Press a serving mode in the expanded panel.
+ *
+ * Pressing the selected mode is the only way back to the unpinned default, so
+ * every clear-control test goes through this.
+ */
+async function pressView(label: 'Aggregated' | 'Disaggregated') {
+  await expandRequestInputs();
+  const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
+  const button = Array.from(view?.querySelectorAll('button') ?? [])
+    .find(candidate => candidate.textContent === label);
+  expect(button).toBeDefined();
   await act(async () => {
-    Array.from(container.querySelectorAll('button'))
-      .find(button => button.textContent?.includes('Adjust?'))
-      ?.click();
+    button?.click();
     await Promise.resolve();
   });
+}
+
+async function selectDisaggregated() {
+  await expandRequestInputs();
   const disaggregated = Array.from(container.querySelectorAll('button'))
     .find(button => button.textContent === 'Disaggregated');
   expect(disaggregated).toBeDefined();
   expect(disaggregated?.hasAttribute('disabled')).toBe(false);
+  // Pressing the selected mode clears it, so only press when it is not pinned.
+  if (disaggregated?.getAttribute('aria-pressed') === 'true') return;
   await act(async () => {
     disaggregated?.click();
     await Promise.resolve();
@@ -391,7 +424,7 @@ describe('recommend sizing shared views', () => {
     expect(sizing.fabric).toBeNull();
     expect(sizing.mode).toBe('agg');
 
-    // The frontier reads the same view: an aggregated view asks for aggregate
+    // The frontier reads the same mode: an aggregated mode asks for aggregate
     // candidates only, and the mode itself is omitted (the sweep rejects it).
     const sweep = await pareto();
     expect(sweep.fabric).toBeNull();
@@ -421,7 +454,7 @@ describe('recommend sizing shared views', () => {
 
     // The summary is the read-only view of the form; a mode the user cannot
     // see without expanding the panel is not a choice they made.
-    expect(container.textContent).toContain('Deployment view: aggregated.');
+    expect(container.textContent).toContain('Serving mode: aggregated.');
   });
 
   it('leaves the deployment to the service until a view is pinned', async () => {
@@ -430,7 +463,7 @@ describe('recommend sizing shared views', () => {
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
 
     expect(container.textContent).toContain(
-      'Deployment view: service default (aggregated or disaggregated).',
+      'Serving mode: service default (aggregated or disaggregated).',
     );
     const sizing = await calculate();
     expect(sizing.mode).toBeUndefined();
@@ -440,8 +473,8 @@ describe('recommend sizing shared views', () => {
     expect(sweep.fabric).toBeUndefined();
   });
 
-  it('leaves the serving mode out of a link while no view is pinned', async () => {
-    // A link describes the request it would reproduce. An unpinned view sends
+  it('leaves the serving mode out of a link while no mode is pinned', async () => {
+    // A link describes the request it would reproduce. An unpinned mode sends
     // no mode and no fabric, so a link that named either would make the
     // recipient answer a different question.
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency');
@@ -457,26 +490,15 @@ describe('recommend sizing shared views', () => {
   });
 
   it('keeps Disaggregated reachable after clearing an aggregate-only fabric', async () => {
-    // Choosing "None" remembers an explicit aggregate-only fabric. Returning to
-    // Default must not strand that value: Default hides the selector, so a
+    // Choosing "None" remembers an explicit aggregate-only fabric. Clearing the
+    // pin must not strand that value: the default hides the selector, so a
     // remembered "None" would disable Disaggregated with no way back to it.
     await mountFabricView('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency&fabric=none');
     expect((await calculate()).mode).toBe('agg');
 
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
-    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
-    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent === 'Default');
-    await act(async () => {
-      unpin?.click();
-      await Promise.resolve();
-    });
+    await pressView('Aggregated');
 
+    const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
     const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
       .find(button => button.textContent === 'Disaggregated');
     expect(disaggregated?.hasAttribute('disabled')).toBe(false);
@@ -486,27 +508,39 @@ describe('recommend sizing shared views', () => {
     expect(sent.fabric).toBeUndefined();
   });
 
-  it('returns to the service default when the pinned view is cleared', async () => {
+  it('returns to the service default when the pinned mode is pressed again', async () => {
     await mountFabricView(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg&fabric=ib-400g',
     );
     expect((await calculate()).mode).toBe('disagg');
 
-    // "Default" must be reachable again: a control that can only pin a view
-    // leaves the reader unable to ask the question they started with.
+    // The unpinned default must stay reachable: pressing the selected mode is
+    // the only way back, so it has to clear rather than re-pin.
+    await pressView('Disaggregated');
+
+    const sent = await calculate();
+    expect(sent.mode).toBeUndefined();
+    expect(sent.fabric).toBeUndefined();
+  });
+
+  it('clears a pinned mode the form cannot submit', async () => {
+    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg',
+    );
+
+    await expandRequestInputs();
+    const view = container.querySelector('[role="group"][aria-label="Serving mode"]');
+    const disaggregated = Array.from(view?.querySelectorAll('button') ?? [])
+      .find(button => button.textContent === 'Disaggregated');
+    // The held mode cannot be submitted, but the press that clears it must
+    // stay available: dropping your own choice cannot depend on making
+    // another one first.
+    expect(disaggregated?.hasAttribute('disabled')).toBe(false);
     await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
-    const view = container.querySelector('[role="group"][aria-label="Deployment view"]');
-    const unpin = Array.from(view?.querySelectorAll('button') ?? [])
-      .find(button => button.textContent === 'Default');
-    expect(unpin).toBeDefined();
-    await act(async () => {
-      unpin?.click();
+      disaggregated?.click();
       await Promise.resolve();
     });
 
@@ -518,18 +552,13 @@ describe('recommend sizing shared views', () => {
   it('omits the serving mode from a summary for a goal without one', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity');
 
-    expect(container.textContent).not.toContain('Deployment view:');
+    expect(container.textContent).not.toContain('Serving mode:');
   });
 
   it('does not offer a serving mode for a demand link', async () => {
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=demand');
 
-    await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent?.includes('Adjust?'))
-        ?.click();
-      await Promise.resolve();
-    });
+    await expandRequestInputs();
 
     // The simulator reports the deployment that sustains the rate, so the page
     // must not claim one, and the request must not narrow the search.
@@ -745,12 +774,98 @@ describe('recommend sizing shared views', () => {
   });
 
   it('selects the workload the linked input shape names', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=16384&osl=512');
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=16384&osl=512&prefix=2000');
 
     const pressed = Array.from(container.querySelectorAll('button[aria-pressed="true"]'))
       .map(button => button.textContent);
     expect(pressed).toContain('RAG / Search');
     expect(pressed).not.toContain('Default');
+  });
+
+  it('applies the input length, output length, and prefix a workload preset states', async () => {
+    // RAG changes all three fields from the page's starting shape, so this
+    // fails if the chip stops writing any one of them. The Default chip is a
+    // reset handler rather than a preset, and its values match the start, so
+    // clicking it would prove neither the handler nor the three writes.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'RAG / Search')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    const sent = await calculate();
+    expect(sent).toMatchObject({ isl: 16384, osl: 512, prefix: 2000 });
+  });
+
+  it('sends the prefix a shared link states', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&prefix=200');
+
+    expect((await calculate()).prefix).toBe(200);
+    // A warm assumption is always stated, so the recipient cannot confuse it
+    // with an older link that left the field out.
+    expect(shareUrl.getUrl?.() ?? '').toContain('prefix=200');
+  });
+
+  it('reads a link that omits the prefix as a cold request', async () => {
+    // Links written before the system-prompt default left the field out and
+    // meant 0, so the recipient must not inherit the new 200-token default.
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+
+    expect((await calculate()).prefix).toBe(0);
+    expect(shareUrl.getUrl?.() ?? '').toContain('prefix=0');
+  });
+
+  it('keeps the system-prompt prefix on an unlinked page', async () => {
+    await mountAt('');
+
+    expect((await calculate()).prefix).toBe(200);
+  });
+
+  it('blocks sizing when the shared prefix cannot fit the input length', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&isl=128&prefix=200');
+    await expandRequestInputs();
+
+    expect(container.textContent).toContain('Shared prefix cannot exceed');
+    // The visible error is the input's description, not just nearby text.
+    const prefix = container.querySelector('[aria-describedby="recommend-shared-prefix-error"]');
+    expect(prefix).not.toBeNull();
+    expect(prefix?.getAttribute('aria-invalid')).toBe('true');
+    expect(container.querySelector('#recommend-shared-prefix-error')?.textContent)
+      .toContain('Shared prefix cannot exceed');
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(true);
+  });
+
+  it('checks the prefix against the pool limits a disaggregated mode sends', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
+      '&servingMode=disagg&prefillMaxSeqLen=128&prefix=200',
+    );
+    await expandRequestInputs();
+
+    const calculateButton = () => Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Calculate');
+    expect(container.querySelector('[aria-describedby="recommend-shared-prefix-error"]')).not.toBeNull();
+    expect(calculateButton()?.disabled).toBe(true);
+
+    // The remembered pool limit stops applying when the view goes back to
+    // aggregated, and the request stops sending it.
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Aggregated')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[aria-describedby="recommend-shared-prefix-error"]')).toBeNull();
+    expect(calculateButton()?.disabled).toBe(false);
+
+    const sent = await calculate();
+    expect(sent.mode).toBe('agg');
+    expect(sent.prefill_max_seq_len).toBeUndefined();
   });
 
   it('drops the workload selection when a sequence length is cleared', async () => {
@@ -759,13 +874,7 @@ describe('recommend sizing shared views', () => {
     // the form no longer states.
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
 
-    const adjust = Array.from(container.querySelectorAll('button'))
-      .find(button => (button.textContent ?? '').startsWith('Adjust?'));
-    expect(adjust).toBeDefined();
-    await act(async () => {
-      adjust?.click();
-      await Promise.resolve();
-    });
+    await expandRequestInputs();
 
     const label = Array.from(container.querySelectorAll('label'))
       .find(candidate => (candidate.textContent ?? '').includes('Avg input tokens (ISL)'));
@@ -786,20 +895,10 @@ describe('recommend sizing shared views', () => {
 
   it('describes the capacity options the catalog reports', async () => {
     const search = '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=capacity';
-    // The deployment-view block sits in the expandable input panel, so open it
+    // The serving-mode block sits in the expandable input panel, so open it
     // once; it stays open across the remount below.
-    const expand = async () => {
-      const adjust = Array.from(container.querySelectorAll('button'))
-        .find(button => (button.textContent ?? '').startsWith('Adjust?'));
-      if (adjust == null) return;
-      await act(async () => {
-        adjust.click();
-        await Promise.resolve();
-      });
-    };
-
     await mountAt(search);
-    await expand();
+    await expandRequestInputs();
     expect(container.textContent).toContain(
       'reports the aggregated deployments that hold the target',
     );

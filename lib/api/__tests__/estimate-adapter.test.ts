@@ -587,6 +587,13 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     expect(body).not.toHaveProperty('hf_model_config')
   })
 
+  it('omits an unset requests-per-load-unit and forwards an explicit one', () => {
+    expect(buildPredictRequestBody(VALID_INPUT)).not.toHaveProperty('requests_per_load_unit')
+    expect(
+      buildPredictRequestBody({ ...VALID_INPUT, requests_per_load_unit: 4 }),
+    ).toHaveProperty('requests_per_load_unit', 4)
+  })
+
   it('includes include=config,memory in query params', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)

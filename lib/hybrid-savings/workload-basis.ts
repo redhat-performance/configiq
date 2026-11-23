@@ -152,14 +152,18 @@ export function proposeRequestMixAlignment(
 }
 
 /**
- * Presets control only input and output lengths, independently of sizing targets.
+ * Presets control input and output lengths and the shared prefix, independently
+ * of sizing targets. Prefix is part of the identity: the same lengths with a
+ * different reuse assumption are a different workload.
  */
 export function matchRequestShapePreset(
   fields: Pick<HybridWorkload, 'averageInputTokens' | 'averageOutputTokens'>,
   presets: readonly WorkloadPreset[],
+  prefix: number,
 ): WorkloadPreset | null {
   return presets.find(preset =>
     preset.isl === fields.averageInputTokens &&
-    preset.osl === fields.averageOutputTokens,
+    preset.osl === fields.averageOutputTokens &&
+    (preset.prefix ?? 0) === prefix,
   ) ?? null
 }

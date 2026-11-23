@@ -35,7 +35,7 @@ vi.mock('@/lib/app-config', async (importOriginal) => {
       ...actual.getAppConfig(),
       defaultSystem: 'retired_gpu',
       workloadPresets: [
-        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300 },
+        { key: 'interactive-chat', label: 'Interactive chat', isl: 4000, osl: 300, prefix: 3950 },
       ],
       concurrencyPresets: [
         { key: 'small', label: 'Small (100)', concurrency: 100 },
@@ -179,7 +179,6 @@ vi.mock('./performanceHelpers', () => ({
   useCountUp: (value: number) => value,
 }));
 vi.mock('@/components/ProductTour', () => ({ ProductTour: () => null }));
-vi.mock('./SaveEstimateModal', () => ({ SaveEstimateModal: () => null }));
 vi.mock('@/components/GpuChipLoader/GpuChipLoader', () => ({ GpuChipLoader: () => null }));
 vi.mock('@/components/ui/InfoStrip', () => ({
   InfoStrip: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
@@ -281,10 +280,7 @@ beforeEach(() => {
   });
   writeText.mockClear();
   vi.stubGlobal('localStorage', {
-    getItem: vi.fn((key: string) => {
-      if (key.includes('saved-estimates')) return '[]';
-      return 'seen';
-    }),
+    getItem: vi.fn(() => 'seen'),
     setItem: vi.fn(),
     removeItem: vi.fn(),
     clear: vi.fn(),
@@ -394,6 +390,39 @@ describe('performance page widget handoff', () => {
     expect(container.querySelector('[data-term="ttft"]')).not.toBeNull();
     expect(container.querySelector('[data-term="concurrent"]')).not.toBeNull();
     expect(container.querySelector('[data-term="tpot"]')).not.toBeNull();
+  });
+
+  it('offers no estimate export actions after a calculation', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      const calculate = Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate');
+      if (!calculate) throw new Error('Calculate button not found');
+      calculate.click();
+    });
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    });
+
+    // The absence checks below are only meaningful once a result exists: a
+    // result that never rendered would pass them for the wrong reason.
+    expect(container.querySelector('[data-term="requestLatency"]')).not.toBeNull();
+
+    // The result view carries the numbers only. Copying a request, a CLI
+    // command, a sheet, or saving a local estimate are not result controls:
+    // request replay belongs to the debug panel.
+    const labels = Array.from(container.querySelectorAll('button'))
+      .map(button => button.textContent ?? '');
+    for (const removed of [
+      'Copy API request',
+      'Copy CLI command',
+      'Export to Sheets',
+      'Save estimate',
+    ]) {
+      expect(labels.some(label => label.startsWith(removed)), removed).toBe(false);
+    }
+    expect(container.querySelector('a[href="/compare"]')).toBeNull();
   });
 
   it('forwards the selected network fabric for BLIS disaggregated predictions', async () => {
@@ -893,6 +922,201 @@ describe('performance page parameter defaults', () => {
 
     await typeUsers('5');
     expect(pressed()).not.toContain('Small (100)');
+  });
+
+  it('applies a workload preset prefix and matches the preset back', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Interactive chat')
+        ?.click();
+    });
+
+    const prefix = container.querySelector<HTMLInputElement>('input[aria-label="Shared prefix tokens"]');
+    expect(prefix?.value).toBe('3950');
+    const pressed = Array.from(container.querySelectorAll<HTMLButtonElement>('button[aria-pressed="true"]'))
+      .map((button) => button.textContent);
+    expect(pressed).toContain('Interactive chat');
+  });
+
+  it('omits the per-user request count by default', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .not.toHaveProperty('requests_per_load_unit');
+  });
+
+  it('sends the prefix a shared link states', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&prefix=200');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ prefix: 200 });
+  });
+
+  it('reads a link that omits the prefix as a cold request', async () => {
+    // Links written before the system-prompt default left the field out and
+    // meant 0, so the recipient must not inherit the new 200-token default —
+    // including when its inputs are shorter than 200, where the inherited
+    // prefix would make the view invalid.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128&osl=128');
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Shared prefix tokens"]')?.value)
+      .toBe('0');
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(false);
+
+    await act(async () => {
+      calculate?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    // A cold request is the API default, so the page leaves the field out
+    // instead of sending the 200-token system prompt the page starts with.
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0].prefix)
+      .toBeUndefined();
+  });
+
+  it('keeps the system-prompt prefix on an unlinked page', async () => {
+    await mountAt('');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ prefix: 200 });
+  });
+
+  it('blocks sizing when the shared prefix exceeds the input length', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=128&prefix=200');
+
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(true);
+  });
+
+  it('explains both workload fields in a popover instead of below the input', async () => {
+    // The definitions belong in the "?" beside each label. Freeform help under
+    // the input pushes the controls apart and is easy to miss; the popover is
+    // the only place a reader looks for an explanation.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    expect(container.querySelector('[data-term="prefix"]')).not.toBeNull();
+    expect(container.querySelector('[data-term="requestsPerUser"]')).not.toBeNull();
+
+    expect(container.textContent).not.toContain('A cached system prompt shared by every request.');
+    expect(container.textContent).not.toContain('Leave empty to simulate one request across all users.');
+  });
+
+  it('forwards an explicit per-user request count', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      const reuse = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(reuse, '4');
+      reuse.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('4');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .toMatchObject({ requests_per_load_unit: 4 });
+  });
+
+  it('refuses a per-user request count above the link limit', async () => {
+    // A value the link cannot carry must not become a request the page still
+    // submits: the form treats it as invalid instead.
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
+
+    await act(async () => {
+      const reuse = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(reuse, '1000001');
+      reuse.dispatchEvent(new Event('input', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const field = container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]');
+    expect(field?.getAttribute('aria-invalid')).toBe('true');
+    // The rejection states the accepted range, and the input describes it.
+    expect(field?.getAttribute('aria-describedby')).toBe('predict-requests-per-user-error');
+    expect(container.querySelector('#predict-requests-per-user-error')?.textContent)
+      .toContain('1 to 1,000,000');
+    const calculate = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Calculate');
+    expect(calculate?.disabled).toBe(true);
+    expect(fetchEstimateAsInferenceResult).not.toHaveBeenCalled();
+  });
+
+  it('clears a per-user request count when a newly opened link omits it', async () => {
+    await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&requestsPerLoadUnit=4');
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('4');
+
+    // A second link describes the same view without the optional count.
+    // Omission means one total request, so the previous 4 must not leak into
+    // the request the page would now send.
+    window.history.replaceState(
+      {},
+      '',
+      '/predict?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&isl=1024',
+    );
+    navigation.search = window.location.search;
+    await act(async () => {
+      root.render(<Performance />);
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Requests per user"]')?.value).toBe('');
+
+    await act(async () => {
+      Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Calculate')
+        ?.click();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+
+    expect(vi.mocked(fetchEstimateAsInferenceResult).mock.calls[0][0])
+      .not.toHaveProperty('requests_per_load_unit');
   });
 
   it('keeps current values visible on collapsed assumption rows', async () => {

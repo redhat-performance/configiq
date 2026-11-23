@@ -114,7 +114,8 @@ for (const model of appConfig.approvedModels) {
       })
       if (savedVersion) expect(body.backend_version).toBe(savedVersion)
       else expect(body).not.toHaveProperty('backend_version')
-      expect(body).not.toHaveProperty('prefix')
+      if (workload.prefix) expect(body).toMatchObject({ prefix: workload.prefix })
+      else expect(body).not.toHaveProperty('prefix')
 
       if (!response.ok() || result.status === 'failed') {
         const errorCode = result.error?.code ?? 'AISIM_NO_CONFIGURATION'

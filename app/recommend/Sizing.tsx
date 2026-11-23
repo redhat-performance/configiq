@@ -14,6 +14,7 @@ import DollarSignIcon from '@patternfly/react-icons/dist/esm/icons/dollar-sign-i
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { WarningPanel } from '@/components/ui/WarningPanel';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import { exchangeRuns } from '@/lib/debug/types';
 
 import styles from './Sizing.module.css';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
@@ -60,6 +61,10 @@ const DEFAULT_DEMAND_RATE = 10;
 /**
  * The link's own starting points. A field left at one of these is omitted from
  * a generated link, so the recipient falls back to the same value.
+ *
+ * `prefix` is deliberately not one of them. Links written before the
+ * system-prompt default left it out and meant 0, so every generated link states
+ * it explicitly and an opened link without it applies 0 (`absent` below).
  */
 const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
   goal: 'demand',
@@ -69,7 +74,6 @@ const RECOMMEND_LINK_DEFAULTS: RecommendLinkValues = {
   ttft: 1000,
   tpot: 30,
   demandRate: DEFAULT_DEMAND_RATE,
-  prefix: 0,
 };
 
 /** Match a retained request back to the sizing goal that produced it. */
@@ -83,12 +87,12 @@ function goalFromParams(params: RecommendParams | null): SizingGoal {
 }
 
 /**
- * Word a deployment view for the collapsed summary.
+ * Word a serving mode for the collapsed summary.
  *
- * `null` is the page's default, not a third deployment: the request pins no
- * mode and the service returns whichever deployment answers the workload.
+ * `null` is the page's default, not a third mode: the request pins no mode and
+ * the service returns whichever deployment answers the workload.
  */
-function describeDeploymentView(mode: 'agg' | 'disagg' | null): string {
+function describeServingMode(mode: 'agg' | 'disagg' | null): string {
   if (mode === 'agg') return 'aggregated';
   if (mode === 'disagg') return 'disaggregated';
   return 'service default (aggregated or disaggregated)';
@@ -372,7 +376,7 @@ export default function Sizing() {
   // configuration; see d32b0dd and 0730b07. Users raise this with the presets.
   const [targetConcurrency, setTargetConcurrency] = React.useState(1);
   const [requestLatency, setRequestLatency] = React.useState<number | null>(null);
-  const [prefix, setPrefix] = React.useState(0);
+  const [prefix, setPrefix] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0);
 
   // GPU sizer (persistent across navigation)
   const { params, runMode, isLoading, result: primaryResult, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset } = useRecommend();
@@ -413,12 +417,12 @@ export default function Sizing() {
   const disaggSelectable = disaggCapable && (!fabricRequired || selectedNetworkFabric !== '');
   // Clamp submission; never overwrite the choice. An explicit mode therefore
   // survives a goal or simulator change and applies again as soon as the form
-  // can honour it. A pinned prefill/decode view the form cannot honour falls
+  // can honour it. A pinned prefill/decode mode the form cannot honour falls
   // back to an explicit aggregated request rather than a mode the service would
-  // reject, and an unpinned view submits nothing at all.
+  // reject, and an unpinned mode submits nothing at all.
   const servingMode: 'agg' | 'disagg' | null =
     servingModeChoice === 'disagg' && !disaggSelectable ? 'agg' : servingModeChoice;
-  // Per-pool limits and fabric belong to a pinned prefill/decode view only: an
+  // Per-pool limits and fabric belong to a pinned prefill/decode mode only: an
   // unpinned run may be served aggregated, and `mode=agg` cannot carry them.
   const disaggregatedView = servingMode === 'disagg';
   // A Pareto sweep is not a sizing goal, so it is unavailable only when the
@@ -482,11 +486,23 @@ export default function Sizing() {
   const [tpotInput, setTpotInput] = React.useState('30');
   const [concurrencyInput, setConcurrencyInput] = React.useState('1');
   const [latencyInput, setLatencyInput] = React.useState('');
-  const [prefixInput, setPrefixInput] = React.useState('0');
+  const [prefixInput, setPrefixInput] = React.useState(String(DEFAULT_WORKLOAD.prefix ?? 0));
   const [demandRateInput, setDemandRateInput] = React.useState(String(DEFAULT_DEMAND_RATE));
 
   const invalidISL = islInput === '' || parseInt(islInput, 10) < 1;
   const invalidOSL = oslInput === '' || parseInt(oslInput, 10) < 1;
+  // A shared prefix is part of the input, so it cannot outgrow the prompt, a
+  // stated context limit, or a pool limit the disaggregated request sends. The
+  // service rejects these combinations; the form mirrors them so Calculate
+  // cannot submit one. A remembered pool limit is ignored unless the request
+  // submits it.
+  const invalidPrefix =
+    prefix > isl ||
+    (maxSeqLen != null && prefix > maxSeqLen) ||
+    (disaggregatedView && (
+      (prefillMaxSeqLen != null && prefix > prefillMaxSeqLen) ||
+      (decodeMaxSeqLen != null && prefix > decodeMaxSeqLen)
+    ));
   const invalidTTFT = ttftInput === '' || !Number.isFinite(Number(ttftInput)) || Number(ttftInput) <= 0;
   const invalidTpot = tpotInput === '' || !Number.isFinite(Number(tpotInput)) || Number(tpotInput) <= 0;
   const invalidConcurrency = concurrencyInput === '' || parseInt(concurrencyInput, 10) < 1;
@@ -508,6 +524,28 @@ export default function Sizing() {
 
   const markInputsDirty = () => {
     if (primaryResult || isLoading || frontier.status !== 'idle') setInputsDirty(true);
+  };
+
+  // Clearing a pinned mode must narrow nothing, the fabric included: a
+  // remembered "None" is the aggregate-only choice being left behind, and
+  // keeping it would disable Disaggregated behind a selector this state hides.
+  const clearServingMode = () => {
+    if (networkFabric === '') setNetworkFabric(null);
+    setServingModeChoice(null);
+    markInputsDirty();
+  };
+
+  // Pressing the selected mode clears it, so two buttons cover the unpinned
+  // default without a third control. A pinned mode the form cannot honour
+  // still clears: a choice the reader made is theirs to take back.
+  const toggleServingMode = (mode: 'agg' | 'disagg') => {
+    if (servingModeChoice === mode) {
+      clearServingMode();
+      return;
+    }
+    if (mode === 'disagg' && !disaggSelectable) return;
+    setServingModeChoice(mode);
+    markInputsDirty();
   };
 
   const handleSequenceLengthChange = (
@@ -715,15 +753,18 @@ export default function Sizing() {
         workloadPresetOptions(getAppConfig().workloadPresets),
         isl,
         osl,
+        prefix,
       )?.key ?? '');
   // Selection follows the actual value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, concurrencyInput);
 
-  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl'>) => {
+  const applyPreset = (p: Pick<WorkloadPreset, 'key' | 'isl' | 'osl' | 'prefix'>) => {
     reset();
     setIsl(p.isl); setIslInput(String(p.isl));
     setOsl(p.osl); setOslInput(String(p.osl));
+    const presetPrefix = p.prefix ?? 0;
+    setPrefix(presetPrefix); setPrefixInput(String(presetPrefix));
     setInputsDirty(false);
     setExpanded(prev => prev.includes('customize') ? prev : [...prev, 'customize']);
   };
@@ -795,7 +836,7 @@ export default function Sizing() {
       write: (value) => { setMaxSeqLen(value); setMaxSeqLenInput(String(value)); },
     },
     servingMode: {
-      // A pinned view is part of the shared contract; an unpinned one is the
+      // A pinned mode is part of the shared contract; an unpinned one is the
       // default, so the link carries nothing and the recipient's own choice
       // stands rather than inheriting a mode nobody picked.
       read: () => servingMode ?? undefined,
@@ -808,7 +849,7 @@ export default function Sizing() {
       write: (value, values) => {
         setPrefillMaxSeqLen(value);
         setPrefillMaxSeqLenInput(String(value));
-        // Pool lengths only exist in a prefill/decode view, so a link written
+        // Pool lengths only exist in a prefill/decode mode, so a link written
         // before the mode field described one. A link that names the mode has
         // already been applied and must keep its own choice.
         if (values.servingMode == null) setServingModeChoice('disagg');
@@ -859,6 +900,8 @@ export default function Sizing() {
     fields: linkFields,
     ready: hydrated && gpuReady && modelFromSettingsApplied && !catalogLoading,
     defaults: RECOMMEND_LINK_DEFAULTS,
+    // A link that predates the system-prompt default described a cold request.
+    absent: { prefix: 0 },
     provenance: {
       simulator: simulator || undefined,
       backend: inferenceBackend,
@@ -904,7 +947,7 @@ export default function Sizing() {
   const reportedServingMode: 'agg' | 'disagg' | null =
     !inputsDirty && hasDisplayedResult && result ? result.mode : null;
   const statedServingMode: 'agg' | 'disagg' | null = reportedServingMode ?? servingModeChoice;
-  // A pinned view the service did not return is worth saying out loud: the
+  // A pinned mode the service did not return is worth saying out loud: the
   // request asked for one deployment and the answer named another.
   const pinnedViewServedDifferently = reportedServingMode != null
     && servingModeChoice != null
@@ -1109,18 +1152,17 @@ export default function Sizing() {
         {fabricRequired && disaggCapable && (
           <div style={{ marginTop: 14, maxWidth: 360 }}>
             {servingMode == null ? (
-              // An unpinned view sends no fabric, so naming one here would
+              // An unpinned mode sends no fabric, so naming one here would
               // decide the deployment the page just left to the service.
               <div style={{ fontSize: 13, color: '#3c3f42' }}>
-                The service picks aggregated or prefill/decode and its own default fabric.
-                Choose Disaggregated to name a fabric.
+                The service chooses the fabric.
               </div>
             ) : (
               <>
                 <label className={styles.fieldLabel} htmlFor="recommend-network-fabric">Inter-node fabric</label>
                 <FormSelect
                   id="recommend-network-fabric"
-                  // Show what the request will submit. An aggregated view sends an
+                  // Show what the request will submit. An aggregated mode sends an
                   // explicit null even when a fabric name is still remembered, so
                   // displaying the remembered name would claim a topology the
                   // request does not use.
@@ -1144,16 +1186,16 @@ export default function Sizing() {
                 <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 4 }}>
                   {disaggregatedView
                     ? networkFabric === null && defaultNetworkFabric
-                      ? `${defaultNetworkFabric} is the simulator's default; choose another fabric or None for aggregate-only search.`
-                      : 'The simulator searches aggregate and P/D candidates using this fabric.'
-                    : 'The aggregated view sends no fabric, so sizing and the Pareto frontier both ask for aggregated candidates only.'}
+                      ? `${defaultNetworkFabric} is the simulator default; choose another fabric or None.`
+                      : 'Aggregated and P/D candidates are searched.'
+                    : 'No fabric is sent; the search is aggregated only.'}
                 </div>
               </>
             )}
           </div>
         )}
 
-        {/* Calculate and Pareto are alternative actions, not a chain. */}
+        {/* Pareto runs the sizing recommendation and the sweep together. */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }} data-tour="calculate">
           <Button
             variant="secondary"
@@ -1167,6 +1209,7 @@ export default function Sizing() {
               !model.includes('/') ||
               invalidISL ||
               invalidOSL ||
+              invalidPrefix ||
               invalidMaxSeqLen ||
               (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) ||
               catalogLoading ||
@@ -1178,11 +1221,16 @@ export default function Sizing() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidMaxSeqLen || (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
+            isDisabled={isLoading || simulatorUnavailable || modelUnsupported || !model.includes('/') || invalidISL || invalidOSL || invalidPrefix || invalidMaxSeqLen || (disaggregatedView && (invalidPrefillMaxSeqLen || invalidDecodeMaxSeqLen)) || catalogLoading || (isDemand ? invalidDemandRate : isCapacity ? invalidConcurrency : (invalidTTFT || invalidTpot || invalidConcurrency || invalidLatency))}
           >
             {isLoading && runMode === 'sizing' ? 'Calculating...' : 'Calculate'}
           </Button>
         </div>
+        {invalidPrefix && (
+          <div style={{ fontSize: 13, color: '#c9190b', marginTop: 6, textAlign: 'right' }}>
+            Shared prefix cannot exceed the input length or context limit.
+          </div>
+        )}
         {paretoDisabledReason && (
           <div style={{ fontSize: 13, color: '#3c3f42', marginTop: 6, textAlign: 'right' }}>
             {paretoDisabledReason}
@@ -1287,7 +1335,7 @@ export default function Sizing() {
         )}
         {!aggregateOnlyGoal && (
           <>
-            {' '}Deployment view: {describeDeploymentView(statedServingMode)}.
+            {' '}Serving mode: {describeServingMode(statedServingMode)}.
           </>
         )}
         {' '}<InfoStripAction onClick={() => setExpanded(expanded.includes('customize') ? expanded.filter(e => e !== 'customize') : [...expanded, 'customize'])}>
@@ -1299,33 +1347,18 @@ export default function Sizing() {
       {expanded.includes('customize') && (
         <div className={`${styles.card}`} style={{ marginBottom: 16 }}>
           <div className={styles.cardBody}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12, fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 600, color: 'var(--t)' }}>
-              Deployment view
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#3c3f42', whiteSpace: 'nowrap' }}>
+                Serving mode: <Term k="servingMode" />
+              </span>
               {!aggregateOnlyGoal && (
-                <span role="group" aria-label="Deployment view" style={{ display: 'contents' }}>
-                  <Button
-                    className="gc-preset-button"
-                    variant={servingModeChoice == null ? 'secondary' : 'tertiary'}
-                    size="sm"
-                    aria-pressed={servingModeChoice == null}
-                    onClick={() => {
-                      // Default narrows nothing, the fabric included. A
-                      // remembered "None" belongs to the aggregate-only view
-                      // being left; keeping it would also leave Disaggregated
-                      // disabled behind a selector this state hides.
-                      if (networkFabric === '') setNetworkFabric(null);
-                      setServingModeChoice(null);
-                      markInputsDirty();
-                    }}
-                  >
-                    Default
-                  </Button>
+                <span role="group" aria-label="Serving mode" style={{ display: 'contents' }}>
                   <Button
                     className="gc-preset-button"
                     variant={servingModeChoice === 'agg' ? 'secondary' : 'tertiary'}
                     size="sm"
                     aria-pressed={servingModeChoice === 'agg'}
-                    onClick={() => { setServingModeChoice('agg'); markInputsDirty(); }}
+                    onClick={() => toggleServingMode('agg')}
                   >
                     Aggregated
                   </Button>
@@ -1334,24 +1367,17 @@ export default function Sizing() {
                     variant={servingModeChoice === 'disagg' ? 'secondary' : 'tertiary'}
                     size="sm"
                     aria-pressed={servingModeChoice === 'disagg'}
-                    isDisabled={!disaggSelectable}
-                    onClick={() => {
-                      if (!disaggSelectable) return;
-                      setServingModeChoice('disagg');
-                      markInputsDirty();
-                    }}
+                    // A pinned mode stays pressable so its own press can clear
+                    // it, even while the form cannot submit that view.
+                    isDisabled={!disaggSelectable && servingModeChoice !== 'disagg'}
+                    onClick={() => toggleServingMode('disagg')}
                   >
                     Disaggregated
                   </Button>
                 </span>
               )}
-              {!aggregateOnlyGoal && servingModeChoice == null && (
-                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
-                  The service picks the deployment that answers the workload and reports it with the result.
-                </span>
-              )}
               {!aggregateOnlyGoal && disaggregatedView && (
-                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Prefill and decode have separate inputs in this view.</span>
+                <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>Separate prefill and decode inputs.</span>
               )}
               {!aggregateOnlyGoal && pinnedViewServedDifferently && (
                 <span style={{ fontSize: 13, fontWeight: 400, color: '#3c3f42' }}>
@@ -1364,8 +1390,8 @@ export default function Sizing() {
                   {!disaggSupported
                     ? `The selected simulator does not model prefill/decode disaggregation for ${modeledBackendLabel || 'the selected backend'}.`
                     : availableNetworks.length === 0
-                      ? 'No network fabric is available to model a prefill/decode search.'
-                      : 'Choose a network fabric to view prefill/decode inputs.'}
+                      ? 'No network fabric is available.'
+                      : 'Choose a network fabric first.'}
                 </span>
               )}
               {aggregateOnlyGoal && (
@@ -1446,11 +1472,22 @@ export default function Sizing() {
                 <label className={styles.fieldLabel}>Shared prefix tokens <Term k="prefix" /></label>
                 <input
                   type="number"
-                  className={styles.paramInput}
+                  className={invalidPrefix ? styles.paramInputInvalid : styles.paramInput}
                   value={prefixInput}
                   onChange={e => handlePrefixChange(e.target.value)}
+                  aria-invalid={invalidPrefix}
+                  aria-describedby={invalidPrefix ? 'recommend-shared-prefix-error' : undefined}
                   min={0}
                 />
+                {invalidPrefix && (
+                  <div
+                    id="recommend-shared-prefix-error"
+                    className={styles.helperText}
+                    style={{ color: '#c9190b' }}
+                  >
+                    Shared prefix cannot exceed the input length or context limit.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1462,7 +1499,10 @@ export default function Sizing() {
                     {capacityContextTokens.toLocaleString()} tokens
                   </div>
                   <div className={styles.helperText}>
-                    {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL, with no prefix-cache credit'}
+                    {maxSeqLen != null ? 'Max sequence length' : 'ISL + OSL peak'}
+                    {prefix > 0
+                      ? ` · requested shared prefix ${prefix.toLocaleString()} tokens`
+                      : ' · no shared prefix'}
                   </div>
                 </div>
                 <div>
@@ -1771,8 +1811,11 @@ export default function Sizing() {
                         {(result.capacity?.capacityTokens ?? 0).toLocaleString()} tokens
                       </span><br />
                       fits: <span className={styles.em}>{result.capacity?.capacitySequences ?? '—'} sequences</span><br />
+                      {result.capacity != null && result.capacity.sharedPrefixTokens > 0 && (
+                        <>shared prefix cached once per attention-DP rank: <span className={styles.em}>{result.capacity.sharedPrefixTokens.toLocaleString()} tokens</span><br /></>
+                      )}
                       {result.capacity?.shortfallTokens != null && (
-                        <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} tokens</span><br /></>
+                        <>shortfall: <span className={styles.em}>{result.capacity.shortfallTokens.toLocaleString()} {result.capacity.sharedPrefixTokens > 0 ? 'suffix ' : ''}tokens</span><br /></>
                       )}
                       {result.capacity?.minimumGpus != null && (
                         <>fewest GPUs for one sequence: <span className={styles.em}>{result.capacity.minimumGpus}</span><br /></>
@@ -2112,7 +2155,7 @@ export default function Sizing() {
         />
       )}
 
-      {/* ─── Pareto frontier (standalone action, exclusive of the sizing result) ─── */}
+      {/* ─── Pareto frontier (sweep plus the sizing recommendation collated in) ─── */}
       {runMode === 'pareto' && (
         <FrontierPanel
           state={frontier}
@@ -2130,8 +2173,7 @@ export default function Sizing() {
 
       {/* ─── Debug panel ─── */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}

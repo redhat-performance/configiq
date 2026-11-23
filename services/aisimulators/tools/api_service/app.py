@@ -51,6 +51,8 @@ from .blis.service import RecommendInput as BlisRecommendInput
 from .blis.service import estimate as run_blis_estimate
 from .blis.service import recommend as run_blis_recommend
 from .blis.service import supported_model_ids, supported_system_ids
+from .replay import ReplayRecorder, capture_into
+from .replay.capture import active_recorder
 
 # Optional observability + MCP, provided by the shared configiq package
 # (configiq[otel,mcp]). Kept out of the base install/container because otel
@@ -159,6 +161,10 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         # whether it must collect a fabric and tells request validation whether
         # "disagg" names a search this simulator can run without one.
         "disaggregation_requires_fabric": False,
+        # How a recorded run maps to a command. This simulator is called in
+        # process, so its record carries the equivalent CLI invocation rather
+        # than a process ConfigIQ started itself.
+        "execution": "in_process",
     },
     {
         "id": "blis",
@@ -178,6 +184,9 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         # catalog's default, named here so /networks can report it as the
         # user-visible assumption rather than the UI inventing a value.
         "default_network": "roce-200g",
+        # This simulator runs as a subprocess, so its record carries the exact
+        # command ConfigIQ executed.
+        "execution": "subprocess",
     },
 )
 _DEFAULT_SIMULATOR = next(item["id"] for item in _SIMULATORS if item["default"])
@@ -196,6 +205,51 @@ def _simulator_entry(simulator: str) -> dict[str, Any]:
 
 def _validate_simulator(simulator: str) -> str:
     return _simulator_entry(simulator)["id"]
+
+
+def _validate_prefix(req: "RecommendRequest | EstimateRequest") -> None:
+    """Reject a cached prefix longer than the prompt it is part of.
+
+    A prefix is a subset of ``isl``, not additional input. A longer prefix
+    would charge KV and prefill time for tokens the request never contains, so
+    it is refused with a message that names the two inputs instead of leaking
+    the simulator's internal wording. The same applies when the caller states a
+    smaller peak context: a prefix cannot fit in a sequence it does not fit.
+    """
+    if req.prefix > req.isl:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"prefix must not exceed isl: got prefix={req.prefix} and "
+                f"isl={req.isl}. A cached prefix is part of the input, not "
+                "additional to it."
+            ),
+        )
+    if req.max_seq_len is not None and req.prefix > req.max_seq_len:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"prefix must not exceed max_seq_len: got prefix={req.prefix} "
+                f"and max_seq_len={req.max_seq_len}. A cached prefix has to fit "
+                "in the context it is cached for."
+            ),
+        )
+    # A disaggregated estimate renders each pool with its own context length,
+    # so the prefix has to fit both of them. A sizing search with no mode may
+    # still evaluate P/D candidates, so a supplied pool limit counts there too.
+    if getattr(req, "mode", "agg") != "agg":
+        for field_name in ("prefill_max_seq_len", "decode_max_seq_len"):
+            limit = getattr(req, field_name, None)
+            if limit is not None and req.prefix > limit:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"prefix must not exceed {field_name}: got "
+                        f"prefix={req.prefix} and {field_name}={limit}. A "
+                        "cached prefix has to fit in the context it is cached "
+                        "for."
+                    ),
+                )
 
 
 # ─── Pydantic models ────────────────────────────────────────────────────────
@@ -245,7 +299,18 @@ class RecommendRequest(BaseModel):
     ttft: float | None = Field(default=None, description="TTFT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
     tpot: float | None = Field(default=None, description="TPOT target (ms). Required when sla_mode='enforce' unless request_latency is set.")
     request_latency: float | None = Field(default=None, description="E2E latency target (ms).")
-    prefix: int = Field(default=0, description="Prefix cache length.")
+    prefix: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cached prefix tokens shared by every request. A prefix is a subset "
+            "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
+            "uncached input tokens. It must also fit a supplied `max_seq_len`. "
+            "With objective='concurrency_capacity' each attention-DP rank caches "
+            "the prefix once, so additional resident sequences on that rank need "
+            "only their suffix."
+        ),
+    )
     database_mode: str = Field(default="HYBRID", description="Perf database mode.")
     top_n: int = Field(default=5, ge=1, le=20, examples=[2], description="Number of configs to return.")
     search_budget_seconds: int = Field(
@@ -477,7 +542,17 @@ class EstimateRequest(BaseModel):
     max_seq_len: int | None = Field(default=None, gt=0, description="Maximum sequence length for KV cache allocation.")
     prefill_max_seq_len: int | None = Field(default=None, gt=0, description="Prefill worker sequence-length override.")
     decode_max_seq_len: int | None = Field(default=None, gt=0, description="Decode worker sequence-length override.")
-    prefix: int = Field(default=0, ge=0, description="Cached prefix tokens.")
+    prefix: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Cached prefix tokens shared by every request. A prefix is a subset "
+            "of `isl`, not additional input: `prefix=1000, isl=4000` means 3000 "
+            "uncached input tokens. It must also fit a supplied `max_seq_len` "
+            "and, for a disaggregated request, each pool's sequence-length "
+            "override."
+        ),
+    )
     gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1, description="GPU memory fraction for KV-cache capacity.")
     prefill_gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
     decode_gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
@@ -665,13 +740,19 @@ class CapacityOutcome(BaseModel):
 
     ``capacity_sequences`` is the largest whole number of
     ``context_per_sequence_tokens``-long sequences the deployment's KV budget
-    holds. Sequences cannot span replicas, so the value is whole sequences per
-    replica multiplied by the replica count, not the pooled token total divided
-    by the context length. When the target does not fit, the response is still
-    200 and reports the best achievable configuration plus the shortfall.
+    holds. A shared prefix is cached once per attention-DP rank, so an
+    additional sequence needs only its suffix: ``shared_prefix_tokens`` is the
+    credit that was applied, and it is 0 when no prefix was requested or the
+    prefix is not shorter than the peak context. Sequences cannot span ranks or
+    replicas, so the value is whole sequences per rank multiplied by attention
+    DP and the replica count, not the pooled token total divided by the context
+    length. When the target does not fit, the response is still 200 and reports
+    the best achievable configuration plus the shortfall.
     """
     target_concurrency: int
     context_per_sequence_tokens: int
+    #: Prefix tokens each attention-DP rank caches. Zero means no credit.
+    shared_prefix_tokens: int
     capacity_tokens: int
     capacity_sequences: int
     fits: bool
@@ -791,6 +872,58 @@ class CapacityOption(BaseModel):
     capacity: CapacityOutcome
 
 
+class ReplayFileResponse(BaseModel):
+    """One input file of a recorded run, relative to the bundle root."""
+
+    path: str
+    contents: str
+
+
+class ReplayInvocationResponse(BaseModel):
+    """One runnable unit: a command and the input files it reads."""
+
+    id: str
+    label: str
+    #: Shell command, already quoted. Reads its input files from the bundle.
+    command: str
+    #: ``subprocess`` when this exact command ran; ``in_process`` when it is the
+    #: equivalent CLI invocation for code the service called directly.
+    execution: str
+    #: Optional grouping the panel uses for a sub-tab (a pool, a window, a
+    #: candidate). Absent when the run needs no grouping.
+    group: str | None = None
+    #: Set when this invocation reproduces one Pareto candidate, so a candidate
+    #: row copies the command for its own shape.
+    candidate_id: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    files: list[ReplayFileResponse] = Field(default_factory=list)
+
+
+class ReplayRecordResponse(BaseModel):
+    """What one request executed, when the caller asked for ``include=debug``.
+
+    The record travels with the response rather than being fetched by id: the
+    service runs several worker processes, so a later request has no guarantee
+    of reaching the worker that made the record.
+    """
+
+    endpoint: str
+    simulator: str
+    #: How the simulator ran: ``subprocess`` for an exact command,
+    #: ``in_process`` for an equivalent one.
+    execution: str
+    created_at: float
+    #: Releases and data revisions the run was made against. A value this
+    #: deployment cannot report is null.
+    versions: dict[str, str | None] = Field(default_factory=dict)
+    #: What the run chose, in one line, when it had a choice to make.
+    selection: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    invocations: list[ReplayInvocationResponse] = Field(default_factory=list)
+    #: ``run.sh``: every non-candidate invocation in execution order.
+    script: str | None = None
+
+
 class RecommendResponse(BaseModel):
     configs: list[RecommendConfig]
     chosen_mode: str
@@ -802,6 +935,9 @@ class RecommendResponse(BaseModel):
     capacity: CapacityOutcome | None = None
     capacity_options: list[CapacityOption] = Field(default_factory=list)
     sweep: SweepMeta | None = None
+    #: Present only when the request asked for `include=debug`: the commands and
+    #: input files that reproduce this answer.
+    debug: ReplayRecordResponse | None = None
 
 
 class EstimateResponse(BaseModel):
@@ -835,6 +971,9 @@ class EstimateResponse(BaseModel):
     provenance: SimulatorProvenance | None = None
     memory_unavailable_reason: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    #: Present only when the request asked for `include=debug`: the commands and
+    #: input files that reproduce this estimate.
+    debug: ReplayRecordResponse | None = None
 
 
 class MemoryRequest(BaseModel):
@@ -881,6 +1020,9 @@ class MemoryResponse(BaseModel):
     memory_breakdown: MemoryBreakdown
     tolerance_adjusted: dict[str, Any] | None = None
     simulator: str = "aisimulate"
+    #: Present only when the request asked for `include=debug`: the snippet that
+    #: reproduces this estimate, with the pins it was computed against.
+    debug: ReplayRecordResponse | None = None
 
 
 class _PredictionResult:
@@ -1563,6 +1705,15 @@ def _aisimulate_recommendation_config(
             "candidate_timeout_seconds": candidate_timeout_seconds,
         },
     }
+    recorder = active_recorder()
+    if recorder is not None:
+        recorder.recommendation(
+            raw,
+            # The response reports the window the whole ladder resolved; each
+            # attempt's own config is what reproduces that attempt.
+            label=f"GPU window {window_min_gpus}-{window_max_gpus}",
+            group="Search windows",
+        )
     return CoreRecommendationConfig.model_validate(raw)
 
 
@@ -1691,6 +1842,16 @@ def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
         },
     }
     return CorePredictionConfig.model_validate(raw)
+
+
+def _recorded_prediction_document(config: Any) -> dict[str, Any]:
+    """The validated prediction config as plain JSON data.
+
+    The runner consumes the SDK model, but the recorder writes the document
+    before the run, so the record needs a serializable copy. The model itself
+    is not JSON-serializable and made every `include=debug` prediction fail.
+    """
+    return config.model_dump(mode="json")
 
 
 def _metric(metrics: dict[str, Any], *names: str) -> float | None:
@@ -2199,6 +2360,7 @@ def _run_demand_windows(
     budget_exhausted = False
     run_id: str | None = None
     modes_searched: list[Literal["agg", "disagg"]] = []
+    recorder = active_recorder()
     for lower, upper in windows:
         remaining = deadline - time.monotonic()
         if attempted and remaining < _DEMAND_MIN_WINDOW_S:
@@ -2221,6 +2383,7 @@ def _run_demand_windows(
             ),
         )
         offered_trials += window_trials
+        mark = recorder.checkpoint() if recorder is not None else 0
         try:
             result = _run_aisimulate_recommendation(
                 req,
@@ -2233,6 +2396,12 @@ def _run_demand_windows(
             # The window is simply below the model's fit; the next, larger
             # window is the point of the ladder.
             if _is_no_viable_config(exc):
+                # A window that evaluated nothing is not part of the answer, so
+                # its command must not reach the replay script: `run.sh` stops
+                # at the first failure and would never reach the window that
+                # produced the result.
+                if recorder is not None:
+                    recorder.rollback(mark)
                 continue
             raise
         searched = True
@@ -2328,6 +2497,7 @@ def _run_min_gpus_windows(
     best_gpus: int | None = None
     modes_searched: list[Literal["agg", "disagg"]] = []
 
+    recorder = active_recorder()
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
             budget_exhausted = True
@@ -2351,6 +2521,7 @@ def _run_min_gpus_windows(
             ),
         )
         offered_trials += window_trials
+        mark = recorder.checkpoint() if recorder is not None else 0
         try:
             window_result = _run_aisimulate_recommendation(
                 req,
@@ -2365,6 +2536,11 @@ def _run_min_gpus_windows(
             # version fallback can retry it.
             if not _is_no_viable_config(exc):
                 raise
+            # The skipped window evaluated nothing, so the command it would
+            # have run does not belong in the record: `run.sh` stops at the
+            # first failure and would never reach the window that answered.
+            if recorder is not None:
+                recorder.rollback(mark)
             window_result = None
             if refining:
                 # No shape fits below the known-good candidate, so that
@@ -2464,11 +2640,27 @@ def _run_min_gpus_windows(
 def _capacity_context_tokens(req: RecommendRequest) -> int:
     """Peak context one sequence occupies: ``max_seq_len`` or ``ISL + OSL``.
 
-    Capacity is a residency question, so this is the full sequence length with
-    no prefix-cache credit. A shorter average prompt does not reduce the KV a
-    resident sequence can grow to.
+    Capacity is a residency question, so this stays the full sequence length: a
+    shorter average prompt does not reduce the KV one sequence can grow to.
+    A shared prefix does not shorten this peak either. It is credited once per
+    attention-DP rank, so an *additional* resident sequence needs only its own
+    suffix; see :func:`_capacity_prefix_credit` and ``_CapacityCandidate``.
     """
     return int(req.max_seq_len or (req.isl + req.osl))
+
+
+def _capacity_prefix_credit(req: RecommendRequest, context_tokens: int) -> int:
+    """Prefix tokens each attention-DP rank caches for its resident sequences.
+
+    A rank has its own KV budget and caches the shared prefix once for all the
+    sequences it holds, so each resident sequence then needs only the suffix
+    after it. Credit nothing when no prefix is requested, or when the prefix is
+    not shorter than the peak context: such a prefix cannot reduce the space an
+    additional sequence needs.
+    """
+    if req.prefix <= 0 or req.prefix >= context_tokens:
+        return 0
+    return int(req.prefix)
 
 
 def _gpu_window_label(lower: int, upper: int) -> str:
@@ -2517,6 +2709,8 @@ class _CapacityCandidate:
     shape: _CapacityShape
     replicas: int
     context_tokens: int
+    #: Shared prefix tokens each engine rank caches once for its sequences.
+    prefix_tokens: int = 0
 
     @property
     def total_gpus(self) -> int:
@@ -2527,11 +2721,24 @@ class _CapacityCandidate:
         return self.shape.tokens_per_replica * self.replicas
 
     @property
+    def suffix_tokens(self) -> int:
+        """KV an additional resident sequence needs after the shared prefix."""
+        return self.context_tokens - self.prefix_tokens
+
+    @property
     def capacity_sequences(self) -> int:
-        # A replica is a separate engine: a sequence cannot use KV space from
-        # another replica. Count whole sequences per replica, then scale by the
-        # replica count instead of dividing the pooled token total.
-        return (self.shape.tokens_per_replica // self.context_tokens) * self.replicas
+        # Each attention-DP rank has its own KV budget, and a sequence cannot
+        # use KV space from another rank or replica. Count whole sequences per
+        # rank, then scale by attention DP and the replica count instead of
+        # dividing the pooled token total.
+        #
+        # Prefix caching stores the shared prefix once on each rank, so only
+        # the suffix is charged per additional sequence:
+        # (per-rank tokens - prefix) // (context - prefix). Holding one
+        # sequence still costs the full context, because the prefix alone is
+        # not a whole resident sequence.
+        available = max(0, self.shape.per_rank_tokens - self.prefix_tokens)
+        return (available // self.suffix_tokens) * self.shape.dp * self.replicas
 
 
 @dataclass(frozen=True)
@@ -2556,6 +2763,16 @@ class _DisaggCapacityCandidate:
     @property
     def capacity_sequences(self) -> int:
         return self.decode.capacity_sequences
+
+    @property
+    def prefix_tokens(self) -> int:
+        """Shared prefix tokens each decode rank caches for its sequences."""
+        return self.decode.prefix_tokens
+
+    @property
+    def suffix_tokens(self) -> int:
+        """KV an additional resident decode sequence needs after the prefix."""
+        return self.decode.suffix_tokens
 
 
 def _capacity_shapes(
@@ -2746,6 +2963,7 @@ def _capacity_aggregate_candidates(
     context_tokens: int,
     lower_gpus: int,
     upper_gpus: int,
+    prefix_tokens: int = 0,
 ) -> tuple[list[_CapacityCandidate], list[_CapacityCandidate], int | None]:
     """Enumerate aggregate deployments around the minimum for each shape.
 
@@ -2767,8 +2985,11 @@ def _capacity_aggregate_candidates(
         if per_worker * min_replicas > upper_gpus:
             continue
         # Sequences cannot span replicas, so only whole per-replica sequences
-        # count. A shape that cannot hold one sequence is not a candidate.
-        per_replica_sequences = shape.tokens_per_replica // context_tokens
+        # count. A shape that cannot hold one sequence is not a candidate. The
+        # probe applies the shared-prefix credit exactly as the candidates do.
+        per_replica_sequences = _CapacityCandidate(
+            shape, 1, context_tokens, prefix_tokens
+        ).capacity_sequences
         if per_replica_sequences < 1:
             continue
         single_gpus = per_worker * min_replicas
@@ -2784,9 +3005,13 @@ def _capacity_aggregate_candidates(
             # single shape is feasible.
             for replicas in sorted({first_fitting, first_fitting + 1, first_fitting + 2, max_replicas}):
                 if first_fitting <= replicas <= max_replicas:
-                    fitting.append(_CapacityCandidate(shape, replicas, context_tokens))
+                    fitting.append(
+                        _CapacityCandidate(shape, replicas, context_tokens, prefix_tokens)
+                    )
         if max_replicas >= min_replicas:
-            best_effort.append(_CapacityCandidate(shape, max_replicas, context_tokens))
+            best_effort.append(
+                _CapacityCandidate(shape, max_replicas, context_tokens, prefix_tokens)
+            )
 
     # Collapse duplicate shape/replica pairs while preserving deterministic order.
     fitting = list(dict.fromkeys(fitting))
@@ -2869,7 +3094,12 @@ def _capacity_disagg_candidates(
     if not prefill_tokens or not decode_tokens:
         return []
 
-    def candidate_for(worker: Any, tokens: dict[Any, int]) -> _CapacityCandidate:
+    def candidate_for(
+        worker: Any,
+        tokens: dict[Any, int],
+        *,
+        prefix_tokens: int = 0,
+    ) -> _CapacityCandidate:
         shape = worker.shape
         return _CapacityCandidate(
             shape=_CapacityShape(
@@ -2881,15 +3111,19 @@ def _capacity_disagg_candidates(
             ),
             replicas=worker.replicas,
             context_tokens=context_tokens,
+            prefix_tokens=prefix_tokens,
         )
 
+    # The decode pool holds the resident sequences, so it is the side that
+    # credits the shared prefix. Prefill only holds one sequence transiently.
+    prefix_tokens = _capacity_prefix_credit(req, context_tokens)
     candidates: list[_DisaggCapacityCandidate] = []
     seen: set[tuple[int, int, int, int, int, int]] = set()
     for pair in pairs:
         if pair.prefill.shape not in prefill_tokens or pair.decode.shape not in decode_tokens:
             continue
         prefill = candidate_for(pair.prefill, prefill_tokens)
-        decode = candidate_for(pair.decode, decode_tokens)
+        decode = candidate_for(pair.decode, decode_tokens, prefix_tokens=prefix_tokens)
         if decode.capacity_sequences < target_concurrency:
             continue
         total = prefill.total_gpus + decode.total_gpus
@@ -3139,6 +3373,7 @@ def _capacity_prediction(
             backend_version=backend_version,
             isl=req.isl,
             osl=req.osl,
+            prefix=req.prefix,
             max_seq_len=req.max_seq_len,
             max_num_seqs=max(1, math.ceil(target_concurrency / decode.replicas)),
             mode="disagg",
@@ -3171,6 +3406,7 @@ def _capacity_prediction(
             backend_version=backend_version,
             isl=req.isl,
             osl=req.osl,
+            prefix=req.prefix,
             max_seq_len=req.max_seq_len,
             max_num_seqs=per_replica,
             tp_size=candidate.shape.tp,
@@ -3371,21 +3607,23 @@ def _capacity_option_outcome(
     unavailable_reason: str | None,
 ) -> CapacityOutcome:
     fits = candidate.capacity_sequences >= target_concurrency
+    short_by = max(0, target_concurrency - candidate.capacity_sequences)
     common = {
         "target_concurrency": target_concurrency,
         "context_per_sequence_tokens": context_tokens,
+        # The credit actually applied per rank. Zero when no prefix was
+        # requested or it was not shorter than the peak context.
+        "shared_prefix_tokens": candidate.prefix_tokens,
         "capacity_tokens": candidate.capacity_tokens,
         "capacity_sequences": candidate.capacity_sequences,
         "fits": fits,
-        "shortfall_sequences": (
-            None if fits else max(0, target_concurrency - candidate.capacity_sequences)
-        ),
-        # Tokens belonging to the sequences that do not fit. The aggregate pool
-        # can exceed `target * context_tokens` while still not holding whole
-        # sequences, because unused KV in one replica cannot serve another.
-        "shortfall_tokens": (
-            None if fits else max(0, target_concurrency - candidate.capacity_sequences) * context_tokens
-        ),
+        "shortfall_sequences": None if fits else short_by,
+        # Tokens belonging to the sequences that do not fit. With a shared
+        # prefix, each missing sequence needs only its suffix, so the shortfall
+        # is measured in suffix tokens. The aggregate pool can exceed
+        # `target * context_tokens` while still not holding whole sequences,
+        # because unused KV in one replica cannot serve another.
+        "shortfall_tokens": None if fits else short_by * candidate.suffix_tokens,
         "minimum_gpus": minimum_gpus,
         "evaluated_shapes": evaluated_shapes,
         "feasible_shapes": feasible_shapes,
@@ -3625,6 +3863,7 @@ def _run_capacity_recommendation(
             context_tokens=context_tokens,
             lower_gpus=lower_gpus,
             upper_gpus=upper_gpus,
+            prefix_tokens=_capacity_prefix_credit(req, context_tokens),
         )
         if minimum_gpus is None:
             raise HTTPException(
@@ -3805,14 +4044,18 @@ def _run_pareto_recommendation(req: RecommendRequest) -> tuple[Any, tuple[int, i
 
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
     from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config.cli import CorePredictionConfig
     from aisimulate.sweeper.replay import ReplayOutputRequirements
 
     with _with_model_config(req.model_path, req.model_config_data) as effective_path:
         prediction_req = req.model_copy(update={"model_path": effective_path})
-        config = CorePredictionConfig.model_validate(
-            _aisimulate_prediction_config(prediction_req)
-        )
+        config = _aisimulate_prediction_config(prediction_req)
+        recorder = active_recorder()
+        if recorder is not None:
+            recorder.prediction(
+                _recorded_prediction_document(config),
+                label="Prediction",
+                include_memory_detail="memory" in include,
+            )
         spec = prediction_to_replay_spec(config)
         runner = _aisimulate_runner_factory().create(worker_id=0)
         report = runner.run(
@@ -3940,6 +4183,7 @@ def _run_with_version_fallback(
 
     attempted: list[str | None] = []
     cause: BaseException | None = None
+    recorder = active_recorder()
     for index, version in enumerate(ordered[:_VERSION_FALLBACK_ATTEMPTS]):
         # The first attempt always runs; a retry must fit in what is left of
         # the request-wide budget instead of restarting it.
@@ -3947,9 +4191,14 @@ def _run_with_version_fallback(
             break
         req.backend_version = version
         attempted.append(version)
+        mark = recorder.checkpoint() if recorder is not None else 0
         try:
             result = run()
         except Exception as error:
+            # A failed attempt is not part of the answer. Drop its artifacts so
+            # the record holds the command that worked, not the one that did not.
+            if recorder is not None:
+                recorder.rollback(mark)
             if not _is_perf_data_gap(error):
                 raise
             cause = error
@@ -4092,28 +4341,39 @@ def _build_memory_breakdown(
     max_seq_len: int | None = None,
     memory_fraction: float | None = None,
     attention_dp: int = 1,
+    replay_label: str | None = None,
+    replay_group: str | None = None,
+    replay_recorder: ReplayRecorder | None = None,
 ) -> MemoryBreakdown | None:
+    kwargs = {
+        "model_path": model_path,
+        "system": system,
+        "backend": _sdk_backend_id(backend),
+        "backend_version": backend_version,
+        "max_num_tokens": max_seq_len or isl + osl,
+        "max_batch_size": concurrency,
+        "memory_fraction_kind": _backend_memory_fraction_kind(backend),
+        "memory_fraction_value": memory_fraction or _backend_memory_fraction(backend, backend_version),
+        "tp_size": tp,
+        "pp_size": pp,
+        "attention_dp_size": attention_dp,
+        "moe_tp_size": moe_tp,
+        "moe_ep_size": moe_ep,
+        "gemm_quant_mode": gemm_quant if gemm_quant and gemm_quant != "half" else None,
+        "kvcache_quant_mode": kvcache_quant if kvcache_quant and kvcache_quant != "half" else None,
+    }
+    # Only the calls whose numbers the reader needs recorded ask for it; the
+    # capacity path simulates many options and records nothing.
     try:
-        raw = estimate_kv_cache(
-            model_path=model_path,
-            system=system,
-            backend=_sdk_backend_id(backend),
-            backend_version=backend_version,
-            max_num_tokens=max_seq_len or isl + osl,
-            max_batch_size=concurrency,
-            memory_fraction_kind=_backend_memory_fraction_kind(backend),
-            memory_fraction_value=memory_fraction or _backend_memory_fraction(backend, backend_version),
-            tp_size=tp,
-            pp_size=pp,
-            attention_dp_size=attention_dp,
-            moe_tp_size=moe_tp,
-            moe_ep_size=moe_ep,
-            gemm_quant_mode=gemm_quant if gemm_quant and gemm_quant != "half" else None,
-            kvcache_quant_mode=kvcache_quant if kvcache_quant and kvcache_quant != "half" else None,
-        )
+        raw = estimate_kv_cache(**kwargs)
     except Exception:
         logger.debug("memory breakdown unavailable for %s on %s", model_path, system)
         return None
+    # Recorded only once the estimate succeeded: an invocation whose snippet
+    # would fail is not part of the answer, and `run.sh` stops at the first
+    # failure, so a best-effort miss must leave no memory step behind.
+    if replay_recorder is not None and replay_label is not None:
+        replay_recorder.memory(kwargs, label=replay_label, group=replay_group)
 
     breakdown = raw.get("memory_breakdown") or {}
     return MemoryBreakdown(
@@ -4327,6 +4587,114 @@ def _parse_include(include: str | None) -> set[str]:
     return {s.strip().lower() for s in include.split(",")}
 
 
+def _env_value(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
+
+
+def _replay_versions() -> dict[str, str | None]:
+    """Pin the releases and data revisions that shaped a recorded run.
+
+    A command is only reproducible against the same simulator build and the
+    same performance data, so the record names every pin it was run with.
+    Values this deployment cannot report stay null instead of being guessed.
+    """
+    return {
+        "aisimulate": _installed_aisimulate_version(),
+        "aisimulate_commit": _installed_aisimulate_commit(),
+        "blis": blis_release(),
+        "blis_commit": blis_commit(),
+        "blis_image": _env_value("BLIS_IMAGE"),
+        "blis_catalog_commit": _env_value("BLIS_CATALOG_COMMIT"),
+        "blis_registry_commit": _env_value("BLIS_REGISTRY_COMMIT"),
+    }
+
+
+def _new_recorder(
+    req: Any,
+    *,
+    endpoint: str,
+    simulator: str | None = None,
+) -> ReplayRecorder:
+    """A recorder for one request.
+
+    ``execution`` comes from the simulator registry rather than from a check on
+    the simulator's name here: the registry is the one place that knows how a
+    simulator runs.
+    """
+    entry = _simulator_entry(simulator or req.simulator)
+    return ReplayRecorder(
+        endpoint=endpoint,
+        simulator=entry["id"],
+        execution=entry["execution"],
+        versions=_replay_versions(),
+        model_path=req.model_path,
+        model_config=req.model_config_data,
+    )
+
+
+def _replay_record(recorder: ReplayRecorder | None) -> ReplayRecordResponse | None:
+    """The artifacts of this request, or None when none were kept.
+
+    Best-effort by design: a simulation that succeeded must not fail because its
+    description could not be built. An unbuildable or oversized record leaves
+    ``debug`` null, which reads the same as a request that has no single command
+    of its own.
+    """
+    if recorder is None:
+        return None
+    try:
+        record = recorder.build()
+    except Exception:
+        logger.exception("Could not build a replay record")
+        return None
+    if record is None:
+        return None
+    return ReplayRecordResponse(
+        endpoint=record.endpoint,
+        simulator=record.simulator,
+        execution=record.execution,
+        created_at=record.created_at,
+        versions=dict(record.versions),
+        selection=record.selection,
+        notes=list(record.notes),
+        invocations=[
+            ReplayInvocationResponse(
+                id=invocation.id,
+                label=invocation.label,
+                command=invocation.command,
+                execution=invocation.execution,
+                group=invocation.group,
+                candidate_id=invocation.candidate_id,
+                notes=list(invocation.notes),
+                files=[
+                    ReplayFileResponse(path=item.path, contents=item.contents)
+                    for item in invocation.files
+                ],
+            )
+            for invocation in record.invocations
+        ],
+        script=record.script,
+    )
+
+
+def _record_selection(
+    recorder: ReplayRecorder | None,
+    config: RecommendConfig | None,
+    *,
+    mode: str,
+    detail: str | None = None,
+) -> None:
+    """Say what the run chose, in the one line a record header can carry."""
+    if recorder is None:
+        return
+    gpus = getattr(config, "total_gpus_needed", None) if config is not None else None
+    parts = [f"{gpus} GPUs" if gpus else "GPU count not reported", mode]
+    if detail:
+        parts.append(detail)
+    recorder.select(", ".join(parts))
+
+
 # ─── App ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -4515,12 +4883,23 @@ def startup_event():
 @app.post("/recommend")
 def post_recommend(
     req: RecommendRequest,
-    include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
+    include: str | None = Query(
+        default=None,
+        examples=["config,memory"],
+        description=(
+            "Comma-separated extras: config, memory, debug. `debug` returns the "
+            "commands and input files that reproduce this answer, inline in the "
+            "response."
+        ),
+    ),
 ):
     """Find optimal GPU configuration for a workload."""
     # Validate against the deployment's simulator registry so an unknown value
     # is an explicit 422, never a silent fall-through to another simulator.
     req.simulator = _validate_simulator(req.simulator)
+    _validate_prefix(req)
+    includes = _parse_include(include)
+    recorder = _new_recorder(req, endpoint="/recommend") if "debug" in includes else None
     if req.simulator == "blis":
         pareto_slots = _pareto_slots() if req.objective == "pareto" else None
         if pareto_slots is not None and not pareto_slots.acquire(blocking=False):
@@ -4531,7 +4910,12 @@ def post_recommend(
             )
         try:
             try:
-                outcome = _blis_recommend(req)
+                # Capacity is an enumeration, not one invocation: its probes are
+                # not a replay anyone would run, so the record stays empty here
+                # as it does for the AISimulate capacity branch.
+                captured = None if req.objective == "concurrency_capacity" else recorder
+                with capture_into(captured):
+                    outcome = _blis_recommend(req)
             except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
                 _handle_blis_error(e)
             except Exception as e:
@@ -4573,6 +4957,15 @@ def post_recommend(
                     "pareto_front": [],
                     "top_n": [],
                 }
+                _record_selection(
+                    recorder,
+                    configs[0] if configs else None,
+                    mode=configs[0].mode if configs else "agg",
+                    detail=(
+                        f"{len(candidates)} candidates, "
+                        f"{len(views.get('pareto_front') or [])} on the frontier"
+                    ),
+                )
                 return RecommendResponse(
                     configs=configs,
                     chosen_mode=configs[0].mode if configs else "agg",
@@ -4581,6 +4974,7 @@ def post_recommend(
                     candidates=candidates,
                     views=CandidateViews.model_validate(views),
                     sweep=sweep,
+                    debug=_replay_record(recorder),
                 )
             if not outcome.configs:
                 raise HTTPException(
@@ -4594,6 +4988,13 @@ def post_recommend(
                         status_code=422,
                         detail="BLIS did not report a capacity outcome.",
                     )
+                capacity_config = RecommendConfig.model_validate(outcome.configs[0])
+                _record_selection(
+                    recorder,
+                    capacity_config,
+                    mode=capacity_config.mode,
+                    detail=f"capacity for {req.target_concurrency} concurrent users",
+                )
                 return RecommendResponse(
                     configs=[
                         RecommendConfig.model_validate(config)
@@ -4604,6 +5005,7 @@ def post_recommend(
                     search_summary=outcome.search_summary,
                     capacity=CapacityOutcome.model_validate(vars(capacity)),
                     sweep=sweep,
+                    debug=_replay_record(recorder),
                 )
             # A non-demand BLIS outcome (or a test double) may not carry a
             # demand block at all.
@@ -4623,16 +5025,28 @@ def post_recommend(
                 if blis_demand is not None
                 else None
             )
+            blis_configs = [
+                RecommendConfig.model_validate(config)
+                for config in outcome.configs
+            ]
+            _record_selection(
+                recorder,
+                blis_configs[0] if blis_configs else None,
+                mode=str(outcome.configs[0].get("mode", "agg")),
+                detail=(
+                    f"{demand.achieved_rps} rps of {demand.target_rps} demanded"
+                    if demand is not None
+                    else None
+                ),
+            )
             return RecommendResponse(
-                configs=[
-                    RecommendConfig.model_validate(config)
-                    for config in outcome.configs
-                ],
+                configs=blis_configs,
                 chosen_mode=str(outcome.configs[0].get("mode", "agg")),
                 simulator="blis",
                 search_summary=outcome.search_summary,
                 demand=demand,
                 sweep=sweep,
+                debug=_replay_record(recorder),
             )
         finally:
             if pareto_slots is not None:
@@ -4657,7 +5071,6 @@ def post_recommend(
     fell_back_from: str | None = None
     demand_records: list[Any] = []
     sweep: SweepMeta | None = None
-    includes = _parse_include(include)
     try:
         if req.objective == "throughput_demand":
             # Demand sizing cannot rely on the SDK's smallest-first search
@@ -4665,11 +5078,12 @@ def post_recommend(
             # growing GPU window and stops at the first one that sustains
             # the offered rate. One deadline covers every version attempt.
             deadline = time.monotonic() + _demand_search_budget_seconds()
-            (demand_records, sweep), fell_back_from = _run_with_version_fallback(
-                req,
-                lambda: _run_demand_windows(req, deadline=deadline),
-                deadline=deadline,
-            )
+            with capture_into(recorder):
+                (demand_records, sweep), fell_back_from = _run_with_version_fallback(
+                    req,
+                    lambda: _run_demand_windows(req, deadline=deadline),
+                    deadline=deadline,
+                )
         elif req.objective == "concurrency_capacity":
             # Capacity is a deterministic enumeration over the aggregated
             # search space: no SLA-free min-GPU sweep objective exists, so
@@ -4678,20 +5092,22 @@ def post_recommend(
                 req, lambda: _run_capacity_recommendation(req, include=includes)
             )
         elif req.objective == "pareto":
-            (result, window), fell_back_from = _run_with_version_fallback(
-                req, lambda: _run_pareto_recommendation(req)
-            )
+            with capture_into(recorder):
+                (result, window), fell_back_from = _run_with_version_fallback(
+                    req, lambda: _run_pareto_recommendation(req)
+                )
         else:
             # The service resolves the whole min-GPU window ladder from the
             # model's fit floor; the request carries workload intent only. One
             # deadline covers fit discovery, every window, and every version
             # attempt, so a retry cannot exceed the gateway timeout.
             deadline = time.monotonic() + _min_gpus_search_budget_seconds()
-            (result, sweep), fell_back_from = _run_with_version_fallback(
-                req,
-                lambda: _run_min_gpus_windows(req, deadline=deadline),
-                deadline=deadline,
-            )
+            with capture_into(recorder):
+                (result, sweep), fell_back_from = _run_with_version_fallback(
+                    req,
+                    lambda: _run_min_gpus_windows(req, deadline=deadline),
+                    deadline=deadline,
+                )
     except Exception as e:
         _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
     finally:
@@ -4750,7 +5166,7 @@ def post_recommend(
         )
         for cfg in configs:
             cfg.warnings.insert(0, fallback_warning)
-    for cfg in configs:
+    for index, cfg in enumerate(configs):
         if req.objective == "concurrency_capacity":
             # `_run_capacity_recommendation` already built the winning shape's
             # extras, including `inclusive_tpot`. Rebuilding them here would
@@ -4758,18 +5174,25 @@ def post_recommend(
             # block, and apply the TPOT transform twice to the primary config,
             # which is shared with `capacity_options[0].config`.
             continue
+        # The replay record explains the answer, so it carries the primary
+        # config's memory inputs. Alternatives are one tab each in the result;
+        # replaying them all would bury the chosen one.
+        replay_label = "Memory estimate" if index == 0 else None
         if req.inclusive_tpot:
             cfg.tpot = _inclusive_tpot(cfg.ttft, cfg.tpot, req.osl)
         if cfg.prefill_config is not None or cfg.decode_config is not None:
-            for worker, context_length in (
-                (cfg.prefill_config, req.prefill_max_seq_len or req.max_seq_len),
-                (cfg.decode_config, req.decode_max_seq_len or req.max_seq_len),
+            for worker, context_length, role in (
+                (cfg.prefill_config, req.prefill_max_seq_len or req.max_seq_len, "Prefill"),
+                (cfg.decode_config, req.decode_max_seq_len or req.max_seq_len, "Decode"),
             ):
                 if worker and worker.tp and "memory" in includes:
                     worker.memory_breakdown = _build_memory_breakdown(
                         req.model_path, req.system, req.backend, worker.backend_version,
                         worker.tp, worker.pp or 1, req.isl, req.osl, worker.num_workers or 1,
                         max_seq_len=context_length,
+                        replay_label=f"{role} memory" if index == 0 else None,
+                        replay_group=role,
+                        replay_recorder=recorder,
                     )
             if "memory" in includes and cfg.memory is None:
                 cfg.memory = max(
@@ -4794,6 +5217,8 @@ def post_recommend(
                     req.model_path, req.system, req.backend, cfg.backend_version,
                     cfg.tp or 1, cfg.pp or 1, req.isl, req.osl,
                     cfg.bs or req.target_concurrency or cfg.concurrency or 1, max_seq_len=req.max_seq_len,
+                    replay_label=replay_label,
+                    replay_recorder=recorder,
                 )
                 if cfg.memory is None:
                     cfg.memory = _memory_breakdown_gb(cfg.memory_breakdown)
@@ -4813,6 +5238,18 @@ def post_recommend(
                     transfer_delay_modeled=is_disagg and transfer_modeled and bool(record.metrics),
                 )
             )
+            # Each row can copy the command that reproduces that candidate.
+            # The SDK keeps the resolved config on the record; a record without
+            # one (a failed trial) simply has no row-level replay.
+            document = getattr(record, "prediction_config", None)
+            if recorder is not None and document:
+                recorder.prediction(
+                    document,
+                    label=f"Candidate {record.candidate_id}",
+                    group="Candidates",
+                    candidate_id=record.candidate_id,
+                    include_memory_detail="memory" in includes,
+                )
         # ResultViews.pareto_front / top_n are plain candidate-ID string lists.
         # Guard a missing view object: an SDK build may return no views.
         if result.views is not None:
@@ -4820,6 +5257,38 @@ def post_recommend(
                 pareto_front=list(result.views.pareto_front),
                 top_n=list(result.views.top_n),
             )
+    if req.objective == "throughput_demand":
+        _record_selection(
+            recorder,
+            configs[0] if configs else None,
+            mode=chosen_mode,
+            detail=(
+                f"{demand.achieved_rps} rps of {demand.target_rps} demanded"
+                if demand is not None
+                else None
+            ),
+        )
+    elif req.objective == "pareto":
+        _record_selection(
+            recorder,
+            configs[0] if configs else None,
+            mode=chosen_mode,
+            detail=(
+                f"{len(candidate_responses)} candidates, "
+                f"{len(pareto_views.pareto_front) if pareto_views else 0} on the frontier"
+            ),
+        )
+    elif req.objective != "concurrency_capacity":
+        _record_selection(
+            recorder,
+            configs[0] if configs else None,
+            mode=chosen_mode,
+            detail=(
+                f"{sweep.evaluated} evaluated"
+                if sweep is not None and sweep.evaluated is not None
+                else None
+            ),
+        )
     return RecommendResponse(
         configs=configs,
         chosen_mode=chosen_mode,
@@ -4830,6 +5299,7 @@ def post_recommend(
         capacity=capacity,
         capacity_options=capacity_options,
         sweep=sweep,
+        debug=_replay_record(recorder),
     )
 
 
@@ -4957,7 +5427,15 @@ def _blis_recommend(req: RecommendRequest):
 
 def post_predict(
     req: EstimateRequest,
-    include: str | None = Query(default=None, examples=["config,memory"], description="Comma-separated extras: config, memory."),
+    include: str | None = Query(
+        default=None,
+        examples=["config,memory"],
+        description=(
+            "Comma-separated extras: config, memory, debug. `debug` returns the "
+            "commands and input files that reproduce this answer, inline in the "
+            "response."
+        ),
+    ),
 ):
     """Single-point performance prediction for a given parallelism configuration.
 
@@ -4969,7 +5447,10 @@ def post_predict(
     # Validate against the simulator registry so an unknown value is an
     # explicit 422 instead of falling through to another simulator's branch.
     req.simulator = _validate_simulator(req.simulator)
+    _validate_prefix(req)
     is_disagg = req.mode == "disagg"
+    includes = _parse_include(include)
+    recorder = _new_recorder(req, endpoint="/predict") if "debug" in includes else None
 
     # Resolve per-role parallelism, falling back to the top-level agg fields.
     p_tp = req.prefill_tp_size or req.tp_size
@@ -4994,9 +5475,10 @@ def post_predict(
             req.tp_size, req.attention_dp_size, req.moe_tp_size, req.moe_ep_size
         )
         try:
-            prediction, fell_back_from = _run_with_version_fallback(
-                req, lambda: _run_aisimulate_prediction(req, _parse_include(include))
-            )
+            with capture_into(recorder):
+                prediction, fell_back_from = _run_with_version_fallback(
+                    req, lambda: _run_aisimulate_prediction(req, includes)
+                )
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
     else:
@@ -5005,13 +5487,12 @@ def post_predict(
         agg_moe_tp, agg_moe_ep = req.moe_tp_size, req.moe_ep_size
         fell_back_from = None
         try:
-            prediction = _blis_estimate(req)
+            with capture_into(recorder):
+                prediction = _blis_estimate(req)
         except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
             _handle_blis_error(e)
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
-
-    includes = _parse_include(include)
 
     tpot = _metric(prediction.summary, "tpot_ms", "mean_tpot_ms", "itl_ms")
     if req.inclusive_tpot:
@@ -5071,6 +5552,7 @@ def post_predict(
             resp.decode_config = WorkerConfig.model_validate(prediction.decode_config)
         if "memory" in includes:
             resp.memory_unavailable_reason = "The selected simulator does not provide a KV-cache memory breakdown."
+        resp.debug = _replay_record(recorder)
         return resp
 
     if is_disagg:
@@ -5100,9 +5582,9 @@ def post_predict(
             # The decode pool may run on a different GPU system than prefill.
             decode_sys = req.decode_system or req.system
             with _with_model_config(req.model_path, req.model_config_data) as effective_path:
-                for worker, worker_sys in (
-                    (resp.prefill_config, req.system),
-                    (resp.decode_config, decode_sys),
+                for worker, worker_sys, role in (
+                    (resp.prefill_config, req.system, "Prefill"),
+                    (resp.decode_config, decode_sys, "Decode"),
                 ):
                     if worker and worker.tp:
                         worker.memory_breakdown = _build_memory_breakdown(
@@ -5115,7 +5597,11 @@ def post_predict(
                             memory_fraction=(req.prefill_gpu_memory_utilization if worker is resp.prefill_config else req.decode_gpu_memory_utilization)
                             or req.gpu_memory_utilization,
                             attention_dp=req.attention_dp_size,
+                            replay_label=f"{role} memory",
+                            replay_group=role,
+                            replay_recorder=recorder,
                         )
+        resp.debug = _replay_record(recorder)
         return resp
 
     if "config" in includes:
@@ -5137,8 +5623,11 @@ def post_predict(
                 agg_moe_tp, agg_moe_ep, max_seq_len=req.max_seq_len,
                 memory_fraction=req.gpu_memory_utilization,
                 attention_dp=req.attention_dp_size,
+                replay_label="Memory estimate",
+                replay_recorder=recorder,
             )
 
+    resp.debug = _replay_record(recorder)
     return resp
 
 
@@ -5147,7 +5636,10 @@ app.post("/estimate", response_model=EstimateResponse, deprecated=True)(post_pre
 
 
 @app.post("/memory", response_model=MemoryResponse)
-def post_memory(req: MemoryRequest):
+def post_memory(
+    req: MemoryRequest,
+    include: str | None = Query(default=None, examples=["debug"], description="Comma-separated extras: debug."),
+):
     """Estimate GPU memory breakdown for a model configuration."""
     simulator = _validate_simulator(req.simulator)
     if not _simulator_entry(simulator).get("memory"):
@@ -5155,29 +5647,41 @@ def post_memory(req: MemoryRequest):
             status_code=422,
             detail=f"The {simulator!r} simulator does not provide a KV-cache memory breakdown.",
         )
+    includes = _parse_include(include)
+    recorder = (
+        _new_recorder(req, endpoint="/memory", simulator=simulator)
+        if "debug" in includes
+        else None
+    )
     try:
-        with _with_model_config(req.model_path, req.model_config_data) as effective_path:
-            raw = estimate_kv_cache(
-                model_path=effective_path,
-                system=req.system,
-                backend=_sdk_backend_id(req.backend),
-                backend_version=req.backend_version,
-                max_num_tokens=req.max_num_tokens,
-                max_batch_size=req.max_batch_size,
-                memory_fraction_kind=req.memory_fraction_kind,
-                memory_fraction_value=req.memory_fraction_value,
-                tp_size=req.tp_size,
-                pp_size=req.pp_size,
-                attention_dp_size=req.attention_dp_size,
-                moe_tp_size=req.moe_tp_size,
-                moe_ep_size=req.moe_ep_size,
-                gemm_quant_mode=req.gemm_quant_mode,
-                moe_quant_mode=req.moe_quant_mode,
-                kvcache_quant_mode=req.kvcache_quant_mode,
-                fmha_quant_mode=req.fmha_quant_mode,
-                comm_quant_mode=req.comm_quant_mode,
-                tolerance_fraction=req.tolerance_fraction,
-            )
+        with (
+            capture_into(recorder),
+            _with_model_config(req.model_path, req.model_config_data) as effective_path,
+        ):
+            kwargs = {
+                "model_path": effective_path,
+                "system": req.system,
+                "backend": _sdk_backend_id(req.backend),
+                "backend_version": req.backend_version,
+                "max_num_tokens": req.max_num_tokens,
+                "max_batch_size": req.max_batch_size,
+                "memory_fraction_kind": req.memory_fraction_kind,
+                "memory_fraction_value": req.memory_fraction_value,
+                "tp_size": req.tp_size,
+                "pp_size": req.pp_size,
+                "attention_dp_size": req.attention_dp_size,
+                "moe_tp_size": req.moe_tp_size,
+                "moe_ep_size": req.moe_ep_size,
+                "gemm_quant_mode": req.gemm_quant_mode,
+                "moe_quant_mode": req.moe_quant_mode,
+                "kvcache_quant_mode": req.kvcache_quant_mode,
+                "fmha_quant_mode": req.fmha_quant_mode,
+                "comm_quant_mode": req.comm_quant_mode,
+                "tolerance_fraction": req.tolerance_fraction,
+            }
+            if recorder is not None:
+                recorder.memory(kwargs, label="Memory estimate")
+            raw = estimate_kv_cache(**kwargs)
     except Exception as e:
         _common_error_handler(e, "memory", req.model_path, req.backend, req.system)
 
@@ -5197,6 +5701,7 @@ def post_memory(req: MemoryRequest):
         ),
         tolerance_adjusted=raw.get("tolerance_adjusted"),
         simulator=simulator,
+        debug=_replay_record(recorder),
     )
 
 

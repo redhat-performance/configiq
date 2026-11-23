@@ -18,8 +18,8 @@ export const coveredSystems = [
 
 export const workloads: WorkloadPreset[] = [DEFAULT_WORKLOAD, ...appConfig.workloadPresets]
 
-// Workload presets set ISL/OSL only. Exercise each visible concurrency choice
-// independently where the page sends a concurrency target.
+// Workload presets set ISL/OSL/prefix. Exercise each visible concurrency
+// choice independently where the page sends a concurrency target.
 export const matrixConcurrencyPresets: readonly ConcurrencyPreset[] = appConfig.concurrencyPresets
 if (matrixConcurrencyPresets.length === 0) throw new Error('No concurrency presets in config.json')
 export const baselineConcurrencyPreset: ConcurrencyPreset = (() => {

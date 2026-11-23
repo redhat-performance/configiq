@@ -143,9 +143,7 @@ const predictCensus: RequestCensus = {
     decode_pp_size: { from: ['decodePp'] },
     decode_num_workers: { from: ['decodeWorkers'] },
     decode_batch_size: { from: ['decodeBatch'] },
-    requests_per_load_unit: {
-      notShareable: 'a per-load-unit hint other callers compute; the predict form never sets it',
-    },
+    requests_per_load_unit: { from: ['requestsPerLoadUnit'] },
     attention_dp_size: {
       notShareable: 'no control on this page; attention DP is set by other callers',
     },
