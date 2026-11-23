@@ -93,9 +93,10 @@ export function candidateForRecommendation(result: RecommendResult): Candidate {
 
 /**
  * A comparable identity for a deployment: its serving mode, GPU count, and
- * parallelism widths. Two rows with the same key describe the same deployment,
- * so the sizing recommendation is marked on the sweep's row instead of being
- * listed a second time.
+ * parallelism widths, including the expert widths that distinguish MoE
+ * deployments. Two rows with the same key describe the same deployment, so the
+ * sizing recommendation is marked on the sweep's row instead of being listed a
+ * second time.
  */
 function deploymentKey(candidate: Candidate): string {
   const topology = candidate.topology
@@ -107,10 +108,14 @@ function deploymentKey(candidate: Candidate): string {
       parallel(topology.prefill_pp),
       parallel(topology.prefill_attention_dp),
       parallel(topology.prefill_replicas),
+      parallel(topology.prefill_moe_tp),
+      parallel(topology.prefill_moe_ep),
       parallel(topology.decode_tp),
       parallel(topology.decode_pp),
       parallel(topology.decode_attention_dp),
       parallel(topology.decode_replicas),
+      parallel(topology.decode_moe_tp),
+      parallel(topology.decode_moe_ep),
     ])
   }
   return JSON.stringify([
@@ -120,6 +125,8 @@ function deploymentKey(candidate: Candidate): string {
     parallel(topology.pp),
     parallel(topology.attention_dp),
     parallel(topology.replicas),
+    parallel(topology.moe_tp),
+    parallel(topology.moe_ep),
   ])
 }
 
@@ -146,8 +153,50 @@ export function collateRecommendation(
   )
   if (match >= 0) {
     const collated = candidates.slice()
-    collated[match] = { ...collated[match], recommended: true }
+    // The row is shown as the sizing recommendation, so it displays the sizing
+    // response's numbers. Keeping the sweep's measurements here would show
+    // throughput and latency that the recommendation did not report.
+    collated[match] = {
+      ...recommended,
+      // Keep the sweep row's identity: the server's Pareto view and the row
+      // selection refer to this candidate id.
+      candidate_id: collated[match].candidate_id,
+      status: collated[match].status,
+      recommended: true,
+    }
     return collated
   }
   return [...candidates, { ...recommended, recommended: true }]
+}
+
+/**
+ * Which candidate the detail view should show after the candidate list changes.
+ *
+ * The panel auto-selects the recommendation so the row the user just asked for
+ * is inspected first. A recommendation that arrives after the sweep has already
+ * picked a row must replace that automatic pick, but it must never replace a
+ * row the user selected.
+ */
+export function resolveSelection(
+  selectedId: string | null,
+  feasible: Candidate[],
+  frontierIds: ReadonlySet<string>,
+  explicit: boolean,
+): string | null {
+  const recommendedId =
+    feasible.find(candidate => candidate.recommended)?.candidate_id ?? null
+  const present =
+    selectedId != null &&
+    feasible.some(candidate => candidate.candidate_id === selectedId)
+  if (present && (explicit || recommendedId == null || selectedId === recommendedId)) {
+    return selectedId
+  }
+  return (
+    recommendedId ??
+    [...frontierIds].find(id =>
+      feasible.some(candidate => candidate.candidate_id === id),
+    ) ??
+    feasible[0]?.candidate_id ??
+    null
+  )
 }

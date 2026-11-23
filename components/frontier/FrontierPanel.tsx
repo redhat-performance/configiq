@@ -24,7 +24,7 @@ import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import { computeFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
-import { RECOMMENDED_CANDIDATE_ID } from '@/lib/pareto/recommendation';
+import { RECOMMENDED_CANDIDATE_ID, resolveSelection } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -487,7 +487,13 @@ export function FrontierPanel({
 }: FrontierPanelProps) {
   const [axisMode, setAxisMode] = React.useState<AxisMode>('throughput_per_user');
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [selectionExplicit, setSelectionExplicit] = React.useState(false);
   const [showFailures, setShowFailures] = React.useState(false);
+
+  const selectCandidate = React.useCallback((id: string) => {
+    setSelectionExplicit(true);
+    setSelectedId(id);
+  }, []);
 
   const candidates = React.useMemo(
     () => (state.status === 'ready' ? state.candidates : []),
@@ -519,17 +525,17 @@ export function FrontierPanel({
   }, [axisMode, feasible, views]);
 
   React.useEffect(() => {
-    if (selectedId != null && candidates.some(candidate => candidate.candidate_id === selectedId)) return;
-    // Lead with the configuration the user was just recommended, so the row
-    // they came to see is the one inspected first. Fall back to a frontier
-    // point, then to anything feasible.
-    const next =
-      feasible.find(candidate => candidate.recommended)?.candidate_id ??
-      [...frontierIds].find(id => feasible.some(candidate => candidate.candidate_id === id)) ??
-      feasible[0]?.candidate_id ??
-      null;
+    const next = resolveSelection(
+      selectedId,
+      feasible,
+      frontierIds,
+      selectionExplicit,
+    );
+    if (next === selectedId) return;
     setSelectedId(next);
-  }, [candidates, feasible, frontierIds, selectedId]);
+    // The panel picked this row; only a later user click makes it explicit.
+    setSelectionExplicit(false);
+  }, [feasible, frontierIds, selectedId, selectionExplicit]);
 
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
@@ -555,7 +561,7 @@ export function FrontierPanel({
           candidates={failed}
           frontierIds={frontierIds}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={selectCandidate}
           caption={`Failed attempts for ${gpuLabel}. Kept for transparency; they are not plotted.`}
         />
       )}
@@ -676,7 +682,7 @@ export function FrontierPanel({
                     frontierIds={frontierIds}
                     axisMode={axisMode}
                     selectedId={selectedId}
-                    onSelect={setSelectedId}
+                    onSelect={selectCandidate}
                   />
                 </div>
                 <div className={styles.detailColumn}>
@@ -689,7 +695,7 @@ export function FrontierPanel({
                 candidates={feasible}
                 frontierIds={frontierIds}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={selectCandidate}
                 caption={`Feasible candidates for ${gpuLabel}. Select a row to inspect it on the chart.`}
               />
 

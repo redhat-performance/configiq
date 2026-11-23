@@ -6,6 +6,7 @@ import {
   RECOMMENDED_CANDIDATE_ID,
   candidateForRecommendation,
   collateRecommendation,
+  resolveSelection,
 } from './recommendation'
 
 function result(overrides: Partial<RecommendResult> = {}): RecommendResult {
@@ -175,8 +176,56 @@ describe('collateRecommendation', () => {
     expect(collated).toHaveLength(1)
     expect(collated[0].candidate_id).toBe('candidate-000001')
     expect(collated[0].recommended).toBe(true)
-    // The sweep's own measurements are kept; only the marker is added.
-    expect(collated[0].metrics.mean_ttft_ms).toBe(200)
+    // The row is the sizing recommendation, so it shows the sizing numbers
+    // rather than the sweep's measurements for the same deployment.
+    expect(collated[0].metrics).toEqual({
+      ttft_ms: 210,
+      tpot_ms: 24,
+      request_latency_ms: 12_000,
+    })
+    expect(collated[0].objectives).toEqual({
+      throughput_per_user: 14,
+      throughput_per_gpu: 225,
+    })
+  })
+
+  it('matches a sweep row whose expert widths are the same', () => {
+    const candidates = [
+      candidate({
+        topology: {
+          deployment_mode: 'agg',
+          tp: 4,
+          pp: 1,
+          attention_dp: 1,
+          replicas: 1,
+          moe_tp: 1,
+          moe_ep: 1,
+        },
+      }),
+    ]
+
+    expect(collateRecommendation(candidates, result())).toHaveLength(1)
+  })
+
+  it('does not match a deployment that differs only in expert parallelism', () => {
+    const candidates = [
+      candidate({
+        topology: {
+          deployment_mode: 'agg',
+          tp: 4,
+          pp: 1,
+          attention_dp: 1,
+          replicas: 1,
+          moe_tp: 2,
+          moe_ep: 2,
+        },
+      }),
+    ]
+
+    const collated = collateRecommendation(candidates, result())
+
+    expect(collated).toHaveLength(2)
+    expect(collated.filter(entry => entry.recommended)).toHaveLength(1)
   })
 
   it('adds the recommendation when the sweep evaluated no equivalent deployment', () => {
@@ -211,5 +260,41 @@ describe('collateRecommendation', () => {
     const recommended = collated.find(entry => entry.recommended)
     expect(recommended?.candidate_id).toBe(RECOMMENDED_CANDIDATE_ID)
     expect(recommended?.status).toBe('feasible')
+  })
+})
+
+describe('resolveSelection', () => {
+  const first = candidate({ candidate_id: 'first' })
+  const second = candidate({ candidate_id: 'second' })
+  const recommended = candidate({
+    candidate_id: RECOMMENDED_CANDIDATE_ID,
+    recommended: true,
+  })
+  const frontier = new Set(['first', 'second'])
+
+  it('keeps a row the user selected when the recommendation arrives', () => {
+    expect(resolveSelection('first', [first, second, recommended], frontier, true)).toBe('first')
+  })
+
+  it('replaces an automatic selection with a late recommendation', () => {
+    expect(resolveSelection('first', [first, second, recommended], frontier, false)).toBe(
+      RECOMMENDED_CANDIDATE_ID,
+    )
+  })
+
+  it('keeps an automatic selection when there is no recommendation', () => {
+    expect(resolveSelection('first', [first, second], frontier, false)).toBe('first')
+  })
+
+  it('re-selects when the selected row disappeared', () => {
+    expect(resolveSelection('gone', [recommended], frontier, true)).toBe(
+      RECOMMENDED_CANDIDATE_ID,
+    )
+  })
+
+  it('falls back to a frontier point, then to any feasible row', () => {
+    expect(resolveSelection(null, [first, second], new Set(['second']), false)).toBe('second')
+    expect(resolveSelection(null, [second], new Set(), false)).toBe('second')
+    expect(resolveSelection(null, [], new Set(), false)).toBeNull()
   })
 })
