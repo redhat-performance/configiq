@@ -179,16 +179,24 @@ function ReplayControl({ candidate, invocation, copied, failed, onCopy }: Replay
     );
   }
 
+  // A matched row keeps the sweep's command but shows the sizing response's
+  // figures, so the control must not present that command as reproducing them.
+  const sweepOnly = isSizingProjection(candidate);
+  const noun = sweepOnly ? 'Sweep command' : 'Replay command';
   const hint = copied
     ? 'Copied'
     : failed
       ? 'Copy failed — select the button to try again'
-      : 'Copy replay command and its input files';
+      : sweepOnly
+        ? 'Copies the sweep command that evaluated this deployment; the figures shown come from the sizing response.'
+        : 'Copy replay command and its input files';
   const label = copied
-    ? `Replay command copied for ${name}`
+    ? `${noun} copied for ${name}`
     : failed
-      ? `Replay command copy failed for ${name}`
-      : `Copy replay command for ${name}`;
+      ? `${noun} copy failed for ${name}`
+      : sweepOnly
+        ? `Copy sweep command for ${name}`
+        : `Copy replay command for ${name}`;
 
   return (
     <Tooltip content={hint}>

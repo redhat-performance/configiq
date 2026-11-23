@@ -129,6 +129,15 @@ describe('FrontierPanel candidate replay', () => {
     expect(host.textContent).toContain('Replay command for candidate-001 copied with its input files.');
   });
 
+  it('labels the sweep command when a matched row shows sizing figures', async () => {
+    await render(ready([
+      candidate({ provenance_sources: ['sizing recommendation'], recommended: true }),
+    ], replay()));
+
+    expect(button('Copy sweep command for candidate-001')).toBeDefined();
+    expect(button('Copy replay command for candidate-001')).toBeUndefined();
+  });
+
   it('shows a failed copy instead of silently keeping the copy icon', async () => {
     writeText.mockRejectedValueOnce(new Error('denied'));
     await render(ready([candidate()], replay()));
