@@ -23,6 +23,12 @@ interface TabStripProps {
   activeId: string | null;
   onSelect: (id: string) => void;
   variant: 'run' | 'group' | 'artifact';
+  /**
+   * The one region these tabs switch. Every strip picks a pane for the same
+   * panel, so they all name it rather than each claiming content that is not
+   * rendered. Undefined when there is no pane to control.
+   */
+  panelId?: string;
 }
 
 /** A tablist with arrow/Home/End movement, rendered only when it can switch. */
@@ -33,6 +39,7 @@ function TabStrip({
   activeId,
   onSelect,
   variant,
+  panelId,
 }: TabStripProps) {
   if (items.length < 2) return null;
 
@@ -72,7 +79,7 @@ function TabStrip({
             role="tab"
             id={`${idPrefix}-tab-${item.id}`}
             aria-selected={selected}
-            aria-controls={`${idPrefix}-panel-${item.id}`}
+            aria-controls={panelId}
             tabIndex={selected ? 0 : -1}
             data-tab-id={item.id}
             className={`${styles.tab} ${selected ? styles.tabSelected : ''}`}
@@ -122,8 +129,12 @@ export function DebugPanel({
   const pane = panes.find(candidate => candidate.id === paneId) ?? panes[0];
 
   const copy = async (target: DebugPane) => {
+    const clipboard = navigator.clipboard;
+    // Without the Clipboard API there is nothing to write, and reporting
+    // success would claim a copy that did not happen.
+    if (!clipboard) return;
     try {
-      await navigator.clipboard?.writeText(target.contents);
+      await clipboard.writeText(target.contents);
       setCopiedId(target.id);
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopiedId(null), COPY_FEEDBACK_MS);
@@ -134,7 +145,7 @@ export function DebugPanel({
 
   const hasTabStrip = panes.length > 1;
   const activeTabId = hasTabStrip && pane ? `${baseId}-artifact-tab-${pane.id}` : undefined;
-  const activePanelId = hasTabStrip && pane ? `${baseId}-artifact-panel-${pane.id}` : undefined;
+  const panePanelId = pane ? `${baseId}-pane` : undefined;
 
   return (
     <div className={styles.debugSection}>
@@ -171,6 +182,7 @@ export function DebugPanel({
             variant="run"
             items={runs.map(item => ({ id: item.id, label: item.badge ? `${item.label} · ${item.badge}` : item.label }))}
             activeId={run.id}
+            panelId={panePanelId}
             onSelect={(id) => {
               setRunId(id);
               setGroupId(null);
@@ -184,6 +196,7 @@ export function DebugPanel({
             variant="group"
             items={groups.map(item => ({ id: item, label: item }))}
             activeId={group}
+            panelId={panePanelId}
             onSelect={(id) => {
               setGroupId(id);
               setPaneId(null);
@@ -198,6 +211,7 @@ export function DebugPanel({
               items={panes.map(item => ({ id: item.id, label: item.label }))}
               activeId={pane?.id ?? null}
               onSelect={setPaneId}
+              panelId={panePanelId}
             />
             {pane && (
               <div className={styles.paneActions}>
@@ -217,7 +231,7 @@ export function DebugPanel({
           {pane && (
             <div
               role="tabpanel"
-              id={activePanelId}
+              id={panePanelId}
               aria-labelledby={activeTabId}
               className={styles.paneBody}
             >

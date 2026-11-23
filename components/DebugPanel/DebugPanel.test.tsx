@@ -152,6 +152,45 @@ describe('DebugPanel', () => {
     expect(host.querySelector('pre')?.textContent).toBe('{"role":"decode"}');
   });
 
+  it('points every tab at a panel that is rendered', async () => {
+    await render([
+      exchangeRun(),
+      {
+        id: 'pareto',
+        label: 'Pareto sweep',
+        panes: [{ id: 'command', label: 'Command', language: 'shell', contents: 'blis run' }],
+      },
+    ]);
+
+    const tabs = buttons().filter(button => button.getAttribute('role') === 'tab');
+    expect(tabs).toHaveLength(4);
+    for (const control of tabs) {
+      const target = control.getAttribute('aria-controls');
+      expect(target, `${control.textContent} names no panel`).toBeTruthy();
+      expect(document.getElementById(target!), `${control.textContent} names a missing panel`).not.toBeNull();
+    }
+
+    // The panel is labelled by the artifact tab that switched it.
+    const panel = host.querySelector('[role="tabpanel"]');
+    expect(document.getElementById(panel?.getAttribute('aria-labelledby') ?? '')).toBe(tab('Request'));
+
+    await click(tab('Pareto sweep'));
+    expect(document.getElementById(host.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby') ?? '')).toBeNull();
+    expect(host.querySelector('pre')?.textContent).toBe('blis run');
+  });
+
+  it('does not claim a copy when the clipboard is unavailable', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    await render([exchangeRun()]);
+
+    const copy = buttons().find(button => button.getAttribute('aria-label') === 'Copy Request');
+    expect(copy?.textContent).toBe('Copy');
+
+    await click(copy!);
+    expect(copy?.textContent).toBe('Copy');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it('moves between artifacts with the arrow keys', async () => {
     await render([exchangeRun()]);
 
