@@ -72,6 +72,15 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     sharedView: { kind: 'link', fields: Object.keys(validationCompareLink.fields) },
   },
   {
+    path: '/deploy',
+    name: 'Auto-deploy',
+    sharedView: {
+      kind: 'none',
+      reason:
+        'v1 ships without a link contract; the answer-first inputs (model, load, targets, free GPUs) become shareable when the page gains a deep link',
+    },
+  },
+  {
     path: '/',
     name: 'Home',
     sharedView: { kind: 'none', reason: 'the landing page links to the tools and holds no inputs' },
