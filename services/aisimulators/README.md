@@ -133,7 +133,9 @@ Each Pareto candidate's recorded invocation carries that candidate's
 `script` leaves candidate invocations out: running every candidate is not the
 sweep. A record holds at most 512 invocations, and a version-fallback attempt
 that failed is dropped from it — the record describes the run that produced the
-answer, not the ones that did not.
+answer, not the ones that did not. A GPU window the search skipped because the
+model did not fit is dropped the same way, so `run.sh` never stops before the
+window that answered.
 
 
 ## AISimulate backend versions

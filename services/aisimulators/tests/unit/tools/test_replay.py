@@ -207,9 +207,16 @@ def test_a_candidate_invocation_carries_the_id_its_row_uses():
 
 
 def test_candidate_commands_are_dropped_before_the_answer(monkeypatch):
-    monkeypatch.setattr(capture_module, "_max_record_bytes", lambda: 400)
     recorder = _recorder()
     recorder.prediction({"engine": {}}, label="Prediction")
+    # Calibrate against the answer's own record: the cap has to admit it
+    # including the JSON structure, and still be far below 20 candidates.
+    primary = recorder.build()
+    monkeypatch.setattr(
+        capture_module,
+        "_max_record_bytes",
+        lambda: primary.size_bytes() + 512,
+    )
     for index in range(20):
         recorder.prediction(
             {"engine": {"tp": index}},
@@ -431,3 +438,175 @@ def test_a_record_reports_the_size_it_adds_to_a_response():
     )
 
     assert record.size_bytes() > 0
+
+
+def test_the_size_cap_counts_the_escaping_json_adds():
+    # A scenario file is full of quotes; the record travels as JSON, so each
+    # one costs a second byte on the wire. Summing raw strings would let a
+    # record just under the cap overflow it in the response.
+    contents = '"' * 4000
+    record = ReplayRecord(
+        endpoint="/recommend",
+        simulator="blis",
+        execution="subprocess",
+        created_at=1000.0,
+        invocations=[
+            ReplayInvocation(
+                id="run",
+                label="Run",
+                command="./run.sh",
+                execution="subprocess",
+                files=[ReplayFile("scenario.json", contents)],
+            )
+        ],
+    )
+
+    assert record.size_bytes() >= 2 * len(contents)
+
+
+def test_the_prediction_document_is_plain_data_for_the_recorder():
+    # The recorder serializes the document before the run, so the record needs
+    # a JSON-safe copy; recording the SDK model itself made every
+    # `include=debug` prediction fail to serialize.
+    req = app_module.EstimateRequest(
+        model_path="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        isl=4000,
+        osl=1000,
+        tp_size=2,
+        batch_size=128,
+    )
+
+    document = app_module._recorded_prediction_document(
+        app_module._aisimulate_prediction_config(req)
+    )
+
+    assert json.loads(json.dumps(document))["engine"]["model"] == "Qwen/Qwen3-32B"
+
+
+def test_a_failed_memory_estimate_leaves_no_memory_step(monkeypatch):
+    # The breakdown is best-effort: a miss returns None, and the record must
+    # not keep an invocation whose snippet would make `run.sh` fail.
+    recorder = _recorder()
+    monkeypatch.setattr(app_module, "_backend_memory_fraction_kind", lambda backend: "of_free")
+    monkeypatch.setattr(
+        app_module, "_backend_memory_fraction", lambda backend, version=None: 0.9
+    )
+    arguments = {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "h200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "tp": 1,
+        "pp": 1,
+        "isl": 1024,
+        "osl": 128,
+        "concurrency": 8,
+        "replay_label": "Memory breakdown",
+        "replay_recorder": recorder,
+    }
+
+    def boom(**_kwargs):
+        raise RuntimeError("no memory model for these inputs")
+
+    monkeypatch.setattr(app_module, "estimate_kv_cache", boom)
+    with capture_into(recorder):
+        assert app_module._build_memory_breakdown(**arguments) is None
+    assert recorder.build() is None
+
+    # A successful estimate still keeps its step, after the numbers exist.
+    monkeypatch.setattr(
+        app_module,
+        "estimate_kv_cache",
+        lambda **_kwargs: {"memory_breakdown": {}, "total_kv_size_bytes": 0},
+    )
+    with capture_into(recorder):
+        assert app_module._build_memory_breakdown(**arguments) is not None
+    assert [item.label for item in recorder.build().invocations] == ["Memory breakdown"]
+
+
+# ── window ladders ───────────────────────────────────────────────────────────
+
+
+def _skipped_window_fake(recorder):
+    """A ladder step that records, then reports the window cannot hold the model."""
+
+    def fake(req, *, window, **_kwargs):
+        recorder.prediction(
+            {"engine": {"window": list(window)}},
+            label=f"GPU window {window[0]}-{window[1]}",
+        )
+        raise RuntimeError(f"NoViableParallelConfig: {window} is too small")
+
+    return fake
+
+
+def test_a_skipped_demand_window_leaves_no_command(monkeypatch):
+    # `run.sh` stops at the first failure, so a window that was skipped must
+    # not survive in the record ahead of the window that produced the answer.
+    recorder = _recorder(endpoint="/recommend")
+    req = app_module.RecommendRequest(
+        model_path="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        objective="throughput_demand",
+        sla_mode="none",
+        target_request_rate=10.0,
+        isl=2048,
+        osl=128,
+    )
+    windows = [(1, 2), (3, 4)]
+    skipped = _skipped_window_fake(recorder)
+
+    def fake(req, *, window, **_kwargs):
+        if window == windows[0]:
+            return skipped(req, window=window)
+        recorder.prediction({"engine": {"window": list(window)}}, label="GPU window 3-4")
+        return SimpleNamespace(candidates=[], counts=None, provenance=None)
+
+    monkeypatch.setattr(app_module, "_demand_gpu_windows", lambda req: windows)
+    monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+    with capture_into(recorder):
+        app_module._run_demand_windows(req)
+
+    record = recorder.build()
+    assert [invocation.label for invocation in record.invocations] == ["GPU window 3-4"]
+
+
+def test_a_skipped_min_gpu_window_leaves_no_command(monkeypatch):
+    recorder = _recorder(endpoint="/recommend")
+    req = app_module.RecommendRequest(
+        model_path="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend="vllm",
+        objective="min_gpus",
+        sla_mode="enforce",
+        target_concurrency=8,
+        ttft=1000,
+        tpot=30,
+    )
+    windows = [(1, 16), (17, 32)]
+    skipped = _skipped_window_fake(recorder)
+
+    def fake(req, *, window, **_kwargs):
+        if window == windows[0]:
+            return skipped(req, window=window)
+        recorder.prediction({"engine": {"window": list(window)}}, label="GPU window 17-32")
+        return SimpleNamespace(
+            candidates=[],
+            counts=None,
+            provenance=None,
+            selected_candidates=[SimpleNamespace(used_gpus=17)],
+        )
+
+    monkeypatch.setattr(app_module, "_max_candidate_gpus", lambda: 32)
+    monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **k: 1)
+    monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+
+    with capture_into(recorder):
+        app_module._run_min_gpus_windows(req)
+
+    record = recorder.build()
+    assert [invocation.label for invocation in record.invocations] == ["GPU window 17-32"]

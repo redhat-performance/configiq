@@ -1844,6 +1844,16 @@ def _aisimulate_prediction_config(req: EstimateRequest) -> dict[str, Any]:
     return CorePredictionConfig.model_validate(raw)
 
 
+def _recorded_prediction_document(config: Any) -> dict[str, Any]:
+    """The validated prediction config as plain JSON data.
+
+    The runner consumes the SDK model, but the recorder writes the document
+    before the run, so the record needs a serializable copy. The model itself
+    is not JSON-serializable and made every `include=debug` prediction fail.
+    """
+    return config.model_dump(mode="json")
+
+
 def _metric(metrics: dict[str, Any], *names: str) -> float | None:
     for name in names:
         value = metrics.get(name)
@@ -2350,6 +2360,7 @@ def _run_demand_windows(
     budget_exhausted = False
     run_id: str | None = None
     modes_searched: list[Literal["agg", "disagg"]] = []
+    recorder = active_recorder()
     for lower, upper in windows:
         remaining = deadline - time.monotonic()
         if attempted and remaining < _DEMAND_MIN_WINDOW_S:
@@ -2372,6 +2383,7 @@ def _run_demand_windows(
             ),
         )
         offered_trials += window_trials
+        mark = recorder.checkpoint() if recorder is not None else 0
         try:
             result = _run_aisimulate_recommendation(
                 req,
@@ -2384,6 +2396,12 @@ def _run_demand_windows(
             # The window is simply below the model's fit; the next, larger
             # window is the point of the ladder.
             if _is_no_viable_config(exc):
+                # A window that evaluated nothing is not part of the answer, so
+                # its command must not reach the replay script: `run.sh` stops
+                # at the first failure and would never reach the window that
+                # produced the result.
+                if recorder is not None:
+                    recorder.rollback(mark)
                 continue
             raise
         searched = True
@@ -2479,6 +2497,7 @@ def _run_min_gpus_windows(
     best_gpus: int | None = None
     modes_searched: list[Literal["agg", "disagg"]] = []
 
+    recorder = active_recorder()
     while lower <= upper <= ceiling:
         if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
             budget_exhausted = True
@@ -2502,6 +2521,7 @@ def _run_min_gpus_windows(
             ),
         )
         offered_trials += window_trials
+        mark = recorder.checkpoint() if recorder is not None else 0
         try:
             window_result = _run_aisimulate_recommendation(
                 req,
@@ -2516,6 +2536,11 @@ def _run_min_gpus_windows(
             # version fallback can retry it.
             if not _is_no_viable_config(exc):
                 raise
+            # The skipped window evaluated nothing, so the command it would
+            # have run does not belong in the record: `run.sh` stops at the
+            # first failure and would never reach the window that answered.
+            if recorder is not None:
+                recorder.rollback(mark)
             window_result = None
             if refining:
                 # No shape fits below the known-good candidate, so that
@@ -4019,20 +4044,18 @@ def _run_pareto_recommendation(req: RecommendRequest) -> tuple[Any, tuple[int, i
 
 def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
     from aisimulate.compiler import prediction_to_replay_spec
-    from aisimulate.config.cli import CorePredictionConfig
     from aisimulate.sweeper.replay import ReplayOutputRequirements
 
     with _with_model_config(req.model_path, req.model_config_data) as effective_path:
         prediction_req = req.model_copy(update={"model_path": effective_path})
-        document = _aisimulate_prediction_config(prediction_req)
+        config = _aisimulate_prediction_config(prediction_req)
         recorder = active_recorder()
         if recorder is not None:
             recorder.prediction(
-                document,
+                _recorded_prediction_document(config),
                 label="Prediction",
                 include_memory_detail="memory" in include,
             )
-        config = CorePredictionConfig.model_validate(document)
         spec = prediction_to_replay_spec(config)
         runner = _aisimulate_runner_factory().create(worker_id=0)
         report = runner.run(
@@ -4341,13 +4364,16 @@ def _build_memory_breakdown(
     }
     # Only the calls whose numbers the reader needs recorded ask for it; the
     # capacity path simulates many options and records nothing.
-    if replay_recorder is not None and replay_label is not None:
-        replay_recorder.memory(kwargs, label=replay_label, group=replay_group)
     try:
         raw = estimate_kv_cache(**kwargs)
     except Exception:
         logger.debug("memory breakdown unavailable for %s on %s", model_path, system)
         return None
+    # Recorded only once the estimate succeeded: an invocation whose snippet
+    # would fail is not part of the answer, and `run.sh` stops at the first
+    # failure, so a best-effort miss must leave no memory step behind.
+    if replay_recorder is not None and replay_label is not None:
+        replay_recorder.memory(kwargs, label=replay_label, group=replay_group)
 
     breakdown = raw.get("memory_breakdown") or {}
     return MemoryBreakdown(
@@ -4884,7 +4910,11 @@ def post_recommend(
             )
         try:
             try:
-                with capture_into(recorder):
+                # Capacity is an enumeration, not one invocation: its probes are
+                # not a replay anyone would run, so the record stays empty here
+                # as it does for the AISimulate capacity branch.
+                captured = None if req.objective == "concurrency_capacity" else recorder
+                with capture_into(captured):
                     outcome = _blis_recommend(req)
             except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
                 _handle_blis_error(e)

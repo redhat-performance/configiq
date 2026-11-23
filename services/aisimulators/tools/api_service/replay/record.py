@@ -11,7 +11,8 @@ Nothing here imports the simulators, and nothing here keeps state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass(frozen=True)
@@ -57,11 +58,10 @@ class ReplayRecord:
     script: str | None = None
 
     def size_bytes(self) -> int:
-        """The wire size of the artifacts, to bound what one response carries."""
-        total = len(self.script.encode("utf-8")) if self.script else 0
-        for invocation in self.invocations:
-            total += len(invocation.command.encode("utf-8"))
-            for item in invocation.files:
-                total += len(item.path.encode("utf-8"))
-                total += len(item.contents.encode("utf-8"))
-        return total
+        """The bytes this record adds to a response, as it will be serialized.
+
+        The record travels inline as JSON, so escaped quotes, backslashes and
+        newlines in a scenario file count against the cap; summing the raw
+        strings instead would let a record near the limit travel over it.
+        """
+        return len(json.dumps(asdict(self), ensure_ascii=False).encode("utf-8"))

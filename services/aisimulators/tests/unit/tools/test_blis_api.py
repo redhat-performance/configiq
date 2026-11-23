@@ -390,8 +390,20 @@ def test_blis_recommend_pareto_returns_candidates_views_and_enumerated_sweep():
     run_aisimulate.assert_not_called()
 
 
-def test_blis_recommend_capacity_returns_the_capacity_block():
-    outcome = SimpleNamespace(
+CAPACITY_BODY = {
+    "model_path": RECOMMEND_BODY["model_path"],
+    "system": RECOMMEND_BODY["system"],
+    "isl": RECOMMEND_BODY["isl"],
+    "osl": RECOMMEND_BODY["osl"],
+    "target_concurrency": 8,
+    "objective": "concurrency_capacity",
+    "sla_mode": "none",
+    "simulator": "blis",
+}
+
+
+def _capacity_outcome() -> SimpleNamespace:
+    return SimpleNamespace(
         configs=[{
             "total_gpus_needed": 2,
             "replicas_needed": 2,
@@ -426,16 +438,11 @@ def test_blis_recommend_capacity_returns_the_capacity_block():
             simulator="blis",
         ),
     )
-    body = {
-        "model_path": RECOMMEND_BODY["model_path"],
-        "system": RECOMMEND_BODY["system"],
-        "isl": RECOMMEND_BODY["isl"],
-        "osl": RECOMMEND_BODY["osl"],
-        "target_concurrency": 8,
-        "objective": "concurrency_capacity",
-        "sla_mode": "none",
-        "simulator": "blis",
-    }
+
+
+def test_blis_recommend_capacity_returns_the_capacity_block():
+    outcome = _capacity_outcome()
+    body = CAPACITY_BODY
     with (
         patch("tools.api_service.app._blis_recommend", return_value=outcome) as run_blis,
         patch("tools.api_service.app._run_aisimulate_recommendation") as run_aisimulate,
@@ -451,6 +458,23 @@ def test_blis_recommend_capacity_returns_the_capacity_block():
     assert payload["capacity_options"] == []
     run_blis.assert_called_once()
     run_aisimulate.assert_not_called()
+
+
+def test_blis_capacity_records_no_replay_even_when_debug_is_asked_for():
+    # A capacity search is an enumeration of probes, not one invocation to
+    # rerun, so there is nothing to replay and the recorder stays uninstalled.
+    observed: dict[str, object] = {}
+
+    def fake(request):
+        observed["recorder"] = app_module.active_recorder()
+        return _capacity_outcome()
+
+    with patch("tools.api_service.app._blis_recommend", side_effect=fake):
+        response = client.post("/recommend?include=debug", json=CAPACITY_BODY)
+
+    assert response.status_code == 200
+    assert observed["recorder"] is None
+    assert response.json()["debug"] is None
 
 
 def test_blis_capacity_rejects_an_explicit_fabric():
