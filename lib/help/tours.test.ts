@@ -18,6 +18,7 @@ const ROUTE_SOURCES: Record<string, string> = {
   '/gpu-explorer': 'app/gpu-explorer/GpuExplorer.tsx',
   '/hybrid-savings': 'app/hybrid-savings/HybridSavings.tsx',
   '/validation/compare': 'app/validation/compare/Compare.tsx',
+  '/validation/scorecard': 'app/validation/scorecard/SimulatorScorecard.tsx',
 };
 
 describe('tour registry', () => {

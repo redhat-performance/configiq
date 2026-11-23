@@ -13,6 +13,7 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
@@ -235,6 +236,20 @@ const compareCensus: RequestCensus = {
   },
 };
 
+const scorecardCensus: RequestCensus = {
+  page: '/validation/scorecard',
+  request: {},
+  viewOnly: {
+    metric: 'selects which published statistic slice to show; the request returns all of them',
+    statistic: 'selects a column of the published totals; not a request field',
+    releaseMatch: 'selects the matched or mixed slice the artifact already contains',
+    source: 'selects one measured source from the same artifact',
+    model: 'narrows rows the browser already holds; it never changes what is fetched',
+    gpu: 'narrows rows the browser already holds; it never changes what is fetched',
+    workload: 'narrows rows the browser already holds; it never changes what is fetched',
+  },
+};
+
 describe('every request key is accounted for by a link field', () => {
   it('/predict', () => {
     expect(
@@ -254,8 +269,13 @@ describe('every request key is accounted for by a link field', () => {
     ).toEqual([]);
   });
 
-  it('/validation/compare', () => {
-    // Both requests the page sends: resolving a selection, then loading the
+  it('/validation/scorecard', () => {
+    // The page reads one published artifact and narrows it in the browser, so
+    // its only keys are transport parameters, not view values.
+    expect(auditRequestCensus(Object.keys(scorecardLink.fields), scorecardCensus, {})).toEqual([]);
+  });
+
+  it('/validation/compare', () => {    // Both requests the page sends: resolving a selection, then loading the
     // measured rows for it.
     const resolve = Object.fromEntries(
       buildResolveParams(

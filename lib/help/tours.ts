@@ -306,6 +306,41 @@ export const HELP_TOURS: HelpTour[] = [
       },
     ],
   },
+  {
+    id: 'validation-scorecard',
+    route: '/validation/scorecard',
+    title: 'Simulator scorecard',
+    steps: [
+      {
+        target: '[data-tour="sources"]',
+        title: 'Both measured sources',
+        description:
+          'The scorecard scores every published cell from the Red Hat benchmark data and InferenceX, naming the revision each snapshot used.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="filters"]',
+        title: 'Narrow the comparison',
+        description:
+          'Choose TTFT or TPOT, the statistic, and whether to compare like-for-like engine releases. Model, GPU, and workload are separate dropdowns filled with the values the published snapshot contains.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="agreement"]',
+        title: 'Agreement by simulator',
+        description:
+          'Each simulator gets a score. MAPE is the headline, with MdAPE, p90, and bias beside it, plus a coverage bar counting every attempt.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="error"]',
+        title: 'Where the error sits',
+        description:
+          'The chart ranks the measured configurations with the largest error. Click the tile for the full table, including rows the chart leaves out.',
+        position: 'top',
+      },
+    ],
+  },
 ];
 
 /** Normalise a pathname for registry lookup: drop query, hash, trailing slash. */

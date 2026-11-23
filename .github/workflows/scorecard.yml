@@ -1,0 +1,149 @@
+name: Scorecard
+
+# Builds the simulator scorecard against the dev gateway and publishes the
+# derived artifact. The sweep is thousands of simulator calls, so it runs here
+# rather than on the dev host: a full run is a clean coverage signal instead of
+# a measurement taken while the dev deployment is also serving traffic.
+#
+# Prod is promoted from the dev snapshot at release time. There is no separate
+# prod sweep, and therefore no second answer to the same question.
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the artifact to Hugging Face
+        required: true
+        type: boolean
+        default: false
+      concurrency:
+        description: In-flight prediction calls
+        required: false
+        type: string
+        default: '6'
+  schedule:
+    - cron: '20 5 * * *'
+      timezone: America/New_York
+
+concurrency:
+  group: scorecard
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sweep:
+    if: github.repository == 'redhat-performance/configiq'
+    runs-on: ubuntu-latest
+    # A cold run is roughly 1,300 predictions at a few seconds each. The cache
+    # below means a warm run is a fraction of that.
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.19.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The prediction cache is keyed by simulator, simulator release, and
+      # request body, so a daily run only pays for new points or a new release.
+      - name: Restore prediction cache
+        uses: actions/cache@v4
+        with:
+          path: artifacts/scorecard/scorecard-cache.json
+          key: scorecard-cache-${{ github.run_id }}
+          restore-keys: |
+            scorecard-cache-
+
+      - name: Build the scorecard
+        env:
+          AISIMULATORS_GATEWAY_URL: https://aisimulators.configiq.dev
+          INFERENCEX_HF_TOKEN: ${{ secrets.INFERENCEX_HF_TOKEN }}
+        run: |
+          npm run scorecard:build -- \
+            --gateway "$AISIMULATORS_GATEWAY_URL" \
+            --channel dev \
+            --concurrency '${{ inputs.concurrency || 6 }}' \
+            --out artifacts/scorecard
+
+      - name: Summarize the snapshot
+        if: always()
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "artifacts/scorecard/scorecard-dev.json";
+            const out = process.env.GITHUB_STEP_SUMMARY;
+            if (!fs.existsSync(path)) {
+              fs.appendFileSync(out, "## Scorecard\n\nNo artifact was written.\n");
+              process.exit(0);
+            }
+            const summary = JSON.parse(fs.readFileSync(path, "utf8"));
+            const lines = [
+              "## Scorecard snapshot",
+              "",
+              `- Generated ${summary.generatedAt} in ${summary.durationSeconds}s`,
+              `- ${summary.answeredPoints} predicted of ${summary.attemptedPoints} attempted points`,
+              `- ${summary.cachedPoints} points reused from cache`,
+            ];
+            for (const simulator of summary.simulators) {
+              const totals = summary.totals.filter(
+                (total) => total.simulator === simulator.id && total.source === "all" && total.statistic === "mape",
+              );
+              for (const total of totals) {
+                lines.push(
+                  `- ${simulator.label} ${total.metric.toUpperCase()} MAPE ${(total.value * 100).toFixed(1)}%`
+                  + ` over ${total.configurations} configurations (${total.releaseMatch})`,
+                );
+              }
+            }
+            if (summary.incomplete.length > 0) {
+              lines.push("", "### Incomplete");
+              for (const item of summary.incomplete) lines.push(`- ${item.leg}: ${item.reason}`);
+            }
+            fs.appendFileSync(out, `${lines.join("\n")}\n`);
+          '
+
+      - name: Upload the artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecard-${{ github.run_id }}
+          path: |
+            artifacts/scorecard/scorecard-dev.json
+            artifacts/scorecard/scorecard-points-dev.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: '0.12.18'
+          enable-cache: true
+
+      - name: Install dataset dependencies
+        run: uv sync --locked --group tested-models
+
+      - name: Publish
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          ((github.event_name == 'workflow_dispatch' && inputs.publish) ||
+           (github.event_name == 'schedule' && vars.SCORECARD_PUBLISH_ENABLED == 'true'))
+        env:
+          HF_OIDC_RESOURCE: datasets/${{ vars.SCORECARD_DATASET_REPO || 'redhat-performance/configiq-simulator-scorecard' }}
+          SCORECARD_DATASET_REPO: ${{ vars.SCORECARD_DATASET_REPO || 'redhat-performance/configiq-simulator-scorecard' }}
+        run: |
+          HF_TOKEN="$(uv run --locked --group tested-models hf auth token)"
+          echo "::add-mask::${HF_TOKEN}"
+          export HF_TOKEN
+          uv run --locked --group tested-models python scripts/publish-scorecard-snapshot.py \
+            --channel dev --source-dir artifacts/scorecard

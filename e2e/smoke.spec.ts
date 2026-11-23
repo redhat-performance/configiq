@@ -211,7 +211,7 @@ test('home opens the core tools from the main navigation', async ({ page }) => {
   const navigation = page.getByRole('navigation', { name: 'Main navigation' })
   for (const name of [
     'Recommend sizing', 'KV cache calculator', 'Predict performance', 'GPU explorer',
-    'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
+    'Simulator scorecard', 'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
   ]) {
     await expect(navigation.getByRole('link', { name, exact: true })).toBeVisible()
   }
@@ -241,6 +241,7 @@ for (const route of modelPages) {
 const secondaryPages = [
   { path: '/hybrid-savings', heading: 'Hybrid savings' },
   { path: '/routing', heading: 'Routing economics' },
+  { path: '/validation/scorecard', heading: 'Simulator scorecard' },
   { path: '/validation/compare', heading: 'Benchmark comparison' },
   { path: '/sources', heading: 'Cost sources' },
   { path: '/docs', heading: 'ConfigIQ documentation' },
@@ -253,6 +254,24 @@ for (const route of secondaryPages) {
     await expect(page.getByRole('heading', { name: route.heading, level: 1 })).toBeVisible()
   })
 }
+
+test('Simulator scorecard says plainly when no snapshot is published', async ({ page }) => {
+  await stubApi(page)
+  // The page reads a published artifact; an unpublished channel is a 404, not
+  // an empty scorecard that looks like a result of zero error.
+  await page.route('**/api/validation/scorecard', route => route.fulfill({
+    status: 404,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'failed',
+      error: { code: 'SCORECARD_NOT_PUBLISHED', message: 'No scorecard snapshot is published.' },
+    }),
+  }))
+  await page.goto('/validation/scorecard')
+
+  await expect(page.getByRole('heading', { name: 'Simulator scorecard', level: 1 })).toBeVisible()
+  await expect(page.getByText('No scorecard snapshot is published yet')).toBeVisible()
+})
 
 test('GPU explorer loads with an available preset control', async ({ page }) => {
   await stubApi(page)

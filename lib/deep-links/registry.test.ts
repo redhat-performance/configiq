@@ -7,6 +7,7 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
 } from './pages';
 import { predictLink, buildPredictLink } from './predict';
@@ -71,6 +72,7 @@ describe('the page registry', () => {
         gpuExplorerLink.path,
         hybridSavingsLink.path,
         validationCompareLink.path,
+        scorecardLink.path,
       ].sort(),
     );
   });
@@ -235,5 +237,17 @@ describe('golden links', () => {
       backend: 'vllm',
       backendVersion: '0.31.0',
     })).toMatchInlineSnapshot(`"/validation/compare?v=1&model=Qwen%2FQwen3-32B&accelerator=h200_sxm&isl=4096&osl=512&tp=8&configurationKey=fp8-tp8&backend=vllm&backendVersion=0.31.0&simulator=aisimulate"`);
+  });
+
+  it('/validation/scorecard', () => {
+    expect(scorecardLink.build({
+      metric: 'tpot',
+      statistic: 'mdape',
+      releaseMatch: 'any',
+      source: 'redhat',
+      model: 'openai/gpt-oss-120b',
+      gpu: 'H200',
+      workload: '8192/1024',
+    })).toMatchInlineSnapshot(`"/validation/scorecard?v=1&metric=tpot&statistic=mdape&releaseMatch=any&source=redhat&model=openai%2Fgpt-oss-120b&gpu=H200&workload=8192%2F1024"`);
   });
 });

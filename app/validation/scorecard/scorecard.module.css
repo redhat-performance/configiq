@@ -1,0 +1,773 @@
+/* Simulator scorecard
+   Follows docs/DESIGN_SYSTEM.md: Red Hat Display for headings and big numbers,
+   Red Hat Text for body copy, Red Hat Mono for values and uppercase labels.
+   Nothing here is smaller than 11.5px and no label is lighter than #3c3f42. */
+
+.page {
+  --scorecard-gap: 16px;
+}
+
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.heading h1 {
+  margin: 0 0 6px;
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.2;
+}
+
+.intro {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.headingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Source provenance and the page actions form one cluster in the top-right
+   corner. The column keeps the two measured sources aligned and the cluster
+   narrow enough to sit beside the title on a normal console width. */
+.headingAside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.sourceBadges {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: min(340px, 100%);
+}
+
+.sourceBadge {
+  display: grid;
+  gap: 3px;
+  max-width: 320px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.sourceBadge a {
+  color: var(--link);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.sourceBadge a:hover {
+  text-decoration: underline;
+}
+
+.sourceBadge strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sourceDetail {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notice {
+  margin-bottom: 16px;
+}
+
+.warningList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+}
+
+.loadingCopy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+/* ── Provenance strip ─────────────────────────────────────────────────── */
+
+.provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  background: var(--bg-secondary, #f5f5f5);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.provenanceItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.provenanceLabel {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.provenanceItem > span:last-child {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 24px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.controlLabel {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.filterGroup {
+  flex: 0 0 220px;
+  width: 220px;
+  max-width: 100%;
+}
+
+/* Start the three row filters on their own line, under the view controls. */
+.controlBreak {
+  flex-basis: 100%;
+  height: 0;
+}
+
+/* Group heading for the row filters; the selects keep their own facet labels. */
+.filterRowLabel {
+  flex-basis: 100%;
+  margin-bottom: -6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.filterSelect {
+  width: 100%;
+  max-width: 100%;
+}
+
+.clearFilters {
+  align-self: flex-end;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+/* Explains why the pooled tiles do not move when a row filter is applied. */
+.filterNote {
+  margin: -4px 0 14px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* ── Section headings ─────────────────────────────────────────────────── */
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0 0 12px;
+}
+
+.sectionHead h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sectionNote {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ── Simulator tiles ──────────────────────────────────────────────────── */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--scorecard-gap);
+  margin-bottom: 28px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.tileHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tileHead h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.tileVersion {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.tileValueRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.tileValue {
+  font-family: var(--display);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.tileValueLabel {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.tileStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.tileStats div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tileStats dt {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.tileStats dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.tileFoot {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tileEmpty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ── Coverage bar ─────────────────────────────────────────────────────── */
+
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.coverageTrack {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.coverageSegment {
+  display: block;
+  height: 100%;
+}
+
+.coverageLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.coverageLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.legendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.legendCount {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── Flip card: chart front, table back ───────────────────────────────── */
+
+.flipCard {
+  position: relative;
+  min-height: 560px;
+  margin-bottom: 28px;
+  perspective: 1600px;
+  transform-style: preserve-3d;
+  transition: transform 420ms cubic-bezier(.2, .7, .2, 1);
+  cursor: pointer;
+  outline: none;
+}
+
+.flipCard:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.flipCard.flipped {
+  transform: rotateY(180deg);
+}
+
+.flipFace {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition: opacity 220ms ease;
+  overflow: hidden;
+}
+
+.flipFront {
+  opacity: 1;
+}
+
+.flipBack {
+  opacity: 0;
+  transform: rotateY(180deg);
+}
+
+.flipped .flipFront {
+  opacity: 0;
+}
+
+.flipped .flipBack {
+  opacity: 1;
+}
+
+.chartHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+
+.chartHead h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chartHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.chartUnit {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.chartLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chartSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.chartCanvas {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow-x: auto;
+}
+
+.chartFoot {
+  margin: 4px 0 0;
+  padding-right: 84px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.flipButton {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--link);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.flipButton:hover {
+  text-decoration: underline;
+}
+
+.backHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.backHead h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tableWrapFill {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin-bottom: 24px;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  margin-bottom: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 620px;
+  background: var(--bg-card);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tableCaption {
+  caption-side: top;
+  padding: 12px 16px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--bg-secondary, #f5f5f5);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light, #e0e0e0);
+  color: var(--text);
+  vertical-align: top;
+}
+
+.table tbody tr:hover td {
+  background: var(--bg-secondary, #f5f5f5);
+}
+
+.numericCell {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * `.table thead th` sets text-align: left, which outranks `.numericCell` on its
+ * own. A numeric header has to sit over its values, so restate the alignment
+ * with enough specificity and let the numbers hug their content: the slack then
+ * lands in the text columns instead of opening a gap under each header.
+ */
+.table thead th.numericCell {
+  text-align: right;
+}
+
+.table th.numericCell,
+.table td.numericCell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* A workload is an input/output pair rather than a magnitude: keep the column
+   left-aligned under its header and align the digits. */
+.workloadCell {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.modelCell {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.mutedCell {
+  color: var(--text-2);
+}
+
+.emptyRows {
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* Head-to-head outcome: who was closer at each measured level. */
+.outcomeCell {
+  min-width: 150px;
+}
+
+.outcomeBar {
+  display: flex;
+  width: 130px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.outcomeSegment {
+  display: block;
+  height: 100%;
+}
+
+.outcomeAria {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ── Method notes ─────────────────────────────────────────────────────── */
+
+.methodSection {
+  margin-bottom: 24px;
+  padding: 2px 18px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.method {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.method ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.method strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.methodLinks {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+}
+
+.methodLinks a {
+  color: var(--link);
+}
+
+@media (max-width: 720px) {
+  .heading {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .tileStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

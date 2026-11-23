@@ -33,6 +33,7 @@ import {
   DatabaseIcon,
   ChartLineIcon,
   ListIcon,
+  ClipboardCheckIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
@@ -210,6 +211,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             />}
 
             <div style={groupLabelStyle}>VALIDATION</div>
+
+            <NavItemWithIcon
+              icon={ClipboardCheckIcon}
+              label="Simulator scorecard"
+              href="/validation/scorecard"
+              isActive={pathname === "/validation/scorecard"}
+            />
 
             <NavItemWithIcon
               icon={ChartLineIcon}

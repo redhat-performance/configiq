@@ -18,6 +18,7 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
@@ -65,6 +66,11 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     path: '/hybrid-savings',
     name: 'Hybrid savings',
     sharedView: { kind: 'link', fields: Object.keys(hybridSavingsLink.fields) },
+  },
+  {
+    path: '/validation/scorecard',
+    name: 'Simulator scorecard',
+    sharedView: { kind: 'link', fields: Object.keys(scorecardLink.fields) },
   },
   {
     path: '/validation/compare',
