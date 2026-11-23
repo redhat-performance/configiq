@@ -5,15 +5,20 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const startSizing = vi.hoisted(() => vi.fn());
+const recommendState = vi.hoisted(() => ({
+  result: null as unknown,
+  error: null as string | null,
+  errorCode: null as string | null,
+}));
 
 vi.mock('@/contexts/RecommendContext', () => ({
   useRecommend: () => ({
     params: null,
     runMode: null,
     isLoading: false,
-    result: null,
-    error: null,
-    errorCode: null,
+    result: recommendState.result,
+    error: recommendState.error,
+    errorCode: recommendState.errorCode,
     elapsed: 0,
     debugRequest: null,
     debugResponse: null,
@@ -89,6 +94,9 @@ beforeEach(() => {
   document.body.appendChild(host);
   root = createRoot(host);
   startSizing.mockClear();
+  recommendState.result = null;
+  recommendState.error = null;
+  recommendState.errorCode = null;
 });
 
 afterEach(async () => {
@@ -146,6 +154,26 @@ describe('Deploy page', () => {
     const params = startSizing.mock.calls[1][0];
     expect(params.objective).toBe('throughput_demand');
     expect(params.target_request_rate).toBe(5);
+  });
+
+  it('shows the no-configuration empty state, distinct from a failure', async () => {
+    recommendState.error = 'No configuration found';
+    recommendState.errorCode = 'AISIM_NO_CONFIGURATION';
+    await renderPage();
+    expect(host.textContent).toContain('No configuration for this pair');
+    expect(host.querySelector('.pf-v6-c-alert')).toBeNull();
+  });
+
+  it('shows an error alert with retry for other failures', async () => {
+    recommendState.error = 'gateway unreachable';
+    recommendState.errorCode = 'AISIM_UNAVAILABLE';
+    await renderPage();
+    expect(host.querySelector('.pf-v6-c-alert')).not.toBeNull();
+    expect(host.textContent).toContain('gateway unreachable');
+    const retry = [...host.querySelectorAll('button')].find(b => b.textContent === 'Retry');
+    expect(retry).not.toBeUndefined();
+    await act(async () => { retry!.click(); });
+    expect(startSizing).toHaveBeenCalledTimes(2);
   });
 
   it('renders the input controls', async () => {

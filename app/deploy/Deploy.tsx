@@ -20,6 +20,7 @@ import { useCatalog } from '@/lib/hooks/useCatalog'
 import { useTestedModels } from '@/lib/hooks/useTestedModels'
 import { workloadPresetOptions, type WorkloadPreset } from '@/lib/workload-presets'
 import { buildDeployParams, pickDeployDefaults } from './deploy-request'
+import { AnswerCard } from './AnswerCard'
 import styles from './deploy.module.css'
 
 /**
@@ -200,10 +201,35 @@ export function Deploy() {
               <p>Running the simulator for your workload.</p>
             </div>
           )}
-          {!isLoading && error && (
+          {!isLoading && result && (
+            <AnswerCard
+              result={result}
+              ttftTarget={Number(ttftTarget) || 0}
+              tpotTarget={Number(tpotTarget) || 0}
+              gpusFree={Number(gpusFree) || 0}
+              loadUnit={loadUnit}
+            />
+          )}
+          {!isLoading && !result && error && errorCode === 'AISIM_NO_CONFIGURATION' && (
+            <div className={styles.emptyState}>
+              <h3>No configuration for this pair</h3>
+              <p>
+                The simulator returned no deployment for this model on this GPU system.
+                Try a different model, GPU, or load.
+              </p>
+            </div>
+          )}
+          {!isLoading && !result && error && errorCode !== 'AISIM_NO_CONFIGURATION' && (
             <Alert variant="danger" title="Could not load the recommendation" isInline>
               <p>{errorCode ? `${errorCode}: ` : ''}{error}</p>
+              <Button variant="link" onClick={() => run()}>Retry</Button>
             </Alert>
+          )}
+          {!isLoading && !result && !error && (
+            <div className={styles.emptyState}>
+              <h3>Pick a model and your load</h3>
+              <p>The recommendation appears here.</p>
+            </div>
           )}
         </section>
       </div>
