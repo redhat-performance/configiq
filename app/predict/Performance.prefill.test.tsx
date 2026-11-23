@@ -396,13 +396,18 @@ describe('performance page widget handoff', () => {
     await mountAt('?model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
 
     await act(async () => {
-      Array.from(container.querySelectorAll('button'))
-        .find(button => button.textContent === 'Calculate')
-        ?.click();
+      const calculate = Array.from(container.querySelectorAll('button'))
+        .find(button => button.textContent === 'Calculate');
+      if (!calculate) throw new Error('Calculate button not found');
+      calculate.click();
     });
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 50));
     });
+
+    // The absence checks below are only meaningful once a result exists: a
+    // result that never rendered would pass them for the wrong reason.
+    expect(container.querySelector('[data-term="requestLatency"]')).not.toBeNull();
 
     // The result view carries the numbers only. Copying a request, a CLI
     // command, a sheet, or saving a local estimate are not result controls:
