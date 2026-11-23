@@ -21,6 +21,7 @@ import {
 import { HYBRID_PLANNING_HORIZON_TOKENS, type CostPoint } from '@/lib/hybrid-savings/calc'
 import {
   costPerMillionOutputTokens,
+  formatHybridUsd,
   outputTokensAtVolume,
 } from '@/lib/hybrid-savings/token-economics'
 import styles from './hybrid-savings.module.css'
@@ -35,6 +36,7 @@ interface CostComparisonChartProps {
   rentedLowestCostTokens: number | null
   ownedLowestCostTokens: number | null
   transitionsVerified: boolean
+  targetConcurrency?: number
   hostedModelLabel?: string
   infrastructureModelLabel?: string
 }
@@ -63,6 +65,7 @@ export default function CostComparisonChart({
   rentedLowestCostTokens,
   ownedLowestCostTokens,
   transitionsVerified,
+  targetConcurrency,
   hostedModelLabel,
   infrastructureModelLabel,
 }: CostComparisonChartProps) {
@@ -80,7 +83,8 @@ export default function CostComparisonChart({
   if (points.length < 2 || !Number.isFinite(outputShare) || outputShare <= 0) return null
 
   const maximumTokens = points.reduce((maximum, point) => Math.max(maximum, point.tokens), 1)
-  const transitions = [rentedBreakEvenTokens, ownedBreakEvenTokens, rentedLowestCostTokens, ownedLowestCostTokens]
+  const transitions = transitionsVerified
+    ? [rentedBreakEvenTokens, ownedBreakEvenTokens, rentedLowestCostTokens, ownedLowestCostTokens] : []
   // Unit cost is undefined at zero and unbounded near it. Start at a quarter
   // of the earliest workload/crossover anchor, using an actual engine sample.
   // Every cost in the explicitly displayed range then fits without clipping.
@@ -128,7 +132,7 @@ export default function CostComparisonChart({
     key: 'rented' | 'owned',
     tokens: number | null,
   ): Array<{ x: number; y: number; name: string }> => {
-    if (tokens === null) return []
+    if (tokens === null || !transitionsVerified) return []
     const point = points.find(candidate => candidate.tokens === tokens)
     const cost = point ? seriesValue(point, key) : null
     return cost === null ? [] : [{ x: tokens, y: cost, name: key }]
@@ -160,13 +164,20 @@ export default function CostComparisonChart({
   const seriesLabel = (name: string) => name === 'hosted'
     ? 'Hosted API'
     : name === 'rented' ? 'Rented' : 'Purchased'
+  const tooltip = ({ x, y, name }: { x?: number; y?: number; name?: string }) => {
+    const point = points.find(point => point.tokens === x)
+    const monthly = name === 'hosted' || name === 'rented' || name === 'owned' ? point?.[name] : null
+    return `${seriesLabel(String(name))}\n${compactNumber(Number(x))} total tokens/month\n${workloadSplitLabel(Number(x))}\n${formatHybridUsd(Number(y))} / 1M output${monthly == null ? '' : `\n${formatHybridUsd(monthly)} / month`}`
+  }
 
   return (
     <div className={styles.chartPanel}>
       <div className={styles.chartHeader}>
         <div className={styles.chartHeading}>
           <Title headingLevel="h3" size="lg">Cost as demand grows</Title>
-          <p className={styles.chartExplanation}>Input/output mix stays fixed. Steps show added hardware.</p>
+          <p className={styles.chartExplanation}>Input/output mix stays fixed.{(rentedSeries.length > 0 || ownedSeries.length > 0) && (targetConcurrency
+            ? ` Hardware keeps at least the deployment sized for ${targetConcurrency.toLocaleString('en-US')} concurrent ${targetConcurrency === 1 ? 'request' : 'requests'} and scales as demand grows.`
+            : ' Hardware scales as demand grows.')}</p>
         </div>
         <DescriptionList isCompact columnModifier={{ default: '3Col' }} className={styles.chartWorkload} aria-label="Current monthly workload in tokens">
           <DescriptionListGroup>
@@ -184,25 +195,27 @@ export default function CostComparisonChart({
         </DescriptionList>
       </div>
       {hostedModelLabel && <p className={styles.calculationNote}>Hosted API: {hostedModelLabel} · Rented / purchased: {infrastructureModelLabel}. Same token volumes; model quality and capability may differ.</p>}
-      {noHardwareCrossover ? (
+      {!hasSeries('hosted') || (!hasSeries('rented') && !hasSeries('owned')) ? (
+        <p className={styles.chartControlNote}>Break-even needs both a hosted price and a priced hardware estimate.</p>
+      ) : noHardwareCrossover ? (
         <Alert isInline isPlain variant="info" component="p" className={styles.chartInsight}
-          title={`Hosted API stays cheaper up to ${searchHorizon} under these assumptions.`} />
+          title={`Hosted API stays cheaper than the priced hardware options up to ${searchHorizon}.`} />
       ) : <div className={styles.chartMilestones} aria-label="Modeled cost milestones">
         <div className={styles.breakEvenMilestone}>
           <strong>Cheaper than hosted API</strong>
           <span className={styles.rentedMilestone}>Rented {transitionText('rented', rentedBreakEvenTokens)}</span>
           <span className={styles.ownedMilestone}>Purchased {transitionText('owned', ownedBreakEvenTokens)}</span>
         </div>
-        <div>
+        {hasSeries('rented') && hasSeries('owned') && <div>
           <strong>Cheapest of all options</strong>
           <span className={styles.rentedMilestone}>Rented {transitionText('rented', rentedLowestCostTokens)}</span>
           <span className={styles.ownedMilestone}>Purchased {transitionText('owned', ownedLowestCostTokens)}</span>
-        </div>
+        </div>}
       </div>}
       {!transitionsVerified && (
         <p className={styles.currentMarker}>Crossover points could not be verified. Current-workload costs remain available.</p>
       )}
-      <ChartPlotHeader />
+      <ChartPlotHeader series={{ hosted: hostedSeries.length > 0, rented: rentedSeries.length > 0, owned: ownedSeries.length > 0 }} />
       <div className={styles.chartCanvas} ref={canvasRef}>
         {currentLine.length > 0 && (
           <span
@@ -220,8 +233,7 @@ export default function CostComparisonChart({
               constrainToVisibleArea
               voronoiBlacklist={['current-workload']}
               labelComponent={<ChartTooltip style={{ fontFamily: 'var(--sans)', fontSize: 12 }} />}
-              labels={({ datum }: { datum: { x?: number; y?: number; name?: string } }) =>
-                `${seriesLabel(String(datum.name))}\n${compactNumber(Number(datum.x))} total tokens/month\n${workloadSplitLabel(Number(datum.x))}\n${preciseCurrency(Number(datum.y))} / 1M output`}
+              labels={({ datum }: { datum: { x?: number; y?: number; name?: string } }) => tooltip(datum)}
             />
           }
           domain={{ x: [minimumTokens, maximumTokens], y: [0, maximumCost] }}

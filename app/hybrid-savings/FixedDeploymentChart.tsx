@@ -13,7 +13,7 @@ import {
 } from '@patternfly/react-charts/victory'
 import type { InfrastructurePath } from '@/lib/hybrid-savings/calc'
 import type { FixedDeploymentSample } from '@/lib/hybrid-savings/fixed-deployment'
-import { costPerMillionOutputTokens } from '@/lib/hybrid-savings/token-economics'
+import { costPerMillionOutputTokens, formatHybridUsd, formatPlanningCapacityUse } from '@/lib/hybrid-savings/token-economics'
 import { JargonPopover } from '@/components/ui/JargonPopover'
 import { ChartPlotHeader } from './ChartPlotHeader'
 import styles from './hybrid-savings.module.css'
@@ -107,6 +107,11 @@ export default function FixedDeploymentChart({
   const seriesLabel = (name: string) => name === 'hosted'
     ? 'Hosted API'
     : path === 'rented' ? 'Rented (fixed)' : 'Purchased (fixed)'
+  const tooltip = ({ x, y, name }: { x?: number; y?: number; name?: string }) => {
+    const sample = samples.find(point => point.capacityUsedPct === x)
+    const monthly = (name === 'hosted' ? sample?.hosted : sample?.hardware)?.monthlyCost
+    return `${seriesLabel(String(name))}\n${formatPlanningCapacityUse(Number(x))} capacity used\n${formatHybridUsd(Number(y))} / 1M output${monthly == null ? '' : `\n${formatHybridUsd(monthly)} / month`}`
+  }
 
   return (
     <div className={styles.chartPanel}>
@@ -127,14 +132,15 @@ export default function FixedDeploymentChart({
         </DescriptionList>
       </div>
       {hostedModelLabel && <p className={styles.calculationNote}>Hosted API: {hostedModelLabel} · Rented / purchased: {infrastructureModelLabel}. Same token volumes; model quality and capability may differ.</p>}
-      <ChartPlotHeader path={path} />
+      <ChartPlotHeader path={path} series={{ hosted: hostedSeries.length > 0,
+        rented: path === 'rented' && hardwareSeries.length > 0, owned: path === 'owned' && hardwareSeries.length > 0 }} />
       <div className={styles.chartCanvas} ref={canvasRef}>
         {currentLine.length > 0 && (
           <span
             className={styles.currentWorkloadLabel}
             style={{ left: `${currentLinePosition}%`, transform: currentLabelTransform }}
           >
-            Your usage · {(currentCapacityUsedPct ?? 0).toFixed(1)}%
+            Your usage · {formatPlanningCapacityUse(currentCapacityUsedPct ?? 0)}
           </span>
         )}
         <Chart
@@ -145,8 +151,7 @@ export default function FixedDeploymentChart({
               constrainToVisibleArea
               voronoiBlacklist={['current-workload']}
               labelComponent={<ChartTooltip style={{ fontFamily: 'var(--sans)', fontSize: 12 }} />}
-              labels={({ datum }: { datum: { x?: number; y?: number; name?: string } }) =>
-                `${seriesLabel(String(datum.name))}\n${Number(datum.x).toFixed(0)}% capacity used\n${preciseCurrency(Number(datum.y))} / 1M output`}
+              labels={({ datum }: { datum: { x?: number; y?: number; name?: string } }) => tooltip(datum)}
             />
           }
           domain={{ x: [minimumPct, 100], y: [0, maximumCost] }}
@@ -158,7 +163,7 @@ export default function FixedDeploymentChart({
             label="Planning capacity used (%)"
             crossAxis={false}
             tickValues={Array.from({ length: width < 600 ? 3 : 5 }, (_, index) => minimumPct + index * (100 - minimumPct) / (width < 600 ? 2 : 4))}
-            tickFormat={(tick: number) => `${Number(tick).toFixed(0)}%`}
+            tickFormat={(tick: number) => formatPlanningCapacityUse(Number(tick))}
             style={{
               axisLabel: { padding: 40, fontSize: 12, fontFamily: 'var(--sans)' },
               tickLabels: { fontSize: 11.5, fontFamily: 'var(--mono)' },

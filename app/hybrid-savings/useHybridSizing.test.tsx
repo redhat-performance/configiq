@@ -53,7 +53,7 @@ beforeEach(async () => {
   root = createRoot(host)
   await act(async () => root.render(<Harness />))
 })
-afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals() })
+afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
 describe('Hybrid live sizing orchestration', () => {
   it.each([
@@ -108,7 +108,49 @@ describe('Hybrid live sizing orchestration', () => {
     expect(hook.sizingError).toBeNull()
   })
 
-  it('limits outstanding requests to four and completes the full queue', async () => {
+  it('publishes a priced result before a second system finishes', async () => {
+    const pending = deferred()
+    fetchMock.mockResolvedValueOnce(new Response()).mockReturnValueOnce(pending.promise)
+    let run!: Promise<void>
+    await act(async () => { run = hook.runSizing({ ...input, gpuOptions: [...input.gpuOptions, gpu('slow')] }) })
+    expect(hook.isSizing).toBe(true)
+    expect(hook.lastSizingSignature).toBe(input.signature)
+    expect(hook.progress).toEqual({ completed: 1, total: 2 })
+    expect(hook.candidates.some(candidate => candidate.cloudHourlyCostPerInstance !== null)).toBe(true)
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'failed', requestId: 'failed', error: { code: 'AISIM_NO_CONFIGURATION', message: 'Search reached its time budget.' },
+    })
+    await act(async () => { pending.resolve(new Response()); await run })
+    expect(hook.isSizing).toBe(false)
+    expect(hook.failedSystems).toBe(1)
+    expect(hook.sizingError).toBeNull()
+    expect(hook.candidates.some(candidate => candidate.cloudHourlyCostPerInstance !== null)).toBe(true)
+  })
+
+  it.each([true, false])('prices a compatible verified aggregate purchase fallback (passes: %s)', async passes => {
+    vi.mocked(readRecommendStream).mockResolvedValue({
+      ...result,
+      mode: 'disagg',
+      recommendation: { gpusPerReplica: 40, replicasNeeded: 1 },
+      aggregatedFallback: {
+        ...result,
+        mode: 'agg',
+        recommendation: { gpusPerReplica: 8, replicasNeeded: 25 },
+        performance: { ttftLatencyMs: passes ? 2500 : 5500, tpotMs: 20 },
+      },
+    } as RecommendResponse)
+    await act(async () => hook.runSizing(input))
+    const purchases = hook.candidates.filter(candidate => candidate.purchasePricePerReplica !== null)
+    if (passes) {
+      expect(purchases).toMatchObject([{ gpusPerReplica: 8, replicasNeeded: 25, referenceMode: 'agg' }])
+    } else {
+      expect(purchases).toEqual([])
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([undefined, '0', '1.5', '5'])('uses four outstanding requests by default or for an invalid limit (%s)', async limit => {
+    vi.stubEnv('NEXT_PUBLIC_HYBRID_SIZING_PARALLELISM', limit)
     const pending = Array.from({ length: 6 }, deferred)
     fetchMock.mockImplementation(() => pending[fetchMock.mock.calls.length - 1].promise)
     let run!: Promise<void>
@@ -118,6 +160,33 @@ describe('Hybrid live sizing orchestration', () => {
     expect(fetchMock).toHaveBeenCalledTimes(6)
     await act(async () => { for (const request of pending.slice(2)) request.resolve(new Response()); await run })
     expect(hook.progress.completed).toBe(6)
+  })
+
+  it('can search one system at a time without changing the 100-concurrent workload', async () => {
+    vi.stubEnv('NEXT_PUBLIC_HYBRID_SIZING_PARALLELISM', '1')
+    const first = deferred()
+    const second = deferred()
+    fetchMock.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    let run!: Promise<void>
+    await act(async () => {
+      run = hook.runSizing({
+        ...input, model: 'zai-org/GLM-5.3', averageInputTokens: 45000, averageOutputTokens: 300,
+        targetConcurrency: 100, targetTtftMs: 3000, targetTpotMs: 30, prefixTokens: 36000,
+        gpuOptions: [gpu('gb200'), gpu('b200_sxm')],
+      })
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => first.resolve(new Response()))
+    expect(hook.progress).toEqual({ completed: 1, total: 2 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(init!.body as string))).toMatchObject(
+      ['gb200', 'b200_sxm'].map(system => ({
+        system, isl: 45000, osl: 300, target_concurrency: 100, ttft: 3000, tpot: 30, prefix: 36000,
+      })),
+    )
+    await act(async () => { second.resolve(new Response()); await run })
+    expect(hook.progress).toEqual({ completed: 2, total: 2 })
+    expect(hook.failedSystems).toBe(0)
   })
 
   it('cancels active requests and never publishes late completions', async () => {
@@ -150,7 +219,8 @@ describe('Hybrid live sizing orchestration', () => {
     fetchMock.mockRejectedValue(new Error('offline'))
     await act(async () => hook.runSizing(input))
     expect(hook.failedSystems).toBe(1)
-    expect(hook.sizingError).toContain('could not find')
+    expect(hook.sizingError?.issues).toEqual([{ message: 'offline', systems: ['l40s'] }])
+    expect(hook.sizingError?.canReviewTargets).toBe(false)
     expect(hook.isSizing).toBe(false)
     const pending = deferred()
     fetchMock.mockReturnValue(pending.promise)

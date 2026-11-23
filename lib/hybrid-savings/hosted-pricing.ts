@@ -1,5 +1,25 @@
 import type { FrontierModel } from '@/lib/hooks/useCostings'
-import type { HostedPrice } from './calc'
+import { hostedUsageBreakdown, type HostedPrice } from './calc'
+
+export interface HostedCacheUsage {
+  readTokens: number
+  writeTokens: number
+}
+
+export function applyHostedCachePricing(price: HostedPrice, inputTokens: number, usage: HostedCacheUsage) {
+  const { readTokens, writeTokens } = usage
+  let issue: string | null = null
+  if (![inputTokens, readTokens, writeTokens].every(tokens => Number.isSafeInteger(tokens) && tokens >= 0) ||
+      readTokens + writeTokens > inputTokens) {
+    issue = 'Cache reads and writes must be whole token counts and fit within total monthly input.'
+  } else if (readTokens > 0 && price.cacheReadPerMillion === undefined) {
+    issue = 'This offer does not have a verified cache-read rate for this request length.'
+  } else if (writeTokens > 0 && price.cacheWritePerMillion === undefined) {
+    issue = 'This offer does not have a single verified cache-write rate for this request length.'
+  }
+  if (issue || readTokens + writeTokens === 0) return { price, issue }
+  return { price: { ...price, cachePricing: { readShare: readTokens / inputTokens, writeShare: writeTokens / inputTokens } }, issue }
+}
 
 export interface HostedPricingResolution {
   selected: FrontierModel | null
@@ -157,7 +177,7 @@ export interface HostedRequestShape {
   averageOutputTokens: number
 }
 
-/** Standard synchronous, uncached text tariff. No guessed cache-hit discounts. */
+/** Resolve the standard text tariff; cache volumes are an explicit scenario input. */
 export function hostedPriceForWorkload(
   model: FrontierModel,
   shape?: HostedRequestShape,
@@ -168,6 +188,8 @@ export function hostedPriceForWorkload(
     inputPerMillion: model.price_per_m_input,
     outputPerMillion: model.price_per_m_output,
     requestPerRequest: model.billing?.request_price ?? 0,
+    cacheReadPerMillion: model.billing?.input_cache_read_per_million,
+    cacheWritePerMillion: model.billing?.cache_write_variant ? undefined : model.billing?.input_cache_write_per_million,
   }
   if (!shape) return price.requestPerRequest || model.billing?.overrides.length ? null : price
   const { averageInputTokens: input, averageOutputTokens: output } = shape
@@ -179,12 +201,26 @@ export function hostedPriceForWorkload(
   if ((maxInput != null && input > maxInput) ||
       (model.max_output_tokens != null && output > model.max_output_tokens) ||
       (maxContext != null && input + output > maxContext)) return null
+  const cacheTiers = new Map<number, NonNullable<FrontierModel['billing']>['overrides'][number]>()
   for (const tier of model.billing?.overrides ?? []) {
     // OpenRouter's threshold is strictly greater than, not greater-or-equal.
     if (input <= tier.min_prompt_tokens) continue
+    cacheTiers.set(tier.min_prompt_tokens, { ...cacheTiers.get(tier.min_prompt_tokens), ...tier })
     price.inputPerMillion = tier.input_per_million ?? price.inputPerMillion
     price.outputPerMillion = tier.output_per_million ?? price.outputPerMillion
     price.requestPerRequest = tier.request_price ?? price.requestPerRequest
+  }
+  let ambiguousWrite = !!model.billing?.cache_write_variant
+  for (const tier of [...cacheTiers.values()].sort((a, b) => a.min_prompt_tokens - b.min_prompt_tokens)) {
+    // A long-context input tier may change cache rates too. Don't carry base
+    // cache rates into it without an explicit tariff for that tier.
+    if (tier.input_per_million !== undefined || tier.input_cache_read_per_million !== undefined) {
+      price.cacheReadPerMillion = tier.input_cache_read_per_million
+    }
+    ambiguousWrite ||= !!tier.cache_write_variant
+    if (tier.input_per_million !== undefined || tier.input_cache_write_per_million !== undefined || ambiguousWrite) {
+      price.cacheWritePerMillion = ambiguousWrite ? undefined : tier.input_cache_write_per_million
+    }
   }
   return price
 }
@@ -200,14 +236,15 @@ export function hostedTokenUsageCost(
   monthlyInputTokens: number,
   monthlyOutputTokens: number,
   shape?: HostedRequestShape,
+  cacheUsage?: HostedCacheUsage,
 ): number {
   const inputTokens = Number.isFinite(monthlyInputTokens) ? Math.max(monthlyInputTokens, 0) : 0
   const outputTokens = Number.isFinite(monthlyOutputTokens) ? Math.max(monthlyOutputTokens, 0) : 0
   const price = hostedPriceForWorkload(model, shape)
   if (!price) return Number.POSITIVE_INFINITY
   const requests = shape ? Math.max(inputTokens / shape.averageInputTokens, outputTokens / shape.averageOutputTokens) : 0
-  return inputTokens / 1_000_000 * price.inputPerMillion +
-    outputTokens / 1_000_000 * price.outputPerMillion + requests * (price.requestPerRequest ?? 0)
+  const resolved = cacheUsage ? applyHostedCachePricing(price, inputTokens, cacheUsage).price : price
+  return hostedUsageBreakdown(resolved, inputTokens, outputTokens, requests).reduce((sum, item) => sum + item.monthlyCost, 0)
 }
 
 /**

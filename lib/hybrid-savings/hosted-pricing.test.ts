@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { FrontierModel } from '@/lib/hooks/useCostings'
-import { hostedPriceForWorkload, hostedProviderIdentity, hostedTokenUsageCost, resolveHostedPricing } from './hosted-pricing'
+import { applyHostedCachePricing, hostedPriceForWorkload, hostedProviderIdentity, hostedTokenUsageCost, resolveHostedPricing } from './hosted-pricing'
 
 function pricedModel(
   id: string,
@@ -23,6 +23,45 @@ function pricedModel(
 describe('hosted pricing resolution', () => {
   const shape = { averageInputTokens: 1000, averageOutputTokens: 100 }
   const billing: NonNullable<FrontierModel['billing']> = { currency: 'USD', request_price: 0, overrides: [], unsupported: [] }
+
+  it('reproduces the IdeaBot session fixture before fixed costs without adding cache tokens to volume', () => {
+    const offer = { ...pricedModel('openai/gpt-6.1-sol', 'OpenAI', 2, 10),
+      billing: { ...billing, input_cache_read_per_million: 0.1, input_cache_write_per_million: 2.5 } }
+    const tokens = { readTokens: 4_980_000, writeTokens: 841_040 }
+    expect(hostedTokenUsageCost(offer, 6_030_000, 31_620, shape)).toBeCloseTo(12.3762, 8)
+    expect(hostedTokenUsageCost(offer, 6_030_000, 31_620, shape, tokens)).toBeCloseTo(3.33472, 8)
+  })
+
+  it('accepts published zero but falls back for missing rates and invalid counts', () => {
+    const offer = { ...pricedModel('owner/model', 'A', 2, 10), billing: { ...billing, input_cache_read_per_million: 0 } }
+    const price = hostedPriceForWorkload(offer, shape)!
+    expect(hostedTokenUsageCost(offer, 1_000_000, 100_000, shape, { readTokens: 1_000_000, writeTokens: 0 })).toBe(1)
+    expect(applyHostedCachePricing(price, 1_000_000, { readTokens: 0, writeTokens: 1 })).toMatchObject({
+      price, issue: expect.stringContaining('cache-write rate'),
+    })
+    for (const readTokens of [-1, 1.5, 1_000_001, NaN]) {
+      expect(applyHostedCachePricing(price, 1_000_000, { readTokens, writeTokens: 0 })).toMatchObject({
+        price, issue: expect.stringContaining('fit within total monthly input'),
+      })
+    }
+  })
+
+  it('uses explicit cache tiers, and keeps the uncached tariff when retention is ambiguous', () => {
+    const offer = { ...pricedModel('owner/model', 'A', 1, 2), billing: {
+      ...billing, input_cache_read_per_million: 0.1, input_cache_write_per_million: 1.25,
+      overrides: [
+        { min_prompt_tokens: 1000, input_cache_read_per_million: 0.5 },
+        { min_prompt_tokens: 1000, input_per_million: 3, input_cache_write_per_million: 4 },
+        { min_prompt_tokens: 2000, cache_write_variant: true },
+        { min_prompt_tokens: 3000, input_per_million: 5 },
+      ],
+    } }
+    const at = (averageInputTokens: number) => hostedPriceForWorkload(offer, { ...shape, averageInputTokens })!
+    expect(at(1000)).toMatchObject({ cacheReadPerMillion: 0.1, cacheWritePerMillion: 1.25 })
+    expect(at(1001)).toMatchObject({ cacheReadPerMillion: 0.5, cacheWritePerMillion: 4 })
+    expect(at(2001)).toMatchObject({ inputPerMillion: 3, cacheReadPerMillion: 0.5, cacheWritePerMillion: undefined })
+    expect(at(3001)).toMatchObject({ inputPerMillion: 5, cacheReadPerMillion: undefined, cacheWritePerMillion: undefined })
+  })
 
   it('includes request fees in offer ranking and usage, independently of token prices', () => {
     const fee = { ...pricedModel('owner/model', 'A', 0.1, 0.1), billing: { ...billing, request_price: 0.01 } }

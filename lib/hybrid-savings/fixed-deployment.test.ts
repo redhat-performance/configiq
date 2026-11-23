@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { CostAssumptions, CostOption, HybridWorkload, InfrastructureCandidate } from './calc'
+import { calculateHybridComparison, hostedCostAtVolume, type CostAssumptions, type CostOption, type HybridWorkload, type InfrastructureCandidate } from './calc'
 import { captureFixedDeployment, fixedDeploymentSamples } from './fixed-deployment'
+import { applyHostedCachePricing } from './hosted-pricing'
 
 const workload: HybridWorkload = {
   monthlyInputTokens: 8_000_000,
@@ -126,6 +127,38 @@ describe('captureFixedDeployment', () => {
 })
 
 describe('fixedDeploymentSamples', () => {
+  it.each(['fully-loaded', 'marginal'] as const)('matches cached costs at both graph markers under the %s lens', costLens => {
+    const pricing = applyHostedCachePricing({ ...hostedPrice, cacheReadPerMillion: 0.1, cacheWritePerMillion: 1.25 },
+      workload.monthlyInputTokens, { readTokens: 4_000_000, writeTokens: 2_000_000 })
+    const budget: CostAssumptions = { ...assumptions, costLens, hostedImplementation: 360,
+      loadedMonthlyCostPerFte: 5000, hostedOperationsFte: 0.1 }
+    const comparison = calculateHybridComparison(workload, pricing.price, [candidate], budget)
+    const { monthlyTokens, chartPoints, options } = comparison
+    const current = chartPoints.find(point => point.tokens === monthlyTokens)!
+    const hosted = options.find(option => option.key === 'hosted')!
+    const expectedUsage = 2 + 4 * 0.1 + 2 * 1.25 + 2 * 2
+    expect(hosted.monthlyCost).toBeCloseTo(expectedUsage + (costLens === 'fully-loaded' ? 510 : 0))
+    expect(current.hosted).toBeCloseTo(hosted.monthlyCost)
+    const uncached = calculateHybridComparison(workload, hostedPrice, [candidate], budget)
+    expect(comparison.rentedBreakEvenTokens).not.toBeNull()
+    expect(comparison.rentedBreakEvenTokens!).toBeGreaterThan(uncached.rentedBreakEvenTokens!)
+    const crossing = comparison.rentedBreakEvenTokens!
+    const atCrossing = chartPoints.find(point => point.tokens === crossing)!
+    expect(atCrossing.rented).toBeLessThanOrEqual(atCrossing.hosted!)
+    for (const path of ['rented', 'owned'] as const) {
+      const option = options.find(item => item.key === path)!
+      const capture = captureFor(option, path)!
+      const samples = fixedDeploymentSamples(workload, pricing.price, budget, candidate, capture)
+      const marker = samples.find(sample => Math.abs(sample.combinedTokens - monthlyTokens) < 1e-6)!
+      expect(marker.hosted!.costPerMillionOutputTokens).toBeCloseTo(hosted.costPerMillionOutputTokens!)
+      expect(marker.hardware!.costPerMillionOutputTokens).toBeCloseTo(option.costPerMillionOutputTokens!)
+      expect(current[path]).toBeCloseTo(option.monthlyCost)
+      expect(samples.find(sample => sample.capacityUsedPct === 50)!.hosted!.monthlyCost).toBeCloseTo(
+        hostedCostAtVolume(workload, pricing.price, budget, capture.planningTokenCapacity / 2).monthlyCost,
+      )
+    }
+  })
+
   it('samples whole percentages plus the exact current workload percentage', () => {
     const option = {
       key: 'rented' as const,

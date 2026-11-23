@@ -4,6 +4,7 @@ import { buildKvCachePayload } from '@/lib/api/kv-cache-calc';
 import { buildPredictRequestBody, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import type { RecommendRequest } from '@/lib/api/schemas';
 import type { KvCacheCalcRequest } from '@/lib/api/schemas';
+import { buildHybridSizingRequest } from '@/lib/hybrid-savings/sizing-request';
 import {
   buildDataParams,
   buildResolveParams,
@@ -190,6 +191,33 @@ const recommendCensus: RequestCensus = {
   },
 };
 
+const hybridSavingsCensus: RequestCensus = {
+  page: '/hybrid-savings',
+  request: {
+    model_path: { from: ['model'] },
+    system: { notShareable: 'the page sizes each supported GPU system, not a user-selected accelerator' },
+    backend: { from: ['backend'] },
+    simulator: { from: ['simulator'] },
+    search_strategy: { notShareable: 'comes from the selected simulator capability metadata' },
+    backend_version: { from: ['backendVersion'] },
+    isl: { from: ['averageInputTokens'] },
+    osl: { from: ['averageOutputTokens'] },
+    ttft: { from: ['ttft'] },
+    tpot: { from: ['tpot'] },
+    target_concurrency: { from: ['concurrency'] },
+    prefix: { from: ['prefix', 'selfHostedCacheReadTokens', 'averageInputTokens', 'averageOutputTokens', 'monthlyInputTokens', 'monthlyOutputTokens'] },
+    top_n: { notShareable: 'a fixed cap on the number of requested options' },
+    model_config: { notShareable: 'loaded for the requested model; links do not embed configuration files' },
+  },
+  viewOnly: {
+    apiModel: 'selects the hosted price, not the self-hosted model',
+    hours: 'scales monthly demand and running costs locally',
+    peak: 'scales peak demand locally',
+    billingMode: 'changes rental costs locally',
+    costLens: 'changes which cost categories the page includes',
+  },
+};
+
 const kvCacheCensus: RequestCensus = {
   page: '/kv-cache',
   request: {
@@ -285,13 +313,16 @@ describe('every request key is accounted for by a link field', () => {
   });
 });
 
-describe('pages that submit no request', () => {
-  // Documented rather than assumed: if one of these grows an API call, the
-  // today-shaped comment is wrong and the census has to be written for it.
-  it('/hybrid-savings compares hosted, rented, and owned cost from catalog and price responses only', () => {
-    expect(Object.keys(hybridSavingsLink.fields).length).toBeGreaterThan(0);
-  });
+it('/hybrid-savings', () => {
+  const payload = buildHybridSizingRequest({
+    model: 'Qwen/Qwen3-32B', backend: 'vllm', simulator: 'aisimulate', backendVersion: '0.31.0',
+    averageInputTokens: 4096, averageOutputTokens: 512, targetTtftMs: 1000, targetTpotMs: 30,
+    targetConcurrency: 100, prefixTokens: 512, modelConfig: { hidden_size: 4096 },
+  }, 'h200_sxm');
+  expect(auditRequestCensus(Object.keys(hybridSavingsLink.fields), hybridSavingsCensus, payload)).toEqual([]);
+});
 
+describe('pages that submit no request', () => {
   it('/gpu-explorer filters a catalog response it has already received', () => {
     expect(Object.keys(gpuExplorerLink.fields).length).toBeGreaterThan(0);
   });

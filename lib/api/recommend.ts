@@ -153,6 +153,8 @@ export interface RecommendResult {
   capacity?: RecommendCapacityOutcome
   /** Ranked alternatives for a capacity run; `configs[0]` is also rank 1. */
   capacityOptions?: RecommendCapacityOption[]
+  /** Verified aggregate topology retained alongside a disaggregated minimum. */
+  aggregatedFallback?: RecommendResult
   /** Run-control facts for the sweep that produced the candidates. */
   sweep?: RecommendSweepMeta
   /** Serving mode the recommender chose. Disagg splits prefill/decode pools. */
@@ -728,6 +730,19 @@ function parseRecommendPayload(
     )
   }
 
+  let aggregatedFallback: RecommendResult | undefined
+  const rawFallback = rawData.aggregated_fallback
+  if (mode === 'disagg' && !isCapacityObjective && rawFallback && typeof rawFallback === 'object') {
+    const config = rawFallback as Record<string, unknown>
+    if (config.mode === 'agg' && (config.simulator == null || config.simulator === simulator) &&
+        config.prefill_config == null && config.decode_config == null) {
+      const fallback = parseRecommendPayload({
+        configs: [config], chosen_mode: 'agg', simulator,
+      }, request, requestId, startTime, false)
+      if (fallback.status === 'completed') aggregatedFallback = fallback
+    }
+  }
+
   return {
     requestId,
     status: 'completed',
@@ -738,6 +753,7 @@ function parseRecommendPayload(
     capacityOptions: includeCapacityOptions
       ? parseCapacityOptions(rawData, request, requestId, startTime)
       : undefined,
+    ...(aggregatedFallback ? { aggregatedFallback } : {}),
     sweep,
     debug: parseDebugRecord(rawData.debug),
     mode,

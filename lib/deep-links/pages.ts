@@ -122,6 +122,7 @@ export const hybridSavingsLink = withProvenance(defineLink('/hybrid-savings', {
   tpot: z.coerce.number().min(0.001).max(600_000),
   concurrency: positiveInt(1_000_000),
   prefix: nonNegativeInt(MAX_SEQUENCE_LENGTH),
+  selfHostedCacheReadTokens: nonNegativeInt(1e15),
   hours: z.coerce.number().min(0.01).max(744),
   peak: z.coerce.number().min(1).max(100),
   billingMode: z.enum(['scale-to-zero', 'active-window', 'always-on']),

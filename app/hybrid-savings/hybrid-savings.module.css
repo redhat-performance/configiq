@@ -62,7 +62,12 @@
 .advancedBody { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .page h3.advancedSectionLabel { margin: 16px 0 8px; font: 600 11.5px var(--gc-font-mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); }
 .workloadGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: end; }
+/* Put both fields on the same row so cache guidance can't shift either input. */
+.sizingFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; align-items: start; margin-top: 16px; }
+.sizingFields > :global(.pf-v6-c-form__group) { grid-area: 2 / 1; }
+.selfHostedCache { display: grid; grid-area: 1 / 2 / span 2; grid-template-rows: subgrid; }
 .workloadBilling { grid-column: span 2; }
+.sizingDetails { margin: 8px 0 0; padding-inline-start: 18px; list-style: disc; overflow-wrap: anywhere; }
 .advancedLead { color: var(--text-muted); font-size: 13px; margin: 12px 0; }
 .sizingProgress { margin-top: 20px; display: grid; gap: 8px; font-size: 13px; }
 .progressHeading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
@@ -72,12 +77,12 @@
 .sectionHeading h2 { margin: 0; }
 .lensControl { display: flex; align-items: center; gap: 8px; }
 .lensControl :global(.pf-v6-c-form__group-label) { padding: 0; white-space: nowrap; }
-.resultGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+.resultGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: stretch; margin-bottom: 16px; }
 .resultHeading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
 .resultHeading h3 { font-size: 16px; font-weight: 600; margin: 0; }
 .page .resultCard { background: transparent; border: none; overflow: visible; }
 .page .resultCard::before { display: none; }
-.page .resultCard :global(.pf-v6-c-card__body) { display: flex; flex-direction: column; padding: 0; }
+.page .resultCard :global(.pf-v6-c-card__body) { flex: 1; display: flex; flex-direction: column; padding: 0; }
 /* Stable height and paint-only clearance keep the rotating corners intact without adding scrollbars. */
 .costFlip { position: relative; display: grid; flex: 1; perspective: 1100px; overflow: clip; overflow-clip-margin: 100px; border-radius: var(--radius); }
 /* Without paint clearance, an orthographic flip stays inside the card's bounds. */
@@ -86,6 +91,7 @@
 }
 .costFace { grid-area: 1 / 1; z-index: 2; display: flex; flex-direction: column; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); pointer-events: none; backface-visibility: hidden; -webkit-backface-visibility: hidden; transition: opacity 0.3s ease, transform 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
 .costFront { min-height: 350px; opacity: 1; transform: rotateY(0); }
+.unpricedFront { min-height: 156px; }
 .costBack { opacity: 0; transform: rotateY(180deg); }
 .costFlipped .costFront { opacity: 0; transform: rotateY(-180deg); }
 .costFlipped .costBack { opacity: 1; transform: rotateY(0); }
@@ -111,17 +117,23 @@
 .costKeyFacts dt { color: var(--text-muted); }
 .costKeyFacts dd { min-width: 0; margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .costPriceSource { margin: 10px 0 0; color: var(--text-muted); font-size: 12px; }
-.costValue { font: 700 32px var(--gc-font-display); font-variant-numeric: tabular-nums; line-height: 1.25; }
+.costValue { font: 700 32px var(--gc-font-display); font-variant-numeric: tabular-nums; line-height: 1.25; overflow-wrap: anywhere; }
 .costValue span { font: 400 13px var(--gc-font-sans); white-space: nowrap; color: var(--text-muted); }
 .costPeriod { margin: 4px 0 20px; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
 .hostedSelectors { display: grid; gap: 14px; }
+.hostedCacheControl { display: grid; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
+.cacheHeading { display: flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; }
+.hostedCacheFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.compactFields :global(.pf-v6-c-form__group-label) { padding-block-end: 2px; }
+.compactFields :global(.pf-v6-c-form__label) { font-size: 12px; }
+.compactFields :global(.pf-v6-c-form-control) { min-width: 0; }
 .apiSourceLine { margin: 0; font-size: 13px; color: var(--text-muted); }
 .apiModelFallback { max-width: 420px; margin-top: 12px; }
 .costSelectionNote { margin: 8px 0 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
 .costCapacity { margin-top: 14px; font-size: 13px; color: var(--text-muted); }
 .costCapacity p { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
 .costCapacity p.costCapacityLabel { margin-top: 10px; }
-.unavailable { color: var(--text-muted); }
+.unavailable { margin: 0 0 8px; color: var(--text-muted); }
 .calculationDetailsHeader { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
 .assumptionsLink { color: var(--blue); font-size: 13px; font-weight: 600; }
 .assumptionsLink:focus-visible { outline: 2px solid var(--blue); outline-offset: 4px; border-radius: 4px; }
@@ -143,6 +155,7 @@
 .calculationList dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .appliedValueNote { display: block; margin-top: 4px; font-size: 12px; color: var(--text-muted); }
 .calculationNote { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-muted); }
+.fieldHelp { margin: 4px 0 0; font-size: 13px; color: var(--text-muted); }
 .sourceDetailsLink { display: inline-block; margin-top: 12px; color: var(--blue); font-size: 13px; }
 .chartPanel { margin-top: 16px; }
 .chartControls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin-top: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
@@ -189,15 +202,20 @@
 .currentWorkloadLabel { position: absolute; top: 8px; z-index: 1; padding: 4px 8px; border-radius: 6px; background: var(--bg2); color: var(--text-muted); font: 500 11.5px var(--gc-font-mono); pointer-events: none; white-space: nowrap; }
 .chartCanvas :global(svg) { display: block; max-width: 100%; height: auto; }
 .currentMarker { margin: 8px 0 0; }
-@media (max-width: 1100px) { .resultGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1100px) { .resultGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; } }
 @media (max-width: 800px) {
   .page { padding: 24px 20px 48px; }
-  .resultGrid { grid-template-columns: minmax(0, 1fr); }
+  .resultGrid { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
   .workloadGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .assumptionColumns { grid-template-columns: minmax(0, 1fr); }
   .basisList { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .advancedToggle { flex-wrap: wrap; }
   .advancedSummary { flex-basis: 100%; margin-left: 18px; }
+}
+@media (max-width: 600px) {
+  .sizingFields { grid-template-columns: minmax(0, 1fr); row-gap: 16px; }
+  .sizingFields > :global(.pf-v6-c-form__group), .selfHostedCache { grid-area: auto; }
+  .selfHostedCache { grid-template-rows: auto; row-gap: 8px; }
 }
 @media (max-width: 480px) {
   .calculationDetailsHeader { flex-direction: column; align-items: flex-start; }

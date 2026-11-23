@@ -87,7 +87,7 @@ export function captureFixedDeployment(
  */
 export function fixedDeploymentSamples(
   workload: HybridWorkload,
-  hostedPrice: HostedPrice,
+  hostedPrice: HostedPrice | null,
   assumptions: CostAssumptions,
   candidate: InfrastructureCandidate,
   capture: FixedDeploymentCapture,
@@ -109,7 +109,7 @@ export function fixedDeploymentSamples(
     .filter(pct => Number.isFinite(pct) && pct >= 0 && pct <= 100)
     .sort((left, right) => left - right)
     .map(pct => {
-      const combinedTokens = capacity * pct / 100
+      const combinedTokens = pct === currentPct ? currentTokens : capacity * pct / 100
       const hardware = capture.path === 'rented'
         ? rentedCostForCandidate(workload, candidate, assumptions, combinedTokens, {
           availableReplicaSlots: capture.availableReplicaSlots,
@@ -121,7 +121,7 @@ export function fixedDeploymentSamples(
         capacityUsedPct: pct,
         combinedTokens,
         outputTokens: combinedTokens * outputShare,
-        hosted: hostedCostAtVolume(workload, hostedPrice, assumptions, combinedTokens),
+        hosted: hostedPrice ? hostedCostAtVolume(workload, hostedPrice, assumptions, combinedTokens) : null,
         hardware,
       }
     })

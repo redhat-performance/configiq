@@ -4,13 +4,12 @@ import * as React from 'react'
 import { Button, Card, CardBody, Label } from '@patternfly/react-core'
 import { JargonPopover } from '@/components/ui/JargonPopover'
 import type { CostLens, CostOption } from '@/lib/hybrid-savings/calc'
-import { formatCostPerMillionOutputTokens } from '@/lib/hybrid-savings/token-economics'
+import { formatCostPerMillionOutputTokens, formatHybridUsd, formatPlanningCapacityUse } from '@/lib/hybrid-savings/token-economics'
 import styles from './hybrid-savings.module.css'
 
-const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })
-const rate = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const whole = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
+const hours = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
 // Short display labels only; every included amount still comes from the cost engine.
 const costLabels: Record<string, string> = {
   'Input token usage': 'Input tokens',
@@ -45,6 +44,7 @@ export function HybridCostCard({
 }) {
   const candidate = option?.candidate
   const deployment = option?.deployment ?? null
+  const concurrency = candidate?.referenceTargetConcurrency ?? 0
   const [flipped, setFlipped] = React.useState(false)
   const isFlipped = flipped && !!option
   const detailsId = React.useId()
@@ -78,14 +78,14 @@ export function HybridCostCard({
             aria-label={isFlipped ? `Back to ${title} summary` : `View ${title} details`}
             aria-controls={detailsId} aria-expanded={isFlipped}
             onClick={() => setFlipped(value => !value)} />}
-          <div ref={frontRef} className={`${styles.costFace} ${styles.costFront}`} aria-hidden={isFlipped}>
+          <div ref={frontRef} className={`${styles.costFace} ${styles.costFront}${option ? '' : ` ${styles.unpricedFront}`}`} aria-hidden={isFlipped}>
             <div className={styles.resultHeading}>
               <h3>{title}</h3>
               {cheapest && option && <Label color="green" isCompact>Cheapest</Label>}
             </div>
-            {!option ? <p className={styles.unavailable}>{unavailable}</p> : unitCost === null ? (
+            {!option ? <p className={styles.unavailable} role="status">{unavailable}</p> : unitCost === null ? (
               <>
-                <div className={styles.costValue}>{money.format(option.monthlyCost)}<span> / month</span></div>
+                <div className={styles.costValue}>{formatHybridUsd(option.monthlyCost)}<span> / month</span></div>
                 <p className={styles.costPeriod}>{requestedOutputTokens !== undefined && requestedOutputTokens <= 0
                   ? 'Enter a positive monthly output volume to compare cost per million output tokens.'
                   : 'Cost per million output tokens is not available.'}</p>
@@ -101,18 +101,21 @@ export function HybridCostCard({
                       appendTo={() => document.body} />
                   </span>
                 </div>
-                <p className={styles.costPeriod}>{money.format(option.monthlyCost)} / month</p>
+                <p className={styles.costPeriod}>{formatHybridUsd(option.monthlyCost)} / month</p>
               </>
             )}
-            {option && <div className={styles.costSelector}>{selector}</div>}
+            {selector && <div className={styles.costSelector} data-no-flip>{selector}</div>}
             {option && children}
             {deployment && <div className={styles.costCapacity}>
               <p>{whole.format(deployment.wholeUnits)} {option?.key === 'rented' ? 'instance' : 'server'}{deployment.wholeUnits === 1 ? '' : 's'} · {whole.format(deployment.billedGpus)} GPU{deployment.billedGpus === 1 ? '' : 's'}</p>
               {deployment.planningOutputCapacity > 0 && <>
                 <p className={styles.costCapacityLabel}>Modeled output capacity</p>
                 <p>{compact.format(deployment.planningOutputCapacity)} tokens/month
-                  {deployment.planningCapacityUsedPct !== null && ` · ${whole.format(deployment.planningCapacityUsedPct)}% used`}</p>
+                  {deployment.planningCapacityUsedPct !== null && ` · ${formatPlanningCapacityUse(deployment.planningCapacityUsedPct)} used`}</p>
               </>}
+              {concurrency > 0 && <p className={styles.costCapacityLabel}>
+                Includes sizing for {whole.format(concurrency)} concurrent {concurrency === 1 ? 'request' : 'requests'}.
+              </p>}
             </div>}
             {option && <span className={styles.costFlipHint} aria-hidden="true">↻ see details</span>}
           </div>
@@ -123,14 +126,20 @@ export function HybridCostCard({
             </div>
             <ul className={styles.costCompactBreakdown}>
               {option.breakdown.filter(item => item.monthlyCost !== 0 && (lens === 'fully-loaded' || item.includedInMarginal)).map(item => (
-                <li key={item.label}><span>{costLabels[item.label] ?? item.label}</span><strong>{money.format(item.monthlyCost)}</strong></li>
+                <li key={item.label}><span>{costLabels[item.label] ?? item.label}</span><strong>{formatHybridUsd(item.monthlyCost)}</strong></li>
               ))}
             </ul>
-            <div className={styles.costBackTotal}><span>Total / month</span><strong>{money.format(option.monthlyCost)}</strong></div>
+            <div className={styles.costBackTotal}><span>Total / month</span><strong>{formatHybridUsd(option.monthlyCost)}</strong></div>
+            {unitCost !== null && !!requestedOutputTokens && <p className={styles.costPeriod}>
+              {formatCostPerMillionOutputTokens(unitCost)} per 1M output tokens at {whole.format(requestedOutputTokens)} output tokens/month.
+            </p>}
             {candidate && <dl className={styles.costKeyFacts}>
               <div><dt>{option.key === 'rented' ? 'Instance rate' : 'Server price'}</dt><dd>{option.key === 'rented'
-                ? (candidate.cloudHourlyCostPerInstance == null ? 'Not supplied' : `${rate.format(candidate.cloudHourlyCostPerInstance)} / hour`)
-                : `${money.format(candidate.purchasePricePerReplica ?? 0)}${candidate.purchasePriceIndicative ? ' · indicative' : ''}`}</dd></div>
+                ? (candidate.cloudHourlyCostPerInstance == null ? 'Not supplied' : `${formatHybridUsd(candidate.cloudHourlyCostPerInstance)} / hour`)
+                : `${formatHybridUsd(candidate.purchasePricePerReplica ?? 0)}${candidate.purchasePriceIndicative ? ' · indicative' : ''}`}</dd></div>
+              {deployment?.billableInstanceHours != null && <div><dt>Billable instance-hours</dt><dd>
+                {deployment.billableInstanceHours > 0 && deployment.billableInstanceHours < 0.01 ? '<0.01' : hours.format(deployment.billableInstanceHours)} / month
+              </dd></div>}
             </dl>}
             {candidate && <p className={styles.costPriceSource}>
               {priceSourceUrl ? <a href={priceSourceUrl} target="_blank" rel="noreferrer" aria-label={priceSource || 'Price source'}>Price source</a> : <span>Source link unavailable</span>}

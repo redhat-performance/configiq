@@ -1,11 +1,10 @@
 // Single source of truth for the AISimulators request timeout.
 //
-// The default must stay below nginx's webapp proxy_read_timeout (120s; see
-// configiq-deploy/deploy.sh) so a slow request surfaces the app's
-// AISIM_TIMEOUT rather than a bare nginx 504.
+// Leave headroom above the simulator's 180s min-GPU search budget for the
+// response. The deployment's reverse proxy must wait longer than this timeout.
 
 /** Default AISimulators timeout (seconds) when the env var is unset. */
-export const DEFAULT_GATEWAY_TIMEOUT_SECONDS = 90
+export const DEFAULT_GATEWAY_TIMEOUT_SECONDS = 210
 
 /**
  * Resolve the configured AISimulators timeout in seconds, honoring the

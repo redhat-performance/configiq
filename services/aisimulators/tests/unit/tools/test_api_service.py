@@ -201,6 +201,7 @@ class MockRecommendationCounts:
     evaluated: int = 2
     feasible: int = 2
     timed_out: int = 0
+    resource_limited: int = 0
 
 
 @dataclass
@@ -234,6 +235,13 @@ class MockPredictionResult:
 
 class TestRecommend:
 
+    def test_min_gpus_wall_clock_budget_defaults_to_180_seconds(self, monkeypatch):
+        monkeypatch.delenv("MIN_GPUS_SEARCH_BUDGET_S", raising=False)
+        assert app_module._min_gpus_search_budget_seconds() == 180
+
+        monkeypatch.setenv("MIN_GPUS_SEARCH_BUDGET_S", "70")
+        assert app_module._min_gpus_search_budget_seconds() == 70
+
     def test_recommendation_search_is_bounded(self, monkeypatch):
         monkeypatch.delenv("AISIMULATORS_MAX_CANDIDATE_GPUS", raising=False)
         request = app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
@@ -260,6 +268,44 @@ class TestRecommend:
         assert config.engine.mode.choices == ["aggregated"]
         assert "prefill" not in config.engine.workers
         assert "decode" not in config.engine.workers
+
+    @pytest.mark.parametrize("concurrency, requests", [(1, 4), (8, 32), (100, 100)])
+    def test_closed_loop_replay_includes_requested_concurrency(self, concurrency, requests):
+        request = app_module.RecommendRequest.model_validate(
+            {**VALID_RECOMMEND_BODY, "target_concurrency": concurrency}
+        )
+        config = app_module._aisimulate_recommendation_config(request)
+
+        assert config.traffic.load.concurrency == concurrency
+        assert config.traffic.stop.requests == requests
+
+    @pytest.mark.parametrize("concurrency, requests", [(10, 32), (25, 32), (100, 100)])
+    def test_replicated_probe_preserves_exact_traffic_and_sla(self, concurrency, requests):
+        request = app_module.RecommendRequest.model_validate({
+            **VALID_RECOMMEND_BODY, "model_path": "zai-org/GLM-5.3", "isl": 45000,
+            "osl": 300, "prefix": 36000, "ttft": 3000, "tpot": 30,
+            "target_concurrency": concurrency, "backend_version": "current",
+        })
+        shape = app_module._CapacityShape(tp=8, dp=1, moe_tp=8, moe_ep=1, per_rank_tokens=65536)
+        probe = app_module._CapacityCandidate(shape, concurrency, 45300)
+        gpus = concurrency * 8
+        config = app_module._aisimulate_recommendation_config(
+            request, window=(gpus, gpus), max_trials_override=1, replicated_probe=probe,
+        )
+        raw = config.model_dump(mode="json", exclude_none=True)
+
+        assert raw["traffic"]["source"] == {
+            "type": "synthetic", "input_tokens": 45000, "output_tokens": 300, "cached_prefix_tokens": 36000,
+        }
+        assert raw["traffic"]["load"]["concurrency"] == concurrency
+        assert raw["traffic"]["stop"]["requests"] == requests
+        assert raw["evaluation"]["sla"]["ttft_ms"] == 3000
+        assert raw["evaluation"]["sla"]["itl_ms"] == 30
+        assert raw["engine"]["backend_version"] == "current"
+        assert raw["engine"]["mode"]["choices"] == ["aggregated"]
+        assert raw["engine"]["workers"]["aggregated"]["parallelism"]["preset"][0]["replicas"] == concurrency
+        assert raw["optimization"]["constraints"]["min_candidate_gpus"] == gpus
+        assert raw["optimization"]["constraints"]["max_candidate_gpus"] == gpus
 
     def test_pareto_rejects_a_serving_mode(self):
         # A Pareto sweep enumerates both deployment modes, so a mode would state
@@ -310,6 +356,56 @@ class TestRecommend:
         assert cfg["system"] == "h200_sxm"
         assert cfg["backend"] == "vllm"
         assert cfg["backend_version"] == "0.24.0"
+
+    @pytest.mark.parametrize(
+        "mode, top_n, has_probe, include, available",
+        [
+            ("disagg", 2, True, "", True),
+            ("disagg", 2, True, "?include=config,memory", True),
+            ("disagg", 1, True, "", False),
+            ("disagg", 2, False, "", False),
+            ("agg", 2, True, "", False),
+        ],
+    )
+    def test_aggregated_fallback_contract(self, monkeypatch, mode, top_n, has_probe, include, available):
+        primary, probe = MockCandidate(), MockCandidate(used_gpus=4)
+        configs = {
+            id(primary): app_module.RecommendConfig(
+                mode=mode, ttft=400, tpot=20,
+                prefill_config=app_module.WorkerConfig() if mode == "disagg" else None,
+            ),
+            id(probe): app_module.RecommendConfig(
+                mode="agg", ttft=500, tpot=20, tp=2,
+                total_gpus_needed=4, num_total_gpus=2, replicas_needed=2,
+                backend_version="0.24.0",
+            ),
+        }
+        monkeypatch.setattr(
+            app_module, "_run_with_version_fallback",
+            lambda req, *_a, **_kw: ((make_mock_recommendation_result([primary]), None, probe if has_probe else None), "old"),
+        )
+        monkeypatch.setattr(app_module, "_aisimulate_candidate_config", lambda candidate, req: configs[id(candidate)])
+        serving = MagicMock(return_value=None)
+        memory = MagicMock(return_value=None)
+        monkeypatch.setattr(app_module, "_build_serving_config", serving)
+        monkeypatch.setattr(app_module, "_build_memory_breakdown", memory)
+        response = client.post(
+            f"/recommend{include}",
+            json={**VALID_RECOMMEND_BODY, "top_n": top_n, "inclusive_tpot": True, "backend_version": "0.24.0"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["chosen_mode"] == mode
+        assert len(body["configs"]) == 1
+        fallback = body["aggregated_fallback"]
+        if available:
+            assert fallback["simulator"] == "aisimulate"
+            assert fallback["replicas_needed"] == 2
+            assert fallback["tpot"] == pytest.approx(app_module._inclusive_tpot(500, 20, VALID_RECOMMEND_BODY["osl"]))
+            assert "used 0.24.0" in fallback["warnings"][0]
+        else:
+            assert fallback is None
+        assert serving.call_count == memory.call_count == int(bool(include))
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_response_derives_compatibility_metrics_from_engine_report(self, mock_recommend):
@@ -527,7 +623,7 @@ class TestRecommend:
         mock_recommend.return_value = MockRecommendationResult(selected_candidates=[])
         resp = client.post("/recommend", json=VALID_RECOMMEND_BODY)
         assert resp.status_code == 422
-        assert "No GPU configuration" in resp.json()["detail"]
+        assert "No evaluated GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_value_error_returns_422(self, mock_recommend):
@@ -556,7 +652,7 @@ class TestRecommend:
         assert resp.status_code == 422
         # The ladder exhausts every window and reports the range it searched,
         # rather than the last window's internal optimizer message.
-        assert "No GPU configuration" in resp.json()["detail"]
+        assert "No evaluated GPU configuration" in resp.json()["detail"]
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_unexpected_error_returns_500(self, mock_recommend):
@@ -1541,6 +1637,13 @@ class TestMinGpusTrialBudget:
 
 
 class TestRunMinGpusWindows:
+    @staticmethod
+    def _stub_non_probe_fit_floor(monkeypatch, floor: int | None) -> None:
+        # Model a fit floor with no eligible pure tensor-parallel shape so
+        # these tests exercise the ordinary window ladder in isolation.
+        shapes = [] if floor is None else [_capacity_shape(tp=1, dp=floor, moe_tp=1, moe_ep=floor)]
+        monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *args, **kwargs: shapes)
+
     def _request(self):
         return app_module.RecommendRequest.model_validate(VALID_RECOMMEND_BODY)
 
@@ -1568,9 +1671,100 @@ class TestRunMinGpusWindows:
             provenance=MockRecommendationProvenance(run_id="run-min"),
         )
 
+    @pytest.mark.parametrize("concurrency", [10, 25, 100])
+    @pytest.mark.parametrize("small_result", ["pass", "timeout", "error", "resource_limit"])
+    def test_closed_loop_probes_outside_initial_windows_and_keeps_only_verified_results(
+        self, monkeypatch, concurrency, small_result,
+    ):
+        from aisimulate.resources import ResourceLimitError
+
+        req = self._request().model_copy(update={"target_concurrency": concurrency, "isl": 45000, "osl": 300})
+        gpus = concurrency * 8
+        clock = [0.0]
+        monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "1024")
+        shape = app_module._CapacityShape(tp=8, dp=1, moe_tp=8, moe_ep=1, per_rank_tokens=65536)
+        monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **kw: [shape])
+        windows = []
+
+        def fake(request, *, window, replicated_probe=None, **kwargs):
+            assert request is req
+            windows.append(window)
+            if replicated_probe is not None:
+                assert replicated_probe.shape == shape
+                assert replicated_probe.replicas == concurrency
+                assert kwargs["max_trials_override"] == kwargs["parallelism_override"] == 1
+                return self._result(gpus, evaluated=1)
+            assert kwargs["max_trials_override"] == 2
+            assert kwargs["parallelism_override"] == 2
+            if small_result == "error":
+                raise RuntimeError("missing performance data for smaller deployment")
+            if small_result == "resource_limit":
+                raise ResourceLimitError("no host memory remains")
+            if small_result == "timeout":
+                clock[0] = 68
+                return MockLedgerRecommendationResult(
+                    candidates=[], counts=MockRecommendationCounts(evaluated=1, feasible=0, timed_out=1),
+                )
+            return self._result(8, modes=("agg", "disagg"))
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        result, sweep, verified_probe = app_module._run_min_gpus_windows(req, deadline=70)
+
+        assert windows == [(gpus, gpus), (8, 16)]
+        assert result.selected_candidates[0].used_gpus == (8 if small_result == "pass" else gpus)
+        assert verified_probe.used_gpus == gpus
+        assert sweep.window_max_gpus == gpus
+        assert sweep.budget_exhausted == (small_result == "timeout")
+
+    def test_small_worker_uses_normal_ladder_when_replicas_fit_first_two_windows(self, monkeypatch):
+        req = self._request().model_copy(update={"target_concurrency": 25})
+        monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **kw: [_capacity_shape(tp=1)])
+        windows = []
+
+        def fake(request, *, window, replicated_probe=None, **kwargs):
+            windows.append(window)
+            assert replicated_probe is None
+            assert kwargs["max_trials_override"] == 16
+            return self._result(1)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        result, _, _ = app_module._run_min_gpus_windows(req)
+        assert windows == [(1, 16)]
+        assert result.selected_candidates[0].used_gpus == 1
+
+    @pytest.mark.parametrize("input_tokens, expected", [(32768, None), (120600, 16)])
+    def test_long_prompt_probes_at_two_concurrent_requests(self, input_tokens, expected):
+        req = self._request().model_copy(update={"target_concurrency": 2, "isl": input_tokens, "osl": 632})
+        shape = _capacity_shape(tp=8, per_rank_tokens=150000)
+        probe = app_module._replicated_latency_probe(req, [shape], ceiling=1024, first_window_max=16)
+        assert (probe.total_gpus if probe else None) == expected
+
+    def test_failed_probe_does_not_replace_the_regular_search(self, monkeypatch):
+        req = self._request().model_copy(update={"target_concurrency": 100})
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "128")
+        shape = app_module._CapacityShape(tp=8, dp=1, moe_tp=8, moe_ep=1, per_rank_tokens=65536)
+        monkeypatch.setattr(app_module, "_discover_fit_shapes", lambda *a, **kw: [shape])
+        windows = []
+
+        def fake(request, *, window, replicated_probe=None, **kwargs):
+            windows.append(window)
+            if replicated_probe is not None:
+                assert replicated_probe.replicas == 16
+                assert request.target_concurrency == 100
+                raise RuntimeError("missing performance data for probe")
+            assert kwargs["max_trials_override"] == 16
+            return self._result(8)
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        result, sweep, _ = app_module._run_min_gpus_windows(req)
+        assert windows == [(128, 128), (8, 16)]
+        assert result.selected_candidates[0].used_gpus == 8
+        assert sweep.feasible == 1
+
     def test_starts_with_a_wide_window_at_the_fit_floor(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         windows: list[tuple[int, int] | None] = []
 
         def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
@@ -1579,7 +1773,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        result, sweep = app_module._run_min_gpus_windows(self._request())
+        result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
         assert windows == [(8, 16)]
@@ -1595,7 +1789,7 @@ class TestRunMinGpusWindows:
         # together: if the config stops asking for P/D while the sweep still
         # reports it, the two disagree about what was searched.
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         configs = []
 
         def fake(request, *, window=None, **kwargs):
@@ -1606,7 +1800,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        _result, sweep = app_module._run_min_gpus_windows(self._request())
+        _result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert configs
         assert configs[0].engine.mode.choices == ["aggregated", "disaggregated"]
@@ -1620,20 +1814,20 @@ class TestRunMinGpusWindows:
 
     def test_reports_both_modes_for_the_wide_ladder(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         monkeypatch.setattr(
             app_module,
             "_run_aisimulate_recommendation",
             lambda request, **kwargs: self._result(8, modes=("agg", "disagg")),
         )
 
-        _result, sweep = app_module._run_min_gpus_windows(self._request())
+        _result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert sweep.modes_searched == ["agg", "disagg"]
 
     def test_does_not_report_a_mode_the_ledger_never_evaluated(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         # The window is configured for both modes, but the SDK skipped P/D for
         # it, so only the evaluated mode is reported.
         monkeypatch.setattr(
@@ -1642,13 +1836,13 @@ class TestRunMinGpusWindows:
             lambda request, **kwargs: self._result(8, modes=("agg",)),
         )
 
-        _result, sweep = app_module._run_min_gpus_windows(self._request())
+        _result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert sweep.modes_searched == ["agg"]
 
     def test_reports_one_mode_for_an_aggregated_request(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         monkeypatch.setattr(
             app_module,
             "_run_aisimulate_recommendation",
@@ -1658,13 +1852,13 @@ class TestRunMinGpusWindows:
             {**VALID_RECOMMEND_BODY, "mode": "agg"}
         )
 
-        _result, sweep = app_module._run_min_gpus_windows(request)
+        _result, sweep, _ = app_module._run_min_gpus_windows(request)
 
         assert sweep.modes_searched == ["agg"]
 
     def test_passes_the_window_parallelism_with_its_trial_budget(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         captured: dict[str, int | None] = {}
 
         def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
@@ -1681,7 +1875,7 @@ class TestRunMinGpusWindows:
 
     def test_expands_past_an_infeasible_window_then_refines(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        self._stub_non_probe_fit_floor(monkeypatch, 4)
         windows: list[tuple[int, int] | None] = []
 
         class NoViableParallelConfig(Exception):
@@ -1697,7 +1891,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        result, sweep = app_module._run_min_gpus_windows(self._request())
+        result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
         assert windows == [(4, 16), (17, 32), (17, 17)]
@@ -1708,7 +1902,7 @@ class TestRunMinGpusWindows:
         self, monkeypatch
     ):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         windows: list[tuple[int, int] | None] = []
 
         class NoViableParallelConfig(Exception):
@@ -1725,7 +1919,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        result, sweep = app_module._run_min_gpus_windows(self._request())
+        result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
         assert result.selected_candidates[0].used_gpus == 16
@@ -1736,7 +1930,7 @@ class TestRunMinGpusWindows:
 
     def test_a_fitting_window_without_an_sla_candidate_still_grows(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        self._stub_non_probe_fit_floor(monkeypatch, 4)
         windows: list[tuple[int, int] | None] = []
 
         empty = MockLedgerRecommendationResult(
@@ -1752,7 +1946,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        result, sweep = app_module._run_min_gpus_windows(self._request())
+        result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
         # (4, 16) held the model but no SLA candidate; (17, 32) found one and
@@ -1764,21 +1958,21 @@ class TestRunMinGpusWindows:
 
     def test_a_large_floor_raises_the_reported_ceiling(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
         monkeypatch.setattr(
             app_module,
             "_run_aisimulate_recommendation",
             lambda request, *, window=None, **kwargs: self._result(8),
         )
 
-        _, sweep = app_module._run_min_gpus_windows(self._request())
+        _, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert sweep.configured_max_gpus == 8
         assert sweep.effective_max_gpus == 16
 
     def test_fit_floor_failure_uses_the_wide_one_gpu_fallback(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: None)
+        self._stub_non_probe_fit_floor(monkeypatch, None)
         windows: list[tuple[int, int] | None] = []
 
         def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
@@ -1787,7 +1981,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        result, sweep = app_module._run_min_gpus_windows(self._request())
+        result, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert result is not None
         assert windows == [(1, 16)]
@@ -1796,7 +1990,7 @@ class TestRunMinGpusWindows:
 
     def test_no_fitting_window_is_an_explicit_error(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        self._stub_non_probe_fit_floor(monkeypatch, 4)
 
         class NoViableParallelConfig(Exception):
             pass
@@ -1814,9 +2008,38 @@ class TestRunMinGpusWindows:
         assert raised.value.status_code == 422
         assert "between 4 and 8 GPUs" in raised.value.detail
 
+    @pytest.mark.parametrize(("outcome", "status", "message"), [
+        ("host_error", 503, "simulator host reached a resource limit"),
+        ("candidate_resource_limit", 503, "simulator host reached a resource limit"),
+        ("candidate_timeout", 504, "simulator timed out on 1 candidate"),
+    ])
+    def test_incomplete_evaluation_is_not_reported_as_no_match(self, monkeypatch, outcome, status, message):
+        from aisimulate.resources import ResourceLimitError
+
+        monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "8")
+        self._stub_non_probe_fit_floor(monkeypatch, 4)
+
+        def fake(*args, **kwargs):
+            if outcome == "host_error":
+                raise ResourceLimitError("no host memory remains")
+            return MockLedgerRecommendationResult(
+                counts=MockRecommendationCounts(
+                    evaluated=0,
+                    feasible=0,
+                    timed_out=int(outcome == "candidate_timeout"),
+                    resource_limited=int(outcome == "candidate_resource_limit"),
+                ),
+            )
+
+        monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
+        response = client.post("/recommend", json=VALID_RECOMMEND_BODY)
+
+        assert response.status_code == status
+        assert message in response.json()["detail"]
+
     def test_wall_clock_budget_sets_budget_exhausted(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 4)
+        self._stub_non_probe_fit_floor(monkeypatch, 4)
         monkeypatch.setattr(app_module, "_min_gpus_search_budget_seconds", lambda: 1)
 
         def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
@@ -1835,7 +2058,7 @@ class TestRunMinGpusWindows:
 
     def test_a_spent_trial_budget_does_not_mark_the_search_exhausted(self, monkeypatch):
         monkeypatch.setenv("AISIMULATORS_MAX_CANDIDATE_GPUS", "32")
-        monkeypatch.setattr(app_module, "_discover_fit_floor", lambda *a, **kw: 8)
+        self._stub_non_probe_fit_floor(monkeypatch, 8)
 
         def fake(request, *, window=None, max_trials_override=None, parallelism_override=None, candidate_timeout_override=None):
             # Evaluate more trials than the window offered; this is trial
@@ -1851,7 +2074,7 @@ class TestRunMinGpusWindows:
 
         monkeypatch.setattr(app_module, "_run_aisimulate_recommendation", fake)
 
-        _, sweep = app_module._run_min_gpus_windows(self._request())
+        _, sweep, _ = app_module._run_min_gpus_windows(self._request())
 
         assert sweep.budget_exhausted is False
         assert sweep.max_trials is not None

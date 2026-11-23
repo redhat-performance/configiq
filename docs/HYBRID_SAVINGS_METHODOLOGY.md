@@ -74,7 +74,8 @@ total), matching the shared Default request shape of 2,048 input and 128 output
 tokens. Both monthly volumes imply exactly 1,171,875 requests, so the default
 workload mix is aligned. Selecting a shared preset changes only the input and
 output lengths per request. It leaves monthly volumes, latency targets,
-concurrency, and cached prefix unchanged.
+concurrency, and the entered cache-read total unchanged. The estimated cache
+reuse per request may change when the request lengths change.
 
 ## AISimulators field contract
 
@@ -85,6 +86,28 @@ limits. This is modeled performance at that reference load, not evidence of
 maximum server throughput. A concurrency-one result describes that load;
 increasing concurrency is not guaranteed to preserve latency or scale linearly.
 Calibrate with a benchmark matching the intended workload and latency targets.
+An exhausted search budget means no configuration was verified within the
+search, not that the workload cannot run. Hardware costs are only displayed
+when a recommendation meets the selected targets and has an eligible offer.
+For closed-loop requests, AISimulate sizing can try one larger replicated
+layout first if the model's worker footprint and requested concurrency place
+that deployment outside the first two GPU search windows, or if the prompt
+exceeds the sweep's 32,768-token runtime batch limit. A passing result
+is the smallest verified in that search, not proof of the
+global minimum. At positive demand, the priced deployment keeps at least the
+simulator's replica count for the requested concurrency and latency targets.
+If a disaggregated winner cannot use a complete-server offer, Hybrid Savings
+can price a compatible aggregate alternative verified by the same search.
+Above that floor, demand scales using modeled per-replica throughput. The
+reported concurrency can differ from the requested load (for example, an
+average over a replay); it does not replace the target or multiply demand.
+
+Hybrid Savings normally searches up to four GPU systems in parallel. For a
+memory-constrained local simulator, set `NEXT_PUBLIC_HYBRID_SIZING_PARALLELISM=1`
+when starting the development server or building the frontend. This runs the
+same searches and latency checks one system at a time; it does not lower the
+workload's requested concurrency. A single search still needs sufficient host
+memory and may reach the simulator's own search budget.
 
 | AISimulators value | Meaning used by Hybrid Savings | Transformation |
 | --- | --- | --- |
@@ -93,7 +116,7 @@ Calibrate with a benchmark matching the intended workload and latency targets.
 | `tp`, `pp`, `dp`, `cp` | Parallelism dimensions for one aggregate-serving replica | Product gives GPUs per replica |
 | `tokens_per_second` / output throughput | Output-token throughput for the complete candidate cluster | Divided by returned replicas to obtain scalable per-replica throughput |
 | per-GPU output throughput | Diagnostic rate | Not used as a second capacity multiplier |
-| `concurrency` | Concurrency represented by the complete candidate | Display/diagnostic value; not multiplied again |
+| `concurrency` | Concurrency reported for the candidate | Diagnostic value shown separately from the requested concurrency |
 | `ttft` | Time to first token, milliseconds | Must be positive and satisfy the requested limit |
 | `tpot` | Time per output token, milliseconds/token | Must be positive and satisfy the requested limit |
 | request latency | End-to-end request latency when that target is used | Must satisfy the requested limit |
@@ -116,7 +139,8 @@ capacity/replica = requests/second/replica
                    * H * 3,600
                    / P
                    / requests/billed token
-required replicas = ceil(billed tokens / capacity/replica)
+required replicas at positive demand = max(simulated replicas,
+                                           ceil(billed tokens / capacity/replica))
 ```
 
 The default planning-capacity percentage is 90%, so 10% of estimated
@@ -142,7 +166,7 @@ Provider offers are ranked using the same input/output workload. The cheapest
 valid offer is selected initially, and changing provider recalculates the
 cards, chart, and crossovers.
 
-The supported tariff is **standard synchronous, uncached text** in USD:
+The supported tariff is **standard synchronous text** in USD, uncached by default:
 
 - AICostings normalizes USD/token to USD/million tokens once, without rounding
   very small non-zero rates to zero. Per-request prices remain USD/request.
@@ -153,9 +177,19 @@ The supported tariff is **standard synchronous, uncached text** in USD:
 - Published input, output and combined-context limits are checked separately.
   LiteLLM's legacy `context_window` is an input limit. Its ambiguous
   `max_tokens` field is not guessed to be a combined-context limit.
-- Cache read/write rates are retained as metadata but not applied: simulator
-  prefix reuse is not a measured hosted cache-hit/write volume. Batch, tools,
-  audio/image and other optional modalities are not included.
+- Optional monthly hosted cache reads and writes are disjoint parts of the
+  entered input total. Bill the remaining input at the normal rate, reads and
+  writes at the selected offer's applicable rates, and output normally. If a
+  requested cache rate is missing or has multiple retention prices, show the
+  uncached baseline. Both graphs and break-even keep these input shares fixed.
+- **Self-hosted cache reads** count toward the monthly input total. Enter the
+  monthly cache-read count from the self-hosted model, not the hosted provider.
+  The calculator divides those reads by the larger request count implied by
+  monthly input and output, rounds down, and shows the estimated reuse per
+  request. Sizing uses that estimate as a reusable prefix. Cache misses still
+  need regular input processing. Self-hosted writes aren't a separate cost
+  input, and these counts don't affect the hosted bill or guarantee hits.
+  Batch, tools, audio/image and other optional modalities are excluded.
 - Offers with unsupported token-pricing conditions (for example time-window
   rates), invalid additional charges or separately priced reasoning tokens are
   not eligible for this comparison. They are not silently charged at base rates.
@@ -172,8 +206,14 @@ The supported tariff is **standard synchronous, uncached text** in USD:
 Only complete mapped cloud offers can be priced. Replica topology is packed
 into whole instances, subject to any multi-instance/interconnect limit.
 
-- `Scale to zero` bills modeled serving time plus the runtime buffer. Average
-  work, rather than peak replicas running continuously, determines runtime.
+- `Scale to zero` bills modeled serving time plus the runtime buffer. While
+  serving, the whole instances that cover the simulated replica floor are
+  billable. Sparse traffic is not credited with perfect parallelism across
+  inactive replicas. At higher average demand, instance-hours increase as
+  additional instance capacity is used. This assumes the deployment can be
+  stopped when idle; it does not price standby availability or guarantee the
+  provider's billing minimums and startup latency. Use an always-warm billing
+  mode when requests must be served without a cold start.
 - `Active window` keeps the required whole instances warm for `H` hours.
 - `Always on` bills the required whole instances for the configured monthly
   hours (730 by default).
@@ -307,7 +347,7 @@ result: sparse demand is no longer mistaken for server capacity and GPU cost is
 
 - No automatic high-availability or failure-reserve replica is included.
 - CPU serving paths are outside the present Hybrid Savings scope.
-- Retry traffic, cache discounts, storage, data transfer, networking, taxes,
+- Retry traffic, storage, data transfer, networking, taxes,
   commitment discounts, private contract rates, and Red Hat subscriptions are
   included only if represented by an explicit user-entered cost.
 - Hosted reasoning-token volumes and cache-hit/write volumes are not inferred

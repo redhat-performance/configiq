@@ -928,6 +928,9 @@ class RecommendResponse(BaseModel):
     configs: list[RecommendConfig]
     chosen_mode: str
     simulator: str = "aisimulate"
+    # A verified aggregate layout kept when the lowest-GPU configuration uses
+    # separate prefill and decode pools. Clients can price it independently.
+    aggregated_fallback: RecommendConfig | None = None
     search_summary: dict[str, Any] | None = None
     candidates: list[CandidateResponse] = Field(default_factory=list)
     views: CandidateViews | None = None
@@ -1253,7 +1256,7 @@ _FIT_DISCOVERY_BUDGET_S = 15
 #: every window and every backend-version attempt. Kept below the gateway
 #: timeout so the caller receives the best observed result instead of a proxy
 #: timeout.
-_MIN_GPUS_SEARCH_BUDGET_S = 70
+_MIN_GPUS_SEARCH_BUDGET_S = 180
 #: Do not start another min_gpus window with less time than this remaining.
 _MIN_GPUS_MIN_WINDOW_S = 5
 #: Minimum headroom above the fit floor for the first search window. A small
@@ -1561,6 +1564,7 @@ def _aisimulate_recommendation_config(
     max_trials_override: int | None = None,
     parallelism_override: int | None = None,
     candidate_timeout_override: int | None = None,
+    replicated_probe: "_CapacityCandidate | None" = None,
 ) -> Any:
     from aisimulate.config.cli import CoreRecommendationConfig
 
@@ -1574,7 +1578,7 @@ def _aisimulate_recommendation_config(
     # per-window timeout on redundant optimizer trials.
     is_pareto = req.objective == "pareto"
     is_demand = req.objective == "throughput_demand"
-    modes = [
+    modes = ["aggregated"] if replicated_probe is not None else [
         _SDK_DEPLOYMENT_MODES[mode]
         for mode in _aisimulate_search_modes(req, (window_min_gpus, window_max_gpus))
     ]
@@ -1608,10 +1612,24 @@ def _aisimulate_recommendation_config(
         stop = {"requests_per_load_unit": _demand_requests_per_load_unit()}
     else:
         load = {"type": "concurrency", "concurrency": concurrency}
-        stop = {"requests": max(4, min(32, concurrency * 4))}
+        # This is an absolute request count in the SDK, not requests per user.
+        # A smaller replay cannot even start the requested number of concurrent
+        # requests. Preserve the short replay at low load and include at least
+        # one full wave at higher load.
+        stop = {"requests": max(concurrency, 4, min(32, concurrency * 4))}
     workers: dict[str, Any] = {
         "aggregated": {"parallelism": {"preset": "default"}},
     }
+    if replicated_probe is not None:
+        shape = replicated_probe.shape
+        workers["aggregated"]["parallelism"] = {"preset": [{
+            "replicas": replicated_probe.replicas,
+            "tensor": shape.tp,
+            "pipeline": 1,
+            "attention_data": shape.dp,
+            "moe_tensor": shape.moe_tp,
+            "moe_expert": shape.moe_ep,
+        }]}
     if "disaggregated" in modes:
         workers.update({
             "prefill": {
@@ -2455,11 +2473,17 @@ def _run_min_gpus_windows(
     req: RecommendRequest,
     *,
     deadline: float | None = None,
-) -> tuple[Any | None, SweepMeta]:
+) -> tuple[Any, SweepMeta, Any | None]:
     """Run the min-GPU search over a service-resolved window ladder.
 
-    The first window starts at the model's single-sequence fit floor and reaches
-    at least 16 GPUs (or twice a larger floor), so both aggregated and
+    For closed-loop load, first try one replicated layout at the exact workload
+    and latency targets if it extends beyond the first two ordinary windows
+    or the prompt exceeds the sweep runtime's token budget.
+    This depends on the model's worker footprint, not an arbitrary concurrency
+    threshold. It supplies an upper bound only if the SDK verifies it. The
+    ordinary ladder still tries smaller layouts and both modes
+    when permitted. Its first window starts at the single-sequence fit floor
+    and reaches at least 16 GPUs (or twice a larger floor), so both aggregated and
     disaggregated shapes have room. The SDK orders candidates smallest-first;
     a returned candidate above the floor narrows the range below it, while a
     window with no qualifying candidate doubles the upper bound. Each window
@@ -2471,14 +2495,14 @@ def _run_min_gpus_windows(
     A discovery failure starts from the wide one-GPU fallback window; it is
     logged rather than returned as a separate result.
     """
+    from aisimulate.resources import ResourceLimitError
+
     configured = _max_candidate_gpus()
     if deadline is None:
         deadline = time.monotonic() + _min_gpus_search_budget_seconds()
-    discovered = _discover_fit_floor(
-        req,
-        configured=configured,
-        deadline=min(deadline, time.monotonic() + _fit_discovery_budget_seconds()),
-    )
+    fit_deadline = min(deadline, time.monotonic() + _fit_discovery_budget_seconds())
+    fit_shapes = _discover_fit_shapes(req, configured=configured, deadline=fit_deadline)
+    discovered = min((shape.gpus_per_worker for shape in fit_shapes), default=None)
     floor = 1 if discovered is None else discovered
     ceiling = _effective_search_ceiling(configured, floor)
 
@@ -2492,20 +2516,82 @@ def _run_min_gpus_windows(
     timed_out = 0
     searched = False
     budget_exhausted = False
+    resource_limited = False
     run_id: str | None = None
     result: Any | None = None
     best_gpus: int | None = None
     modes_searched: list[Literal["agg", "disagg"]] = []
+    verified_probe: Any | None = None
+
+    def record_window(window_result: Any, modes: list[Literal["agg", "disagg"]]) -> int | None:
+        nonlocal searched, modes_searched, evaluated, feasible, timed_out, result, best_gpus, run_id
+        nonlocal resource_limited
+        searched = True
+        modes_searched = _merge_search_modes(modes_searched, _evaluated_search_modes(window_result, modes))
+        counts = getattr(window_result, "counts", None)
+        window_evaluated = getattr(counts, "evaluated", None)
+        if not isinstance(window_evaluated, int):
+            window_evaluated = len(getattr(window_result, "candidates", []) or [])
+        evaluated += window_evaluated
+        feasible += int(getattr(counts, "feasible", 0) or 0)
+        timed_out += int(getattr(counts, "timed_out", 0) or 0)
+        resource_limited = resource_limited or bool(getattr(counts, "resource_limited", 0))
+        window_run_id = getattr(getattr(window_result, "provenance", None), "run_id", None)
+        selected = getattr(window_result, "selected_candidates", None) or []
+        candidate_gpus = getattr(selected[0], "used_gpus", None) if selected else None
+        if candidate_gpus is not None and (best_gpus is None or candidate_gpus < best_gpus):
+            result, best_gpus, run_id = window_result, candidate_gpus, window_run_id
+        elif result is None:
+            run_id = window_run_id or run_id
+        return candidate_gpus
+
+    if (req.target_concurrency or 0) > 1 and req.target_request_rate is None and req.mode != "disagg":
+        probe = _replicated_latency_probe(req, fit_shapes, ceiling=ceiling, first_window_max=upper)
+        remaining = deadline - time.monotonic()
+        if probe is not None and remaining >= 4 * _MIN_GPUS_MIN_WINDOW_S:
+            probe_window = (probe.total_gpus, probe.total_gpus)
+            attempted.append(probe_window)
+            offered_trials += 1
+            try:
+                probe_result = _run_aisimulate_recommendation(
+                    req,
+                    window=probe_window,
+                    max_trials_override=1,
+                    parallelism_override=1,
+                    candidate_timeout_override=min(_min_gpus_candidate_timeout_seconds(), int(remaining / 2)),
+                    replicated_probe=probe,
+                )
+            except Exception as exc:
+                # This topology may lack data even when the ordinary search can
+                # simulate a different one on the requested backend version.
+                resource_limited = resource_limited or isinstance(exc, ResourceLimitError)
+                logger.info("Replicated latency probe on %s did not finish: %s", req.system, exc)
+            else:
+                if record_window(probe_result, ["agg"]) is not None:
+                    verified_probe = probe_result.selected_candidates[0]
 
     recorder = active_recorder()
     while lower <= upper <= ceiling:
-        if attempted and deadline - time.monotonic() < _MIN_GPUS_MIN_WINDOW_S:
+        if best_gpus is not None:
+            upper = min(upper, best_gpus - 1)
+            if upper < lower:
+                break
+        # A replica probe already supplies an answer. Avoid starting another
+        # expensive replay near the deadline merely to refine that answer.
+        window_reserve = 3 * _MIN_GPUS_MIN_WINDOW_S if verified_probe is not None else _MIN_GPUS_MIN_WINDOW_S
+        if attempted and deadline - time.monotonic() < window_reserve:
             budget_exhausted = True
             break
         remaining = max(1.0, deadline - time.monotonic())
         window_max_trials, window_parallelism, candidate_timeout = (
             _recommendation_trial_budget(req.objective, upper)
         )
+        if verified_probe is not None:
+            # SDK resource admission can serialize nominally parallel workers.
+            # Limit each optional improvement window to one trial per enabled
+            # mode so it cannot delay a verified large result by several waves.
+            window_max_trials = len(_aisimulate_search_modes(req, (lower, upper)))
+            window_parallelism = min(window_parallelism, window_max_trials)
         attempted.append((lower, upper))
         # Honour this window's own trial budget when time allows. The per-wave
         # timeout absorbs the remaining time rather than shrinking the sample
@@ -2530,11 +2616,17 @@ def _run_min_gpus_windows(
                 parallelism_override=window_parallelism,
                 candidate_timeout_override=window_timeout,
             )
+        except ResourceLimitError as exc:
+            resource_limited = True
+            logger.info("Sizing on %s reached an execution-host resource limit: %s", req.system, exc)
+            break
         except Exception as exc:
-            # A window below the model's fit is the point of the ladder; any
-            # other error (perf-data gap included) must reach the caller so
-            # version fallback can retry it.
+            # A window below the model's fit is the point of the ladder. If
+            # nothing was verified yet, other errors must reach version fallback.
             if not _is_no_viable_config(exc):
+                if result is not None:
+                    logger.info("Smaller GPU window on %s did not finish: %s", req.system, exc)
+                    break
                 raise
             # The skipped window evaluated nothing, so the command it would
             # have run does not belong in the record: `run.sh` stops at the
@@ -2549,34 +2641,8 @@ def _run_min_gpus_windows(
                 break
 
         if window_result is not None:
-            searched = True
-            # Only a window that returned a result searched its modes; a window
-            # below the model's fit evaluated nothing, so it contributes none.
-            # The ledger then narrows the configured modes to the ones evaluated.
-            modes_searched = _merge_search_modes(
-                modes_searched,
-                _evaluated_search_modes(
-                    window_result, _aisimulate_search_modes(req, (lower, upper))
-                ),
-            )
-            counts = getattr(window_result, "counts", None)
-            window_evaluated = getattr(counts, "evaluated", None)
-            if not isinstance(window_evaluated, int):
-                window_evaluated = len(getattr(window_result, "candidates", []) or [])
-            evaluated += window_evaluated
-            feasible += int(getattr(counts, "feasible", 0) or 0)
-            timed_out += int(getattr(counts, "timed_out", 0) or 0)
-            run_id = getattr(getattr(window_result, "provenance", None), "run_id", None) or run_id
-
-            selected = getattr(window_result, "selected_candidates", None) or []
-            candidate_gpus = getattr(selected[0], "used_gpus", None) if selected else None
+            candidate_gpus = record_window(window_result, _aisimulate_search_modes(req, (lower, upper)))
             if candidate_gpus is not None:
-                # Keep the smallest candidate: a later window can return an
-                # out-of-window shape (for example disaggregation rounding)
-                # that is larger than the minimum already found.
-                if best_gpus is None or candidate_gpus < best_gpus:
-                    result = window_result
-                    best_gpus = candidate_gpus
                 if candidate_gpus <= lower:
                     break
                 refinement_max = candidate_gpus - 1
@@ -2604,17 +2670,27 @@ def _run_min_gpus_windows(
         upper = min(ceiling, max(lower, upper * 2))
 
     if result is None:
+        if resource_limited:
+            raise HTTPException(
+                status_code=503,
+                detail="The simulator host reached a resource limit before any hardware configuration could be verified.",
+            )
         # Only wall-clock time sets `budget_exhausted`; a spent trial budget is
         # reported through `max_trials` and `evaluated` instead.
         if budget_exhausted:
             detail = (
                 f"The recommendation search reached its time budget after "
-                f"{len(attempted)} GPU window(s) (up to {attempted[-1][1]} GPUs) "
+                f"{len(attempted)} GPU window(s) (up to {max(end for _, end in attempted)} GPUs) "
                 "without a feasible configuration."
+            )
+        elif timed_out > 0:
+            raise HTTPException(
+                status_code=504,
+                detail=f"The simulator timed out on {timed_out} candidate(s) without verifying a configuration.",
             )
         else:
             detail = (
-                f"No GPU configuration on {req.system} meets the requested workload "
+                f"No evaluated GPU configuration on {req.system} met the requested workload "
                 f"between {floor} and {ceiling} GPUs."
             )
         raise HTTPException(status_code=422, detail=detail)
@@ -2634,7 +2710,7 @@ def _run_min_gpus_windows(
         configured_max_gpus=configured,
         effective_max_gpus=ceiling,
         modes_searched=modes_searched or None,
-    )
+    ), verified_probe
 
 
 def _capacity_context_tokens(req: RecommendRequest) -> int:
@@ -2857,13 +2933,13 @@ def _capacity_shapes(
     ]
 
 
-def _discover_fit_floor(
+def _discover_fit_shapes(
     req: RecommendRequest,
     *,
     configured: int,
     deadline: float,
-) -> int | None:
-    """Smallest aggregated worker shape that holds one full-context sequence.
+) -> list[_CapacityShape]:
+    """Aggregated worker shapes that hold one full-context sequence.
 
     Discovery starts at the configured candidate ceiling and doubles the
     enumeration budget when no shape fits, so a model whose single-replica
@@ -2875,7 +2951,7 @@ def _discover_fit_floor(
     fraction). A different envelope would make discovery report a floor the
     sweep cannot reproduce.
 
-    Returns ``None`` when discovery cannot resolve a floor: a preflight failure
+    Returns no shapes when discovery cannot resolve a floor: a preflight failure
     or an exhausted budget is logged and the caller starts from the wide
     one-GPU fallback window. The fit floor is a search-start hint, so a
     discovery problem must not block a real search.
@@ -2909,9 +2985,9 @@ def _discover_fit_floor(
                 req.backend,
                 error,
             )
-            return None
+            return []
         if shapes:
-            return min(shape.gpus_per_worker for shape in shapes)
+            return shapes
         if time.monotonic() >= deadline:
             logger.warning(
                 "Fit-floor discovery reached its budget for %s on %s (%s): no "
@@ -2923,8 +2999,44 @@ def _discover_fit_floor(
                 context_tokens,
                 budget,
             )
-            return None
+            return []
         budget *= 2
+
+
+def _discover_fit_floor(req: RecommendRequest, *, configured: int, deadline: float) -> int | None:
+    shapes = _discover_fit_shapes(req, configured=configured, deadline=deadline)
+    return min((shape.gpus_per_worker for shape in shapes), default=None)
+
+
+def _replicated_latency_probe(
+    req: RecommendRequest,
+    fit_shapes: list[_CapacityShape],
+    *,
+    ceiling: int,
+    first_window_max: int,
+) -> _CapacityCandidate | None:
+    """Try an exact-load replay with as little replica queueing as possible.
+
+    This is a search hint, not a sizing calculation. Choose a legal
+    tensor-parallel shape that already passed the SDK memory check and give
+    each concurrent request its own replica when the GPU budget permits. A
+    single explicit topology avoids sampling many equivalent high GPU counts
+    and keeps expert routing inside the tensor-parallel replica.
+    """
+    shape = min(
+        (shape for shape in fit_shapes if shape.dp == 1 and shape.moe_ep == 1),
+        key=lambda shape: shape.gpus_per_worker,
+        default=None,
+    )
+    if shape is None:
+        return None
+    replicas = min(int(req.target_concurrency or 1), ceiling // shape.gpus_per_worker)
+    # Long prompts can exhaust the first window even at low concurrency.
+    # Check the explicit layout before spending the budget sampling that window.
+    long_prompt = req.isl > _SWEEP_RUNTIME_MAX_NUM_TOKENS
+    if replicas < 2 or (not long_prompt and replicas * shape.gpus_per_worker <= 2 * first_window_max):
+        return None
+    return _CapacityCandidate(shape, replicas, _capacity_context_tokens(req))
 
 
 def _pareto_auto_window(req: RecommendRequest) -> tuple[int, int]:
@@ -4012,6 +4124,7 @@ def _run_aisimulate_recommendation(
     max_trials_override: int | None = None,
     parallelism_override: int | None = None,
     candidate_timeout_override: int | None = None,
+    replicated_probe: _CapacityCandidate | None = None,
 ):
     from aisimulate.recommend import run_recommendation
 
@@ -4024,6 +4137,7 @@ def _run_aisimulate_recommendation(
                 max_trials_override=max_trials_override,
                 parallelism_override=parallelism_override,
                 candidate_timeout_override=candidate_timeout_override,
+                replicated_probe=replicated_probe,
             ),
             stack="engine",
             runner_factory=_aisimulate_runner_factory(),
@@ -5071,6 +5185,7 @@ def post_recommend(
     fell_back_from: str | None = None
     demand_records: list[Any] = []
     sweep: SweepMeta | None = None
+    verified_aggregate: Any | None = None
     try:
         if req.objective == "throughput_demand":
             # Demand sizing cannot rely on the SDK's smallest-first search
@@ -5103,7 +5218,7 @@ def post_recommend(
             # attempt, so a retry cannot exceed the gateway timeout.
             deadline = time.monotonic() + _min_gpus_search_budget_seconds()
             with capture_into(recorder):
-                (result, sweep), fell_back_from = _run_with_version_fallback(
+                (result, sweep, verified_aggregate), fell_back_from = _run_with_version_fallback(
                     req,
                     lambda: _run_min_gpus_windows(req, deadline=deadline),
                     deadline=deadline,
@@ -5159,14 +5274,21 @@ def post_recommend(
             assert window is not None
             sweep = _sweep_meta(result, req, window=window)
 
+    chosen_mode = "disagg" if configs and configs[0].prefill_config is not None else "agg"
+    aggregated_fallback = (
+        _aisimulate_candidate_config(verified_aggregate, req)
+        if req.top_n > 1 and chosen_mode == "disagg" and verified_aggregate is not None
+        else None
+    )
+    configs_with_fallback = [*configs, aggregated_fallback] if aggregated_fallback is not None else configs
     if fell_back_from and req.backend_version:
         fallback_warning = (
             f"No performance data for {req.backend} {fell_back_from} on {req.system}; "
             f"used {req.backend_version}."
         )
-        for cfg in configs:
+        for cfg in configs_with_fallback:
             cfg.warnings.insert(0, fallback_warning)
-    for index, cfg in enumerate(configs):
+    for index, cfg in enumerate(configs_with_fallback):
         if req.objective == "concurrency_capacity":
             # `_run_capacity_recommendation` already built the winning shape's
             # extras, including `inclusive_tpot`. Rebuilding them here would
@@ -5222,7 +5344,6 @@ def post_recommend(
                 )
                 if cfg.memory is None:
                     cfg.memory = _memory_breakdown_gb(cfg.memory_breakdown)
-    chosen_mode = "disagg" if configs and configs[0].prefill_config is not None else "agg"
     candidate_responses: list[CandidateResponse] = []
     pareto_views: CandidateViews | None = None
     if req.objective == "pareto":
@@ -5293,6 +5414,7 @@ def post_recommend(
         configs=configs,
         chosen_mode=chosen_mode,
         simulator="aisimulate",
+        aggregated_fallback=aggregated_fallback,
         candidates=candidate_responses,
         views=pareto_views,
         demand=demand,

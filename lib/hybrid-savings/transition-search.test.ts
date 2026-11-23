@@ -24,6 +24,7 @@ describe('exact cost transitions', () => {
       if (kind === 0) return { kind: 'linear', fixed, rate }
       if (kind === 1) return {
         kind: 'step', fixed, increment: 1 + Math.floor(random() * 30), capacity: 2 + random() * 75,
+        minimumUnits: 1 + Math.floor(random() * 12),
       }
       return {
         kind: 'scale-to-zero', fixed, rate, firstKnot: 5 + random() * 100,
@@ -38,6 +39,15 @@ describe('exact cost transitions', () => {
         exhaustiveFirst(targets, competitors, 2_000),
       )
     }
+  })
+
+  it('does not report an early crossover while the concurrency floor costs more', () => {
+    const hardware: CostCurve = { kind: 'step', fixed: 0, increment: 20, capacity: 10, minimumUnits: 4 }
+    const hosted: CostCurve = { kind: 'linear', fixed: 0, rate: 2.1 }
+    expect(firstWinningVolume([hardware], [hosted], 1_000_000_000_000)).toBe(39)
+    expect(costOnCurve(hardware, 0)).toBe(0)
+    expect(costOnCurve(hardware, 40)).toBe(80)
+    expect(costOnCurve(hardware, 41)).toBe(100)
   })
 
   it('finds a brief win between later capacity steps', () => {

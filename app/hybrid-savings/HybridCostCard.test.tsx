@@ -112,7 +112,7 @@ describe('Hybrid cost flip cards', () => {
     expect(back.textContent).not.toContain('Implementation')
     expect(back.textContent).not.toContain('Other platform costs')
     expect(back.querySelectorAll('li')).toHaveLength(1)
-    expect(back.querySelector('[class*="costBackTotal"]')!.textContent).toBe('Total / month$356')
+    expect(back.querySelector('[class*="costBackTotal"]')!.textContent).toBe('Total / month$356.00')
     expect(marginal.breakdown).toHaveLength(3)
   })
 
@@ -125,17 +125,36 @@ describe('Hybrid cost flip cards', () => {
     expect(value.textContent).toContain('$2.93')
     expect(front.textContent).toContain('per 1M output tokens')
     expect(front.querySelector('button[aria-label="Help for Cost per 1M output tokens"]')).not.toBeNull()
-    expect(period.textContent).toBe('$1,467 / month')
+    expect(period.textContent).toBe('$1,467.00 / month')
     expect(front.textContent).toContain('1 instance · 2 GPUs')
     expect(front.textContent).toContain('Modeled output capacity')
     expect(front.textContent).toContain('2.5M tokens/month · 50% used')
     await click('View Rented details')
     const back = host.querySelector<HTMLElement>('[class*="costBack"]')!
-    for (const removed of ['Requested output', 'Planning output capacity', 'Planning capacity used', 'Reference concurrency', 'Effective billing mode', 'Billable instance-hours', 'replica slots', 'Average request']) {
+    for (const removed of ['Planning output capacity', 'Planning capacity used', 'Reference concurrency', 'Effective billing mode', 'replica slots', 'Average request']) {
       expect(back.textContent).not.toContain(removed)
     }
-    expect(back.querySelectorAll('dt')).toHaveLength(1)
+    expect(back.querySelectorAll('dt')).toHaveLength(2)
     expect(back.textContent).toContain('Instance rate$2.00 / hour')
+    expect(back.textContent).toContain('Billable instance-hours730 / month')
+    expect(back.textContent).toContain('$2.93 per 1M output tokens at 500,000,000 output tokens/month.')
+  })
+
+  it('does not round nonzero hosted token charges down to a misleading zero', async () => {
+    const hosted = {
+      ...option('hosted'), monthlyCost: 0.467,
+      breakdown: [
+        { label: 'Input token usage', monthlyCost: 0.421, includedInMarginal: true },
+        { label: 'Output token usage', monthlyCost: 0.044, includedInMarginal: true },
+        { label: 'Cache-read input tokens', monthlyCost: 0.002, includedInMarginal: true },
+      ],
+    }
+    await act(async () => root.render(<HybridCostCard title="Hosted API" option={hosted} cheapest lens="fully-loaded" />))
+    expect(host.querySelector('[class*="costPeriod"]')!.textContent).toBe('$0.47 / month')
+    await click('View Hosted API details')
+    expect(host.querySelector('[class*="costCompactBreakdown"]')!.textContent)
+      .toBe('Input tokens$0.42Output tokens$0.04Cache-read input tokens<$0.01')
+    expect(host.querySelector('[class*="costBackTotal"]')!.textContent).toBe('Total / month$0.47')
   })
 
   it('explains the missing unit metric when no output volume is requested', async () => {

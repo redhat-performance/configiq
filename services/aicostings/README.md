@@ -95,8 +95,10 @@ separate `max_input_tokens`, `max_output_tokens`, `max_context_tokens`, and
 normalized `billing` metadata. `billing.currency` is USD, `request_price` is
 USD/request, cache rates and input/output tier rates are USD/million tokens.
 `billing.overrides` is ordered, with a strictly exceeded `min_prompt_tokens`
-threshold and partial `input_per_million`, `output_per_million`, `request_price`
-fields. OpenRouter overrides retain feed order; LiteLLM's standard
+threshold and partial `input_per_million`, `output_per_million`, `request_price`,
+`cache_read_per_million`, and `cache_write_per_million` fields. Alternative
+cache write retention pricing is flagged as unsupported where applicable.
+OpenRouter overrides retain feed order; LiteLLM's standard
 `*_cost_per_token_above_<N>k_tokens` fields are sorted by increasing threshold.
 Alternate batch/priority/flex rates are not standard-tariff overrides. Unhandled
 conditions or additional charges are recorded in `billing.unsupported` so Hybrid

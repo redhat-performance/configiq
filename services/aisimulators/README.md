@@ -327,8 +327,9 @@ With `sla_mode=enforce`, send either `request_latency` or both `ttft` and
 
 ### Latency-constrained min-GPU sizing
 
-`objective=min_gpus` searches the fewest GPUs that clear the latency SLA. The
-service owns the whole search window, so a request carries workload intent only.
+`objective=min_gpus` searches for the fewest GPUs that clear the latency SLA
+among the configurations it evaluates. The service owns the whole search
+window, so a request carries workload intent only.
 It first resolves the model's **fit floor**: the smallest aggregated worker
 shape whose KV capacity holds one full-context sequence, using the same runtime
 envelope as the sweep (engine `max_num_tokens` / `max_num_seqs` defaults and
@@ -336,9 +337,24 @@ the backend's default memory fraction). Aggregated is a valid lower bound for
 both deployment modes because a disaggregated deployment replicates the full
 weights in each pool.
 
+Closed-loop runs replay at least as many requests as the selected concurrency.
+For closed-loop loads that allow aggregate serving, the search may first test
+an explicit replicated layout within the effective GPU ceiling. The probe
+runs when that layout would be outside the first two ordinary GPU windows,
+or when the prompt exceeds the sweep's 32,768-token runtime batch limit. It
+requires a memory-feasible worker shape and at least two replicas within the
+GPU ceiling. It uses the same workload and SLA; a passing probe gives the
+search a verified upper bound and limits optional refinement to one trial per
+available serving mode in each subsequent window. A failed
+probe does not replace ordinary sizing. If a smaller layout is not verified
+within the remaining budget, the passing result still stands.
+If the smallest verified result is disaggregated and the request permits
+alternatives (`top_n > 1`), `aggregated_fallback` exposes the passing aggregate
+probe so a caller can check single-server offer compatibility separately.
+
 The first window is wide — `floor .. min(ceiling, max(16, floor × 2))` — so
 both aggregated and disaggregated shapes have room and the SDK's
-smallest-first ordering can find the true minimum. `mode=agg` limits that
+smallest-first ordering can find smaller feasible layouts. `mode=agg` limits that
 search to aggregated candidates. Omit `mode`, or send `disagg`, to keep both
 deployment modes. A Pareto sweep rejects `mode` and enumerates both. The ladder
 reports the modes it covered in `sweep.modes_searched`, so a one-GPU window
@@ -349,13 +365,24 @@ shows `agg` alone even when the request kept the broader search. The ladder then
 - grows to `upper + 1 .. upper × 2` when a window cannot hold the model or no
   candidate clears the SLA;
 - stops when the candidate is at the window floor, the effective ceiling is
-  reached, or `MIN_GPUS_SEARCH_BUDGET_S` (default 70 seconds, including fit
+  reached, or `MIN_GPUS_SEARCH_BUDGET_S` (default 180 seconds, including fit
   discovery and every backend-version attempt) is spent.
+
+The ConfigIQ gateway defaults to a 210-second request timeout to leave room for
+the search result. When changing either budget or upgrading a deployment with
+an older override, keep `AISIMULATORS_TIMEOUT_SECONDS` above the simulator
+budget and any intervening proxy timeout above the gateway timeout.
 
 Each window draws its trial budget from that window's own upper bound
 (`MIN_GPUS_MAX_TRIALS`, default 32, `MIN_GPUS_PARALLELISM`, default 4,
 `MIN_GPUS_CANDIDATE_TIMEOUT_S`, default 30), and the same parallelism is passed
 to the SDK so the budget and the config cannot disagree.
+
+When no configuration was verified and the simulator host hit an execution
+resource limit, the service returns `503`. A timed-out candidate replay with no
+verified result returns `504` unless the overall search budget exhausted, which
+is reported in the bounded-search `422` detail. These outcomes are not evidence
+that the workload cannot meet its targets.
 
 `AISIMULATORS_MAX_CANDIDATE_GPUS` (default 1024) is a soft ceiling. When the
 fit floor is at or above it, the effective ceiling is `max(configured,

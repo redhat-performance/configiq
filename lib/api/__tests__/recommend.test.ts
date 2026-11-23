@@ -560,7 +560,7 @@ describe('callRecommend', () => {
     expect(recommendation.warnings).toEqual([])
   })
 
-  it('normalizes a disaggregated prefill/decode topology without multiplying it twice', async () => {
+  it.each([false, true])('normalizes disaggregated sizing and only keeps a passing aggregate fallback (misses SLA: %s)', async missesSla => {
     vi.stubGlobal('fetch', mockFetchOk({
       configs: [{
         ...EXTERNAL_RESPONSE.configs[0],
@@ -587,6 +587,14 @@ describe('callRecommend', () => {
         },
       }],
       chosen_mode: 'disagg',
+      aggregated_fallback: {
+        ...EXTERNAL_RESPONSE.configs[0],
+        mode: 'agg',
+        ttft: missesSla ? 1_000_000 : EXTERNAL_RESPONSE.configs[0].ttft,
+        total_gpus_needed: 8,
+        replicas_needed: 4,
+        tp: 2, pp: 1, dp: 1,
+      },
     }))
 
     const result = await callRecommend(VALID_REQUEST)
@@ -599,6 +607,15 @@ describe('callRecommend', () => {
     expect(recommendation.recommendation.replicasNeeded).toBe(1)
     expect(recommendation.phases.prefill?.gpusPerWorker).toBe(2)
     expect(recommendation.phases.decode?.workers).toBe(4)
+    if (missesSla) {
+      expect(recommendation.aggregatedFallback).toBeUndefined()
+    } else {
+      expect(recommendation.aggregatedFallback).toMatchObject({
+        simulator: recommendation.simulator,
+        mode: 'agg',
+        recommendation: { gpusNeeded: 8, gpusPerReplica: 2, replicasNeeded: 4 },
+      })
+    }
   })
 
   it('derives a missing replica count from the cluster GPU total and topology', async () => {
@@ -1030,6 +1047,16 @@ describe('callRecommend', () => {
 
     expect(result.status).toBe('failed')
     expect((result as RecommendErrorResponse).error.code).toBe('AISIM_TIMEOUT')
+  })
+
+  it.each([[undefined, 210], ['100', 100]] as const)('uses the configured recommendation timeout %s with a longer default', async (override, seconds) => {
+    vi.stubEnv('AISIMULATORS_TIMEOUT_SECONDS', override)
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+
+    await callRecommend(VALID_REQUEST)
+
+    expect(timeout).toHaveBeenCalledWith(seconds * 1000)
   })
 
   it('returns AISIM_UNAVAILABLE on network error', async () => {
