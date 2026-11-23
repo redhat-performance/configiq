@@ -119,4 +119,15 @@ describe('GpuSystemInput all-option mode', () => {
     })
     expect(onChange).toHaveBeenCalledWith('b200_sxm')
   })
+
+  it('names an empty list for a caller whose options are not a loading catalog', async () => {
+    await mount({
+      value: '',
+      gpuOptions: [],
+      allLabel: 'All GPUs',
+      emptyLabel: 'No measured GPU in this slice',
+    })
+    await open()
+    expect(document.body.textContent).toContain('No measured GPU in this slice')
+  })
 })

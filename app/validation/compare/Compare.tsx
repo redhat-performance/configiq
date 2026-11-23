@@ -47,10 +47,10 @@ import {
   type ServingMode,
 } from '@/lib/validation/benchmark-predictions'
 import {
-  acceleratorNamesMatch,
   type BenchmarkAdjustment,
   type BenchmarkUnavailable,
 } from '@/lib/validation/benchmark-resolve'
+import { findCatalogGpu, matchAccelerator } from '@/lib/validation/gpu-catalog'
 import { backendVersionIdentity, backendVersionsComparable, backendVersionsMatch } from '@/lib/validation/benchmark-versions'
 import {
   BENCHMARK_FILTER_KEYS,
@@ -179,23 +179,6 @@ function isHttpsUrl(value: string | null | undefined): value is string {
   } catch {
     return false
   }
-}
-
-function findCatalogGpu(accelerator: string, gpus: GpuOption[]): GpuOption | null {
-  const normalized = accelerator.trim().toLocaleLowerCase()
-  if (!normalized) return null
-  return gpus.find(gpu => gpu.label.toLocaleLowerCase() === normalized)
-    ?? gpus.find(gpu => acceleratorNamesMatch(gpu.label, accelerator))
-    ?? null
-}
-
-function matchAccelerator(options: string[], requested: string): string {
-  const normalized = requested.trim().toLocaleLowerCase()
-  if (!normalized) return options[0] ?? ''
-  return options.find(option => option.toLocaleLowerCase() === normalized)
-    ?? options.find(option => acceleratorNamesMatch(option, requested))
-    ?? options[0]
-    ?? ''
 }
 
 function backendVersionsFor(backend: BackendOption, systemId: string | null): string[] {

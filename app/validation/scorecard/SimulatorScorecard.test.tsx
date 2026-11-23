@@ -47,6 +47,29 @@ vi.mock('@/lib/hooks/useScorecard', () => ({
   useScorecard: () => scorecardState.get(),
 }));
 
+// The page reads the GPU catalog only for presentation (vendor/architecture
+// grouping and the memory line). The measured labels themselves come from the
+// snapshot, so the fixture catalog only needs the parts the snapshot names.
+const catalogState = vi.hoisted(() => ({
+  gpuOptions: [
+    {
+      systemId: 'h200_sxm',
+      label: 'NVIDIA H200',
+      vendor: 'nvidia',
+      architecture: 'hopper',
+      vramGb: 141,
+      bandwidthTbps: 4.8,
+      tflopsBf16: 989,
+      tdpWatts: 700,
+      gpusPerNode: 8,
+    },
+  ],
+}));
+
+vi.mock('@/lib/hooks/useCatalog', () => ({
+  useCatalog: () => catalogState,
+}));
+
 // Victory measures its container and draws SVG; the page tests only need to
 // know the chart mounted with one series per simulator.
 vi.mock('@patternfly/react-charts/victory', async () => {
@@ -294,6 +317,27 @@ function button(label: string): HTMLButtonElement | undefined {
     .find(candidate => candidate.textContent?.trim() === label);
 }
 
+function gpuToggle(): HTMLButtonElement {
+  const wrapper = container.querySelector('label[for="scorecard-gpu"]')?.parentElement;
+  const toggle = wrapper?.querySelector<HTMLButtonElement>('.pf-v6-c-menu-toggle');
+  if (!toggle) throw new Error('GPU control not rendered');
+  return toggle;
+}
+
+async function openGpuMenu(): Promise<void> {
+  await act(async () => {
+    gpuToggle().click();
+    await Promise.resolve();
+  });
+}
+
+function menuOption(text: string): HTMLElement {
+  const option = [...document.body.querySelectorAll<HTMLElement>('.pf-v6-c-menu__item')]
+    .find(element => element.textContent?.includes(text));
+  if (!option) throw new Error(`option not found: ${text}`);
+  return option;
+}
+
 describe('Simulator scorecard page', () => {
   it('says plainly when no snapshot is published', async () => {
     await mount(null);
@@ -458,24 +502,29 @@ describe('Simulator scorecard page', () => {
     expect(button('Like for release')?.disabled).toBe(false);
   });
 
-  it('offers the measured models, GPUs, and workloads as choices, not a free-text box', async () => {
+  it('offers the measured models and GPUs as searchable choices, not a free-text box', async () => {
     await mount(published());
 
-    const gpu = container.querySelector<HTMLSelectElement>('select[aria-label="GPU"]');
-    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]');
+    const model = container.querySelector<HTMLInputElement>('input[aria-label="Model"]');
     const workload = container.querySelector<HTMLSelectElement>('select[aria-label="Workload"]');
-    expect(model).not.toBeNull();
-    expect(gpu).not.toBeNull();
+    expect(model?.value).toBe('All models');
+    expect(model?.getAttribute('role')).toBe('combobox');
     expect(workload).not.toBeNull();
-    expect([...gpu!.options].map(option => option.value)).toEqual(['', 'H200']);
-    expect([...model!.options].map(option => option.value)).toEqual(['', 'org/model']);
+    expect([...workload!.options].map(option => option.value)).toEqual(['', '1024/128']);
+    expect(container.textContent).toContain('All GPUs');
     expect(container.textContent).not.toContain('Filter by model, GPU, or workload');
 
+    // The GPU control groups the measured part by the catalog's vendor and
+    // architecture, and selects the measured label the matrix filters on.
+    await openGpuMenu();
+    expect(document.body.textContent).toContain('Nvidia Hopper');
     await act(async () => {
-      gpu!.value = 'H200';
-      gpu!.dispatchEvent(new Event('change', { bubbles: true }));
+      menuOption('H200').click();
+      await Promise.resolve();
     });
 
+    expect(container.textContent).toContain('H200 — 141 GB');
+    expect(container.textContent).toContain('4.8 TB/s · 989 TFLOPS');
     expect(button('Clear filters')).toBeDefined();
     expect(container.textContent).toContain('filtered');
     // The tiles cannot follow a row filter: the snapshot holds no per-model or
@@ -530,8 +579,7 @@ describe('Simulator scorecard shared view', () => {
       await Promise.resolve();
     });
 
-    const gpu = container.querySelector<HTMLSelectElement>('select[aria-label="GPU"]');
-    expect(gpu?.value).toBe('H200');
+    expect(gpuToggle().textContent).toContain('H200 — 141 GB');
   });
 
   it('round-trips a customised view through the copy-link button', async () => {

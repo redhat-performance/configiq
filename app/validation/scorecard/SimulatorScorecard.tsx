@@ -14,13 +14,17 @@ import {
   Tooltip,
 } from '@patternfly/react-core';
 import Link from 'next/link';
+import { ComboBox, type ComboBoxItem } from '@/components/ModelComboBox/ModelComboBox';
+import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { TourButton } from '@/components/help/TourButton';
 import { JargonPopover } from '@/components/ui/JargonPopover';
+import { useCatalog, type GpuOption } from '@/lib/hooks/useCatalog';
 import { useScorecard } from '@/lib/hooks/useScorecard';
 import { defineAccessors } from '@/lib/deep-links/shared-view';
 import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { scorecardLink } from '@/lib/deep-links/pages';
+import { findCatalogGpu } from '@/lib/validation/gpu-catalog';
 import { predictionColor } from '@/lib/ui/simulator-colors';
 import {
   SCORECARD_SOURCE_FILTERS,
@@ -109,6 +113,10 @@ function metricLabel(metric: ScorecardMetric): string {
 
 export default function SimulatorScorecard() {
   const { summary, notPublished, error, isLoading, reload } = useScorecard();
+  // Only the GPU catalog is read from the gateway: it supplies the vendor and
+  // architecture groups and the memory line for a measured accelerator. It is
+  // not the reader's Settings, so the scorecard stays Settings-independent.
+  const { gpuOptions: catalogGpus } = useCatalog();
   const [mounted, setMounted] = React.useState(false);
   const [metric, setMetric] = React.useState<ScorecardMetric>(DEFAULT_METRIC);
   const [statistic, setStatistic] = React.useState<ScorecardStatistic>(DEFAULT_STATISTIC);
@@ -178,6 +186,44 @@ export default function SimulatorScorecard() {
     if (gpu && !filterOptions.accelerators.includes(gpu)) setGpu('');
     if (workload && !filterOptions.workloads.includes(workload)) setWorkload('');
   }, [summary, filterOptions, model, gpu, workload]);
+
+  const modelItems = React.useMemo<ComboBoxItem[]>(
+    () => filterOptions.models.map(entry => ({
+      value: entry,
+      label: entry,
+      group: entry.includes('/') ? entry.slice(0, entry.indexOf('/')) : 'Models',
+    })),
+    [filterOptions.models],
+  );
+
+  /**
+   * The measured accelerators, dressed in the catalog's GPU shapes.
+   *
+   * The option keeps the measured label as both its value (`systemId`) and its
+   * display text: that label is what the matrix filters on and what a shared
+   * link carries, so showing the catalog's longer name would make the chosen
+   * control disagree with the table column. Catalog metadata still supplies
+   * the vendor/architecture group and the memory line. A part the catalog does
+   * not know remains selectable, because the snapshot measured it.
+   */
+  const gpuInputOptions = React.useMemo<GpuOption[]>(
+    () => filterOptions.accelerators.map(accelerator => {
+      const catalog = findCatalogGpu(accelerator, catalogGpus);
+      if (catalog) return { ...catalog, systemId: accelerator, label: accelerator };
+      return {
+        systemId: accelerator,
+        label: accelerator,
+        vendor: null,
+        architecture: null,
+        vramGb: null,
+        bandwidthTbps: null,
+        tflopsBf16: null,
+        tdpWatts: null,
+        gpusPerNode: null,
+      };
+    }),
+    [filterOptions.accelerators, catalogGpus],
+  );
 
   // A row filter narrows the matrix and the chart. The published snapshot has
   // no per-model, per-GPU, or per-workload totals, so the tiles stay pooled.
@@ -408,33 +454,26 @@ export default function SimulatorScorecard() {
             <span className={styles.filterRowLabel}>Filter rows</span>
 
             <div className={`${styles.controlGroup} ${styles.filterGroup}`}>
-              <span className={styles.controlLabel}>Model</span>
-              <FormSelect
+              <ComboBox
+                id="scorecard-model"
+                label="Model"
                 value={model}
-                onChange={(_event, value) => setModel(String(value))}
-                aria-label="Model"
-                className={styles.filterSelect}
-              >
-                <FormSelectOption value="" label="All models" />
-                {filterOptions.models.map(entry => (
-                  <FormSelectOption key={entry} value={entry} label={entry} />
-                ))}
-              </FormSelect>
+                onChange={value => setModel(value)}
+                items={modelItems}
+                allLabel="All models"
+                placeholder="Search measured models..."
+              />
             </div>
 
             <div className={`${styles.controlGroup} ${styles.filterGroup}`}>
-              <span className={styles.controlLabel}>GPU</span>
-              <FormSelect
+              <GpuSystemInput
+                id="scorecard-gpu"
                 value={gpu}
-                onChange={(_event, value) => setGpu(String(value))}
-                aria-label="GPU"
-                className={styles.filterSelect}
-              >
-                <FormSelectOption value="" label="All GPUs" />
-                {filterOptions.accelerators.map(entry => (
-                  <FormSelectOption key={entry} value={entry} label={entry} />
-                ))}
-              </FormSelect>
+                onChange={value => setGpu(value)}
+                gpuOptions={gpuInputOptions}
+                allLabel="All GPUs"
+                emptyLabel="No measured GPU in this slice"
+              />
             </div>
 
             <div className={`${styles.controlGroup} ${styles.filterGroup}`}>

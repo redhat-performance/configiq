@@ -133,15 +133,20 @@ selector appears only when the snapshot contains more than one simulator pair.
 
 ## Narrowing the view
 
-The model, GPU, and workload dropdowns are filled from the values present in the
-selected slice, so a choice always names something the snapshot contains. They
-narrow the error chart and its table; they do **not** change the headline tiles,
-and they do not narrow head to head, which has its own by-model and by-GPU
-panels. The artifact publishes totals pooled over every configuration and nothing
-finer, so a per-model or per-GPU total would have to be recomputed in the
-browser, from a different population than the published one. The page says this
-in place rather than letting a filtered table sit under totals that look
-unrelated to it.
+Model and GPU are the same searchable controls Benchmark comparison uses: the
+model picker groups by publisher, and the GPU picker groups the measured parts by
+the catalog's vendor and architecture and shows their memory. Both list only the
+values present in the selected slice — a part the snapshot did not measure is
+not offered, because picking it could only produce an empty table. Workload is a
+plain dropdown over the same slice.
+
+The three filters narrow the error chart and its table; they do **not** change
+the headline tiles, and they do not narrow head to head, which has its own
+by-model and by-GPU panels. The artifact publishes totals pooled over every
+configuration and nothing finer, so a per-model or per-GPU total would have to be
+recomputed in the browser, from a different population than the published one.
+The page says this in place rather than letting a filtered table sit under totals
+that look unrelated to it.
 
 ## Where the numbers come from
 

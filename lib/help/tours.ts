@@ -322,7 +322,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="filters"]',
         title: 'Narrow the comparison',
         description:
-          'Choose TTFT or TPOT, the statistic, and whether to compare like-for-like engine releases. Model, GPU, and workload are separate dropdowns filled with the values the published snapshot contains.',
+          'Choose TTFT or TPOT, the statistic, and whether to compare like-for-like engine releases. Model and GPU are searchable and list only the values this snapshot contains; workload narrows it to one shape.',
         position: 'bottom',
       },
       {

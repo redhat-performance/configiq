@@ -183,9 +183,13 @@
 }
 
 .filterGroup {
-  flex: 0 0 220px;
-  width: 220px;
+  flex: 0 0 280px;
+  width: 280px;
   max-width: 100%;
+  /* The GPU control grows a helper line once a part is chosen; keep the three
+     facet labels on one line instead of letting flex-end push two of them
+     down to meet the tallest control. */
+  align-self: flex-start;
 }
 
 /* Start the three row filters on their own line, under the view controls. */
