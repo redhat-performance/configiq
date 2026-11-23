@@ -1,0 +1,60 @@
+/* Deploy page — functional skeleton. The design pass (plan task 4) replaces
+   these rules with the DESIGN_SYSTEM token treatment. */
+
+.page {
+  max-width: 1920px;
+  padding: 24px 32px 64px;
+}
+
+.heading { margin-bottom: 24px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 5fr) 7fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 992px) {
+  .grid { grid-template-columns: 1fr; }
+}
+
+.inputsCard {
+  background: #fff;
+  border: 1px solid #d2d2d2;
+  border-radius: 6px;
+}
+
+.cardHead { padding: 18px 20px 0; }
+.cardBody { padding: 20px; display: grid; gap: 16px; }
+
+.field { display: grid; gap: 6px; }
+.fieldLabel { font-size: 13px; font-weight: 500; color: #3c3f42; }
+
+.loadRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.loadInput { max-width: 110px; }
+
+.targetGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.runRow { display: flex; justify-content: flex-end; }
+
+.pending {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 48px 20px;
+  color: #3c3f42;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
