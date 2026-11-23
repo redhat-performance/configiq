@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Auto-deploy — visual reference</title>
+<!--
+  Standalone visual reference for the /deploy page (app/deploy/). Open in any
+  browser — no build. Same role as design/preview.html for the predict page:
+  the source of truth for "does it look right". Values are the Qwen3-8B / H200
+  fixture from the 2026-11 spike.
+-->
+<style>
+  :root {
+    --t: #151515; --t2: #3c3f42; --t3: #54585c;
+    --bg: #fff; --bg2: #f5f5f5; --line: #d2d2d2; --line2: #b8bbbe;
+    --link: #0066cc; --ok: #3e8635; --warn: #f0ab00; --warn-text: #8c5b00; --danger: #c9190b;
+    --display: "Red Hat Display", system-ui, sans-serif;
+    --sans: "Red Hat Text", system-ui, -apple-system, sans-serif;
+    --mono: "Red Hat Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg2); font-family: var(--sans); color: var(--t); font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 1440px; margin: 0 auto; padding: 24px 32px 64px; background: var(--bg2); min-height: 100vh; }
+
+  .eyebrow { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--t2); margin: 0 0 6px; }
+  h1 { font-family: var(--display); font-size: 26px; font-weight: 500; letter-spacing: -.01em; margin: 0 0 4px; }
+  .intro { font-size: 14px; color: var(--t2); margin: 0 0 24px; }
+
+  .grid { display: grid; grid-template-columns: minmax(320px, 5fr) 7fr; gap: 16px; align-items: start; }
+  @media (max-width: 992px) { .grid { grid-template-columns: 1fr; } }
+
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+  .cardHead { padding: 18px 20px 0; }
+  .cardHead h2 { font-family: var(--display); font-size: 16px; font-weight: 600; margin: 0; }
+  .cardBody { padding: 20px; display: grid; gap: 16px; }
+
+  .field { display: grid; gap: 6px; }
+  .fieldLabel { font: 600 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--t2); line-height: 1.2; }
+  .control { height: 40px; border: 1px solid var(--line2); border-radius: 4px; background: var(--bg); padding: 7px 11px; font: 400 14px var(--sans); color: var(--t); display: flex; align-items: center; justify-content: space-between; }
+  .control .caret { color: var(--t2); font-size: 11px; }
+
+  .loadRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; border: 1px solid var(--line2); border-radius: 4px; overflow: hidden; }
+  .toggle button { border: 0; background: var(--bg); font: 500 13px var(--sans); color: var(--t2); padding: 7px 12px; cursor: pointer; }
+  .toggle button.on { background: var(--t); color: #fff; }
+  .num { width: 110px; height: 36px; border: 1px solid var(--line2); border-radius: 4px; font: 400 14px var(--sans); padding: 4px 8px; }
+  .targetGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .runRow { display: flex; justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--line); margin-top: 4px; }
+  .primary { background: var(--link); color: #fff; border: 0; border-radius: 4px; font: 500 14px var(--sans); padding: 9px 20px; cursor: pointer; }
+
+  .answer { border-left: 3px solid var(--ok); padding: 20px; display: grid; gap: 16px; }
+  .answer.fail { border-left-color: var(--danger); }
+  .answerTitle { font-family: var(--display); font-size: 16px; font-weight: 600; margin: 0; }
+  .heroRow { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  .hero { display: grid; gap: 2px; }
+  .heroValue { font-family: var(--display); font-size: 32px; font-weight: 700; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; }
+  .heroLabel { font-size: 13px; color: var(--t2); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { display: inline-grid; gap: 2px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; min-width: 120px; }
+  .chip.warn { background: color-mix(in srgb, var(--warn) 10%, transparent); border-color: var(--warn); }
+  .chipLabel { font: 600 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--t2); }
+  .chipValue { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chipVerdict { font-size: 11.5px; font-weight: 600; color: var(--ok); }
+  .chip.warn .chipVerdict { color: var(--warn-text); }
+  .served { font-size: 14px; color: var(--t2); margin: 0; }
+  .served strong { color: var(--t); font-variant-numeric: tabular-nums; }
+  details { border-top: 1px solid var(--line); padding-top: 12px; }
+  summary { font-size: 13px; font-weight: 500; color: var(--t2); cursor: pointer; margin-bottom: 12px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; margin: 0; }
+  dt { font-size: 13px; color: var(--t2); }
+  dd { font-size: 13px; margin: 0; font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--mono); }
+  .disclaimer { font-size: 13px; color: var(--t2); margin: 0; }
+  .note { font: 500 12px var(--mono); letter-spacing: .04em; color: var(--t3); text-transform: uppercase; margin: 40px 0 8px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <p class="eyebrow">Deploy</p>
+  <h1>Auto-deploy a model</h1>
+  <p class="intro">Pick a model and your load. Get a recommended deployment and run it on your cluster.</p>
+
+  <div class="grid">
+    <section class="card">
+      <div class="cardHead"><h2>Your workload</h2></div>
+      <div class="cardBody">
+        <div class="field">
+          <span class="fieldLabel">Model</span>
+          <div class="control">Qwen/Qwen3-8B <span class="caret">▾</span></div>
+        </div>
+        <div class="field">
+          <span class="fieldLabel">GPU system</span>
+          <div class="control">NVIDIA H200 — 141 GB <span class="caret">▾</span></div>
+        </div>
+        <div class="field">
+          <span class="fieldLabel">Workload shape</span>
+          <div class="control">Chat (1,024 in / 1,024 out) <span class="caret">▾</span></div>
+        </div>
+        <div class="field">
+          <span class="fieldLabel">Load</span>
+          <div class="loadRow">
+            <span class="toggle"><button class="on">Concurrent users</button><button>Requests/sec</button></span>
+            <input class="num" value="64" inputmode="numeric" aria-label="Load value">
+          </div>
+        </div>
+        <div class="targetGrid">
+          <div class="field">
+            <span class="fieldLabel">Mean TTFT target (ms)</span>
+            <input class="num" style="width:100%" value="400" aria-label="Mean TTFT target">
+          </div>
+          <div class="field">
+            <span class="fieldLabel">Mean TPOT target (ms)</span>
+            <input class="num" style="width:100%" value="30" aria-label="Mean TPOT target">
+          </div>
+        </div>
+        <div class="field">
+          <span class="fieldLabel">GPUs free in your cluster</span>
+          <input class="num" style="width:100%" value="8" aria-label="GPUs free">
+        </div>
+        <div class="runRow"><button class="primary">Recommend</button></div>
+      </div>
+    </section>
+
+    <section class="card answer">
+      <h3 class="answerTitle">This deployment fits your cluster.</h3>
+      <div class="heroRow">
+        <div class="hero">
+          <span class="heroValue">8</span>
+          <span class="heroLabel">of 8 GPUs free</span>
+        </div>
+        <div class="chips">
+          <span class="chip">
+            <span class="chipLabel">Mean TTFT</span>
+            <span class="chipValue">251 ms</span>
+            <span class="chipVerdict">meets 400</span>
+          </span>
+          <span class="chip">
+            <span class="chipLabel">Mean TPOT</span>
+            <span class="chipValue">6.9 ms</span>
+            <span class="chipVerdict">meets 30</span>
+          </span>
+        </div>
+      </div>
+      <p class="served">Serves <strong>64 concurrent users</strong>.</p>
+      <div class="runRow" style="border:0;padding:0"><button class="primary">Review and deploy</button></div>
+      <details open>
+        <summary>Deployment details</summary>
+        <dl>
+          <dt>Deployment</dt><dd>1 replica × TP 8</dd>
+          <dt>Throughput per GPU</dt><dd>550 tok/s</dd>
+          <dt>Simulator</dt><dd>aisimulate</dd>
+          <dt>Run id</dt><dd class="mono">req-42</dd>
+        </dl>
+      </details>
+      <p class="disclaimer">Best-effort estimate from the simulator, not a guarantee. Latency is shown against your target, not enforced.</p>
+    </section>
+  </div>
+
+  <p class="note">Failure state (needs more GPUs than free)</p>
+  <section class="card answer fail" style="max-width:760px">
+    <h3 class="answerTitle">Needs more GPUs than this cluster has free.</h3>
+    <div class="heroRow">
+      <div class="hero">
+        <span class="heroValue">18</span>
+        <span class="heroLabel">of 8 GPUs free</span>
+      </div>
+      <div class="chips">
+        <span class="chip warn">
+          <span class="chipLabel">Mean TTFT</span>
+          <span class="chipValue">612 ms</span>
+          <span class="chipVerdict">over 400</span>
+        </span>
+        <span class="chip">
+          <span class="chipLabel">Mean TPOT</span>
+          <span class="chipValue">24 ms</span>
+          <span class="chipVerdict">meets 30</span>
+        </span>
+      </div>
+    </div>
+    <p class="served">Serves <strong>64 concurrent users</strong>.</p>
+  </section>
+</div>
+</body>
+</html>

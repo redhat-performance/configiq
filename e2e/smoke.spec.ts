@@ -210,7 +210,7 @@ test('home opens the core tools from the main navigation', async ({ page }) => {
 
   const navigation = page.getByRole('navigation', { name: 'Main navigation' })
   for (const name of [
-    'Recommend sizing', 'KV cache calculator', 'Predict performance', 'GPU explorer',
+    'Auto-deploy', 'Recommend sizing', 'KV cache calculator', 'Predict performance', 'GPU explorer',
     'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
   ]) {
     await expect(navigation.getByRole('link', { name, exact: true })).toBeVisible()
@@ -239,6 +239,7 @@ for (const route of modelPages) {
 }
 
 const secondaryPages = [
+  { path: '/deploy', heading: 'Auto-deploy a model' },
   { path: '/hybrid-savings', heading: 'Hybrid savings' },
   { path: '/routing', heading: 'Routing economics' },
   { path: '/validation/compare', heading: 'Benchmark comparison' },

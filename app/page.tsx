@@ -18,12 +18,20 @@ import {
   RouteIcon,
   BoltIcon,
   CubesIcon,
+  CloudServerIcon,
 } from "@patternfly/react-icons";
 import Link from "next/link";
 import { useSettings } from "@/contexts/SettingsContext";
 import styles from "./page.module.css";
 
 const tools = [
+  {
+    title: "Auto-deploy a model",
+    description:
+      "State your load and latency targets, get a recommended deployment, and review the YAML to run.",
+    href: "/deploy",
+    icon: <CloudServerIcon />,
+  },
   {
     title: "Recommend sizing",
     description:

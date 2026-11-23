@@ -32,6 +32,7 @@ import {
   CogIcon,
   DatabaseIcon,
   ChartLineIcon,
+  CloudServerIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
@@ -207,6 +208,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="#"
               isActive={false}
             />}
+
+            <div style={groupLabelStyle}>DEPLOY</div>
+
+            <NavItemWithIcon
+              icon={CloudServerIcon}
+              label="Auto-deploy"
+              href="/deploy"
+              isActive={pathname === "/deploy"}
+            />
 
             <div style={groupLabelStyle}>VALIDATION</div>
 
