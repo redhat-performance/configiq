@@ -367,3 +367,12 @@
   white-space: nowrap;
   border: 0;
 }
+
+/* A failed copy also needs to reach sighted users, not just the live region. */
+.replayStatusError {
+  display: block;
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
+}

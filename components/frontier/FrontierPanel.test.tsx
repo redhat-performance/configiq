@@ -129,6 +129,19 @@ describe('FrontierPanel candidate replay', () => {
     expect(host.textContent).toContain('Replay command for candidate-001 copied with its input files.');
   });
 
+  it('shows a failed copy instead of silently keeping the copy icon', async () => {
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    await render(ready([candidate()], replay()));
+
+    const copy = button('Copy replay command for candidate-001');
+    await act(async () => copy!.click());
+
+    expect(button('Replay command copy failed for candidate-001')).toBeDefined();
+    expect(host.textContent).toContain('Could not copy the replay command for candidate-001.');
+    const status = host.querySelector('[role="status"]');
+    expect(status?.getAttribute('class')).toContain('replayStatusError');
+  });
+
   it('explains a row the sweep recorded no command for instead of copying another', async () => {
     await render(ready([candidate({ candidate_id: 'candidate-000002' })], replay()));
 

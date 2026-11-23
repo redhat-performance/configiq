@@ -141,11 +141,14 @@ function candidateName(candidate: Candidate): string {
 }
 
 const COPY_FEEDBACK_MS = 2000;
+/** A failure stays on screen longer than a success tick. */
+const COPY_FAILURE_MS = 6000;
 
 interface ReplayControlProps {
   candidate: Candidate;
   invocation: DebugInvocation | null;
   copied: boolean;
+  failed: boolean;
   onCopy: (candidate: Candidate, invocation: DebugInvocation) => void;
 }
 
@@ -157,7 +160,7 @@ interface ReplayControlProps {
  * from the sizing response, which the sweep never ran) keeps the control
  * disabled and says why, rather than copying a different candidate's command.
  */
-function ReplayControl({ candidate, invocation, copied, onCopy }: ReplayControlProps) {
+function ReplayControl({ candidate, invocation, copied, failed, onCopy }: ReplayControlProps) {
   const name = candidateName(candidate);
   if (invocation == null) {
     const reason = candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
@@ -176,15 +179,25 @@ function ReplayControl({ candidate, invocation, copied, onCopy }: ReplayControlP
     );
   }
 
+  const hint = copied
+    ? 'Copied'
+    : failed
+      ? 'Copy failed — select the button to try again'
+      : 'Copy replay command and its input files';
+  const label = copied
+    ? `Replay command copied for ${name}`
+    : failed
+      ? `Replay command copy failed for ${name}`
+      : `Copy replay command for ${name}`;
+
   return (
-    <Tooltip content={copied ? 'Copied' : 'Copy replay command and its input files'}>
+    <Tooltip content={hint}>
       <Button
         variant="plain"
         size="sm"
-        aria-label={copied
-          ? `Replay command copied for ${name}`
-          : `Copy replay command for ${name}`}
-        icon={copied ? <CheckIcon /> : <CopyIcon />}
+        isDanger={failed}
+        aria-label={label}
+        icon={copied ? <CheckIcon /> : failed ? <ExclamationTriangleIcon /> : <CopyIcon />}
         onClick={event => {
           event.stopPropagation();
           onCopy(candidate, invocation);
@@ -410,7 +423,10 @@ function CandidateTable({
 
   React.useEffect(() => {
     if (copyState == null) return;
-    const timer = window.setTimeout(() => setCopyState(null), COPY_FEEDBACK_MS);
+    const timer = window.setTimeout(
+      () => setCopyState(null),
+      copyState.ok ? COPY_FEEDBACK_MS : COPY_FAILURE_MS,
+    );
     return () => window.clearTimeout(timer);
   }, [copyState]);
 
@@ -472,6 +488,9 @@ function CandidateTable({
             const copied = copyState != null
               && copyState.id === candidate.candidate_id
               && copyState.ok;
+            const failed = copyState != null
+              && copyState.id === candidate.candidate_id
+              && !copyState.ok;
             return (
               <tr
                 key={candidate.candidate_id}
@@ -514,6 +533,7 @@ function CandidateTable({
                       candidate={candidate}
                       invocation={invocation}
                       copied={copied}
+                      failed={failed}
                       onCopy={copyReplay}
                     />
                   </td>
@@ -523,7 +543,11 @@ function CandidateTable({
           })}
         </tbody>
       </table>
-      <span role="status" aria-live="polite" className={styles.replayStatus}>
+      <span
+        role="status"
+        aria-live="polite"
+        className={copyState?.ok === false ? styles.replayStatusError : styles.replayStatus}
+      >
         {copyState == null
           ? ''
           : copyState.ok
