@@ -55,7 +55,7 @@ and regression tests are under [scripts/tested_models](scripts/tested_models).
 
 ### Prerequisites
 
-- Node.js >= 20.19.0
+- Node.js >= 22.12.0 (CI and the container image run Node 24 LTS)
 - npm >= 10
 
 ### Setup

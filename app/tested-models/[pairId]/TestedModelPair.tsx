@@ -56,7 +56,7 @@ function testMetrics(pair: PublicRegistryPair): { roc_auc?: number | null; f1?: 
 }
 
 /** Track the rendered chart width so Victory matches the card. */
-function useElementWidth<T extends HTMLElement>(): [React.RefObject<T>, number] {
+function useElementWidth<T extends HTMLElement>(): [React.RefObject<T | null>, number] {
   const ref = React.useRef<T>(null)
   const [width, setWidth] = React.useState(720)
   React.useEffect(() => {
