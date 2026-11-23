@@ -25,7 +25,7 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
   useCatalog: () => ({
     gpuOptions: [],
     modelOptions: ['org/model'],
-    modelSpecs: new Map(),
+    modelSpecs: new Map([['org/model', { num_experts: 4 }]]),
     simulatorSupport: {},
     simulators: [],
     isLoading: false,
@@ -39,6 +39,10 @@ const [configuration] = getConfigurationOptions([{
   backend: 'vllm',
   backend_version: '0.31.0',
   precision: 'FP16',
+  pp: 2,
+  dp: 3,
+  moe_tp_size: 1,
+  moe_ep_size: 3,
   request_type: '/v1/chat/completions',
   turns: 1,
 }])
@@ -84,7 +88,7 @@ afterEach(async () => {
   window.history.replaceState({}, '', '/')
 })
 
-describe('Compare resolution warnings', () => {
+describe('Compare resolution and prediction assumptions', () => {
   it('shows a missing linked configuration alongside an InferenceX source error', async () => {
     await act(async () => root.render(<BenchmarkComparisonPage />))
 
@@ -92,6 +96,18 @@ describe('Compare resolution warnings', () => {
       expect(host.textContent).toContain('InferenceX measurements unavailable')
       expect(host.textContent).toContain('Private dataset unavailable.')
       expect(host.textContent).toContain('Linked configuration is no longer available')
+    })
+  })
+
+  it('shows the selected run’s recorded parallel sizes as prediction assumptions', async () => {
+    await act(async () => root.render(<BenchmarkComparisonPage />))
+
+    await vi.waitFor(() => {
+      const summary = host.querySelector('[class*="accordionSummary"]')?.textContent
+      expect(summary).toContain('PP 2')
+      expect(summary).toContain('DP 3')
+      expect(summary).toContain('MoE TP 1')
+      expect(summary).toContain('EP 3')
     })
   })
 })

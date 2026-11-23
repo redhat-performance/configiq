@@ -281,12 +281,10 @@ function derivedAssumptions(
     servingMode: mode === 'disagg' && disaggAvailable ? 'disagg' : 'agg',
     weightPrecision: quantLabel(configuration?.values.weight_quantization ?? configuration?.values.precision),
     kvCachePrecision: quantLabel(configuration?.values.kv_quantization),
-    // Benchmark rows do not record PP, DP, or MoE widths. Default to a single
-    // stage and the simulator's own width resolution, and say so in the UI.
-    ppSize: '1',
-    dpSize: '1',
-    moeTpSize: '',
-    moeEpSize: '',
+    ppSize: configuration?.values.pp ?? '1',
+    dpSize: configuration?.values.dp ?? '1',
+    moeTpSize: configuration?.values.moe_tp_size ?? '',
+    moeEpSize: configuration?.values.moe_ep_size ?? '',
     fabric: defaultFabric,
   }
 }
@@ -1321,8 +1319,8 @@ export default function BenchmarkComparisonPage() {
               </div>
 
               <p className={`${styles.assumptionNote} ${styles.assumptionsFootnote}`}>
-                Benchmark rows do not record pipeline, data, or expert parallelism. Predictions therefore start from
-                PP 1, DP 1, and the simulator&apos;s own MoE width resolution. Changing them is an explicit override.
+                Recorded parallel sizes from the selected benchmark run are used when available. Where a size was not
+                recorded, predictions use PP 1, DP 1, or the simulator&apos;s MoE width resolution. Changing them is an explicit override.
               </p>
             </AccordionContent>
           </AccordionItem>

@@ -96,6 +96,24 @@ def test_normalize_rows_reads_cli_values_without_turning_them_into_switches() ->
     assert json.loads(frame.loc[1, "runtime_args"]) == {"enable-prefix-caching": "true"}
 
 
+def test_normalize_rows_keeps_assignments_after_boolean_switches() -> None:
+    frame = normalize_rows([{
+        "model": "org/model", "version": "vLLM-0.31.0",
+        "runtime_args": (
+            "--enable-expert-parallel max-num-seqs=32 "
+            "--enable-prefix-caching false --max-num-batched-tokens 8192"
+        ),
+    }], "org/model", "H200")
+
+    assert frame.loc[0, "enable_expert_parallel"] == "1"
+    assert frame.loc[0, "max_num_seqs"] == "32"
+    assert frame.loc[0, "max_num_batched_tokens"] == "8192"
+    assert json.loads(frame.loc[0, "runtime_args"]) == {
+        "enable-expert-parallel": "true", "max-num-seqs": "32",
+        "enable-prefix-caching": "false", "max-num-batched-tokens": "8192",
+    }
+
+
 def test_normalize_rows_keeps_explicit_serving_parallelism() -> None:
     frame = normalize_rows([
         {
@@ -138,6 +156,21 @@ def test_normalize_rows_preserves_safe_env_values_and_omits_paths() -> None:
         "VLLM_ROCM_USE_AITER": "1", "VLLM_ROCM_USE_AITER_MOE": "0",
     }
     assert "/internal/location" not in frame.loc[0, "env_vars"]
+
+
+def test_normalize_rows_omits_null_env_settings_without_changing_identity() -> None:
+    frame = normalize_rows([
+        {"model": "org/model", "version": "vLLM-0.31.0",
+         "env_vars": json.dumps({"VLLM_ROCM_USE_AITER": None, "VLLM_ROCM_USE_AITER_MOE": "0"})},
+        {"model": "org/model", "version": "vLLM-0.31.0",
+         "env_vars": json.dumps({"VLLM_ROCM_USE_AITER_MOE": "0"})},
+    ], "org/model", "MI355X")
+
+    assert frame["env_vars"].tolist() == [
+        '{"VLLM_ROCM_USE_AITER_MOE":"0"}', '{"VLLM_ROCM_USE_AITER_MOE":"0"}',
+    ]
+    assert frame["vllm_rocm_use_aiter"].isna().all()
+    assert frame["vllm_rocm_use_aiter_moe"].tolist() == ["0", "0"]
 
 
 def test_normalize_rows_omits_unreviewed_settings_and_secrets() -> None:

@@ -76,7 +76,7 @@ GUIDELLM_VERSION_PATTERN = re.compile(r"v?\d+(?:\.\d+){1,3}[A-Za-z0-9_.+-]{0,40}
 RUNTIME_OPTION_PATTERN = re.compile(
     r"(?:^|[;\s])(?:"
     r"(?:--)?(?P<assigned_name>[A-Za-z_][A-Za-z0-9_-]*)\s*(?:=|:)\s*(?P<assigned_value>[^;\s]+)"
-    r"|--(?P<cli_name>[A-Za-z_][A-Za-z0-9_-]*)(?:[ \t]+(?P<cli_value>(?!--)[^;\s]+))?"
+    r"|--(?P<cli_name>[A-Za-z_][A-Za-z0-9_-]*)(?:[ \t]+(?P<cli_value>(?!(?:--)?[A-Za-z_][A-Za-z0-9_-]*(?:=|:))(?!--)[^;\s]+))?"
     r")"
 )
 BOOLEAN_RUNTIME_KEYS = {
@@ -101,6 +101,8 @@ def _parse_runtime_args(raw: str) -> dict[str, str]:
 
 
 def _public_setting_value(name: str, value: object, allowed: set[str]) -> str | None:
+    if value is None:
+        return None
     text = str(value)
     if name not in allowed or not SETTING_VALUE_PATTERN.fullmatch(text):
         return None

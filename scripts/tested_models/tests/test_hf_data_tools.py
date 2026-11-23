@@ -5,10 +5,37 @@ import os
 from pathlib import Path
 
 import download_ground_truth
+import extract_datasets
 import pandas as pd
 import publish_ground_truth
 import pytest
 from dataset_common import file_sha256
+
+
+def test_api_extraction_marks_summary_rows_without_discarding_turns(tmp_path, monkeypatch) -> None:
+    discovery = tmp_path / "discovery.json"
+    discovery.write_text(json.dumps({"pairs": [{
+        "id": "model__h200", "status": "available", "model_id": "org/model", "accelerator": "H200",
+    }]}))
+    rows = [
+        {"model": "org/model", "version": "vLLM-0.31.0", "intended concurrency": 1},
+    ]
+    monkeypatch.setattr(extract_datasets, "fetch_rows", lambda *_args, **_kwargs: rows)
+    output = tmp_path / "datasets"
+    manifest = tmp_path / "manifest.json"
+
+    result = extract_datasets.extract(discovery, "https://example.com", output, manifest)
+    frame = pd.read_parquet(output / "model__h200.parquet")
+
+    assert "turn_index" in frame
+    assert str(frame["turn_index"].dtype) == "Int64"
+    assert frame["turn_index"].isna().all()
+    assert "turn_index" in result["pairs"][0]["columns"]
+    assert publish_ground_truth.prepare(manifest, output, tmp_path / "publish")["pairs"][0]["records"] == 1
+
+    rows[0]["turn_index"] = 0
+    extract_datasets.extract(discovery, "https://example.com", output, manifest)
+    assert pd.read_parquet(output / "model__h200.parquet")["turn_index"].tolist() == [0]
 
 
 def test_resolve_revision_accepts_immutable_sha_without_network(monkeypatch) -> None:
