@@ -125,12 +125,13 @@ export function DebugPanel({
   const group = groups.find(candidate => candidate === groupId) ?? groups[0] ?? null;
   // A group only partitions the artifacts that belong to one. Ungrouped panes,
   // such as the run script and the version pins, describe the whole run and stay
-  // visible behind every group tab.
+  // visible behind every group tab. An empty group names no tab, so it counts
+  // as ungrouped here, matching how the tabs are collected above.
   const panes = group === null
     ? run.panes
     : [
         ...run.panes.filter(pane => pane.group === group),
-        ...run.panes.filter(pane => pane.group === undefined),
+        ...run.panes.filter(pane => !pane.group),
       ];
   const pane = panes.find(candidate => candidate.id === paneId) ?? panes[0];
 

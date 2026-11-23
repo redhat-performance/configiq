@@ -190,14 +190,18 @@ describe('DebugPanel', () => {
         { id: 'prefill', label: 'Prefill request', language: 'json', group: 'Prefill', contents: '{"role":"prefill"}' },
         { id: 'decode', label: 'Decode request', language: 'json', group: 'Decode', contents: '{"role":"decode"}' },
         { id: 'script', label: 'run.sh', language: 'shell', contents: 'aisimulate run' },
+        // An empty group names no tab, so it must stay reachable as ungrouped.
+        { id: 'notes', label: 'Notes', language: 'text', group: '', contents: 'how this ran' },
       ],
     }]);
 
-    // The script describes the whole run, so it survives every group switch.
+    // These describe the whole run, so they survive every group switch.
     for (const group of ['Prefill', 'Decode']) {
       await click(tab(group));
-      await click(tab('run.sh'));
-      expect(host.querySelector('pre')?.textContent).toBe('aisimulate run');
+      for (const [label, contents] of [['run.sh', 'aisimulate run'], ['Notes', 'how this ran']]) {
+        await click(tab(label));
+        expect(host.querySelector('pre')?.textContent).toBe(contents);
+      }
     }
   });
 
