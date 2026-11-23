@@ -22,7 +22,7 @@ import {
 } from '@patternfly/react-charts/victory';
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
-import { computeFrontier } from '@/lib/pareto/frontier';
+import { displayedFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
 import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
@@ -513,15 +513,13 @@ export function FrontierPanel({
     [feasible],
   );
 
-  // The server's Pareto view is authoritative for the simulator's own
-  // objectives. It is recomputed only for the TTFT x-axis, where the dominance
-  // direction differs.
+  // The server's Pareto view describes the sweep's own measurements. It is used
+  // unchanged unless a row displays objectives the sweep never measured (a
+  // sizing projection), and on the TTFT axis, where the dominance direction
+  // differs.
   const frontierIds = React.useMemo(() => {
     if (axisMode === 'ttft') return computeTtftFrontier(feasible);
-    // An empty server frontier is still the server's answer: no evaluated
-    // candidate was non-dominated. Only a missing view falls back locally.
-    if (views) return new Set(views.pareto_front);
-    return new Set(computeFrontier(feasible).map(candidate => candidate.candidate_id));
+    return displayedFrontier(feasible, views?.pareto_front ?? null);
   }, [axisMode, feasible, views]);
 
   React.useEffect(() => {

@@ -105,7 +105,8 @@ widths), that row is marked as the recommendation. Otherwise the recommendation
 is added as a row projected from the sizing response, using the GPU count,
 topology, latency, and throughput the response reported. Either way it appears
 once in the chart and once in the list, and its numbers are the sizing
-response's numbers rather than a second prediction. A sizing response that does
+response's numbers rather than a second prediction. Its frontier label follows
+those displayed numbers (see Dominance authority). A sizing response that does
 not report per-user or per-GPU throughput lists the recommendation without
 plotting a point rather than plotting zero.
 
@@ -229,8 +230,18 @@ empty chart.
 ### Dominance authority
 
 `views.pareto_front` is computed by the simulator and is authoritative for the
-simulator's own objectives: maximize `throughput_per_user` and
-`throughput_per_gpu`. The browser uses that view unchanged.
+sweep's own measurements: maximize `throughput_per_user` and
+`throughput_per_gpu`. The browser uses that view unchanged while every plotted
+objective is a sweep measurement.
+
+Collation can break that premise: a matched row displays the sizing response's
+objectives, and a projected recommendation row has no sweep measurement at all.
+Those values are not part of the sweep, so keeping the server's verdict would
+label a point using numbers the chart no longer shows. When a sizing projection
+with objectives is on screen, the panel therefore recomputes membership over the
+displayed objectives so the chart, table, and frontier labels agree. This is a
+display overlay only: the server's `views.pareto_front` stays in the response
+and is what the panel uses for an ordinary sweep.
 
 When the user flips the x-axis to TTFT, the orientation changes (minimize TTFT,
 maximize throughput per GPU), so the browser recomputes the non-dominated set
