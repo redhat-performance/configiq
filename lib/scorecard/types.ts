@@ -229,6 +229,13 @@ export interface ScorecardHeadToHead {
   model: string;
   accelerator: string;
   workload: string;
+  /**
+   * The runtime configuration this row measured. Two rows can share a model,
+   * GPU, workload, and pair and still be distinct configurations, so this and
+   * `tp` are what make the row identity complete.
+   */
+  configurationKey: string;
+  tp: number;
   metric: ScorecardMetric;
   /** Simulator ids, sorted so a row is stable across snapshots. */
   pair: [string, string];
@@ -381,6 +388,8 @@ export const scorecardHeadToHeadSchema = z.object({
   model: z.string().min(1),
   accelerator: z.string().min(1),
   workload: z.string().min(1),
+  configurationKey: z.string().min(1),
+  tp: z.number().int().positive(),
   metric: z.enum(SCORECARD_METRICS),
   pair: z.tuple([z.string().min(1), z.string().min(1)]),
   paired: z.number().int().nonnegative(),

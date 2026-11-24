@@ -143,6 +143,9 @@ export interface HeadToHeadRow {
   model: string;
   accelerator: string;
   workload: string;
+  /** Runtime configuration and parallel size: the rest of the row identity. */
+  configurationKey: string;
+  tp: number;
   metric: ScorecardMetric;
   /** Simulator ids, in sorted order so a row is stable across snapshots. */
   pair: [string, string];
@@ -176,6 +179,8 @@ export function headToHead(points: readonly ScorecardPoint[]): HeadToHeadRow[] {
     model: string;
     accelerator: string;
     workload: string;
+    configurationKey: string;
+    tp: number;
     metric: ScorecardMetric;
     pair: [string, string];
     deltas: number[];
@@ -230,6 +235,8 @@ export function headToHead(points: readonly ScorecardPoint[]): HeadToHeadRow[] {
             model: firstPoint.model,
             accelerator: firstPoint.accelerator,
             workload: firstPoint.workload,
+            configurationKey: firstPoint.configurationKey,
+            tp: firstPoint.tp,
             metric,
             pair: [simulators[first], simulators[second]] as [string, string],
             deltas: [],
@@ -255,6 +262,8 @@ export function headToHead(points: readonly ScorecardPoint[]): HeadToHeadRow[] {
       model: entry.model,
       accelerator: entry.accelerator,
       workload: entry.workload,
+      configurationKey: entry.configurationKey,
+      tp: entry.tp,
       metric: entry.metric,
       pair: entry.pair,
       paired: entry.deltas.length,
@@ -268,6 +277,8 @@ export function headToHead(points: readonly ScorecardPoint[]): HeadToHeadRow[] {
       || left.model.localeCompare(right.model)
       || left.accelerator.localeCompare(right.accelerator)
       || left.workload.localeCompare(right.workload)
+      || left.configurationKey.localeCompare(right.configurationKey)
+      || left.tp - right.tp
       || left.metric.localeCompare(right.metric)
       || left.pair[0].localeCompare(right.pair[0])
       || left.pair[1].localeCompare(right.pair[1]));

@@ -1226,7 +1226,16 @@ function HeadToHeadFlipCard({
             </thead>
             <tbody>
               {rows.map(row => (
-                <tr key={[row.source, row.model, row.accelerator, row.workload, row.metric, ...row.pair].join('|')}>
+                <tr key={[
+                  row.source,
+                  row.model,
+                  row.accelerator,
+                  row.workload,
+                  row.configurationKey,
+                  String(row.tp),
+                  row.metric,
+                  ...row.pair,
+                ].join('|')}>
                   <td className={styles.mutedCell}>{row.source === 'inferencex' ? 'InferenceX' : 'Red Hat'}</td>
                   <td className={styles.modelCell}>{row.model}</td>
                   <td>{row.accelerator}</td>

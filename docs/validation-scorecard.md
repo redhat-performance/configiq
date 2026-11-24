@@ -69,8 +69,10 @@ signed     = (predicted − measured) / measured
 
 Aggregation is **per configuration first, then across configurations**. A run
 swept at twelve concurrency levels does not outvote one swept at three. A
-configuration is one measured series: a runtime configuration at one input and
-output length and one tensor parallel size. The same runtime configuration
+configuration is one measured series: one model on one accelerator, at one
+runtime configuration, one input and output length, and one tensor parallel
+size. The runtime configuration alone says nothing about the model or the GPU,
+so rows that share it are still separate series. The same runtime configuration
 measured at two shapes or two parallel sizes is two votes, because those are two
 different predictions and two different measurements.
 

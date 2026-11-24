@@ -155,6 +155,8 @@ const headToHeadRow: ScorecardHeadToHead = {
   model: 'org/model',
   accelerator: 'H200',
   workload: '1024/128',
+  configurationKey: 'configuration-1',
+  tp: 4,
   metric: 'ttft',
   pair: ['aisim', 'blis'],
   paired: 2,

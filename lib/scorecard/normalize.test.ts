@@ -51,6 +51,8 @@ describe('normalizeScorecardSummary', () => {
         model: 'org/model',
         accelerator: 'H200',
         workload: '1024/128',
+        configurationKey: 'configuration-1',
+        tp: 4,
         metric: 'tpot',
         pair: ['aisimulate', 'blis'],
         paired: 2,

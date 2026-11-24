@@ -192,6 +192,20 @@ describe('buildTotals', () => {
     expect(mape?.configurations).toBe(2);
   });
 
+  it('does not pool different models or GPUs that share a runtime configuration', () => {
+    // `configurationKey` covers runtime settings only, so two models on one
+    // GPU (or one model on two GPUs) can carry the same key.
+    const totals = buildTotals([
+      point({ configurationKey: 'A', model: 'org/first', accelerator: 'H200', identity: 'model-1' }),
+      point({ configurationKey: 'A', model: 'org/second', accelerator: 'H200', identity: 'model-2' }),
+      point({ configurationKey: 'A', model: 'org/first', accelerator: 'B200', identity: 'gpu-1' }),
+      point({ configurationKey: 'A', model: 'org/first', accelerator: 'H200', identity: 'model-1' }),
+    ]);
+    const mape = totals.find(total =>
+      total.source === 'redhat' && total.metric === 'ttft' && total.statistic === 'mape' && total.releaseMatch === 'any');
+    expect(mape?.configurations).toBe(3);
+  });
+
   it('publishes all four statistics from one aggregation', () => {
     const totals = buildTotals([point({ releaseMatch: true })]);
     // Two release slices × two metrics × two sources × four statistics.

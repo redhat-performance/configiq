@@ -150,6 +150,10 @@ describe('headToHead', () => {
     expect(ttft).toHaveLength(2);
     expect(ttft.map(row => row.paired)).toEqual([1, 1]);
     expect(ttft.map(row => row.firstWins).sort()).toEqual([0, 1]);
+    // The row carries the fields that make it a configuration, so a consumer
+    // can key and group it without guessing.
+    expect(ttft.map(row => row.configurationKey).sort()).toEqual(['A', 'B']);
+    expect(ttft.every(row => row.tp === 4)).toBe(true);
   });
 
   it('does not compare across different measured levels', () => {

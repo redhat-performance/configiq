@@ -268,13 +268,16 @@ function identityOf(entry: PlannedUnit): string {
 }
 
 /**
- * A measured series: one runtime configuration at one workload shape.
+ * A measured series: one model on one accelerator, at one runtime
+ * configuration and one workload shape.
  *
- * `configurationKey` alone is not enough to group rows for a prediction. The
- * same runtime configuration is measured at several input/output lengths and
- * tensor-parallel sizes, and a prediction is made for one of each. Folding
- * those rows together would take the shape from whichever row came first and
- * average measurements from several workloads into one series.
+ * None of `configurationKey`, the shape, or the parallel size identifies a
+ * series on its own. The key covers only runtime settings, so two models on
+ * one GPU can share it; the same runtime configuration is also measured at
+ * several input/output lengths and tensor-parallel sizes, and a prediction is
+ * made for one of each. Grouping on any of those alone would take the missing
+ * fields from the first row and average different measurements into one
+ * series.
  */
 interface ConfigurationGroup {
   values: DatasetConfiguration;
@@ -282,7 +285,8 @@ interface ConfigurationGroup {
   rows: DatasetRow[];
 }
 
-function groupConfigurations(rows: readonly DatasetRow[]): Map<string, ConfigurationGroup> {
+/** Exported for the series-grouping test; the sweep is the only caller. */
+export function groupConfigurations(rows: readonly DatasetRow[]): Map<string, ConfigurationGroup> {
   const groups = new Map<string, ConfigurationGroup>();
   for (const row of rows) {
     const values = configurationForRow(row);
@@ -290,6 +294,8 @@ function groupConfigurations(rows: readonly DatasetRow[]): Map<string, Configura
     // Normalized filter values keep `8192` and `'8192'` in one series.
     const seriesKey = [
       configurationId,
+      benchmarkFilterValue(row, 'model') ?? '',
+      benchmarkFilterValue(row, 'accelerator') ?? '',
       benchmarkFilterValue(row, 'isl') ?? '',
       benchmarkFilterValue(row, 'osl') ?? '',
       benchmarkFilterValue(row, 'tp') ?? '',

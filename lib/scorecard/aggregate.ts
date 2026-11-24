@@ -31,15 +31,25 @@ function included(point: ScorecardPoint, releaseMatch: ScorecardReleaseMatch): b
 /**
  * The measured series an observation belongs to.
  *
- * `configurationKey` names a runtime configuration, but the same configuration
- * is measured at several input/output lengths and parallel sizes. Each of
- * those is its own configuration for "one configuration, one vote": averaging
- * two workloads into one vote would let the runtime configuration dominate the
- * statistic and would take a single vote away from a shape that was measured
- * on its own.
+ * `configurationKey` names a runtime configuration, but that says nothing
+ * about which model or GPU was measured, and the same configuration is
+ * measured at several input/output lengths and parallel sizes. Each of those
+ * is its own configuration for "one configuration, one vote": averaging two
+ * models or two shapes into one vote would let one runtime configuration
+ * dominate the statistic and would take a vote away from a series that was
+ * measured on its own.
  */
-function seriesKey(point: Pick<ScorecardPoint, 'configurationKey' | 'isl' | 'osl' | 'tp'>): string {
-  return [point.configurationKey, point.isl, point.osl, point.tp].join('\u0000');
+function seriesKey(
+  point: Pick<ScorecardPoint, 'configurationKey' | 'model' | 'accelerator' | 'isl' | 'osl' | 'tp'>,
+): string {
+  return [
+    point.configurationKey,
+    point.model,
+    point.accelerator,
+    point.isl,
+    point.osl,
+    point.tp,
+  ].join('\u0000');
 }
 
 export function buildCoverage(points: readonly ScorecardPoint[]): ScorecardCoverage[] {
