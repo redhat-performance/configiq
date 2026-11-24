@@ -22,6 +22,25 @@ export const MAX_COMPARISON_BYTES = 1_000_000
 
 export type ComparisonMode = 'agg' | 'disagg'
 
+/**
+ * What the sizing run was asked to achieve.
+ *
+ * Predict entries have no goal: their workload is the whole request. A sizing
+ * entry needs the target beside its figures, because two runs that differ only
+ * by their SLO can produce very different deployments.
+ */
+export interface ComparisonSizingGoal {
+  kind: 'latency' | 'throughput' | 'concurrency'
+  /** End-to-end request bound, when the run used one instead of TTFT/TPOT. */
+  targetRequestLatencyMs: number | null
+  targetTtftMs: number | null
+  targetTpotMs: number | null
+  /** Arrival rate a throughput-demand run was asked to sustain. */
+  targetRequestRate: number | null
+  /** Resident sequences a concurrency-capacity run was asked to hold. */
+  targetConcurrency: number | null
+}
+
 export interface ComparisonWorkload {
   isl: number
   osl: number
@@ -78,6 +97,8 @@ export interface ComparisonEntry {
   engineVersion: string | null
   backend: string | null
   backendVersion: string | null
+  /** Sizing target, when the snapshot came from a recommendation. */
+  goal?: ComparisonSizingGoal | null
   mode: ComparisonMode
   workload: ComparisonWorkload
   topology: ComparisonTopology

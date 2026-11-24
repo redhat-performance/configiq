@@ -11,6 +11,7 @@ import {
   modeLabel,
   precisionLabel,
   simulatorLabel,
+  sizingGoalLabel,
   topologyLabel,
   workloadLabel,
 } from './metrics'
@@ -90,6 +91,47 @@ describe('comparison labels', () => {
   it('names the workload and precision', () => {
     expect(workloadLabel(entry())).toBe('ISL 2048 · OSL 128 · 32 users')
     expect(precisionLabel(entry())).toBe('FP8 weights · FP16 KV')
+  })
+
+  it('describes the sizing goal, or shows none for a predicted result', () => {
+    const none = {
+      targetRequestLatencyMs: null,
+      targetTtftMs: null,
+      targetTpotMs: null,
+      targetRequestRate: null,
+      targetConcurrency: null,
+    }
+
+    expect(sizingGoalLabel(entry())).toBe('—')
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetTtftMs: 300, targetTpotMs: 30 },
+    }))).toBe(`TTFT ≤ ${formatNumber(300, 0)} ms · TPOT ≤ ${formatNumber(30, 0)} ms`)
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetRequestLatencyMs: 3000 },
+    }))).toBe(`Request latency ≤ ${formatNumber(3000, 0)} ms`)
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'throughput', targetRequestRate: 12.5 },
+    }))).toBe(`${formatNumber(12.5, 1)} req/s`)
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'concurrency', targetConcurrency: 64 },
+    }))).toBe(`${formatNumber(64, 0)} concurrent sequences`)
+  })
+
+  it('keeps a fractional latency target visible instead of rounding it to zero', () => {
+    const none = {
+      targetRequestLatencyMs: null,
+      targetTtftMs: null,
+      targetTpotMs: null,
+      targetRequestRate: null,
+      targetConcurrency: null,
+    }
+
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetTtftMs: 0.1, targetTpotMs: 0.4 },
+    }))).toBe('TTFT ≤ 0.1 ms · TPOT ≤ 0.4 ms')
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetRequestLatencyMs: 1.5 },
+    }))).toBe('Request latency ≤ 1.5 ms')
   })
 
   it('names the backend, or says it was not reported', () => {
