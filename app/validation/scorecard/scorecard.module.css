@@ -89,6 +89,13 @@
   text-decoration: underline;
 }
 
+/* A measured source the sweep could not load. Dashed rather than filled so it
+   reads as missing data, not as another dataset the page compared. */
+.sourceBadgeUnavailable {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+
 .sourceBadge strong {
   font-weight: 600;
   color: var(--text);

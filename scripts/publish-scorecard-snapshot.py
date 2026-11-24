@@ -66,6 +66,31 @@ def write_output(path: str | None, values: dict[str, str]) -> None:
             handle.write(f"{key}={value}\n")
 
 
+def require_complete(summary: dict, channel: str) -> None:
+    """Refuse to publish a snapshot that did not load every measured source.
+
+    The page reads one channel, so a source leg that failed to load would
+    silently look like a dataset nobody measured: the coverage map loses its
+    source split and the provenance badge simply disappears. Publish nothing
+    and rerun the sweep instead.
+    """
+    incomplete = summary.get("incomplete")
+    if incomplete is None:
+        return
+    if not isinstance(incomplete, list):
+        raise SystemExit(f"Channel {channel!r} summary has a malformed incomplete list")
+    legs = []
+    for item in incomplete:
+        if not isinstance(item, dict):
+            raise SystemExit(f"Channel {channel!r} summary has a malformed incomplete entry")
+        legs.append(f"{item.get('leg')}: {item.get('reason')}")
+    if legs:
+        raise SystemExit(
+            f"Refusing to publish channel {channel!r}: the sweep did not load every measured "
+            f"source ({'; '.join(legs)}). Rerun the sweep instead of publishing a partial snapshot."
+        )
+
+
 def local_artifact(source_dir: Path, channel: str) -> tuple[bytes, bytes]:
     summary_path = source_dir / f"scorecard-{channel}.json"
     points_path = source_dir / f"scorecard-points-{channel}.json"
@@ -80,6 +105,7 @@ def local_artifact(source_dir: Path, channel: str) -> tuple[bytes, bytes]:
         raise SystemExit("Refusing to publish a scorecard with no simulator totals")
     if not isinstance(points.get("points"), list):
         raise SystemExit("The point detail is missing its points array")
+    require_complete(summary, channel)
     return summary_path.read_bytes(), points_path.read_bytes()
 
 
@@ -129,6 +155,7 @@ def main() -> int:
 
     if args.from_channel:
         summary_bytes, points_bytes = published_artifact(args.repo_id, args.from_channel, revision)
+        require_complete(json.loads(summary_bytes), args.from_channel)
         message = f"Promote scorecard snapshot from {args.from_channel} to {args.channel}"
     else:
         source_dir = args.source_dir or Path("artifacts/scorecard")

@@ -950,6 +950,9 @@ function MatrixFlipCard({
 /**
  * Measured-data provenance, presented the way Benchmark comparison does it:
  * one badge per source, naming the dataset, its size, and the revision scored.
+ * A source the sweep could not load is named too, with its reason: the page
+ * cannot show a comparison the data does not contain, and an absent badge
+ * would read as a source nobody measured.
  */
 function SourceBadges({ summary }: { summary: ScorecardSummary }) {
   return (
@@ -978,9 +981,26 @@ function SourceBadges({ summary }: { summary: ScorecardSummary }) {
           </div>
         );
       })}
+      {summary.incomplete.map(item => (
+        <div
+          key={`unavailable-${item.leg}`}
+          className={`${styles.sourceBadge} ${styles.sourceBadgeUnavailable}`}
+        >
+          <span>
+            Benchmark data from {MEASURED_SOURCE_LABELS[item.leg] ?? item.leg} unavailable
+          </span>
+          <span className={styles.sourceDetail}>{item.reason}</span>
+        </div>
+      ))}
     </div>
   );
 }
+
+/** Measured sources the sweep can load, by the leg name it records. */
+const MEASURED_SOURCE_LABELS: Record<string, string> = {
+  redhat: 'Red Hat',
+  inferencex: 'SemiAnalysis InferenceX',
+};
 
 const COVERAGE_SEGMENTS: {
   key: keyof CoverageCounts;

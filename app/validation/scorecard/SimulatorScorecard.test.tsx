@@ -392,6 +392,31 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).not.toContain('https://aisimulators.example.test');
   });
 
+  it('names a measured source the sweep could not load, and why', async () => {
+    // A snapshot that loaded one source must not look like a complete one:
+    // the reader sees which data is missing before reading any comparison.
+    await mount(published({
+      datasets: [{
+        source: 'redhat',
+        id: 'redhat-performance/configiq-performance-upstream-data',
+        revision: 'abc1234',
+        rowCount: 10,
+      }],
+      incomplete: [{
+        leg: 'inferencex',
+        reason: 'Private InferenceX dataset access is not configured',
+      }],
+    }));
+
+    expect(container.textContent).toContain('Benchmark data from SemiAnalysis InferenceX unavailable');
+    expect(container.textContent).toContain('Private InferenceX dataset access is not configured');
+  });
+
+  it('does not claim a source is unavailable when every source loaded', async () => {
+    await mount(published());
+    expect(container.textContent).not.toContain('unavailable');
+  });
+
   it('draws one chart series per simulator on the flip tile front', async () => {
     await mount(published());
     const card = container.querySelector('[data-flip-card="scorecard-error"]');
