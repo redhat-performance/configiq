@@ -21,7 +21,7 @@ import os
 from io import BytesIO
 from pathlib import Path
 
-from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub import CommitOperationAdd, HfApi, hf_hub_download
 from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 
 DEFAULT_REPO_ID = "redhat-performance/configiq-simulator-scorecard"
@@ -83,17 +83,21 @@ def local_artifact(source_dir: Path, channel: str) -> tuple[bytes, bytes]:
     return summary_path.read_bytes(), points_path.read_bytes()
 
 
-def published_artifact(repo_id: str, channel: str) -> tuple[bytes, bytes]:
+def download_file(repo_id: str, path_in_repo: str) -> bytes | None:
     try:
-        summary_path = hf_hub_download(
-            repo_id=repo_id, repo_type="dataset", filename=f"{channel}/{SUMMARY_FILE}"
-        )
-        points_path = hf_hub_download(
-            repo_id=repo_id, repo_type="dataset", filename=f"{channel}/{POINTS_FILE}"
-        )
-    except EntryNotFoundError as error:
-        raise SystemExit(f"Channel {channel!r} is not published in {repo_id}") from error
-    return Path(summary_path).read_bytes(), Path(points_path).read_bytes()
+        return Path(
+            hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=path_in_repo)
+        ).read_bytes()
+    except EntryNotFoundError:
+        return None
+
+
+def published_artifact(repo_id: str, channel: str) -> tuple[bytes, bytes]:
+    summary = download_file(repo_id, f"{channel}/{SUMMARY_FILE}")
+    points = download_file(repo_id, f"{channel}/{POINTS_FILE}")
+    if summary is None or points is None:
+        raise SystemExit(f"Channel {channel!r} is not published in {repo_id}")
+    return summary, points
 
 
 def main() -> int:
@@ -119,14 +123,12 @@ def main() -> int:
         summary_bytes, points_bytes = local_artifact(source_dir, args.channel)
         message = f"Publish scorecard snapshot for {args.channel}"
 
-    try:
-        current_summary = hf_hub_download(
-            repo_id=args.repo_id, repo_type="dataset", filename=f"{args.channel}/{SUMMARY_FILE}"
-        )
-    except EntryNotFoundError:
-        current_summary = None
-
-    if current_summary is not None and Path(current_summary).read_bytes() == summary_bytes:
+    # Both files are the artifact. A retry after a partial upload must see the
+    # missing or stale half as a change, not report the channel current just
+    # because the summary landed.
+    current_summary = download_file(args.repo_id, f"{args.channel}/{SUMMARY_FILE}")
+    current_points = download_file(args.repo_id, f"{args.channel}/{POINTS_FILE}")
+    if current_summary == summary_bytes and current_points == points_bytes:
         print(f"Channel {args.channel!r} is already current")
         write_output(args.github_output, {"changed": "false", "revision": ""})
         return 0
@@ -136,16 +138,24 @@ def main() -> int:
         write_output(args.github_output, {"changed": "true", "revision": ""})
         return 0
 
-    revision = ""
-    for filename, content in ((SUMMARY_FILE, summary_bytes), (POINTS_FILE, points_bytes)):
-        commit = api.upload_file(
-            path_or_fileobj=BytesIO(content),
-            path_in_repo=f"{args.channel}/{filename}",
-            repo_id=args.repo_id,
-            repo_type="dataset",
-            commit_message=f"{message} ({filename})",
-        )
-        revision = commit.oid
+    # One commit for both files, so a reader never sees a summary that
+    # describes points from the previous snapshot.
+    commit = api.create_commit(
+        repo_id=args.repo_id,
+        repo_type="dataset",
+        commit_message=message,
+        operations=[
+            CommitOperationAdd(
+                path_in_repo=f"{args.channel}/{SUMMARY_FILE}",
+                path_or_fileobj=BytesIO(summary_bytes),
+            ),
+            CommitOperationAdd(
+                path_in_repo=f"{args.channel}/{POINTS_FILE}",
+                path_or_fileobj=BytesIO(points_bytes),
+            ),
+        ],
+    )
+    revision = commit.oid
 
     print(f"Published {args.repo_id}/{args.channel} at {revision}")
     write_output(args.github_output, {"changed": "true", "revision": revision})
