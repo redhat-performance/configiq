@@ -44,6 +44,8 @@ function result(overrides: Partial<RecommendResult> = {}): RecommendResult {
     },
     memory: { value: 58, unit: 'GB', breakdown: null },
     memoryAvailable: true,
+    engineVersion: '0.14.0',
+    precision: { weights: null, kvCache: null },
     metadata: {
       modelPath: 'org/model',
       system: 'h200_sxm',
