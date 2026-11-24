@@ -146,6 +146,7 @@ def test_catalog_resolves_slug_and_hugging_face_id_to_one_entry(tmp_path: Path):
     assert by_slug.hf_repo == "Qwen/Qwen3-32B"
     assert by_slug.context_length == 40960
     assert by_slug.origin == "blis-catalog"
+    assert by_slug.architecture == "Qwen3ForCausalLM"
 
 
 def test_catalog_reads_context_from_text_config(tmp_path: Path):
@@ -346,17 +347,39 @@ def test_serving_config_is_absent_when_the_result_has_no_deployment():
     assert blis_service._serving_config({"metrics": {}}) is None
 
 
-def test_aggregated_documents_leave_block_size_to_blis():
+def _model(architecture: str | None) -> ModelResolution:
+    return ModelResolution(catalog_name="m", hf_repo=None, architecture=architecture)
+
+
+def test_aggregated_documents_state_the_default_block_size():
+    _scenario, deployment = build_documents(_scenario_request())
+
+    assert deployment["pools"][0]["engine"]["block_size"] == 16
+
+
+@pytest.mark.parametrize(("architecture", "hardware", "expected"), [
+    ("DeepseekV4ForCausalLM", "h200", 256),
+    ("DeepseekV4ForCausalLM", "b200", 256),
+    ("DeepseekV41ForCausalLM", "h200", 64),
+    ("DeepseekV41ForCausalLM", "b200", 128),
+])
+def test_deepseek_v4_family_states_its_kernel_block_size(architecture, hardware, expected):
     _scenario, deployment = build_documents(_scenario_request(
-        model=ModelResolution(
-            catalog_name="deepseek-v4-pro",
-            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
-            context_length=None,
-            origin="blis-catalog",
-        ),
+        model=_model(architecture), hardware=hardware,
     ))
 
-    assert "block_size" not in deployment["pools"][0]["engine"]
+    assert deployment["pools"][0]["engine"]["block_size"] == expected
+
+
+def test_disagg_pools_of_a_deepseek_v4_model_state_its_kernel_block_size():
+    _scenario, deployment = build_documents(_scenario_request(
+        model=_model("DeepseekV4ForCausalLM"),
+        fabric="ib-400g",
+        prefill_pool=_pool_request("prefill", nodes=1),
+        decode_pool=_pool_request("decode", nodes=1),
+    ))
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [256, 256]
 
 
 def test_half_cache_dtype_leaves_the_blis_model_default_unmodified():

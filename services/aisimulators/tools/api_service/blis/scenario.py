@@ -36,6 +36,8 @@ DISAGGREGATED_ENGINE_VERSIONS = tuple(
     version for version, support in ENGINE_VERSION_SUPPORT.items() if support["disaggregated"]
 )
 _VERSION_ALIASES = frozenset({"current", "previous", "next"})
+#: Catalog hardware keys for Hopper parts, where DeepSeek-V4.1's sparse kernels run 64-token blocks.
+_HOPPER_HARDWARE = frozenset({"h100", "h200"})
 
 _COEFFICIENTS = [
     "cost-model-primitives",
@@ -145,7 +147,21 @@ def normalize_weight_quantization(raw: str | None) -> str | None:
     return _optional_quantization(raw, _WEIGHT_QUANTIZATION, "weight quantization")
 
 
-def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
+def _kv_block_size(model: ModelResolution, hardware: str, default: int) -> int:
+    """Return the KV block size to state for the model on this hardware.
+
+    BLIS requires a stated block size and refuses one the engine would refuse at startup.
+    DeepSeek-V4-family sparse attention runs fixed kernel blocks, so those models get the
+    size vLLM picks for them; every other model keeps the default.
+    """
+    if model.architecture == "DeepseekV4ForCausalLM":
+        return 256
+    if model.architecture == "DeepseekV41ForCausalLM":
+        return 64 if hardware in _HOPPER_HARDWARE else 128
+    return default
+
+
+def _pool_engine(pool: ScenarioPoolRequest, block_size: int) -> dict[str, Any]:
     raw_weight_quant = pool.weight_quantization.strip().lower() if pool.weight_quantization else None
     raw_moe_quant = pool.moe_quantization.strip().lower() if pool.moe_quantization else None
     if raw_moe_quant and raw_weight_quant != raw_moe_quant:
@@ -156,7 +172,7 @@ def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
         raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
     cache_dtype = _optional_quantization(pool.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
     engine: dict[str, Any] = {
-        "block_size": pool.block_size,
+        "block_size": block_size,
         "max_num_batched_tokens": pool.max_num_batched_tokens,
         "max_num_seqs": pool.max_num_seqs,
         "max_model_len": pool.max_model_len,
@@ -239,7 +255,7 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 "dp": pool.dp,
                 "enable_expert_parallel": pool.enable_expert_parallel,
             },
-            "engine": _pool_engine(pool),
+            "engine": _pool_engine(pool, _kv_block_size(request.model, request.hardware, pool.block_size)),
         })
 
     name = _scenario_name(request)
@@ -319,10 +335,8 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
         if request.max_model_len is not None
         else request.model.context_length or request.isl + request.osl
     )
-    # No block_size: the request contract does not carry one, and BLIS resolves the
-    # size vLLM would pick for the model (16 for most models, a larger kernel block
-    # for sparse-attention families that refuse 16 at startup).
     engine: dict[str, Any] = {
+        "block_size": _kv_block_size(request.model, request.hardware, 16),
         "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
         "max_num_seqs": request.max_num_seqs or request.concurrency,
         "max_model_len": max_model_len,

@@ -34,6 +34,8 @@ class ModelResolution:
     hf_repo: str | None
     context_length: int | None = None
     origin: str = "blis-catalog"
+    #: The catalog config's architectures[0]; it decides the KV block size the engine accepts.
+    architecture: str | None = None
 
 
 #: ConfigIQ system IDs whose spelling differs from the catalog hardware key.
@@ -146,6 +148,7 @@ class BlisCatalog:
                 _config_value(model.config, "max_position_embeddings", "context")
             ),
             origin="blis-catalog",
+            architecture=model_specs(model.model_id, model.config)["architecture"],
         )
 
     def specs_for(self, model_path: str) -> dict[str, Any]:
