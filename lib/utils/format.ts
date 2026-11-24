@@ -43,6 +43,28 @@ export function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+/**
+ * A dataset snapshot's calendar date, spelled out and in UTC.
+ *
+ * The timestamp records when data was captured, not an event in the reader's
+ * day, so formatting it in the browser's zone can move it by one: a retrieval
+ * at 19:22 UTC reads as the next day east of UTC. `11/12/2026` is also
+ * ambiguous between day-first and month-first locales. Returns null when the
+ * value is missing or unparseable, so a caller can omit the date instead of
+ * printing "Invalid Date".
+ */
+export function formatDatasetDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).format(parsed);
+}
+
 /** Average hours per month (365 days × 24 hrs ÷ 12 months). Used for GPU cost calculations. */
 export const HOURS_PER_MONTH = 730;
 

@@ -25,6 +25,7 @@ import { defineAccessors } from '@/lib/deep-links/shared-view';
 import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { scorecardLink } from '@/lib/deep-links/pages';
 import { findCatalogGpu } from '@/lib/validation/gpu-catalog';
+import { formatDatasetDate } from '@/lib/utils/format';
 import { predictionColor } from '@/lib/ui/simulator-colors';
 import {
   SCORECARD_SOURCE_FILTERS,
@@ -956,9 +957,11 @@ function SourceBadges({ summary }: { summary: ScorecardSummary }) {
     <div className={styles.sourceBadges} data-tour="sources">
       {summary.datasets.map(dataset => {
         const inferencex = dataset.source === 'inferencex';
+        // The InferenceX "revision" is a retrieval timestamp. Render its UTC
+        // calendar date so it cannot shift a day with the reader's time zone.
         const revision = dataset.revision && dataset.revision.length > 0
           ? inferencex
-            ? `snapshot ${new Date(dataset.revision).toLocaleDateString(undefined, { dateStyle: 'medium' })}`
+            ? `snapshot ${formatDatasetDate(dataset.revision) ?? dataset.revision}`
             : `revision ${dataset.revision.slice(0, 7)}`
           : null;
         return (

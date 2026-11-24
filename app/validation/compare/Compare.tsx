@@ -52,6 +52,7 @@ import {
 } from '@/lib/validation/benchmark-resolve'
 import { findCatalogGpu, matchAccelerator } from '@/lib/validation/gpu-catalog'
 import { backendVersionIdentity, backendVersionsComparable, backendVersionsMatch } from '@/lib/validation/benchmark-versions'
+import { formatDatasetDate } from '@/lib/utils/format'
 import {
   BENCHMARK_FILTER_KEYS,
   type BenchmarkFilterKey,
@@ -933,7 +934,10 @@ export default function BenchmarkComparisonPage() {
 
   const measuredCount = new Set([...results.benchmark, ...results.inferencex].map(point => point.concurrency)).size
   const safeInferenceXRuns = results.runs.filter(run => isHttpsUrl(run.url))
-  const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
+  // A dataset timestamp, not a local event: render its UTC calendar date so the
+  // badge cannot read as the next day east of UTC or as a different date by locale.
+  const datasetDate = formatDatasetDate(source?.lastModified)
+  const snapshotDate = formatDatasetDate(inferencexSource?.retrievedAt)
   const selectedVersionLabel = backendVersion || 'Simulator default'
   const measuredVersionLabel = resolvedFilters?.backendVersion ?? null
   // Core-equivalent labels are comparable, but a measured vendor image build is
@@ -971,7 +975,10 @@ export default function BenchmarkComparisonPage() {
                 {isHttpsUrl(inferencexSource.url)
                   ? <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
                   : <span>Benchmark data from SemiAnalysis InferenceX</span>}
-                <span>{inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows · snapshot {new Date(inferencexSource.retrievedAt).toLocaleDateString()}</span>
+                <span>
+                  {inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows
+                  {snapshotDate ? ` · snapshot ${snapshotDate}` : ''}
+                </span>
               </div>}
             </div>
           )}

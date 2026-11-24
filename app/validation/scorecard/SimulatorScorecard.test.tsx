@@ -387,6 +387,9 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).toContain('Benchmark data from Red Hat');
     expect(container.textContent).toContain('SemiAnalysis InferenceX');
     expect(container.textContent).toContain('786 rows');
+    // The snapshot timestamp is 19:22 UTC: the next day east of UTC, so the
+    // badge names the UTC date rather than the reader's local one.
+    expect(container.textContent).toContain('snapshot 11 Nov 2026');
     expect(container.textContent).not.toContain('Gateway');
     expect(container.textContent).not.toContain('Simulator releases');
     expect(container.textContent).not.toContain('https://aisimulators.example.test');
