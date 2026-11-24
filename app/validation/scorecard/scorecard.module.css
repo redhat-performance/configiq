@@ -533,6 +533,10 @@
   flex-shrink: 0;
 }
 
+.chartSizer {
+  width: 100%;
+}
+
 .chartCanvas {
   flex: 1;
   min-height: 0;
@@ -541,7 +545,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
-  overflow-x: auto;
+  overflow: auto;
 }
 
 .chartFoot {

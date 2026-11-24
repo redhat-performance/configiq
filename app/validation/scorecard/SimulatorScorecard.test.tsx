@@ -419,24 +419,25 @@ describe('Simulator scorecard page', () => {
     await mount(published());
     expect(container.textContent).toContain('Head to head');
     expect(container.textContent).toContain('AISim vs BLIS');
-    // One win each: an even outcome bar, described for assistive tech. The
+    // One best each: an even outcome bar, described for assistive tech. The
     // default TPOT slice carries the same result as TTFT in this fixture.
-    expect(container.querySelector('[aria-label*="won 1 of 2 paired levels"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label*="best on 1 of 2 paired levels"]')).not.toBeNull();
   });
 
-  it('puts win share by model and GPU on the head-to-head tile front', async () => {
+  it('puts best share by model and GPU on the head-to-head tile front', async () => {
     await mount(published());
     const card = container.querySelector('[data-flip-card="scorecard-paired"]');
 
     expect(card).not.toBeNull();
-    expect(card?.textContent).toContain('Win share by model');
-    expect(card?.textContent).toContain('Win share by GPU');
+    expect(card?.textContent).toContain('Best share by model');
+    expect(card?.textContent).toContain('Best share by GPU');
     expect(card?.querySelector('[class*="flipFront"] table')).toBeNull();
 
     const back = card?.querySelector('[class*="flipBack"] table');
     expect(back).not.toBeNull();
     expect(back?.textContent).toContain('Source');
     expect(back?.textContent).toContain('Ties');
+    expect(back?.textContent).not.toContain('Paired levels');
     expect(back?.textContent).toContain('org/model');
   });
 

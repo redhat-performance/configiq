@@ -204,13 +204,6 @@ export interface ChartRow {
   values: Map<string, number>;
 }
 
-export interface ChartRows {
-  /** The worst configurations, largest absolute value first. */
-  shown: ChartRow[];
-  /** How many configurations had at least one value. */
-  scored: number;
-}
-
 const MODEL_LABEL_CHARS = 26;
 
 /**
@@ -218,14 +211,13 @@ const MODEL_LABEL_CHARS = 26;
  *
  * The chart is a view of the same cells the table lists, not a second
  * aggregation: one bar per published cell. It ranks by absolute value so the
- * configurations that dominate the mean appear first, and caps the count so
- * labels stay legible. The table behind the flip still lists every row.
+ * configurations that dominate the mean appear first, and keeps every scored
+ * row. The tile scrolls rather than hiding the tail behind a cap.
  */
 export function buildChartRows(
   rows: readonly MatrixRow[],
   simulatorIds: readonly string[],
-  limit: number,
-): ChartRows {
+): ChartRow[] {
   const scored = rows
     .map(row => {
       const values = new Map<string, number>();
@@ -255,14 +247,11 @@ export function buildChartRows(
     magnitude(right.values) - magnitude(left.values)
     || labelFor(left.row).localeCompare(labelFor(right.row)));
 
-  return {
-    scored: scored.length,
-    shown: ranked.slice(0, Math.max(1, limit)).map(({ row, values }) => ({
-      key: row.key,
-      label: labelFor(row),
-      values,
-    })),
-  };
+  return ranked.map(({ row, values }) => ({
+    key: row.key,
+    label: labelFor(row),
+    values,
+  }));
 }
 
 function magnitude(values: Map<string, number>): number {
@@ -312,7 +301,7 @@ export interface HeadToHeadCategory {
   configurations: number;
   paired: number;
   ties: number;
-  /** Mean per-configuration win share, so one long sweep cannot outvote one run. */
+  /** Mean per-configuration best share, so one long sweep cannot outvote one run. */
   firstShare: number;
   secondShare: number;
   /** Per-configuration first-share range; null when one configuration is the range. */
@@ -391,14 +380,14 @@ export interface HeadToHeadSummaryOptions extends HeadToHeadOptions {
 /**
  * Roll one pair up by model or by GPU.
  *
- * A row in the artifact is one measured configuration. Its win share is the
- * share of paired concurrency levels that configuration won. A category's
- * share is the mean of those configuration shares — equal weight per
- * configuration — not the pooled level count: a run swept at twelve levels
- * must not outvote one swept at three. The candle is the range across those
- * configuration shares, and it is omitted when one configuration is the whole
- * category, because a range over one value would imply evidence that is not
- * there.
+ * A row in the artifact is one measured configuration. Its best share is the
+ * share of paired concurrency levels where that configuration's simulator was
+ * closer. A category's share is the mean of those configuration shares — equal
+ * weight per configuration — not the pooled level count: a run swept at twelve
+ * levels must not outvote one swept at three. The candle is the range across
+ * those configuration shares, and it is omitted when one configuration is the
+ * whole category, because a range over one value would imply evidence that is
+ * not there.
  */
 export function buildHeadToHeadSummary(
   rows: readonly ScorecardHeadToHead[],
@@ -429,8 +418,8 @@ export function buildHeadToHeadSummary(
     configurations: selected.length,
     paired: sum(selected.map(row => row.paired)),
     ties: sum(selected.map(row => row.ties)),
-    firstShare: mean(selected.map(row => winShare(row.firstWins, row.paired))),
-    secondShare: mean(selected.map(row => winShare(row.secondWins, row.paired))),
+    firstShare: mean(selected.map(row => bestShare(row.firstWins, row.paired))),
+    secondShare: mean(selected.map(row => bestShare(row.secondWins, row.paired))),
     medianGapPct: median(selected.map(row => row.medianDeltaPct).sort((a, b) => a - b)),
   };
 }
@@ -439,7 +428,7 @@ function summarizeHeadToHeadCategory(
   label: string,
   rows: readonly ScorecardHeadToHead[],
 ): HeadToHeadCategory {
-  const shares = rows.map(row => winShare(row.firstWins, row.paired));
+  const shares = rows.map(row => bestShare(row.firstWins, row.paired));
   const hasRange = rows.length > 1;
   return {
     key: label,
@@ -448,7 +437,7 @@ function summarizeHeadToHeadCategory(
     paired: sum(rows.map(row => row.paired)),
     ties: sum(rows.map(row => row.ties)),
     firstShare: mean(shares),
-    secondShare: mean(rows.map(row => winShare(row.secondWins, row.paired))),
+    secondShare: mean(rows.map(row => bestShare(row.secondWins, row.paired))),
     minShare: hasRange ? Math.min(...shares) : null,
     maxShare: hasRange ? Math.max(...shares) : null,
     medianGapPct: median(rows.map(row => row.medianDeltaPct).sort((a, b) => a - b)),
@@ -467,8 +456,8 @@ function emptyHeadToHeadSummary(): HeadToHeadSummary {
   };
 }
 
-function winShare(wins: number, paired: number): number {
-  return paired > 0 ? wins / paired : 0;
+function bestShare(best: number, paired: number): number {
+  return paired > 0 ? best / paired : 0;
 }
 
 function sum(values: readonly number[]): number {

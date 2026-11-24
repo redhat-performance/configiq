@@ -336,14 +336,14 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="error"]',
         title: 'Where the error sits',
         description:
-          'The chart ranks the measured configurations with the largest error. Click the tile for the full table, including rows the chart leaves out.',
+          'The chart ranks every measured configuration, largest error first, and scrolls inside the tile. Click the tile for the same cells as a table.',
         position: 'top',
       },
       {
         target: '[data-tour="paired"]',
         title: 'Head to head',
         description:
-          'Only levels both simulators predicted. Each bar is the mean win share of a model or GPU across its configurations, and the bracket shows how far those configurations range.',
+          'Only levels both simulators predicted. Each bar is the mean best share of a model or GPU across its configurations, and the bracket shows how far those configurations range.',
         position: 'top',
       },
     ],

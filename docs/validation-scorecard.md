@@ -85,6 +85,10 @@ stays visible: a wide gap between MdAPE and MAPE means those extremes, not the
 typical run, drive the mean. The metric and statistic selectors change the
 chart and tables too, so what is ranked is what is charted.
 
+The error chart keeps every configuration with a prediction, worst first, and
+scrolls inside its tile rather than capping the list. The table behind the flip
+lists the same cells for exact reading.
+
 ## Coverage
 
 Every attempt is counted, in four buckets:
@@ -112,13 +116,13 @@ uses only the measured levels **both** simulators predicted, and reports how man
 those were.
 
 A row in the artifact is one measured configuration (source, model, GPU, workload)
-for one simulator pair. It carries the number of paired concurrency levels, the
-wins for each simulator, the ties, and the median gap between their errors. A tie
+for one simulator pair. It carries the number of paired concurrency levels, how
+often each simulator was best, the ties, and the median gap between their errors. A tie
 is equality to six decimal places of relative error; it counts for neither
 simulator and stays visible as its own count.
 
 The page shows the paired view by model and by GPU. Each row in those panels is
-one configuration, and a category's share is the mean of its configuration win
+one configuration, and a category's share is the mean of its configuration best
 shares — one configuration, one vote — not the pooled level count. A run swept at
 twelve concurrency levels must not outvote one swept at three. The bracket spans
 the lowest and highest configuration share, so a category whose mean hides a

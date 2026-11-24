@@ -35,7 +35,7 @@ import {
   type ScorecardStatistic,
   type ScorecardSummary,
 } from '@/lib/scorecard/types';
-import ErrorBarChart, { CHART_ROW_HEIGHT } from './ErrorBarChart';
+import ErrorBarChart from './ErrorBarChart';
 import HeadToHeadChart from './HeadToHeadChart';
 import {
   buildChartRows,
@@ -49,7 +49,7 @@ import {
   selectHeadToHeadRows,
   selectTotals,
   sumCoverage,
-  type ChartRows,
+  type ChartRow,
   type CoverageCounts,
   type HeadToHeadPairOption,
   type HeadToHeadSummary,
@@ -93,8 +93,8 @@ const DEFAULT_METRIC: ScorecardMetric = 'tpot';
 const DEFAULT_STATISTIC: ScorecardStatistic = 'mdape';
 const DEFAULT_RELEASE_MATCH: ScorecardReleaseMatch = 'any';
 
-/** Bars the chart draws before labels crowd; the table behind it has all rows. */
-const CHART_ROW_LIMIT = 12;
+/** The card reserves one fixed box; both faces scroll inside it. */
+const CARD_HEIGHT = 560;
 
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
@@ -304,7 +304,7 @@ export default function SimulatorScorecard() {
   );
 
   const chartRows = React.useMemo(
-    () => buildChartRows(matrix, linkedSimulators.map(simulator => simulator.id), CHART_ROW_LIMIT),
+    () => buildChartRows(matrix, linkedSimulators.map(simulator => simulator.id)),
     [matrix, linkedSimulators],
   );
 
@@ -657,7 +657,7 @@ export default function SimulatorScorecard() {
                 <h2 id="scorecard-paired-title">Head to head</h2>
                 <JargonPopover
                   term="Head to head"
-                  explanation="Only the measured levels both simulators predicted, so neither can look better by skipping the hard ones. A win is the closer prediction at that level. Each bar is the mean win share of a model's or a GPU's measured configurations, so one long sweep cannot outvote one short run. The bracket spans the lowest and highest configuration share; a category with one configuration has no range and says so. Ties count for neither simulator. This paired view spans every release; the Releases choice narrows the error statistics, not these pairs."
+                  explanation="Only the measured levels both simulators predicted, so neither can look better by skipping the hard ones. Best is the closer prediction at that level. Each bar is the mean best share of a model's or a GPU's measured configurations, so one long sweep cannot outvote one short run. The bracket spans the lowest and highest configuration share; a category with one configuration has no range and says so. Ties count for neither simulator. This paired view spans every release; the Releases choice narrows the error statistics, not these pairs."
                 />
                 {headToHeadPairs.length > 1 && (
                   <div className={styles.sectionControl}>
@@ -718,7 +718,7 @@ function MatrixFlipCard({
 }: {
   matrix: MatrixRow[];
   simulators: { id: string; label: string }[];
-  chartRows: ChartRows;
+  chartRows: ChartRow[];
   color: (id: string) => string;
   statistic: ScorecardStatistic;
   statisticLabel: string;
@@ -734,9 +734,9 @@ function MatrixFlipCard({
     label: entry.label,
     color: color(entry.id),
   }));
-  // Faces are absolutely positioned, so the card has to reserve the chart's
-  // height itself; the table face then scrolls inside the same box.
-  const cardHeight = Math.max(560, chartRows.shown.length * CHART_ROW_HEIGHT + 220);
+  // Faces are absolutely positioned, so the card reserves a fixed height and
+  // each face scrolls its own content inside the same box.
+  const cardHeight = CARD_HEIGHT;
 
   React.useEffect(() => {
     // Only the visible face may receive focus or be read by assistive tech.
@@ -761,7 +761,7 @@ function MatrixFlipCard({
           <div>
             <h3>{statisticLabel} by measured configuration</h3>
             <p className={styles.chartHint}>
-              Worst {formatCount(chartRows.shown.length)} of {formatCount(chartRows.scored)} configurations with a prediction
+              {formatCount(chartRows.length)} {chartRows.length === 1 ? 'configuration' : 'configurations'} with a prediction, worst first
             </p>
           </div>
           <span className={styles.chartUnit}>Lower is closer</span>
@@ -774,9 +774,9 @@ function MatrixFlipCard({
             </li>
           ))}
         </ul>
-        {chartRows.shown.length > 0 ? (
+        {chartRows.length > 0 ? (
           <ErrorBarChart
-            rows={chartRows.shown}
+            rows={chartRows}
             series={series}
             statisticLabel={statisticLabel}
             formatValue={formatStatistic}
@@ -1050,7 +1050,7 @@ function HeadToHeadFlipCard({
       <div ref={frontRef} className={`${styles.flipFace} ${styles.flipFront}`} aria-hidden={flipped}>
         <div className={styles.chartHead}>
           <div>
-            <h3>Win share by model and GPU</h3>
+            <h3>Best share by model and GPU</h3>
             <p className={styles.chartHint}>
               Only levels both simulators predicted; each category is the mean of its measured
               configurations.
@@ -1074,14 +1074,14 @@ function HeadToHeadFlipCard({
         </ul>
         <div className={styles.h2hPanels}>
           <HeadToHeadChart
-            title="Win share by model"
+            title="Best share by model"
             summary={byModel}
             first={first}
             second={second}
             formatGap={formatGap}
           />
           <HeadToHeadChart
-            title="Win share by GPU"
+            title="Best share by GPU"
             summary={byGpu}
             first={first}
             second={second}
@@ -1131,9 +1131,8 @@ function HeadToHeadFlipCard({
                 <th scope="col">GPU</th>
                 <th scope="col">Workload</th>
                 <th scope="col">Outcome</th>
-                <th scope="col" className={styles.numericCell}>Paired levels</th>
-                <th scope="col" className={styles.numericCell}>{first.label} wins</th>
-                <th scope="col" className={styles.numericCell}>{second.label} wins</th>
+                <th scope="col" className={styles.numericCell}>{first.label} best</th>
+                <th scope="col" className={styles.numericCell}>{second.label} best</th>
                 <th scope="col" className={styles.numericCell}>Ties</th>
                 <th scope="col" className={styles.numericCell}>Median gap</th>
               </tr>
@@ -1154,7 +1153,6 @@ function HeadToHeadFlipCard({
                       ties={row.ties}
                     />
                   </td>
-                  <td className={styles.numericCell}>{formatCount(row.paired)}</td>
                   <td className={styles.numericCell}>{formatCount(row.firstWins)}</td>
                   <td className={styles.numericCell}>{formatCount(row.secondWins)}</td>
                   <td className={styles.numericCell}>{formatCount(row.ties)}</td>
@@ -1173,7 +1171,7 @@ function HeadToHeadFlipCard({
 }
 
 /**
- * Share of paired levels each simulator won.
+ * Share of paired levels where each simulator was best.
  *
  * The counts are already in adjacent columns for exact reading; the bar is the
  * at-a-glance form, colored with the same positional series colors as the
@@ -1203,8 +1201,8 @@ function OutcomeBar({
       className={styles.outcomeBar}
       role="img"
       aria-label={[
-        `${first.label} won ${formatCount(firstWins)} of ${formatCount(total)} paired levels`,
-        `${second.label} won ${formatCount(secondWins)}`,
+        `${first.label} best on ${formatCount(firstWins)} of ${formatCount(total)} paired levels`,
+        `${second.label} best on ${formatCount(secondWins)}`,
         ties > 0 ? `${formatCount(ties)} tied` : null,
       ].filter(Boolean).join('; ')}
     >

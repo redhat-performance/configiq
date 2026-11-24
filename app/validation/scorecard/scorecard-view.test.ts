@@ -281,12 +281,11 @@ describe('buildChartRows', () => {
       cell({ simulator: 'aisim', value: 0.1 }),
       cell({ simulator: 'blis', value: 0.2 }),
     );
-    const chart = buildChartRows(rows, ['aisim', 'blis'], 12);
+    const chart = buildChartRows(rows, ['aisim', 'blis']);
 
-    expect(chart.scored).toBe(1);
-    expect(chart.shown).toHaveLength(1);
-    expect(chart.shown[0].values.get('aisim')).toBe(0.1);
-    expect(chart.shown[0].values.get('blis')).toBe(0.2);
+    expect(chart).toHaveLength(1);
+    expect(chart[0].values.get('aisim')).toBe(0.1);
+    expect(chart[0].values.get('blis')).toBe(0.2);
   });
 
   it('ranks by the largest absolute value so the worst configuration leads', () => {
@@ -295,29 +294,28 @@ describe('buildChartRows', () => {
       cell({ model: 'org/big', value: -0.8 }),
       cell({ model: 'org/mid', value: 0.4 }),
     );
-    expect(buildChartRows(rows, ['aisim'], 12).shown.map(row => row.label.split(' · ')[0]))
+    expect(buildChartRows(rows, ['aisim']).map(row => row.label.split(' · ')[0]))
       .toEqual(['org/big', 'org/mid', 'org/small']);
   });
 
   it('leaves a configuration with no prediction for a simulator out of that series', () => {
     const rows = matrix(cell({ simulator: 'aisim', value: 0.1 }));
-    const chart = buildChartRows(rows, ['aisim', 'blis'], 12);
-    expect(chart.shown[0].values.has('blis')).toBe(false);
+    const chart = buildChartRows(rows, ['aisim', 'blis']);
+    expect(chart[0].values.has('blis')).toBe(false);
   });
 
-  it('counts every scored configuration but caps the bars drawn', () => {
+  it('keeps every scored configuration in the chart', () => {
     const rows = matrix(
       ...[0.1, 0.2, 0.3, 0.4].map((value, index) => cell({ model: `org/m${index}`, value })),
     );
-    const chart = buildChartRows(rows, ['aisim'], 2);
-    expect(chart.scored).toBe(4);
-    expect(chart.shown).toHaveLength(2);
+    const chart = buildChartRows(rows, ['aisim']);
+    expect(chart).toHaveLength(4);
   });
 
   it('ignores rows with no value for any requested simulator', () => {
     const rows = matrix(cell({ simulator: 'other', value: 0.1 }));
-    const chart = buildChartRows(rows, ['aisim'], 12);
-    expect(chart).toEqual({ scored: 0, shown: [] });
+    const chart = buildChartRows(rows, ['aisim']);
+    expect(chart).toEqual([]);
   });
 
   it('names the source only when two rows would share a label', () => {
@@ -325,7 +323,7 @@ describe('buildChartRows', () => {
       cell({ source: 'redhat', value: 0.1 }),
       cell({ source: 'inferencex', value: 0.2 }),
     );
-    const labels = buildChartRows(rows, ['aisim'], 12).shown.map(row => row.label);
+    const labels = buildChartRows(rows, ['aisim']).map(row => row.label);
     expect(labels).toEqual([
       'org/model · H200 · 1024/128 · InferenceX',
       'org/model · H200 · 1024/128 · Red Hat',
@@ -369,7 +367,7 @@ describe('buildHeadToHeadSummary', () => {
   const byGpu = { ...all, pair, dimension: 'accelerator' } as const;
 
   it('weights configurations equally rather than pooling their levels', () => {
-    // One level won, ten levels lost: a pooled share would be 1/11 (9%), but
+    // Best on one level, worse on ten: a pooled share would be 1/11 (9%), but
     // the short sweep and the long sweep are two configurations, so the mean
     // configuration share is 50%.
     const rows = [
@@ -409,7 +407,7 @@ describe('buildHeadToHeadSummary', () => {
     expect(category.maxShare).toBeNull();
   });
 
-  it('keeps ties out of both win shares', () => {
+  it('keeps ties out of both best shares', () => {
     const [category] = buildHeadToHeadSummary([
       headToHead({ paired: 4, firstWins: 1, secondWins: 1, ties: 2 }),
     ], byModel).categories;

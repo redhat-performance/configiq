@@ -9,9 +9,9 @@ import {
 import styles from './scorecard.module.css';
 
 /**
- * Win share by model and by GPU, with the range across configurations.
+ * Best share by model and by GPU, with the range across configurations.
  *
- * A category's split bar is the mean win share of its measured configurations;
+ * A category's split bar is the mean best share of its measured configurations;
  * the candle spans the lowest and highest configuration share. The candle is
  * what keeps a mean from overclaiming: a category at 50% built from one
  * configuration and one built from twelve configurations that range from 0 to
@@ -91,8 +91,8 @@ function HeadToHeadRow({
   const secondWidth = category.secondShare * 100;
   const description = [
     `${category.label}:`,
-    `${first.label} won ${formatPercent(category.firstShare)} of paired levels`,
-    `${second.label} won ${formatPercent(category.secondShare)}`,
+    `${first.label} best on ${formatPercent(category.firstShare)} of paired levels`,
+    `${second.label} best on ${formatPercent(category.secondShare)}`,
     `${formatCount(category.configurations)} ${category.configurations === 1 ? 'configuration' : 'configurations'}`,
     `${formatCount(category.paired)} paired levels`,
     category.ties > 0 ? `${formatCount(category.ties)} ties` : null,

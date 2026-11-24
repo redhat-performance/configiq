@@ -37,9 +37,6 @@ interface ErrorBarChartProps {
 
 const ROW_HEIGHT = 34;
 
-/** Exported so the flip card can size itself to the chart it contains. */
-export const CHART_ROW_HEIGHT = ROW_HEIGHT;
-
 /**
  * Vertical padding the category labels are centred against.
  *
@@ -48,6 +45,58 @@ export const CHART_ROW_HEIGHT = ROW_HEIGHT;
  */
 const CHART_TOP_PADDING = 4;
 const CHART_BOTTOM_PADDING = 34;
+
+/** Light wash on alternating configurations, so a pair of bars reads as one row. */
+const ROW_BAND_FILL = '#f5f5f5';
+
+interface RowBandsProps {
+  rowCount: number;
+  /** Every row reserves one category point per series, including an empty one. */
+  seriesCount: number;
+  /** Full chart width, so the wash also ties the category label to its bars. */
+  fullWidth: number;
+  /** Supplied by Chart: the plot height, padding removed. */
+  height?: number;
+}
+
+/**
+ * Alternating row bands behind the plot, leaving even rows on the card background.
+ *
+ * Chart's background coordinates are the chart's scale ranges, which are
+ * transposed for the horizontal bars this chart draws, so only the height is
+ * used. Victory places categories on a point scale from the plot's bottom edge
+ * to its top, so a band's edge is halfway between the last point of one row and
+ * the first point of the next. That boundary is exactly where a reader has to
+ * choose which of two adjacent bars belongs to which label.
+ */
+function RowBands({ rowCount, seriesCount, fullWidth, height = 0 }: RowBandsProps) {
+  const categoryCount = rowCount * seriesCount;
+  if (rowCount === 0 || height === 0 || categoryCount < 2) return null;
+  const pitch = height / (categoryCount - 1);
+  const plotTop = CHART_TOP_PADDING;
+  const plotBottom = plotTop + height;
+  return (
+    <g aria-hidden="true">
+      {Array.from({ length: rowCount }, (_, index) => {
+        if (index % 2 === 0) return null;
+        const first = index * seriesCount;
+        const last = first + seriesCount - 1;
+        const top = Math.max(plotTop, plotBottom - (last + 0.5) * pitch);
+        const bottom = Math.min(plotBottom, plotBottom - (first - 0.5) * pitch);
+        return (
+          <rect
+            key={index}
+            x={0}
+            y={top}
+            width={fullWidth}
+            height={bottom - top}
+            fill={ROW_BAND_FILL}
+          />
+        );
+      })}
+    </g>
+  );
+}
 
 function truncateLabel(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -106,10 +155,15 @@ export default function ErrorBarChart({
   // offset is expressed in data units on a category axis, which collapses the
   // two bars in a pair; distinct slots keep them apart and leave each value
   // label its own line, on a phone as well as a wide card.
+  //
+  // Category points are laid out from the plot's bottom edge upwards, so the
+  // ranked list is reversed: the worst configuration, first in `rows`, lands
+  // at the top of the chart where a reader starts.
+  const displayedRows = [...rows].reverse();
   const categories: string[] = [];
   const labelTicks: string[] = [];
   const tickText = new Map<string, string>();
-  for (const row of rows) {
+  for (const row of displayedRows) {
     series.forEach((entry, index) => {
       const key = `${row.key}\u0000${entry.simulator}`;
       categories.push(key);
@@ -126,79 +180,90 @@ export default function ErrorBarChart({
       : [{ x: `${row.key}\u0000${simulator}`, y: value }];
   });
 
-  // Each configuration's label is a tick on its first simulator's slot, the
-  // only position a categorical axis can give it. Move it to the mean slot of
+  // Each configuration's label is a tick on its first simulator's point, the
+  // only position a categorical axis can give it. Move it to the mean point of
   // the series that actually predicted this row, so two bars get a label
   // between them and a row only one simulator answered gets a label on that
-  // bar. The plot height and the number of slots give the slot height without
-  // measuring the rendered SVG.
+  // bar. Victory spreads category points from the plot's bottom edge to its
+  // top, so the pitch is one gap fewer than the category count; using the
+  // count would drift the label off its bars as the list grows.
   const plotHeight = height - CHART_TOP_PADDING - CHART_BOTTOM_PADDING;
-  const slotHeight = categories.length > 0 ? plotHeight / categories.length : 0;
-  const labelOffsets = rows.map(row => {
+  const pointPitch = categories.length > 1 ? plotHeight / (categories.length - 1) : 0;
+  const labelOffsets = displayedRows.map(row => {
     const slots = series
       .map((entry, index) => (row.values.has(entry.simulator) ? index : null))
       .filter((index): index is number => index !== null);
     const meanSlot = slots.length > 0
       ? slots.reduce((total, index) => total + index, 0) / slots.length
       : 0;
-    return -meanSlot * slotHeight;
+    return -meanSlot * pointPitch;
   });
 
   return (
     <div className={styles.chartCanvas} ref={ref}>
       {width > 0 && rows.length > 0 && (
-        <Chart
-          ariaTitle={`${statisticLabel} by measured configuration`}
-          ariaDesc={`Grouped bars comparing ${series.map(entry => entry.label).join(' and ')} `
-            + `on ${statisticLabel} for ${rows.length} measured configurations, worst first.`}
-          height={height}
-          width={chartWidth}
-          domain={{ y: [lowest - (lowest < 0 ? headroom : 0), highest + headroom] }}
-          padding={{
-            top: CHART_TOP_PADDING,
-            bottom: CHART_BOTTOM_PADDING,
-            left: labelWidth,
-            right: 84,
-          }}
-        >
-          <ChartAxis
-            tickValues={labelTicks}
-            tickFormat={(value: string) => tickText.get(value) ?? ''}
-            tickLabelComponent={
-              <ChartLabel
-                dy={(props: { index?: string | number }) => labelOffsets[Number(props.index)] ?? 0}
+        <div className={styles.chartSizer} style={{ height }}>
+          <Chart
+            ariaTitle={`${statisticLabel} by measured configuration`}
+            ariaDesc={`Grouped bars comparing ${series.map(entry => entry.label).join(' and ')} `
+              + `on ${statisticLabel} for ${rows.length} measured configurations, worst first.`}
+            backgroundComponent={
+              <RowBands
+                rowCount={rows.length}
+                seriesCount={series.length}
+                fullWidth={chartWidth}
               />
             }
-            style={AXIS_STYLE}
-          />
-          <ChartAxis
-            dependentAxis
-            showGrid
-            tickFormat={(value: number) => (chartWidth < 480 ? '' : formatValue(value))}
-            style={AXIS_STYLE}
-          />
-          <ChartGroup>
-            {series.map(entry => (
-              <ChartBar
-                key={entry.simulator}
-                horizontal
-                name={entry.simulator}
-                categories={{ x: categories }}
-                data={dataFor(entry.simulator)}
-                barWidth={12}
-                labels={({ datum }: { datum: { y: number } }) => formatValue(datum.y)}
-                style={{
-                  data: { fill: entry.color },
-                  labels: {
-                    fill: '#3c3f42',
-                    fontFamily: 'var(--mono)',
-                    fontSize: 11.5,
-                  },
-                }}
-              />
-            ))}
-          </ChartGroup>
-        </Chart>
+            height={height}
+            width={chartWidth}
+            style={{ background: { fill: 'transparent' } }}
+            domain={{ y: [lowest - (lowest < 0 ? headroom : 0), highest + headroom] }}
+            padding={{
+              top: CHART_TOP_PADDING,
+              bottom: CHART_BOTTOM_PADDING,
+              left: labelWidth,
+              right: 84,
+            }}
+          >
+            <ChartAxis
+              tickValues={labelTicks}
+              tickFormat={(value: string) => tickText.get(value) ?? ''}
+              tickLabelComponent={
+                <ChartLabel
+                  dy={(props: { index?: string | number }) => labelOffsets[Number(props.index)] ?? 0}
+                />
+              }
+              style={AXIS_STYLE}
+            />
+            <ChartAxis
+              dependentAxis
+              showGrid
+              tickFormat={(value: number) => (chartWidth < 480 ? '' : formatValue(value))}
+              style={AXIS_STYLE}
+            />
+            <ChartGroup>
+              {series.map(entry => (
+                <ChartBar
+                  key={entry.simulator}
+                  horizontal
+                  name={entry.simulator}
+                  categories={{ x: categories }}
+                  data={dataFor(entry.simulator)}
+                  barWidth={12}
+                  labels={({ datum }: { datum: { y: number } }) => formatValue(datum.y)}
+                  style={{
+                    data: { fill: entry.color },
+                    labels: {
+                      fill: '#3c3f42',
+                      fontFamily: 'var(--mono)',
+                      fontSize: 11.5,
+                    },
+                  }}
+                />
+              ))}
+            </ChartGroup>
+          </Chart>
+        </div>
       )}
     </div>
   );
