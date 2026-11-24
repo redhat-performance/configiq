@@ -742,6 +742,53 @@ describe('callRecommend', () => {
     })
   })
 
+  it('reports the engine release and resolved quantization of the chosen configuration', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        backend_version: '0.9.2',
+        gemm: 'fp8',
+        kvcache: 'fp8_e5m2',
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBe('0.9.2')
+    expect(result.precision).toEqual({ weights: 'fp8', kvCache: 'fp8_e5m2' })
+  })
+
+  it('falls back to the reported provenance engine release', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        backend_version: null,
+        provenance: { simulator: 'aisimulate', engine_version: '0.10.1' },
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBe('0.10.1')
+  })
+
+  it('leaves an unreported engine release and quantization null', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBeNull()
+    expect(result.precision).toEqual({ weights: null, kvCache: null })
+  })
+
   it('sends correct fields in the upstream request', async () => {
     const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)

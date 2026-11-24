@@ -12,6 +12,7 @@ import {
   Spinner,
   ToggleGroup,
   ToggleGroupItem,
+  Tooltip,
 } from '@patternfly/react-core';
 import {
   Chart,
@@ -21,7 +22,11 @@ import {
   ChartVoronoiContainer,
 } from '@patternfly/react-charts/victory';
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
+import CheckIcon from '@patternfly/react-icons/dist/esm/icons/check-icon';
+import CopyIcon from '@patternfly/react-icons/dist/esm/icons/copy-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
+import { invocationBundle, invocationForCandidate } from '@/lib/debug/replay';
+import type { DebugInvocation, DebugRecord } from '@/lib/debug/types';
 import { displayedFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
 import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection, sweepCandidates } from '@/lib/pareto/recommendation';
@@ -133,6 +138,81 @@ function candidateName(candidate: Candidate): string {
   return candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
     ? 'Sizing recommendation'
     : formatCandidateId(candidate.candidate_id);
+}
+
+const COPY_FEEDBACK_MS = 2000;
+/** A failure stays on screen longer than a success tick. */
+const COPY_FAILURE_MS = 6000;
+
+interface ReplayControlProps {
+  candidate: Candidate;
+  invocation: DebugInvocation | null;
+  copied: boolean;
+  failed: boolean;
+  onCopy: (candidate: Candidate, invocation: DebugInvocation) => void;
+}
+
+/**
+ * Copy the command that reproduced one candidate.
+ *
+ * The service records an invocation per evaluated candidate, tagged with the
+ * candidate's identifier. A row whose command was omitted (or a row projected
+ * from the sizing response, which the sweep never ran) keeps the control
+ * disabled and says why, rather than copying a different candidate's command.
+ */
+function ReplayControl({ candidate, invocation, copied, failed, onCopy }: ReplayControlProps) {
+  const name = candidateName(candidate);
+  if (invocation == null) {
+    const reason = candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+      ? 'This row is projected from the sizing response, so the sweep has no command to replay.'
+      : 'The sweep did not report a replay command for this candidate.';
+    return (
+      <Tooltip content={reason}>
+        <span
+          className={styles.replayUnavailable}
+          tabIndex={0}
+          aria-label={`Replay unavailable for ${name}. ${reason}`}
+        >
+          <Button variant="plain" size="sm" isDisabled aria-hidden="true" icon={<CopyIcon />} />
+        </span>
+      </Tooltip>
+    );
+  }
+
+  // A matched row keeps the sweep's command but shows the sizing response's
+  // figures, so the control must not present that command as reproducing them.
+  const sweepOnly = isSizingProjection(candidate);
+  const noun = sweepOnly ? 'Sweep command' : 'Replay command';
+  const hint = copied
+    ? 'Copied'
+    : failed
+      ? 'Copy failed — select the button to try again'
+      : sweepOnly
+        ? 'Copies the sweep command that evaluated this deployment; the figures shown come from the sizing response.'
+        : 'Copy replay command and its input files';
+  const label = copied
+    ? `${noun} copied for ${name}`
+    : failed
+      ? `${noun} copy failed for ${name}`
+      : sweepOnly
+        ? `Copy sweep command for ${name}`
+        : `Copy replay command for ${name}`;
+
+  return (
+    <Tooltip content={hint}>
+      <Button
+        variant="plain"
+        size="sm"
+        isDanger={failed}
+        aria-label={label}
+        icon={copied ? <CheckIcon /> : failed ? <ExclamationTriangleIcon /> : <CopyIcon />}
+        onClick={event => {
+          event.stopPropagation();
+          onCopy(candidate, invocation);
+        }}
+      />
+    </Tooltip>
+  );
 }
 
 function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
@@ -335,9 +415,48 @@ interface CandidateTableProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   caption: string;
+  /** Replay record for the sweep, when the service returned one. */
+  replay: DebugRecord | null;
 }
 
-function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption }: CandidateTableProps) {
+function CandidateTable({
+  candidates,
+  frontierIds,
+  selectedId,
+  onSelect,
+  caption,
+  replay,
+}: CandidateTableProps) {
+  const [copyState, setCopyState] = React.useState<{ id: string; name: string; ok: boolean } | null>(null);
+
+  React.useEffect(() => {
+    if (copyState == null) return;
+    const timer = window.setTimeout(
+      () => setCopyState(null),
+      copyState.ok ? COPY_FEEDBACK_MS : COPY_FAILURE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  const hasReplay = React.useMemo(
+    () => replay != null && replay.invocations.some(invocation => invocation.candidate_id != null),
+    [replay],
+  );
+
+  const copyReplay = React.useCallback(
+    async (candidate: Candidate, invocation: DebugInvocation) => {
+      const name = candidateName(candidate);
+      try {
+        if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(invocationBundle(invocation));
+        setCopyState({ id: candidate.candidate_id, name, ok: true });
+      } catch {
+        setCopyState({ id: candidate.candidate_id, name, ok: false });
+      }
+    },
+    [],
+  );
+
   const sorted = React.useMemo(
     () =>
       [...candidates].sort((a, b) => {
@@ -366,12 +485,20 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
             <th scope="col" className={styles.numeric}>TTFT</th>
             <th scope="col" className={styles.numeric}>TPOT</th>
             <th scope="col">Topology</th>
+            {hasReplay && <th scope="col">Replay</th>}
           </tr>
         </thead>
         <tbody>
           {sorted.map(candidate => {
             const selected = candidate.candidate_id === selectedId;
             const onFrontier = frontierIds.has(candidate.candidate_id);
+            const invocation = invocationForCandidate(replay, candidate.candidate_id);
+            const copied = copyState != null
+              && copyState.id === candidate.candidate_id
+              && copyState.ok;
+            const failed = copyState != null
+              && copyState.id === candidate.candidate_id
+              && !copyState.ok;
             return (
               <tr
                 key={candidate.candidate_id}
@@ -408,11 +535,33 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
                 <td className={styles.numeric}>{fmt(ttftOf(candidate), 1)}</td>
                 <td className={styles.numeric}>{fmt(tpotOf(candidate), 2)}</td>
                 <td>{topologySummary(candidate)}</td>
+                {hasReplay && (
+                  <td className={styles.replayCell}>
+                    <ReplayControl
+                      candidate={candidate}
+                      invocation={invocation}
+                      copied={copied}
+                      failed={failed}
+                      onCopy={copyReplay}
+                    />
+                  </td>
+                )}
               </tr>
             );
           })}
         </tbody>
       </table>
+      <span
+        role="status"
+        aria-live="polite"
+        className={copyState?.ok === false ? styles.replayStatusError : styles.replayStatus}
+      >
+        {copyState == null
+          ? ''
+          : copyState.ok
+            ? `Replay command for ${copyState.name} copied with its input files.`
+            : `Could not copy the replay command for ${copyState.name}.`}
+      </span>
     </div>
   );
 }
@@ -501,6 +650,7 @@ export function FrontierPanel({
   );
   const views = state.status === 'ready' ? state.views : null;
   const sweep = state.status === 'ready' ? state.sweep : null;
+  const replay = state.status === 'ready' ? state.replay : null;
   // `sweep` is null until the run reports one, and the helper describes the
   // workload rather than promising deployments it cannot confirm.
   const subtitle = describeFrontierDeployments(sweep);
@@ -564,6 +714,7 @@ export function FrontierPanel({
           selectedId={selectedId}
           onSelect={selectCandidate}
           caption={`Failed attempts for ${gpuLabel}. Kept for transparency; they are not plotted.`}
+          replay={replay}
         />
       )}
     </div>
@@ -698,6 +849,7 @@ export function FrontierPanel({
                 selectedId={selectedId}
                 onSelect={selectCandidate}
                 caption={`Feasible candidates for ${gpuLabel}. Select a row to inspect it on the chart.`}
+                replay={replay}
               />
 
               {failuresDisclosure}

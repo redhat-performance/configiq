@@ -1,0 +1,44 @@
+/* Save-for-comparison control in a result page header. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Makes the tooltip's focus target match the button it explains. */
+.disabled {
+  display: inline-flex;
+  border-radius: 4px;
+}
+
+.disabled:focus-visible {
+  outline: 2px solid var(--gc-link, #0066cc);
+  outline-offset: 2px;
+}
+
+/* PatternFly's disabled link is lighter than the legibility floor; keep the
+   label readable and let the tooltip explain why it is unavailable. */
+.button:disabled {
+  color: var(--gc-text-3, #54585c);
+  --pf-v6-c-button--disabled__icon--Color: var(--gc-text-3, #54585c);
+  opacity: 1;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 320px;
+  font: 400 12.5px var(--gc-font-sans, "Red Hat Text", system-ui, sans-serif);
+  color: var(--gc-text-2, #3c3f42);
+}
+
+/* An empty live region stays in the DOM but must not add space. */
+.status:not(:empty) {
+  margin-left: 10px;
+}
+
+.status a {
+  color: var(--gc-link, #0066cc);
+}
