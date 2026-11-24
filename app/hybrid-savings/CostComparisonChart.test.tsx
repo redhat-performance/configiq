@@ -43,7 +43,7 @@ it('shows the combined monthly workload, its input/output split and matching too
     expect(host.querySelectorAll('[data-series="cost"]')).toHaveLength(3)
     const currentLine = JSON.parse(host.querySelector('[data-series="current-workload"]')!.textContent!)
     expect(currentLine.map((point: { x: number }) => point.x)).toEqual([2.5e9, 2.5e9])
-    expect(host.querySelector('[data-tooltip]')!.textContent).toBe('Hosted API\n2.5B total tokens/month\n2B input + 500M output\n$0.05 / 1M output')
+    expect(host.querySelector('[data-tooltip]')!.textContent).toBe('Hosted API\n2.5B total tokens/month\n2B input + 500M output\n$0.05 / 1M output\n$25.00 / month')
     const plotHeader = host.querySelector('[class*="chartPlotHeader"]')!
     expect([...plotHeader.querySelectorAll('li')].map(item => item.textContent)).toEqual(['Hosted API', 'Rented', 'Purchased'])
     expect(plotHeader.nextElementSibling!.querySelector('[data-domain]')).not.toBeNull()
@@ -89,6 +89,31 @@ it('keeps the range, ticks, current line and crossover markers in total-token co
       expect(markers.some(marker => marker[0]?.x === rentedCrossing)).toBe(true)
       expect(markers.some(marker => marker[0]?.x === ownedCrossing)).toBe(true)
     }
+  } finally {
+    await act(async () => root.unmount())
+    host.remove()
+  }
+})
+
+it('keeps the current price points but hides crossover markers before sizing settles', async () => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  try {
+    await act(async () => root.render(<CostComparisonChart
+      points={[
+        { tokens: 1e6, hosted: 25, rented: 50, owned: 100 },
+        { tokens: 2e6, hosted: 50, rented: 50, owned: 100 },
+      ]}
+      currentTokens={1e6} outputShare={0.2} transitionsVerified={false} targetConcurrency={100}
+      rentedBreakEvenTokens={2e6} ownedBreakEvenTokens={null}
+      rentedLowestCostTokens={2e6} ownedLowestCostTokens={null}
+    />))
+    expect(host.textContent).toContain('100 concurrent requests')
+    expect(host.textContent).toContain('Crossover points could not be verified')
+    const markers = [...host.querySelectorAll('[data-marker]')].flatMap(marker => JSON.parse(marker.textContent!) as { x: number }[])
+    expect(markers.map(marker => marker.x)).toEqual([1e6, 1e6, 1e6])
   } finally {
     await act(async () => root.unmount())
     host.remove()
@@ -223,10 +248,10 @@ it('fits the full curves in the displayed range and clearly separates output fro
     expect(currentMarkers).toHaveLength(3)
     expect(currentMarkers.every((point: { y: number }) => point.y <= domain.y[1])).toBe(true)
     expect(host.querySelector('button[aria-label="Help for Cost per 1M output tokens"]')).not.toBeNull()
-    expect(host.textContent).toContain('added hardware')
+    expect(host.textContent).toContain('Hardware scales as demand grows.')
     const summary = host.querySelector('[aria-label="Current monthly workload in tokens"]')!
     expect([...summary.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['2.5B', '2B', '500M'])
-    expect(host.textContent).toContain('Hosted API stays cheaper up to 1T total tokens/month under these assumptions.')
+    expect(host.textContent).toContain('Hosted API stays cheaper than the priced hardware options up to 1T total tokens/month.')
     expect(host.querySelector('[aria-label="Modeled cost milestones"]')).toBeNull()
   } finally {
     await act(async () => root.unmount())
@@ -254,6 +279,8 @@ it('distinguishes unavailable prices, unverified searches and crossovers beyond 
       expect(host.textContent).toContain(verified
         ? 'Purchased Not within 1T total tokens/month'
         : 'Purchased Not verified')
+      expect(host.textContent).not.toContain('Cheapest of all options')
+      expect(host.querySelector('[aria-label="Chart legend"]')?.textContent).toBe('Hosted APIPurchased')
     }
   } finally {
     await act(async () => root.unmount())

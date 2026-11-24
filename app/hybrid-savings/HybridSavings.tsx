@@ -6,6 +6,7 @@ import { useCostAssumptions } from '@/contexts/CostAssumptionsContext'
 import {
   Alert,
   AlertActionCloseButton,
+  AlertActionLink,
   Button,
   Card,
   CardBody,
@@ -23,6 +24,7 @@ import {
 } from '@patternfly/react-core'
 import { ComboBox } from '@/components/ModelComboBox/ModelComboBox'
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
+import { JargonPopover } from '@/components/ui/JargonPopover'
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { buildModelItems, needsHfConfig } from '@/lib/model-options'
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config'
@@ -70,11 +72,11 @@ import {
 import {
   hasRentedCloudOffer,
 } from '@/lib/hybrid-savings/cloud-offer-catalog'
-import { hostedPriceForWorkload, hostedTokenUsageCost, resolveHostedPricing } from '@/lib/hybrid-savings/hosted-pricing'
+import { applyHostedCachePricing, hostedPriceForWorkload, hostedTokenUsageCost, resolveHostedPricing } from '@/lib/hybrid-savings/hosted-pricing'
 import { buildApiModelItems, hostedOfferLabel, hostedPricingSource, isStandardTokenOffer, SAME_API_MODEL } from '@/lib/hybrid-savings/api-models'
-import { DEFAULT_HYBRID_WORKLOAD, analyzeRequestMix, matchRequestShapePreset, proposeRequestMixAlignment } from '@/lib/hybrid-savings/workload-basis'
+import { DEFAULT_HYBRID_WORKLOAD, analyzeRequestMix, estimateSelfHostedPrefix, matchRequestShapePreset, proposeRequestMixAlignment } from '@/lib/hybrid-savings/workload-basis'
 import { captureFixedDeployment, fixedDeploymentSamples, type FixedDeploymentCapture } from '@/lib/hybrid-savings/fixed-deployment'
-import { formatCostPerMillionOutputTokens } from '@/lib/hybrid-savings/token-economics'
+import { formatCostPerMillionOutputTokens, formatPlanningCapacityUse } from '@/lib/hybrid-savings/token-economics'
 import { normalizeModelId } from '@/lib/model-metadata'
 import { formatLatencyBound } from '@/lib/utils/format'
 import styles from './hybrid-savings.module.css'
@@ -115,6 +117,7 @@ const HYBRID_LINK_DEFAULTS: HybridSavingsLinkValues = {
   ttft: 1000,
   tpot: 30,
   concurrency: 1,
+  selfHostedCacheReadTokens: 0,
   hours: 730,
   peak: 1,
   billingMode: 'scale-to-zero',
@@ -177,23 +180,26 @@ function requestCountLabel(value: number | null): string {
 }
 
 /** Compact per-path sizing evidence and whole-deployment layout for Calculation details. */
-function deploymentRows(option: CostOption | undefined, path: InfrastructurePath): React.ReactNode {
+function deploymentRows(option: CostOption | undefined, path: InfrastructurePath, unavailable: string): React.ReactNode {
   const candidate = option?.candidate
   const deployment = option?.deployment ?? null
   if (!candidate) {
-    return <div><dt>Status</dt><dd>Available after sizing</dd></div>
+    return <div><dt>Status</dt><dd>{unavailable}</dd></div>
   }
   const unit = path === 'rented' ? 'instance' : 'server'
+  const simulatedGpus = candidate.replicasNeeded * candidate.gpusPerReplica
   return <>
     <div><dt>Configuration</dt><dd>{candidate.label}</dd></div>
     <div><dt>Serving mode</dt><dd>{candidate.referenceMode === 'disagg' ? 'Disaggregated prefill / decode' : 'Aggregate'}</dd></div>
+    <div><dt>Simulated deployment</dt><dd>{formatter.format(candidate.replicasNeeded)} {candidate.replicasNeeded === 1 ? 'replica' : 'replicas'} · {formatter.format(simulatedGpus)} {simulatedGpus === 1 ? 'GPU' : 'GPUs'}</dd></div>
     <div><dt>Reference throughput</dt><dd>{formatter.format(candidate.clusterOutputTokensPerSecond)} output tokens/s</dd></div>
-    <div><dt>Reference concurrency</dt><dd>{candidate.referenceConcurrency != null ? `${formatter.format(candidate.referenceConcurrency)} concurrent requests` : 'Not supplied'}</dd></div>
+    <div><dt>Requested concurrency</dt><dd>{candidate.referenceTargetConcurrency != null ? `${formatter.format(candidate.referenceTargetConcurrency)} concurrent requests` : 'Not supplied'}</dd></div>
+    <div><dt>Reported concurrency</dt><dd>{candidate.referenceReportedConcurrency != null ? `${formatter.format(candidate.referenceReportedConcurrency)} concurrent requests` : 'Not supplied'}</dd></div>
     <div><dt>Reference latency</dt><dd>{candidate.referenceTtftMs != null && candidate.referenceTpotMs != null ? `${formatter.format(candidate.referenceTtftMs)} ms TTFT · ${formatter.format(candidate.referenceTpotMs)} ms TPOT` : 'Not supplied'}</dd></div>
     {deployment ? <>
-      <div><dt>Required replicas</dt><dd>{formatter.format(deployment.requiredReplicas)} · {formatter.format(deployment.requiredGpus)} GPUs</dd></div>
+      <div><dt>Required replicas (sizing and demand)</dt><dd>{formatter.format(deployment.requiredReplicas)} · {formatter.format(deployment.requiredGpus)} {deployment.requiredGpus === 1 ? 'GPU' : 'GPUs'}</dd></div>
       <div><dt>Whole {unit}s</dt><dd>{formatter.format(deployment.wholeUnits)} · {formatter.format(deployment.availableReplicaSlots)} replica slots</dd></div>
-      <div><dt>Planning capacity</dt><dd>{compactNumber(deployment.planningTokenCapacity)} tokens/month · {deployment.planningCapacityUsedPct === null ? 'usage not available' : `${deployment.planningCapacityUsedPct.toFixed(0)}% used`}</dd></div>
+      <div><dt>Planning capacity</dt><dd>{compactNumber(deployment.planningTokenCapacity)} tokens/month · {deployment.planningCapacityUsedPct === null ? 'usage not available' : `${formatPlanningCapacityUse(deployment.planningCapacityUsedPct)} used`}</dd></div>
       <div><dt>Output capacity</dt><dd>{compactNumber(deployment.planningOutputCapacity)} output tokens/month</dd></div>
       {path === 'rented' && <>
         <div><dt>Effective billing mode</dt><dd>{deployment.effectiveBillingMode ? billingModeLabel(deployment.effectiveBillingMode) : 'Not supplied'}</dd></div>
@@ -212,6 +218,7 @@ function NumberField({
   max,
   step,
   formatWithCommas = false,
+  help,
 }: {
   id: string
   label: string
@@ -219,8 +226,9 @@ function NumberField({
   onChange: (value: number) => void
   min?: number
   max?: number
-  step?: number
+  step?: number | 'any'
   formatWithCommas?: boolean
+  help?: string
 }) {
   const displayValue = formatWithCommas
     ? Math.round(value).toLocaleString('en-US')
@@ -239,6 +247,7 @@ function NumberField({
     <FormGroup label={label} fieldId={id}>
       <TextInput
         id={id}
+        aria-describedby={help ? `${id}-help` : undefined}
         type={formatWithCommas ? 'text' : 'number'}
         inputMode={formatWithCommas ? 'numeric' : undefined}
         min={min}
@@ -258,13 +267,18 @@ function NumberField({
           }
         }}
       />
+      {help && <p id={`${id}-help`} className={styles.fieldHelp}>{help}</p>}
     </FormGroup>
   )
 }
 
 export default function HybridSavings() {
+  // The catalog and saved assumptions can hydrate at different times. Hold
+  // the initial card status steady until this page itself has mounted.
+  const [sizingControlsReady, setSizingControlsReady] = React.useState(false)
+  React.useEffect(() => setSizingControlsReady(true), [])
   const {
-    hydrated,
+    hydrated: settingsHydrated,
     defaultModel,
     inferenceBackend,
     simulator,
@@ -273,6 +287,7 @@ export default function HybridSavings() {
     pricingSource,
     hfToken,
   } = useSettings()
+  const hydrated = sizingControlsReady && settingsHydrated
   const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
   const {
     gpuOptions: allGpuOptions,
@@ -287,12 +302,16 @@ export default function HybridSavings() {
   const support = simulatorSupport[simulator]
   const modelOptions = support?.models ?? allModelOptions
   const selectedBackend = (support?.backends ?? backendOptions).find(backend => backend.id === inferenceBackend)
+  const backendSystemVersions = selectedBackend?.systems
+  const hasPerSystemVersions = !!backendSystemVersions && Object.keys(backendSystemVersions).length > 0
   const gpuOptions = React.useMemo(() => allGpuOptions.filter(gpu =>
     (!support || support.systems.includes(gpu.systemId)) &&
-    (!backendVersion || (backendVersion === 'current' && selectedBackend?.defaultVersion === 'current'
-      ? !!selectedBackend.systems[gpu.systemId]?.length
-      : selectedBackend?.systems[gpu.systemId]?.includes(backendVersion)))),
-  [allGpuOptions, support, selectedBackend, backendVersion])
+    // A backend can report a version without scoping it per system. Preserve
+    // the requested pin and let the API validate it, rather than hiding all GPUs.
+    (!backendVersion || !hasPerSystemVersions || (backendVersion === 'current' && selectedBackend?.defaultVersion === 'current'
+      ? !!backendSystemVersions?.[gpu.systemId]?.length
+      : backendSystemVersions?.[gpu.systemId]?.includes(backendVersion)))),
+  [allGpuOptions, support, backendSystemVersions, hasPerSystemVersions, selectedBackend, backendVersion])
   const backendUnavailable = !!support && !selectedBackend
   const costings = useCostings(hydrated, pricingSource, 'models')
   const infrastructure = useInfrastructureOffers(hydrated)
@@ -328,7 +347,9 @@ export default function HybridSavings() {
   // Selection follows the committed value, so typing a matching concurrency
   // selects the preset and changing it deselects without extra state.
   const activeConcurrencyPreset = matchConcurrencyPresetKey(getAppConfig().concurrencyPresets, targetConcurrency)
-  const [prefixTokens, setPrefixTokens] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0)
+  // Presets and older links supply a per-call estimate. Measured monthly
+  // reads take precedence when supplied.
+  const [linkedPrefixTokens, setLinkedPrefixTokens] = React.useState(DEFAULT_WORKLOAD.prefix ?? 0)
   const [activeHoursPerMonth, setActiveHoursPerMonth] = React.useState(730)
   const [peakToAverage, setPeakToAverage] = React.useState(1)
   const { assumptions: planningAssumptions, hydrated: assumptionsHydrated } = useCostAssumptions()
@@ -341,6 +362,8 @@ export default function HybridSavings() {
   const [ownedSelection, setOwnedSelection] = React.useState<string | null>(null)
   const [selectionNotice, setSelectionNotice] = React.useState<string | null>(null)
   const [selectedHostedOfferKey, setSelectedHostedOfferKey] = React.useState<string | null>(null)
+  const [hostedCache, setHostedCache] = React.useState({ readTokens: 0, writeTokens: 0 })
+  const [selfCacheReads, setSelfCacheReads] = React.useState(0)
   const [apiModel, setApiModel] = React.useState(SAME_API_MODEL)
   const [workloadAdvancedOpen, setWorkloadAdvancedOpen] = React.useState(false)
   const [chartOpen, setChartOpen] = React.useState(false)
@@ -408,25 +431,40 @@ export default function HybridSavings() {
   const hostedProviderOffers = hostedPricing.providerMatches
   const hostedModel = selectedHostedOfferKey === null ? hostedProviderOffers[0] ?? null
     : hostedProviderOffers.find(offer => hostedOfferKey(offer) === selectedHostedOfferKey) ?? null
-  const hostedPrice = React.useMemo(
+  const baseHostedPrice = React.useMemo(
     () => {
       const price = hostedModel ? hostedPriceForWorkload(hostedModel, requestShape) : null
       return price && hostedModel ? { ...price, label: `${hostedOfferLabel(hostedModel)} hosted API` } : null
     },
     [hostedModel, requestShape],
   )
+  const effectiveHostedOfferKey = hostedModel ? hostedOfferKey(hostedModel) : null
+  const cacheOfferKey = JSON.stringify([hostedComparisonModel, effectiveHostedOfferKey])
+  const [cacheInputOfferKey, setCacheInputOfferKey] = React.useState(cacheOfferKey)
+  const hasCacheUsage = hostedCache.readTokens > 0 || hostedCache.writeTokens > 0
+  const [hostedCacheReset, setHostedCacheReset] = React.useState(false)
+  const currentHostedCache = React.useMemo(() => cacheInputOfferKey === cacheOfferKey
+    ? hostedCache : { readTokens: 0, writeTokens: 0 }, [cacheInputOfferKey, cacheOfferKey, hostedCache])
   React.useEffect(() => {
-    setSelectedHostedOfferKey(null)
-  }, [hostedComparisonModel, monthlyInputTokens, monthlyOutputTokens])
+    if (cacheInputOfferKey === cacheOfferKey) return
+    if (hasCacheUsage) setHostedCacheReset(true)
+    setHostedCache({ readTokens: 0, writeTokens: 0 })
+    setCacheInputOfferKey(cacheOfferKey)
+  }, [cacheInputOfferKey, cacheOfferKey, hasCacheUsage])
+  React.useEffect(() => {
+    if (selectedHostedOfferKey && !hostedProviderOffers.some(offer => hostedOfferKey(offer) === selectedHostedOfferKey)) {
+      setSelectedHostedOfferKey(null)
+    }
+  }, [hostedProviderOffers, selectedHostedOfferKey])
+  const cachePricing = React.useMemo(() => baseHostedPrice
+    ? applyHostedCachePricing(baseHostedPrice, monthlyInputTokens, currentHostedCache) : null,
+  [baseHostedPrice, monthlyInputTokens, currentHostedCache])
+  const hostedPrice = cachePricing?.price ?? null
+  const cachePricingApplied = hostedPrice?.cachePricing !== undefined
   const apiModelSelector = <ComboBox id="hybrid-api-model" label="API model"
     value={apiModel} items={apiModelItems} portalMenu
     onChange={value => { setApiModel(value || SAME_API_MODEL); setSelectedHostedOfferKey(null) }} />
   const workloadPresets = hydrated ? [DEFAULT_WORKLOAD, ...getAppConfig().workloadPresets] : [DEFAULT_WORKLOAD]
-  const activePreset = matchRequestShapePreset(
-    { averageInputTokens, averageOutputTokens },
-    workloadPresets,
-    prefixTokens,
-  )
   const workload = React.useMemo<HybridWorkload>(() => ({
     monthlyInputTokens,
     monthlyOutputTokens,
@@ -443,8 +481,17 @@ export default function HybridSavings() {
     peakToAverage,
   ])
   const facts = React.useMemo(() => workloadFacts(workload), [workload])
-  const requestMix = analyzeRequestMix(workload)
-  const mixAlignment = proposeRequestMixAlignment(workload, prefixTokens)
+  const requestMix = React.useMemo(() => analyzeRequestMix(workload), [workload])
+  const { prefixTokens: estimatedPrefix, issue: selfCacheIssue } = React.useMemo(
+    () => estimateSelfHostedPrefix(selfCacheReads, requestMix), [selfCacheReads, requestMix],
+  )
+  const prefixTokens = selfCacheReads > 0 ? estimatedPrefix : linkedPrefixTokens
+  const activePreset = matchRequestShapePreset(
+    { averageInputTokens, averageOutputTokens },
+    workloadPresets,
+    prefixTokens,
+  )
+  const mixAlignment = proposeRequestMixAlignment(workload, selfCacheReads > 0 ? 0 : linkedPrefixTokens)
   const outputShare = workloadOutputShare(workload)
   const hasOutput = facts.monthlyOutputTokens > 0
   const invalidWorkload =
@@ -454,7 +501,7 @@ export default function HybridSavings() {
     monthlyInputTokens < 0 || monthlyOutputTokens < 0 ||
     !Number.isSafeInteger(averageInputTokens) || averageInputTokens <= 0 ||
     !Number.isSafeInteger(averageOutputTokens) || averageOutputTokens <= 0 ||
-    activeHoursPerMonth <= 0 ||
+    activeHoursPerMonth < 1 ||
     activeHoursPerMonth > assumptions.hoursPerMonth ||
     peakToAverage < 1 ||
     targetTtftMs <= 0 ||
@@ -496,10 +543,14 @@ export default function HybridSavings() {
     gpuOptions,
   ])
   const isStale = lastSizingSignature !== null && lastSizingSignature !== sizingSignature
+  const hasCurrentSizingRun = lastSizingSignature === sizingSignature
   const comparison = React.useMemo(() => {
-    if (!hostedPrice || candidates.length === 0 || lastSizingSignature === null || isStale || invalidWorkload) return null
-    return calculateHybridComparison(workload, hostedPrice, candidates, assumptions, { rented: rentedSelection, owned: ownedSelection })
-  }, [workload, hostedPrice, candidates, assumptions, lastSizingSignature, isStale, invalidWorkload, rentedSelection, ownedSelection])
+    // Do not show the result cards before Calculate or for superseded inputs.
+    // A valid partial estimate can appear before the rest of the catalog finishes.
+    if (invalidWorkload || selfCacheIssue || !hasCurrentSizingRun || (isSizing && candidates.length === 0)) return null
+    const result = calculateHybridComparison(workload, hostedPrice, candidates, assumptions, { rented: rentedSelection, owned: ownedSelection })
+    return result.options.length > 0 ? result : null
+  }, [workload, hostedPrice, candidates, assumptions, hasCurrentSizingRun, isSizing, invalidWorkload, selfCacheIssue, rentedSelection, ownedSelection])
   const hostedOption = comparison?.options.find(option => option.key === 'hosted')
   const rentedOption = comparison?.options.find(option => option.key === 'rented')
   const ownedOption = comparison?.options.find(option => option.key === 'owned')
@@ -574,7 +625,7 @@ export default function HybridSavings() {
     return candidates.find(entry => infrastructureCandidateKey(entry, fixedCapture.path) === fixedCapture.candidateKey) ?? null
   }, [fixedCapture, candidates])
   const fixedSamples = React.useMemo(() => {
-    if (chartView !== 'fixed' || !fixedCapture || !fixedCandidate || !hostedPrice) return []
+    if (chartView !== 'fixed' || !fixedCapture || !fixedCandidate) return []
     return fixedDeploymentSamples(workload, hostedPrice, assumptions, fixedCandidate, fixedCapture)
   }, [chartView, fixedCapture, fixedCandidate, hostedPrice, workload, assumptions])
   // Current usage of the FROZEN deployment, not of whatever the automatic
@@ -615,7 +666,7 @@ export default function HybridSavings() {
   const applyProfile = (profile: WorkloadPreset) => {
     setAverageInputTokens(profile.isl)
     setAverageOutputTokens(profile.osl)
-    setPrefixTokens(profile.prefix ?? 0)
+    setLinkedPrefixTokens(profile.prefix ?? 0)
     setWorkloadAdvancedOpen(true)
   }
 
@@ -623,26 +674,59 @@ export default function HybridSavings() {
     setTargetConcurrency(preset.concurrency)
   }
 
-  const runSizing = () => {
+  const runSizing = (retry = false) => {
     // Performance inputs are unchanged: reuse the validated results instead of
     // repeating simulator requests (demand-only edits already rescaled them).
-    if (lastSizingSignature === sizingSignature && !sizingError && candidates.length > 0) {
+    if (!retry && lastSizingSignature === sizingSignature && !sizingError && candidates.length > 0) {
       setSelectionNotice(null)
       return
     }
+    // A priced system can fill a card as soon as it completes. Give it a
+    // head start without skipping unpriced systems or changing the workload.
+    const pricedPaths = new Map<string, number>()
+    for (const gpu of [...rentedReadyGpus, ...purchaseReadyGpus]) {
+      pricedPaths.set(gpu.systemId, (pricedPaths.get(gpu.systemId) ?? 0) + 1)
+    }
+    const orderedGpus = [...gpuOptions].sort((a, b) => (pricedPaths.get(b.systemId) ?? 0) - (pricedPaths.get(a.systemId) ?? 0))
     sizeConfigurations({
       signature: sizingSignature, model, backend: inferenceBackend, simulator, backendVersion,
       searchStrategy: support?.recommendSearch ?? 'windowed',
       averageInputTokens, averageOutputTokens, targetTtftMs, targetTpotMs,
       targetConcurrency, prefixTokens,
-      gpuOptions,
+      gpuOptions: orderedGpus,
       ...(modelConfig?.model === model ? { modelConfig: modelConfig.config } : {}),
     })
   }
 
-  const canCalculate = assumptionsHydrated && !backendUnavailable && !modelUnsupported && !invalidWorkload && !!hostedPrice && !!model && gpuOptions.length > 0 &&
-    !catalogLoading && !costings.isLoading && !isSizing && !configLoading &&
-    (!needsHfConfig(model, modelOptions) || modelConfig?.model === model)
+  const sizingBlockedReason = !hydrated ? 'Loading sizing inputs…'
+    : !assumptionsHydrated ? 'Loading cost assumptions…'
+    : invalidWorkload ? 'Review the workload inputs.'
+    : selfCacheIssue ? 'Review the self-hosted cache reads.'
+    : catalogLoading ? 'Loading the GPU catalog…'
+    : backendUnavailable ? 'Choose a supported backend in Settings.'
+    : !model ? 'Select a model to size hardware.'
+    : modelUnsupported ? 'Choose a model supported by the selected simulator.'
+    : configLoading ? 'Loading the model configuration…'
+    : needsHfConfig(model, modelOptions) && modelConfig?.model !== model
+      ? configError ? 'The model configuration could not be loaded.' : 'Waiting for the model configuration…'
+    : gpuOptions.length === 0 ? catalogError ? 'The GPU catalog could not be loaded.' : 'No GPU systems support the selected simulator and backend settings.'
+    : null
+  const canCalculate = !isSizing && sizingBlockedReason === null
+  const currentSizingError = isStale ? null : sizingError
+  const incompleteHardware = hasCurrentSizingRun && !isSizing && !currentSizingError && failedSystems > 0
+  const hardwareAction = canCalculate
+    ? <Button type="button" variant="secondary" size="sm" onClick={() => runSizing(true)}>Retry sizing</Button>
+    : undefined
+  const hardwareUnavailable = (path: InfrastructurePath) => {
+    if (!hasCurrentSizingRun) return 'Calculate to see an estimate for the current inputs.'
+    if (isSizing) return `Sizing hardware… ${progress.completed} of ${progress.total} GPU systems checked.`
+    if (currentSizingError) return 'No hardware configuration was verified for this workload.'
+    if (infrastructure.isLoading) return 'Sizing complete. Loading hardware prices…'
+    if (infrastructure.error) return 'Hardware pricing is unavailable. Check Cost sources.'
+    return path === 'rented'
+      ? 'No sized configuration has an eligible complete cloud offer.'
+      : 'No sized configuration has an eligible complete-server purchase price.'
+  }
 
   // One row per link field: what this view exports and what an incoming link
   // applies. The table is total over the fields this page owns, so a new
@@ -671,7 +755,8 @@ export default function HybridSavings() {
       ttft: { read: () => targetTtftMs, write: (value) => setTargetTtftMs(value) },
       tpot: { read: () => targetTpotMs, write: (value) => setTargetTpotMs(value) },
       concurrency: { read: () => targetConcurrency, write: (value) => setTargetConcurrency(value) },
-      prefix: { read: () => prefixTokens, write: (value) => setPrefixTokens(value) },
+      prefix: { read: () => linkedPrefixTokens, write: setLinkedPrefixTokens },
+      selfHostedCacheReadTokens: { read: () => selfCacheReads, write: setSelfCacheReads },
       hours: { read: () => activeHoursPerMonth, write: (value) => setActiveHoursPerMonth(value) },
       peak: { read: () => peakToAverage, write: (value) => setPeakToAverage(value) },
       billingMode: { read: () => cloudBillingMode, write: (value) => setCloudBillingMode(value) },
@@ -747,7 +832,7 @@ export default function HybridSavings() {
         Choose a catalog model or switch simulators in Settings.
       </Alert>}
 
-      <Form onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }} data-tour="workload">
+      <Form noValidate onSubmit={event => { event.preventDefault(); if (canCalculate) void runSizing() }} data-tour="workload">
         <Card className={styles.inputCard}>
           <CardBody>
             <h2>Model and workload</h2>
@@ -790,7 +875,7 @@ export default function HybridSavings() {
                 <span>{progress.completed} / {progress.total} GPU systems checked</span>
               </div>
             )}
-            {configLoading && <p role="status">Loading model configuration…</p>}
+            {!isSizing && sizingBlockedReason && !configError && !invalidWorkload && !selfCacheIssue && <p role="status">{sizingBlockedReason}</p>}
             {configError && <Alert title="Model configuration could not be loaded" variant="warning" isInline>{configError}</Alert>}
             <button
               type="button"
@@ -804,7 +889,7 @@ export default function HybridSavings() {
               <span>Advanced workload</span>
               {!workloadAdvancedOpen && (
                 <span className={styles.advancedSummary}>
-                  {formatLatencyBound(targetTtftMs)}s TTFT · {formatter.format(targetTpotMs)} ms TPOT · {formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'user' : 'users'} · {formatter.format(prefixTokens)} prefix tokens · {formatter.format(activeHoursPerMonth)} hours/month · {formatter.format(peakToAverage)}× peak · {billingModeLabel(assumptions.cloudBillingMode)}
+                  {formatLatencyBound(targetTtftMs)}s TTFT · {formatter.format(targetTpotMs)} ms TPOT · {formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'request' : 'requests'} · {formatter.format(prefixTokens)} cached tokens/request · {formatter.format(activeHoursPerMonth)} hours/month · {formatter.format(peakToAverage)}× peak · {billingModeLabel(assumptions.cloudBillingMode)}
                 </span>
               )}
             </button>
@@ -814,10 +899,27 @@ export default function HybridSavings() {
               <div className={styles.workloadGrid}>
                 <NumberField id="hybrid-average-input" label="Average input tokens per request" value={averageInputTokens} min={1} onChange={setAverageInputTokens} />
                 <NumberField id="hybrid-average-output" label="Average output tokens per request" value={averageOutputTokens} min={1} onChange={setAverageOutputTokens} />
-                <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} onChange={setTargetTtftMs} />
-                <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} onChange={setTargetTpotMs} />
+                <NumberField id="hybrid-ttft" label="Maximum TTFT (ms)" value={targetTtftMs} min={1} step="any" onChange={setTargetTtftMs} />
+                <NumberField id="hybrid-tpot" label="Maximum TPOT (ms/token)" value={targetTpotMs} min={1} step="any" onChange={setTargetTpotMs} />
+              </div>
+              <div className={`${styles.sizingFields} ${styles.compactFields}`}>
                 <NumberField id="hybrid-concurrency" label="Sizing concurrency (requests)" value={targetConcurrency} min={1} step={1} onChange={setTargetConcurrency} />
-                <NumberField id="hybrid-prefix" label="Cached prefix tokens per request" value={prefixTokens} min={0} max={averageInputTokens} step={1} onChange={setPrefixTokens} />
+                <div className={styles.selfHostedCache} role="group" aria-labelledby="hybrid-self-cache-title">
+                  <div className={styles.cacheHeading}>
+                    <span id="hybrid-self-cache-title">Self-hosted prompt caching · tokens/month</span>
+                    <JargonPopover term="Self-hosted prompt caching" explanation="Use cache reads measured on your self-hosted model. Include those tokens once in the monthly input total. ConfigIQ estimates cached tokens per request for GPU sizing, not hosted API pricing." appendTo={() => document.body} />
+                  </div>
+                  <div>
+                    <NumberField id="hybrid-self-cache-reads" label="Cache reads" value={selfCacheReads} formatWithCommas
+                      onChange={value => { setSelfCacheReads(value); setLinkedPrefixTokens(0) }}
+                      help={selfCacheIssue ?? (selfCacheReads > 0
+                        ? `Estimated reuse: ${formatter.format(prefixTokens)} tokens per request.`
+                        : linkedPrefixTokens > 0
+                          ? `Sizing uses ${formatter.format(linkedPrefixTokens)} cached tokens per request.`
+                          : 'Leave at 0 if unknown.')} />
+                    {linkedPrefixTokens > 0 && selfCacheReads === 0 && <Button type="button" variant="link" isInline size="sm" onClick={() => setLinkedPrefixTokens(0)}>Clear cache estimate</Button>}
+                  </div>
+                </div>
               </div>
               {requestMix.twoSided && !requestMix.aligned && (
                 <div className={styles.alignRequestMix}>
@@ -828,20 +930,19 @@ export default function HybridSavings() {
                     }}>
                     Align request mix
                   </Button>
-                  <p className={styles.alignRequestMixNote}>
-                    {mixAlignment.proposedInputTokens !== null
+                  <span className={styles.alignRequestMixNote}>Monthly totals and request shape use different token mixes.</span>
+                  <JargonPopover term="Request mix alignment" explanation={mixAlignment.proposedInputTokens !== null
                       ? `Monthly totals imply ${formatter.format(requestMix.inputImpliedRequests!)} input-side and ${formatter.format(requestMix.outputImpliedRequests!)} output-side requests. Hardware sizing uses the larger request count implied by the input or output totals. Aligning sets the average input length to ${formatter.format(mixAlignment.proposedInputTokens)} tokens so both sides imply one request count; monthly totals and every other input stay unchanged.`
-                      : mixAlignment.reason}
-                  </p>
+                      : mixAlignment.reason ?? ''} />
                 </div>
               )}
               <h3 className={styles.advancedSectionLabel}>Processing and billing</h3>
               <div className={styles.workloadGrid}>
-                <NumberField id="hybrid-active-hours" label="Processing hours per month" value={activeHoursPerMonth} min={1} max={assumptions.hoursPerMonth} onChange={setActiveHoursPerMonth} />
-                <NumberField id="hybrid-peak" label="Peak demand multiplier" value={peakToAverage} min={1} step={0.1} onChange={setPeakToAverage} />
+                <NumberField id="hybrid-active-hours" label="Processing hours per month" value={activeHoursPerMonth} min={1} max={assumptions.hoursPerMonth} step="any" onChange={setActiveHoursPerMonth} />
+                <NumberField id="hybrid-peak" label="Peak demand multiplier" value={peakToAverage} min={1} step="any" onChange={setPeakToAverage} />
                 <FormGroup label="Rented billing policy" fieldId="hybrid-billing-mode" className={styles.workloadBilling}>
                   <FormSelect id="hybrid-billing-mode" value={assumptions.cloudBillingMode} onChange={(_event, value) => setCloudBillingMode(value as CloudBillingMode)}>
-                    <FormSelectOption value="scale-to-zero" label="Scale to zero — pay for serving time" />
+                    <FormSelectOption value="scale-to-zero" label="Scale to zero — run hardware only while serving" />
                     <FormSelectOption value="active-window" label="Active window — keep required GPUs warm" />
                     <FormSelectOption value="always-on" label="Always on — full month" />
                   </FormSelect>
@@ -857,10 +958,11 @@ export default function HybridSavings() {
           <InfoStripAction onClick={() => setWorkloadAdvancedOpen(true)}>Adjust</InfoStripAction>
         </span>
       </InfoStrip>
-            {invalidWorkload && <Alert title="Review the workload inputs" variant="warning" isInline>The combined monthly token total must be positive and no more than 1T, performance targets must be positive, processing hours must be between 1 and {assumptions.hoursPerMonth}, and peak demand must be at least 1× average. Concurrency must be a positive whole number; cached prefix tokens must be a whole number between zero and the average input length.</Alert>}
-            {!costings.isLoading && hostedModel === null && model && <Alert title="Hosted comparison unavailable" variant="warning" isInline>
+            {invalidWorkload && <Alert title="Review the workload inputs" variant="warning" isInline>The combined monthly token total must be positive and no more than 1T, performance targets must be positive, processing hours must be between 1 and {assumptions.hoursPerMonth}, and peak demand must be at least 1× average. Concurrency must be a positive whole number; cached tokens per request must be a whole number between zero and the average input length.</Alert>}
+            {selfCacheIssue && <Alert title="Review the self-hosted cache reads" variant="warning" isInline>{selfCacheIssue}</Alert>}
+            {hasCurrentSizingRun && !isSizing && !costings.isLoading && hostedModel === null && model && <Alert title="Hosted comparison unavailable" variant="warning" isInline>
               No compatible standard text price was found for this API model and request length. Choose another API model to compare; rented and purchased sizing still uses {model}.
-              <div className={styles.apiModelFallback}>{apiModelSelector}</div>
+              {!comparison && <div className={styles.apiModelFallback}>{apiModelSelector}</div>}
             </Alert>}
             {!costings.isLoading && costingInputsStale && (
               <Alert title="Some pricing inputs are stale" variant="warning" isInline>
@@ -869,7 +971,38 @@ export default function HybridSavings() {
               </Alert>
             )}
             {isStale && !isSizing && <Alert title="Inputs changed" variant="info" isInline>Refresh the forecast so AISimulators can size the updated workload.</Alert>}
-            {sizingError && <Alert title="Comparison unavailable" variant="danger" isInline>{sizingError}</Alert>}
+            {currentSizingError && <Alert title="Hardware sizing unavailable" variant="warning" isInline
+              actionLinks={<>
+                {currentSizingError.canReviewTargets && <AlertActionLink
+                  onClick={() => {
+                    setWorkloadAdvancedOpen(true)
+                    document.getElementById('hybrid-workload-toggle')?.focus()
+                  }}
+                >Review sizing targets</AlertActionLink>}
+                {canCalculate && <AlertActionLink onClick={() => runSizing(true)}>Retry sizing</AlertActionLink>}
+              </>}
+            >
+              <p>{currentSizingError.summary}</p>
+              {currentSizingError.canReviewTargets && <p>
+                This run asked for a first token within {formatLatencyBound(targetTtftMs)} s and each following token within {formatter.format(targetTpotMs)} ms at {formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'request' : 'requests'}.
+                {currentSizingError.timedOutSystems > 0 && ' A timeout leaves those systems unverified; it does not rule them out.'}
+                {' '}If your workload allows it, try a longer first-token target or fewer simultaneous requests.
+              </p>}
+              <ExpandableSection toggleText="Sizing details" isIndented>
+                <ul className={styles.sizingDetails}>
+                  {currentSizingError.issues.map(({ message, systems }) => (
+                    <li key={message}><strong>{systems.join(', ')}:</strong> {message}</li>
+                  ))}
+                </ul>
+              </ExpandableSection>
+            </Alert>}
+            {incompleteHardware && <Alert title="Hardware sizing partially completed" variant="info" isInline>
+              <p>{failedSystems} of {progress.total} GPU systems did not return usable results. You can retry without changing your targets.</p>
+              {hardwareAction}
+            </Alert>}
+            {hasCurrentSizingRun && !isSizing && !comparison && !currentSizingError && candidates.length > 0 && !selfCacheIssue && !invalidWorkload && <Alert title="Hardware prices not available" variant="info" isInline>
+              {infrastructure.isLoading ? 'Sizing is complete. Loading hardware prices…' : 'No eligible rental or purchase price was found for the sized configurations. Check Cost sources.'}
+            </Alert>}
 
 
 
@@ -877,7 +1010,7 @@ export default function HybridSavings() {
         <section className={styles.resultsSection} aria-label="Cost comparison" data-tour="results">
           <div className={styles.sectionHeading}>
             <h2>Cost comparison</h2>
-            {resultSimulator && <SimulatorBadge simulator={resultSimulator} />}
+            {resultSimulator && !isStale && <SimulatorBadge simulator={resultSimulator} />}
             <FormGroup label="Cost view" fieldId="hybrid-cost-view" className={styles.lensControl}>
               <FormSelect id="hybrid-cost-view" value={assumptions.costLens} onChange={(_event, value) => setCostLens(value as CostLens)}>
                 <FormSelectOption value="fully-loaded" label="Full TCO" />
@@ -886,49 +1019,68 @@ export default function HybridSavings() {
             </FormGroup>
           </div>
           <div className={styles.resultGrid}>
-            <HybridCostCard title="Hosted API" option={hostedOption} cheapest={comparison.cheapest?.key === 'hosted'} lens={assumptions.costLens}
+            <HybridCostCard title="Hosted API" option={hostedOption} cheapest={!isSizing && comparison.options.length > 1 && comparison.cheapest?.key === 'hosted'} lens={assumptions.costLens}
+              unavailable={costings.isLoading ? 'Loading hosted prices…' : costings.error ? 'Hosted prices could not be loaded. Check Cost sources.' : 'No compatible standard text price is available for this request length.'}
               requestedOutputTokens={facts.monthlyOutputTokens}
               selector={<div className={styles.hostedSelectors}>
                 {apiModelSelector}
                 {hostedProviderOffers.length > 1 ? <ComboBox id="hybrid-hosted-provider" label="Provider" portalMenu preserveOrder
                   value={hostedModel ? hostedOfferKey(hostedModel) : ''} onChange={value => setSelectedHostedOfferKey(value || null)}
                   items={hostedProviderOffers.map((offer, index) => {
-                    const usageCost = hostedTokenUsageCost(offer, monthlyInputTokens, monthlyOutputTokens, requestShape)
+                    const isSelectedOffer = hostedOfferKey(offer) === effectiveHostedOfferKey
+                    const usageCost = hostedTokenUsageCost(offer, monthlyInputTokens, monthlyOutputTokens, requestShape, isSelectedOffer ? currentHostedCache : undefined)
                     const price = usageCost > 0 && usageCost < 0.01 ? '<$0.01' : tokenUsageFormatter.format(usageCost)
                     return { value: hostedOfferKey(offer), label: hostedOfferLabel(offer), group: '',
-                      description: `${price}/month API usage${index === 0 ? ' · cheapest' : ''}` }
+                      description: `${price}/month API usage${cachePricingApplied ? (isSelectedOffer ? ' · cache-adjusted' : ' · uncached') : index === 0 ? ' · cheapest' : ''}` }
                   })} />
                   : <p className={styles.apiSourceLine}>{hostedModel && hostedOfferLabel(hostedModel)}</p>}
+                {hostedCacheReset && <p role="status" className={styles.calculationNote}>Cache counts were reset because the hosted offer changed.</p>}
+                {baseHostedPrice && (baseHostedPrice.cacheReadPerMillion !== undefined || baseHostedPrice.cacheWritePerMillion !== undefined || hasCacheUsage) && <div className={styles.hostedCacheControl}>
+                  <div className={styles.cacheHeading}>
+                    <span id="hybrid-hosted-cache-title">Prompt caching · tokens/month</span>
+                    <JargonPopover term="Hosted prompt caching" explanation="Enter the provider’s cache reads and writes. Both are part of your monthly input total. Leave unreported counts at 0." appendTo={() => document.body} />
+                  </div>
+                  <div className={`${styles.hostedCacheFields} ${styles.compactFields}`} role="group" aria-labelledby="hybrid-hosted-cache-title">
+                      <NumberField id="hybrid-hosted-cache-read" label="Cache reads" value={currentHostedCache.readTokens} formatWithCommas
+                        help={baseHostedPrice.cacheReadPerMillion === undefined ? 'Rate not listed' : `$${baseHostedPrice.cacheReadPerMillion} / 1M`}
+                        onChange={readTokens => { setHostedCache({ ...currentHostedCache, readTokens }); setHostedCacheReset(false) }} />
+                      <NumberField id="hybrid-hosted-cache-write" label="Cache writes" value={currentHostedCache.writeTokens} formatWithCommas
+                        help={baseHostedPrice.cacheWritePerMillion === undefined ? 'Rate not listed' : `$${baseHostedPrice.cacheWritePerMillion} / 1M`}
+                        onChange={writeTokens => { setHostedCache({ ...currentHostedCache, writeTokens }); setHostedCacheReset(false) }} />
+                  </div>
+                  {cachePricing?.issue && <Alert variant="warning" isInline title="Showing uncached estimate">{cachePricing.issue}</Alert>}
+                </div>}
               </div>} />
-            <HybridCostCard title="Rented GPU" option={rentedOption} cheapest={comparison.cheapest?.key === 'rented'} lens={assumptions.costLens}
+            <HybridCostCard title="Rented GPU" option={rentedOption} cheapest={!isSizing && comparison.options.length > 1 && comparison.cheapest?.key === 'rented'} lens={assumptions.costLens}
               requestedOutputTokens={facts.monthlyOutputTokens}
-              unavailable={infrastructure.isLoading ? 'Loading complete instance prices…' : 'No sized configuration has an eligible complete cloud offer.'}
-              selector={<ComboBox id="hybrid-rented-configuration" label="Hardware configuration" portalMenu preserveOrder
+              unavailable={hardwareUnavailable('rented')}
+              selector={rentedOption ? <ComboBox id="hybrid-rented-configuration" label="Hardware configuration" portalMenu preserveOrder
                 value={rentedSelection ?? ''} onChange={value => { setRentedSelection(value || null); setSelectionNotice(null) }}
                 items={[
                   { value: '', label: `Automatic · ${rentedOptions[0]?.candidate?.cloudGpusPerInstance ?? 1} × ${rentedOptions[0]?.candidate?.label ?? ''}`, group: '', description: 'Cheapest eligible configuration' },
                   ...rentedOptions.flatMap(option => option.candidate ? [{ value: infrastructureCandidateKey(option.candidate, 'rented'),
                     label: `${option.candidate.cloudGpusPerInstance ?? 1} × ${option.candidate.label}`, group: '',
                     description: `${option.candidate.cloudProvider?.toUpperCase()} · ${instanceLabel(option.candidate.cloudProvider, option.candidate.cloudInstanceName)} · ${option.candidate.cloudProviderRegion} · ${formatCostPerMillionOutputTokens(option.costPerMillionOutputTokens)} / 1M output tokens` }] : []),
-                ]} />}>
+                ]} /> : undefined}>
               <p className={styles.costSelectionNote}>{rentedOption?.candidate?.cloudProvider?.toUpperCase()} · {instanceLabel(rentedOption?.candidate?.cloudProvider, rentedOption?.candidate?.cloudInstanceName)}</p>
             </HybridCostCard>
-            <HybridCostCard title="Purchased hardware" option={ownedOption} cheapest={comparison.cheapest?.key === 'owned'} lens={assumptions.costLens}
+            <HybridCostCard title="Purchased hardware" option={ownedOption} cheapest={!isSizing && comparison.options.length > 1 && comparison.cheapest?.key === 'owned'} lens={assumptions.costLens}
               requestedOutputTokens={facts.monthlyOutputTokens}
-              unavailable={infrastructure.isLoading ? 'Loading complete-server prices…' : 'No sized configuration has an eligible complete-server purchase price.'}
-              selector={<ComboBox id="hybrid-owned-configuration" label="Hardware configuration" portalMenu preserveOrder
+              unavailable={hardwareUnavailable('owned')}
+              selector={ownedOption ? <ComboBox id="hybrid-owned-configuration" label="Hardware configuration" portalMenu preserveOrder
                 value={ownedSelection ?? ''} onChange={value => { setOwnedSelection(value || null); setSelectionNotice(null) }}
                 items={[
                   { value: '', label: `Automatic · ${ownedOptions[0]?.candidate?.purchaseGpusPerServer ?? ownedOptions[0]?.candidate?.gpusPerReplica ?? 1} × ${ownedOptions[0]?.candidate?.label ?? ''} server`, group: '', description: 'Cheapest eligible configuration' },
                   ...ownedOptions.flatMap(option => option.candidate ? [{ value: infrastructureCandidateKey(option.candidate, 'owned'),
                     label: `${option.candidate.purchaseGpusPerServer ?? option.candidate.gpusPerReplica} × ${option.candidate.label} server`, group: '',
                     description: `${formatCostPerMillionOutputTokens(option.costPerMillionOutputTokens)} / 1M output tokens` }] : []),
-                ]} />}>
+                ]} /> : undefined}>
               {ownedOption?.candidate?.purchasePriceIndicative && <p className={styles.costSelectionNote}>Indicative hardware price</p>}
             </HybridCostCard>
           </div>
           <Card className={styles.disclosureCard}><CardBody>
             <ExpandableSection isExpanded={chartOpen} onToggle={(_event, expanded) => setChartOpen(expanded)} toggleText="Cost vs workload (break-even analysis)">
+              {cachePricingApplied && <p className={styles.calculationNote}>Hosted cache-read and cache-write shares stay fixed as demand changes.</p>}
               {hasOutput ? <>
                 <div className={styles.chartControls}>
                   <ToggleGroup id="hybrid-chart-view" className={styles.chartViewSwitch} isFill aria-label="Chart view">
@@ -956,7 +1108,7 @@ export default function HybridSavings() {
                     samples={fixedSamples}
                     currentCapacityUsedPct={fixedCurrentCapacityUsedPct}
                     path={fixedCapture.path}
-                    hardwareLabel={fixedCandidate?.label}
+                    hardwareLabel={`${formatter.format(fixedCapture.wholeUnits)} ${fixedCapture.path === 'rented' ? 'instance' : 'server'}${fixedCapture.wholeUnits === 1 ? '' : 's'} · ${formatter.format(fixedCapture.billedGpus)} GPUs${fixedCandidate ? ` · ${fixedCandidate.label}` : ''}`}
                     hostedModelLabel={apiModel !== SAME_API_MODEL ? hostedComparisonModel : undefined}
                     infrastructureModelLabel={apiModel !== SAME_API_MODEL ? model : undefined}
                   />
@@ -969,7 +1121,8 @@ export default function HybridSavings() {
                     ownedBreakEvenTokens={comparison.ownedBreakEvenTokens}
                     rentedLowestCostTokens={comparison.rentedLowestCostTokens}
                     ownedLowestCostTokens={comparison.ownedLowestCostTokens}
-                    transitionsVerified={comparison.transitionsVerified}
+                    transitionsVerified={comparison.transitionsVerified && !isSizing}
+                    targetConcurrency={targetConcurrency}
                     hostedModelLabel={apiModel !== SAME_API_MODEL ? hostedComparisonModel : undefined}
                     infrastructureModelLabel={apiModel !== SAME_API_MODEL ? model : undefined}
                   />
@@ -1013,7 +1166,7 @@ export default function HybridSavings() {
                 <dl className={styles.calculationList}>
                   <div><dt>Backend</dt><dd>{inferenceBackend}{backendVersion ? ` · ${backendVersion} requested` : ''}</dd></div>
                   <div><dt>Simulator</dt><dd>{resultSimulator && !isStale ? <SimulatorBadge simulator={resultSimulator} /> : 'Not yet calculated for current settings'}</dd></div>
-                  <div><dt>Capacity reference</dt><dd>{formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'request' : 'requests'}</dd></div>
+                  <div><dt>Concurrency target</dt><dd>{formatter.format(targetConcurrency)} concurrent {targetConcurrency === 1 ? 'request' : 'requests'}</dd></div>
                   <div><dt>Response targets</dt><dd>{formatLatencyBound(targetTtftMs)}s TTFT · {formatter.format(targetTpotMs)} ms TPOT</dd></div>
                   <div><dt>Peak demand</dt><dd>{preciseRate(facts.peakRequestsPerSecond)} requests/s · {formatter.format(peakToAverage)}× average</dd></div>
                   <div><dt>Failover reserve</dt><dd>None</dd></div>
@@ -1021,14 +1174,14 @@ export default function HybridSavings() {
               </section>
               <section className={styles.calculationGroup} aria-labelledby="hybrid-rented-deployment-heading">
                 <h4 id="hybrid-rented-deployment-heading">Rented deployment</h4>
-                <dl className={styles.calculationList}>{deploymentRows(rentedOption, 'rented')}</dl>
+                <dl className={styles.calculationList}>{deploymentRows(rentedOption, 'rented', hardwareUnavailable('rented'))}</dl>
               </section>
               <section className={styles.calculationGroup} aria-labelledby="hybrid-owned-deployment-heading">
                 <h4 id="hybrid-owned-deployment-heading">Purchased deployment</h4>
-                <dl className={styles.calculationList}>{deploymentRows(ownedOption, 'owned')}</dl>
+                <dl className={styles.calculationList}>{deploymentRows(ownedOption, 'owned', hardwareUnavailable('owned'))}</dl>
               </section>
             </div>
-            <p className={styles.calculationNote}>Capacity is modeled from the selected request shape and reference concurrency. It is not a measured maximum-throughput benchmark.</p>
+            <p className={styles.calculationNote}>Hardware costs include at least the deployment sized for the concurrency target, then add replicas as monthly demand grows. The reported concurrency is a simulation metric, not the requested load. Scale to zero assumes the reference instances can stop when idle; use Active window or Always on for warm capacity.</p>
           </section>
           <section className={styles.dataSourcesSection} aria-labelledby="hybrid-cost-calculation-heading">
             <h3 id="hybrid-cost-calculation-heading">Cost calculation</h3>
@@ -1044,7 +1197,8 @@ export default function HybridSavings() {
             )}
           </section>
           <AppliedCostAssumptions assumptions={assumptions} workload={workload} rented={rentedOption} owned={ownedOption} />
-          <section className={styles.dataSourcesSection} aria-labelledby="hybrid-data-sources-heading">
+          {/* The browser can already have a warm catalogue when the server has none. */}
+          {sizingControlsReady && <section className={styles.dataSourcesSection} aria-labelledby="hybrid-data-sources-heading">
             <h3 id="hybrid-data-sources-heading">Data sources</h3>
             <div className={styles.assumptionColumns}>
             <section className={styles.calculationGroup} aria-labelledby="hybrid-catalogue-details-heading">
@@ -1085,7 +1239,7 @@ export default function HybridSavings() {
             </section>
             </div>
             <p className={styles.calculationNote}>Planning estimates, not production guarantees. Validate the selected workload and commercial terms. Freshness describes collection, not a price’s effective date; each flip card identifies collected prices or curated estimates.</p>
-          </section>
+          </section>}
         </ExpandableSection>
       </CardBody></Card>
 

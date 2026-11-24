@@ -47,13 +47,22 @@ paths:
         image-pinned BLIS CLI.
 
         `objective` selects what is being sized:
-        - `min_gpus` (default) finds the fewest GPUs that clear the latency SLA.
+        - `min_gpus` (default) finds the fewest GPUs among evaluated
+          configurations that clear the latency SLA.
           Requires `sla_mode=enforce` (the default) and exactly one of
           `target_request_rate` or `target_concurrency`. The service owns the
           search window: it starts at the model's fit floor, the smallest
           aggregated worker shape that holds one full-context sequence, and
           whose feasibility is resolved with the same runtime envelope as the
-          sweep. The first window is wide —
+          sweep. Closed-loop replays run at least one full wave of the selected
+          concurrency. For closed-loop loads that permit aggregate serving,
+          AISimulate may check an explicit replicated layout first if it falls
+          outside the first two ordinary GPU windows or the prompt exceeds the
+          32,768-token runtime batch limit. Eligibility depends on the model's
+          memory-feasible worker footprint and requested concurrency.
+          A verified layout is kept if the search does not verify a smaller one
+          within its budget.
+          The first ordinary search window is wide —
           `floor .. min(ceiling, max(16, floor × 2))` — so the search is not
           spent below the model's size. A feasible candidate above the floor
           narrows the next window to `floor .. candidate − 1`; a window with no
@@ -63,8 +72,12 @@ paths:
           floor so a large model still has room to search. Each window draws its
           trial budget from its own upper bound
           (`MIN_GPUS_MAX_TRIALS`/`MIN_GPUS_PARALLELISM`/
-          `MIN_GPUS_CANDIDATE_TIMEOUT_S`). The whole search shares one
-          wall-clock budget (`MIN_GPUS_SEARCH_BUDGET_S`, default 70 seconds)
+          `MIN_GPUS_CANDIDATE_TIMEOUT_S`). After a passing probe, optional
+          refinement uses one trial per available serving mode per window.
+          It budgets for serial trials and resource retries and skips the
+          window when too little time remains, keeping the verified result.
+          The whole search shares one
+          wall-clock budget (`MIN_GPUS_SEARCH_BUDGET_S`, default 180 seconds)
           across fit discovery, every window, and every backend-version
           attempt. A failed fit-floor discovery is logged and starts from the
           wide `1 .. min(ceiling, 16)` fallback window. The window actually
@@ -183,13 +196,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RecommendResponse'
         '422':
-          description: No feasible configuration found
+          description: Request not supported or no feasible configuration verified within the search
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Simulator host resource limit prevented a verified configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Candidate simulation timed out before any configuration was verified
           content:
             application/json:
               schema:
@@ -886,6 +911,11 @@ components:
           type: string
           description: Serving mode chosen (agg or disagg).
           example: agg
+        aggregated_fallback:
+          nullable: true
+          description: Verified aggregate layout from the same min-GPU search, when the primary is disaggregated and top_n permits alternatives. Uses the same workload and latency targets.
+          allOf:
+            - $ref: '#/components/schemas/RecommendConfig'
         search_summary:
           type: object
           nullable: true

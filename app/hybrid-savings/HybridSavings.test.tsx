@@ -7,7 +7,9 @@ import HybridSavingsPage from './page'
 import { useSettings } from '@/contexts/SettingsContext'
 import { useCostings } from '@/lib/hooks/useCostings'
 import { useInfrastructureOffers } from '@/lib/hooks/useInfrastructureOffers'
-import { TEST_OFFERS, rentalOffer } from '@/lib/hybrid-savings/__fixtures__/offers'
+import { TEST_OFFERS, rentalOffer, serverOffer } from '@/lib/hybrid-savings/__fixtures__/offers'
+import type { CostPoint } from '@/lib/hybrid-savings/calc'
+import type { FixedDeploymentSample } from '@/lib/hybrid-savings/fixed-deployment'
 import { readRecommendStream } from '@/lib/api/recommend-stream'
 import { fetchModelConfig, type FetchResult } from '@/lib/huggingface/fetch-config'
 import type { RecommendResponse } from '@/lib/api/recommend'
@@ -29,7 +31,11 @@ vi.mock('@/lib/hooks/useInfrastructureOffers', () => ({ useInfrastructureOffers:
 vi.mock('@/lib/api/recommend-stream', () => ({ readRecommendStream: vi.fn() }))
 vi.mock('@/lib/huggingface/fetch-config', () => ({ fetchModelConfig: vi.fn() }))
 vi.mock('@/lib/app-config', () => ({ getAppConfig: () => appConfig }))
-vi.mock('next/dynamic', () => ({ default: () => (props: { points?: unknown; samples?: unknown; path?: unknown; currentCapacityUsedPct?: unknown; hostedModelLabel?: string; infrastructureModelLabel?: string }) => <div data-testid="chart">Comparison chart {props.hostedModelLabel} {props.infrastructureModelLabel} {JSON.stringify(props.points)}{JSON.stringify(props.samples)}path={String(props.path)}current={String(props.currentCapacityUsedPct)}</div> }))
+vi.mock('next/dynamic', () => ({ default: () => (props: { points?: unknown; samples?: unknown; path?: unknown; currentCapacityUsedPct?: unknown; hostedModelLabel?: string; infrastructureModelLabel?: string }) => (
+  <div data-testid="chart" data-points={JSON.stringify(props.points)} data-samples={JSON.stringify(props.samples)}>
+    Comparison chart {props.hostedModelLabel} {props.infrastructureModelLabel} {JSON.stringify(props.points)}{JSON.stringify(props.samples)}path={String(props.path)}current={String(props.currentCapacityUsedPct)}
+  </div>
+) }))
 vi.mock('@/lib/hooks/useCatalog', () => ({ useCatalog: vi.fn() }))
 vi.mock('@/lib/hooks/useTestedModels', () => ({
   useTestedModels: () => ({
@@ -122,7 +128,7 @@ async function chooseComboOption(id: string, match: number | string) {
   await act(async () => option.click())
 }
 async function editNumber(id: string, value: string) {
-  const field = host.querySelector<HTMLInputElement>('#' + id)!
+  const field = document.querySelector<HTMLInputElement>('#' + id)!
   await act(async () => {
     field.focus()
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value)
@@ -257,7 +263,7 @@ describe('Hybrid page composition', () => {
       isLoading: false, error: 'Complete-offers API upgrade required', stale: false })
     await render(); await click('Calculate')
     expect(host.textContent).toContain('Complete-offers API upgrade required')
-    expect(host.textContent).toContain('No sized configuration has an eligible complete cloud offer')
+    expect([...host.querySelectorAll('[role="status"]')].filter(node => node.textContent === 'Hardware pricing is unavailable. Check Cost sources.')).toHaveLength(2)
     expect(host.querySelector('#hybrid-hosted-provider')).not.toBeNull()
     expect(host.querySelector('#hybrid-rented-configuration')).toBeNull()
     expect(host.querySelector('#hybrid-owned-configuration')).toBeNull()
@@ -313,7 +319,7 @@ describe('Hybrid page composition', () => {
     expect(host.textContent).not.toContain('Pricing freshnessNo stale feed reported')
   })
 
-  it('uses the selected simulator capability catalog and version without substituting defaults', async () => {
+  it.each([true, false])('uses the selected simulator and version with per-system version metadata: %s', async perSystemVersions => {
     const catalog = vi.mocked(useCatalog)()
     vi.mocked(useCatalog).mockReturnValue({ ...catalog,
       simulators: [
@@ -325,7 +331,7 @@ describe('Hybrid page composition', () => {
       modelSpecs: new Map(), networks: [], defaultNetwork: null,
       systems: ['l40s'], models: ['Qwen/Qwen3-8B'], backends: [{
         id: 'vllm', aisimulateId: 'vllm', versions: ['0.11.0'], defaultVersion: '0.11.0',
-        systems: { l40s: ['0.11.0'] }, systemDefaults: {}, versionSupport: {},
+        systems: perSystemVersions ? { l40s: ['0.11.0'] } : {}, systemDefaults: {}, versionSupport: {},
         memoryFraction: null, memoryFractionKind: 'of_free', runtimeField: null, disaggregationRequiresFabric: true,
         capacityOptions: { disaggregated: false },
       }],
@@ -334,11 +340,12 @@ describe('Hybrid page composition', () => {
     vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'blis', backendVersion: '0.11.0' })
     vi.mocked(readRecommendStream).mockResolvedValue({ ...sizing, simulator: 'blis' } as RecommendResponse)
     await render(); await click('Calculate')
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ simulator: 'blis', backend_version: '0.11.0' })
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ simulator: 'blis', backend_version: '0.11.0', system: 'l40s', search_strategy: 'single' })
     expect(host.querySelector('[aria-label="Cost comparison"]')!.textContent).toContain('BLIS')
     vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'aisimulate', backendVersion: '' })
     await render()
     expect(host.textContent).toContain('Inputs changed')
+    expect(host.querySelector('#hybrid-rented-configuration')).toBeNull()
     expect(host.querySelector('[aria-label="Cost comparison"]')).toBeNull()
     vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'blis', inferenceBackend: 'tensorrt-llm' })
     await render()
@@ -397,6 +404,7 @@ describe('Hybrid page composition', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+    await click('Calculate')
     expect(host.querySelector<HTMLInputElement>('#hybrid-api-model')!.value).toBe('unpriced/model')
   })
 
@@ -440,7 +448,7 @@ describe('Hybrid page composition', () => {
     await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="View Hosted API details"]')!.click())
     const back = host.querySelector('[class*="costBack"]')!
     expect(back.getAttribute('aria-hidden')).toBe('false')
-    expect(back.textContent).toContain('$5,817')
+    expect(back.textContent).toContain('$5,816.67')
     await click('Data and assumptions')
     const details = host.querySelector('#hybrid-calculation-details')!
     expect(details.textContent).toContain('Selected API modelopenai/gpt-5')
@@ -454,8 +462,8 @@ describe('Hybrid page composition', () => {
     const calls = vi.mocked(readRecommendStream).mock.calls.length
     await chooseApiModel('gpt-5')
     const costs = [...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)
-    expect(costs[0]).toContain('$38.78') // $5,817 monthly over 150M requested output tokens.
-    expect([...host.querySelectorAll('[class*="costPeriod"]')][0].textContent).toContain('$5,817')
+    expect(costs[0]).toContain('$38.78') // $5,816.67 monthly over 150M requested output tokens.
+    expect([...host.querySelectorAll('[class*="costPeriod"]')][0].textContent).toContain('$5,816.67')
     expect(costs.slice(1)).toEqual(originalCosts.slice(1))
     expect(vi.mocked(readRecommendStream).mock.calls.length).toBe(calls)
     expect(host.querySelector('[data-testid="chart"]')!.textContent).not.toBe(originalChart)
@@ -473,10 +481,10 @@ describe('Hybrid page composition', () => {
   it('allows a hosted alternative when the open-weight checkpoint has no API price', async () => {
     vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [frontierOffer] })
     await render()
-    expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Calculate')!.disabled).toBe(true)
-    await chooseApiModel('gpt-5'); await click('Calculate')
+    expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Calculate')!.disabled).toBe(false)
+    await click('Calculate'); await chooseApiModel('gpt-5')
     expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(3)
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string).model).not.toBe('openai/gpt-5')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string).model_path).toBe('Qwen/Qwen3-8B')
   })
 
   it('keeps independent pricing-source offers selectable for the same API model', async () => {
@@ -495,13 +503,67 @@ describe('Hybrid page composition', () => {
     expect(vi.mocked(readRecommendStream).mock.calls.length).toBe(calls)
   })
 
+  it('reprices hosted cache on the selected offer only, validates counts, and resets on provider change', async () => {
+    const cachedOffer = { ...models[0], billing: { currency: 'USD' as const, request_price: 0,
+      input_cache_read_per_million: 0, input_cache_write_per_million: 0.15, overrides: [], unsupported: [] } }
+    vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [cachedOffer, ...models.slice(1)] })
+    await render(); await click('Calculate')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    const reads = host.querySelector('#hybrid-hosted-cache-read')!
+    const writes = host.querySelector('#hybrid-hosted-cache-write')!
+    expect(reads.closest('[role="group"]')?.getAttribute('aria-labelledby')).toBe('hybrid-hosted-cache-title')
+    expect(writes.closest('[role="group"]')).toBe(reads.closest('[role="group"]'))
+    expect(reads.closest('.pf-v6-c-card')).toBe(writes.closest('.pf-v6-c-card'))
+    expect(reads.closest('.pf-v6-c-card')!.querySelector('h3')?.textContent).toBe('Hosted API')
+    const costs = () => [...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)
+    const uncached = costs()
+    const calls = vi.mocked(fetch).mock.calls.length
+    await editNumber('hybrid-hosted-cache-read', '1000000000')
+    await editNumber('hybrid-hosted-cache-write', '200000000')
+    expect(costs()[0]).not.toBe(uncached[0])
+    expect(host.textContent).toContain('Token rates / 1M$0.1 input · $0.2 output · standard uncached text')
+    expect(costs().slice(1)).toEqual(uncached.slice(1))
+    expect(host.querySelector<HTMLInputElement>('#hybrid-input-tokens')!.value).toBe('2,400,000,000')
+    await editNumber('hybrid-hosted-cache-read', '2300000000')
+    expect(host.textContent).toContain('Showing uncached estimate')
+    expect(costs()).toEqual(uncached)
+    await chooseComboOption('hybrid-hosted-provider', 1)
+    expect(host.textContent).toContain('Cache counts were reset because the hosted offer changed.')
+    expect(host.textContent).not.toContain('Showing uncached estimate')
+    await chooseComboOption('hybrid-hosted-provider', 0)
+    expect(document.querySelector<HTMLInputElement>('#hybrid-hosted-cache-read')!.value).toBe('0')
+    expect(document.querySelector<HTMLInputElement>('#hybrid-hosted-cache-write')!.value).toBe('0')
+    expect(costs()).toEqual(uncached)
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(calls)
+  })
+
+  it('derives self-hosted reuse from monthly reads and leaves hosted costs unchanged', async () => {
+    await render(); await click('Calculate'); await click('Adjust')
+    const cacheGroup = host.querySelector('[role="group"][aria-labelledby="hybrid-self-cache-title"]')!
+    const reads = cacheGroup.querySelector<HTMLInputElement>('#hybrid-self-cache-reads')!
+    expect(cacheGroup.textContent).toContain('Self-hosted prompt caching · tokens/month')
+    expect(cacheGroup.querySelectorAll('input')).toHaveLength(1)
+    expect(reads.labels?.[0]?.textContent).toBe('Cache reads')
+    const helper = host.querySelector(`#${reads.getAttribute('aria-describedby')}`)!
+    expect(helper.textContent).toBe('Sizing uses 200 cached tokens per request.')
+    const hostedCost = () => host.querySelector('[class*="costValue"]')!.textContent
+    const uncached = hostedCost()
+    await editNumber('hybrid-self-cache-reads', '117187500')
+    expect(helper.textContent).toBe('Estimated reuse: 100 tokens per request.')
+    expect(host.querySelector('#hybrid-self-cache-requests')).toBeNull()
+    expect(host.querySelector('#hybrid-prefix')).toBeNull()
+    await click('Calculate')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)).toMatchObject({ prefix: 100, isl: 2048, osl: 128 })
+    expect(hostedCost()).toBe(uncached)
+  })
+
   it('does not silently substitute a different model when a selected live price disappears', async () => {
     vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [...models, frontierOffer] })
     await render(); await click('Calculate'); await chooseApiModel('gpt-5')
     vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models })
     await render()
     expect(host.textContent).toContain('Hosted comparison unavailable')
-    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(0)
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(2)
     await chooseApiModel('Qwen/Qwen3-8B')
     expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(3)
   })
@@ -576,7 +638,7 @@ describe('Hybrid page composition', () => {
     // Restore the intentionally mismatched demand for this alignment-helper case.
     await editNumber('hybrid-input-tokens', '2000000000')
     await editNumber('hybrid-output-tokens', '500000000')
-    expect(host.textContent).toContain('Hardware sizing uses the larger request count implied by the input or output totals.')
+    expect(host.textContent).toContain('Monthly totals and request shape use different token mixes.')
     const align = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Align request mix')!
     expect(align).toBeTruthy()
     expect(align.disabled).toBe(false)
@@ -587,23 +649,25 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-output-tokens')!.value).toBe('500,000,000')
     expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('1000')
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('1')
-    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe(String(DEFAULT_WORKLOAD.prefix ?? 0))
+    expect(host.querySelector<HTMLInputElement>('#hybrid-self-cache-reads')!.value).toBe('0')
     // The mix is aligned, so the action and explanation disappear.
     expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Align request mix')).toBeUndefined()
-    expect(host.textContent).not.toContain('Hardware sizing uses the larger request count')
+    expect(host.textContent).not.toContain('Monthly totals and request shape use different token mixes.')
     expect(fetch).not.toHaveBeenCalled()
   })
 
   it('blocks alignment when the cached prefix cannot fit the proposed input length', async () => {
-    await render(); await click('Default')
+    window.history.replaceState({}, '', '/hybrid-savings?v=1&prefix=2048')
+    navigation.search = window.location.search
+    await render()
     await editNumber('hybrid-input-tokens', '2000000000')
     await editNumber('hybrid-output-tokens', '500000000')
     // 2,048-token prefix with a proposal of 512 tokens: alignment stays disabled with a reason.
-    await editNumber('hybrid-prefix', '2048')
     const align = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Align request mix')!
     expect(align).toBeTruthy()
     expect(align.disabled).toBe(true)
-    expect(host.textContent).toContain('shorter than the cached prefix')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Help for Request mix alignment"]')!.click())
+    expect(document.body.textContent).toContain('shorter than the cached prefix')
     await act(async () => align.click())
     expect(host.querySelector<HTMLInputElement>('#hybrid-average-input')!.value).toBe('2048')
   })
@@ -854,7 +918,9 @@ describe('Hybrid page composition', () => {
       expect(section.querySelectorAll('dt').length).toBe(section.querySelectorAll('dd').length)
     }
     expect(sections[1].textContent).toContain('1 concurrent request')
-    expect(sections[1].textContent).toContain('Capacity is modeled from the selected request shape and reference concurrency')
+    expect(sections[1].textContent).toContain('Simulated deployment1 replica · 1 GPU')
+    expect(sections[1].textContent).toContain('Required replicas (sizing and demand)')
+    expect(sections[1].textContent).toContain('Hardware costs include at least the deployment sized for the concurrency target')
     expect(sections[0].textContent).toContain('Input-implied requests1,171,875/month')
     expect(sections[0].textContent).toContain('Output-implied requests1,171,875/month')
     expect(sections[2].textContent).toContain('150M output tokens/month')
@@ -866,6 +932,77 @@ describe('Hybrid page composition', () => {
     expect([...host.querySelectorAll('[class*="costValue"]')].map(element => element.textContent)).toEqual(costs)
     expect(host.querySelector('[data-testid="chart"]')!.textContent).toBe(chart)
     expect(vi.mocked(readRecommendStream).mock.calls.length).toBe(sizingCalls)
+  })
+
+  it('prices the full 100-concurrent deployment and reconciles the cards and both chart modes', async () => {
+    vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [
+      { ...models[0], price_per_m_input: 0.0699, price_per_m_output: 1.4 },
+    ] })
+    vi.mocked(useInfrastructureOffers).mockReturnValue({ ...TEST_OFFERS, isLoading: false, error: null, stale: false,
+      rented: [rentalOffer({ id: '4-gpu', gpuCount: 4, hourlyCost: 42, maxInstancesPerReplica: 2, interconnect: 'test-nvlink' })],
+      purchased: [serverOffer({ id: '8-gpu', gpuCount: 8 })],
+    })
+    vi.mocked(readRecommendStream).mockResolvedValue({
+      ...sizing,
+      recommendation: { gpusPerReplica: 8, replicasNeeded: 33 },
+      throughput: { tokensPerSecond: 3_300 },
+      performance: { ttftLatencyMs: 100, tpotMs: 20, concurrency: 91 },
+    } as RecommendResponse)
+    await render()
+    await click('Deep research agent')
+    await click('Large (100)')
+    await editNumber('hybrid-input-tokens', '6030000')
+    await editNumber('hybrid-output-tokens', '31620')
+    await click('Calculate')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({
+      isl: 45_000, osl: 300, target_concurrency: 100,
+    })
+    expect(host.textContent).toContain('66 instances · 264 GPUs')
+    expect(host.textContent).toContain('33 servers · 264 GPUs')
+    expect(host.textContent?.match(/Includes sizing for 100 concurrent requests/g)).toHaveLength(2)
+    await click('Data and assumptions')
+    expect(host.textContent).toContain('Requested concurrency100 concurrent requests')
+    expect(host.textContent).toContain('Reported concurrency91 concurrent requests')
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="View Hosted API details"]')!.click())
+    expect(host.querySelector('[class*="costBack"]')!.textContent).toContain('Input tokens$0.42Output tokens$0.04')
+    expect(host.querySelector('[class*="costBack"]')!.textContent).toContain('Total / month$1,317.13')
+    await click('Cost vs workload (break-even analysis)')
+    const chart = () => host.querySelector('[data-testid="chart"]')!
+    const current = (JSON.parse(chart().getAttribute('data-points')!) as CostPoint[])
+      .find(point => point.tokens === 6_061_620)!
+    expect(current.hosted).toBeCloseTo(1317.132652)
+    for (const [key, unitCount] of [['rented', 66], ['owned', 33]] as const) {
+      await click('Hardware usage')
+      if (key === 'owned') await click('Purchased')
+      const samples = JSON.parse(chart().getAttribute('data-samples')!) as FixedDeploymentSample[]
+      expect(samples.every(sample => sample.hardware?.deployment?.wholeUnits === unitCount)).toBe(true)
+      const fixedCurrent = samples.find(sample => sample.combinedTokens === current.tokens)!
+      expect(fixedCurrent.hardware?.monthlyCost).toBeCloseTo(current[key]!)
+      expect(fixedCurrent.hosted?.monthlyCost).toBeCloseTo(current.hosted!)
+      await click('Growing demand')
+    }
+    const sizingCalls = vi.mocked(readRecommendStream).mock.calls.length
+    await select('hybrid-billing-mode', 'always-on')
+    const warm = (JSON.parse(chart().getAttribute('data-points')!) as CostPoint[]).find(point => point.tokens === current.tokens)!
+    expect(warm.rented).toBeCloseTo(66 * 730 * 42 + 500 + 3_600 + 40_000 / 36)
+    expect(warm.hosted).toBe(current.hosted)
+    expect(warm.owned).toBe(current.owned)
+    expect(vi.mocked(readRecommendStream).mock.calls.length).toBe(sizingCalls)
+
+    vi.mocked(readRecommendStream).mockResolvedValue({
+      ...sizing,
+      recommendation: { gpusPerReplica: 8, replicasNeeded: 1 },
+      throughput: { tokensPerSecond: 100 },
+      performance: { ttftLatencyMs: 100, tpotMs: 20, concurrency: 2 },
+    } as RecommendResponse)
+    await click('X-Small (2)')
+    await click('Calculate')
+    expect(host.textContent).toContain('2 instances · 8 GPUs')
+    expect(host.textContent).toContain('1 server · 8 GPUs')
+    const smaller = (JSON.parse(chart().getAttribute('data-points')!) as CostPoint[]).find(point => point.tokens === current.tokens)!
+    expect(smaller.rented).toBeCloseTo(2 * 730 * 42 + 500 + 3_600 + 40_000 / 36)
+    expect(smaller.owned).toBeLessThan(warm.owned!)
+    expect(smaller.hosted).toBe(warm.hosted)
   })
 
   it.each([
@@ -938,7 +1075,7 @@ describe('Hybrid page composition', () => {
     await select('hybrid-billing-mode', 'active-window')
     const toggle = host.querySelector<HTMLButtonElement>('#hybrid-workload-toggle')!
     await act(async () => toggle.click())
-    expect(toggle.textContent).toContain(`2.5s TTFT · 45 ms TPOT · 1 concurrent user · ${DEFAULT_WORKLOAD.prefix ?? 0} prefix tokens · 200 hours/month · 2× peak · Active window`)
+    expect(toggle.textContent).toContain(`2.5s TTFT · 45 ms TPOT · 1 concurrent request · ${DEFAULT_WORKLOAD.prefix ?? 0} cached tokens/request · 200 hours/month · 2× peak · Active window`)
     await click('Adjust')
     expect(host.querySelector<HTMLInputElement>('#hybrid-average-input')!.value).toBe('3000')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('active-window')
@@ -1035,13 +1172,12 @@ describe('Hybrid page composition', () => {
   })
 
   it.each([DEFAULT_WORKLOAD, ...appConfig.workloadPresets])('applies token lengths and prefix for $label without changing the other workload settings', async preset => {
-    const presetPrefix = preset.prefix ?? 0
     vi.mocked(readRecommendStream).mockResolvedValue({ ...sizing, performance: { ttftLatencyMs: 100, tpotMs: 10 } } as RecommendResponse)
     await render(); await click('Adjust')
     await editNumber('hybrid-ttft', '900')
     await editNumber('hybrid-tpot', '25')
     await editNumber('hybrid-concurrency', '3')
-    await editNumber('hybrid-prefix', '64')
+    await editNumber('hybrid-self-cache-reads', '75000000')
     await editNumber('hybrid-active-hours', '200')
     await editNumber('hybrid-peak', '2')
     await select('hybrid-billing-mode', 'always-on')
@@ -1052,7 +1188,7 @@ describe('Hybrid page composition', () => {
     expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')!.value).toBe('900')
     expect(host.querySelector<HTMLInputElement>('#hybrid-tpot')!.value).toBe('25')
     expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')!.value).toBe('3')
-    expect(host.querySelector<HTMLInputElement>('#hybrid-prefix')!.value).toBe(String(presetPrefix))
+    expect(host.querySelector<HTMLInputElement>('#hybrid-self-cache-reads')!.value).toBe('75,000,000')
     expect(host.querySelector<HTMLInputElement>('#hybrid-active-hours')!.value).toBe('200')
     expect(host.querySelector<HTMLInputElement>('#hybrid-peak')!.value).toBe('2')
     expect(host.querySelector<HTMLSelectElement>('#hybrid-billing-mode')!.value).toBe('always-on')
@@ -1061,10 +1197,10 @@ describe('Hybrid page composition', () => {
     await click('Calculate')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({
       isl: preset.isl, osl: preset.osl, ttft: 900, tpot: 25,
-      target_concurrency: 3, prefix: presetPrefix,
+      target_concurrency: 3, prefix: Math.floor(75_000_000 / Math.max(2_400_000_000 / preset.isl, 150_000_000 / preset.osl)),
     })
     await click('Data and assumptions')
-    const reference = [...host.querySelectorAll('dt')].find(term => term.textContent === 'Capacity reference')!
+    const reference = [...host.querySelectorAll('dt')].find(term => term.textContent === 'Concurrency target')!
     expect(reference.nextElementSibling!.textContent).toBe('3 concurrent requests')
     expect(host.textContent).toContain('Monthly cost breakdown')
   })
@@ -1072,7 +1208,7 @@ describe('Hybrid page composition', () => {
   it('shows the actual default and edited sizing concurrency in calculation details', async () => {
     await render(); await click('Data and assumptions')
     const reference = () => [...host.querySelectorAll('dt')]
-      .find(term => term.textContent === 'Capacity reference')!.nextElementSibling!.textContent
+      .find(term => term.textContent === 'Concurrency target')!.nextElementSibling!.textContent
     expect(reference()).toBe('1 concurrent request')
     await click('Adjust')
     await editNumber('hybrid-concurrency', '64')
@@ -1087,24 +1223,24 @@ describe('Hybrid page composition', () => {
     expect(host.textContent).toContain('Inputs changed')
     await click('Calculate')
     expect(host.textContent).not.toContain('Inputs changed')
-    await editNumber('hybrid-prefix', '128')
+    await editNumber('hybrid-self-cache-reads', '150000000')
     expect(host.textContent).toContain('Inputs changed')
     await click('Calculate')
     const payload = JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)
     expect(payload).toMatchObject({ target_concurrency: 2, prefix: 128 })
   })
 
-  it('blocks fractional concurrency and a cached prefix longer than the input', async () => {
+  it('blocks fractional concurrency and cache reads greater than monthly input', async () => {
     await render(); await click('Default')
     await editNumber('hybrid-concurrency', '1.5')
     const calculate = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Calculate')!
     expect(calculate.disabled).toBe(true)
     expect(host.textContent).toContain('Concurrency must be a positive whole number')
     await editNumber('hybrid-concurrency', '1')
-    await editNumber('hybrid-prefix', '1024')
-    await editNumber('hybrid-average-input', '512')
+    await editNumber('hybrid-self-cache-reads', '2400000001')
     expect(calculate.disabled).toBe(true)
-    await editNumber('hybrid-prefix', '512')
+    expect(host.textContent).toContain('Cache reads must be included in, and cannot exceed, monthly input tokens.')
+    await editNumber('hybrid-self-cache-reads', '2400000000')
     expect(calculate.disabled).toBe(false)
     expect(fetch).not.toHaveBeenCalled()
   })
@@ -1204,8 +1340,133 @@ describe('Hybrid page composition', () => {
   it('shows no fabricated configuration when live sizing fails', async () => {
     vi.mocked(readRecommendStream).mockResolvedValue({ status: 'failed', requestId: 'bad', error: { code: 'NO_FIT', message: 'No fit' } })
     await render(); await click('Calculate')
-    expect(host.textContent).toContain('Comparison unavailable')
+    expect(host.textContent).toContain('Hardware sizing unavailable')
+    await click('Sizing details')
+    expect(host.textContent).toContain('No fit')
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(1)
     expect(host.querySelector('#hybrid-rented-configuration')).toBeNull()
+  })
+
+  it('shows no results on load and publishes the first priced path while other systems are pending', async () => {
+    const catalog = vi.mocked(useCatalog)()
+    vi.mocked(useCatalog).mockReturnValue({ ...catalog, gpuOptions: [
+      ...catalog.gpuOptions, { ...catalog.gpuOptions[0], label: 'Other GPU', systemId: 'other' },
+    ] })
+    vi.mocked(useInfrastructureOffers).mockReturnValue({ ...TEST_OFFERS,
+      purchased: TEST_OFFERS.purchased.map(offer => ({ ...offer, systemId: 'other' })),
+      isLoading: false, error: null, stale: false,
+    })
+    let completeRental!: (result: RecommendResponse) => void
+    let completePurchase!: (result: RecommendResponse) => void
+    vi.mocked(readRecommendStream)
+      .mockReturnValueOnce(new Promise(resolve => { completeRental = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { completePurchase = resolve }))
+    await render()
+    const comparison = () => host.querySelector('[aria-label="Cost comparison"]')
+    expect(comparison()).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+    await click('Calculate')
+    expect(comparison()).toBeNull()
+    expect(host.textContent).toContain('Calculating configurations')
+    await act(async () => completeRental(sizing))
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).toBeNull()
+    expect(comparison()!.textContent).toContain('Sizing hardware… 1 of 2 GPU systems checked.')
+    await act(async () => completePurchase({ status: 'failed', requestId: 'timeout', error: { code: 'AISIM_TIMEOUT', message: 'Timed out' } }))
+    expect(host.textContent).toContain('Hardware sizing partially completed')
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(2)
+    expect([...host.querySelectorAll('button')].filter(button => button.textContent === 'Retry sizing')).toHaveLength(1)
+    await click('Retry sizing')
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).not.toBeNull()
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(3)
+    expect(host.textContent).not.toContain('Hardware sizing partially completed')
+    const requests = vi.mocked(fetch).mock.calls.map(([, init]) => init!.body)
+    expect(requests.slice(2)).toEqual(requests.slice(0, 2))
+  })
+
+  it('can retry a partial run with unchanged inputs even when both hardware cards have prices', async () => {
+    const catalog = vi.mocked(useCatalog)()
+    vi.mocked(useCatalog).mockReturnValue({ ...catalog, gpuOptions: [
+      ...catalog.gpuOptions, { ...catalog.gpuOptions[0], label: 'Other GPU', systemId: 'other' },
+    ] })
+    vi.mocked(readRecommendStream).mockResolvedValueOnce(sizing).mockResolvedValueOnce({
+      status: 'failed', requestId: 'timeout', error: { code: 'AISIM_TIMEOUT', message: 'Timed out' },
+    })
+
+    await render(); await click('Calculate')
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).not.toBeNull()
+    expect(host.textContent).toContain('1 of 2 GPU systems did not return usable results')
+    const initial = vi.mocked(fetch).mock.calls.map(([, init]) => init!.body)
+    expect(initial).toHaveLength(2)
+    await click('Retry sizing')
+    expect(vi.mocked(fetch).mock.calls.slice(2).map(([, init]) => init!.body)).toEqual(initial)
+    expect(host.textContent).not.toContain('Hardware sizing partially completed')
+  })
+
+  it('explains why sizing cannot start when the catalog has no matching hardware', async () => {
+    const catalog = vi.mocked(useCatalog)()
+    vi.mocked(useCatalog).mockReturnValue({ ...catalog, gpuOptions: [] })
+    await render()
+    expect([...host.querySelectorAll('[role="status"]')].filter(node => node.textContent === 'No GPU systems support the selected simulator and backend settings.')).toHaveLength(1)
+    expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true)
+    expect(host.querySelector('[aria-label="Cost comparison"]')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('sizes systems with prices first without dropping unpriced systems', async () => {
+    const catalog = vi.mocked(useCatalog)()
+    vi.mocked(useCatalog).mockReturnValue({ ...catalog, gpuOptions: [
+      { ...catalog.gpuOptions[0], systemId: 'unpriced' }, ...catalog.gpuOptions,
+    ] })
+    await render(); await click('Calculate')
+    expect(vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(init!.body as string).system)).toEqual(['l40s', 'unpriced'])
+  })
+
+  it('clears a timed-out result on retry and fills both hardware cards without changing targets', async () => {
+    const message = 'The recommendation search reached its time budget after 2 GPU window(s) (up to 32 GPUs) without a feasible configuration.'
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({ status: 'failed', requestId: 'budget', error: { code: 'AISIM_NO_CONFIGURATION', message } })
+    await render()
+    await click('RAG / Search')
+    await editNumber('hybrid-tpot', '30.5')
+    await click('Calculate')
+    expect(host.textContent).toContain('The search timed out on 1 of 1 GPU systems.')
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(1)
+    expect(host.textContent).toContain('No hardware configuration was verified for this workload.')
+    await click('Retry sizing')
+    const requests = vi.mocked(fetch).mock.calls.map(([, init]) => JSON.parse(init!.body as string))
+    expect(requests).toEqual([requests[0], requests[0]])
+    expect(requests[0]).toMatchObject({ tpot: 30.5 })
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).not.toBeNull()
+    expect(host.textContent).not.toContain('Hardware sizing unavailable')
+  })
+
+  it('explains an unverified latency target and opens its settings without silently changing the workload', async () => {
+    const message = 'The recommendation search reached its time budget without a feasible configuration.'
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({ status: 'failed', requestId: 'budget', error: { code: 'AISIM_NO_CONFIGURATION', message } })
+    await render()
+    await editNumber('hybrid-concurrency', '100')
+    await click('Calculate')
+    expect(host.textContent).toContain('a first token within 1 s and each following token within 30 ms at 100 concurrent requests')
+    expect(host.textContent).toContain('A timeout leaves those systems unverified; it does not rule them out.')
+    await click('Sizing details')
+    expect(host.querySelector('[class*="sizingDetails"] li strong')?.textContent).toContain('L40S')
+    await click('Review sizing targets')
+    expect(host.querySelector('#hybrid-workload-toggle')?.getAttribute('aria-expanded')).toBe('true')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-ttft')?.value).toBe('1000')
+    expect(host.querySelector<HTMLInputElement>('#hybrid-concurrency')?.value).toBe('100')
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not recommend changing latency targets when the simulator service is unavailable', async () => {
+    vi.mocked(readRecommendStream).mockResolvedValueOnce({
+      status: 'failed', requestId: 'outage', error: { code: 'AISIM_UNAVAILABLE', message: 'The simulator is unreachable.' },
+    })
+    await render(); await click('Calculate')
+    expect(host.textContent).toContain('The sizing service did not return a usable configuration.')
+    expect(host.textContent).not.toContain('Review sizing targets')
   })
 
   it('hides stale results, preserves a valid manual choice and resets an ineligible one', async () => {
@@ -1247,15 +1508,31 @@ describe('Hybrid page composition', () => {
     expect(useInfrastructureOffers).toHaveBeenCalledWith(true)
   })
 
-  it('disables calculation when the feed has no exact hosted price', async () => {
+  it('prices hardware independently when there is no compatible hosted offer', async () => {
     vi.mocked(useCostings).mockReturnValue({ ...vi.mocked(useCostings)(true), models: [] })
-    await render()
+    await render(); await click('Calculate')
     expect(host.textContent).toContain('Hosted comparison unavailable')
-    expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Calculate')?.disabled).toBe(true)
+    expect([...host.querySelectorAll('button')].find(button => button.textContent === 'Calculate')?.disabled).toBe(false)
+    expect(host.querySelector('#hybrid-rented-configuration')).not.toBeNull()
+    expect(host.querySelector('#hybrid-owned-configuration')).not.toBeNull()
+    expect(host.querySelectorAll('[class*="costValue"]')).toHaveLength(2)
   })
 })
 
 describe('hybrid savings shared view', () => {
+  it.each([
+    ['prefix=64', 'Sizing uses 64 cached tokens per request.'],
+    ['selfHostedCacheReadTokens=75000000', 'Estimated reuse: 64 tokens per request.'],
+  ])('loads %s without submitting and sends the same sizing prefix', async (query, help) => {
+    window.history.replaceState({}, '', `/hybrid-savings?v=1&${query}`)
+    navigation.search = window.location.search
+    await render(); await click('Adjust')
+    expect(host.textContent).toContain(help)
+    expect(fetch).not.toHaveBeenCalled()
+    await click('Calculate')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ prefix: 64 })
+  })
+
   it('hydrates the view from a link and reports what it ignored', async () => {
     window.history.replaceState(
       {},

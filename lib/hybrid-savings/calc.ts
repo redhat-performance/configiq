@@ -1,4 +1,4 @@
-import { firstWinningVolume, TransitionSearchLimitError, type CostCurve } from './transition-search'
+import { firstWinningVolume, TransitionSearchLimitError, unitsAtVolume, type CostCurve } from './transition-search'
 import {
   costPerMillionOutputTokens as outputUnitCost,
   outputTokensAtVolume,
@@ -24,6 +24,9 @@ export interface HostedPrice {
   outputPerMillion: number
   /** USD per API request, in addition to the input/output token tariff. */
   requestPerRequest?: number
+  cacheReadPerMillion?: number
+  cacheWritePerMillion?: number
+  cachePricing?: { readShare: number; writeShare: number }
 }
 
 export interface InfrastructureCandidate {
@@ -66,7 +69,8 @@ export interface InfrastructureCandidate {
   referenceMode?: 'agg' | 'disagg' | null
   referenceTtftMs?: number | null
   referenceTpotMs?: number | null
-  referenceConcurrency?: number | null
+  referenceTargetConcurrency?: number | null
+  referenceReportedConcurrency?: number | null
 }
 
 export interface CostAssumptions extends PlanningCostAssumptions {
@@ -86,7 +90,7 @@ export interface CostBreakdownItem {
  * benchmark.
  */
 export interface DeploymentDetails {
-  /** Replicas required by the requested demand. */
+  /** Replicas needed for both the concurrency target and the requested demand. */
   requiredReplicas: number
   /** GPUs required by the requested demand. */
   requiredGpus: number
@@ -216,7 +220,7 @@ function workloadMix(workload: HybridWorkload) {
   const inputShare = monthlyTokens > 0
     ? monthlyInputTokens / monthlyTokens
     : averageInputTokens / averageTokensPerRequest
-  const outputShare = 1 - inputShare
+  const outputShare = monthlyTokens > 0 ? monthlyOutputTokens / monthlyTokens : averageOutputTokens / averageTokensPerRequest
   /*
    * Monthly input/output totals and a representative request shape are two
    * independent user inputs. When their ratios differ, dividing total tokens
@@ -269,6 +273,18 @@ export function workloadFacts(workload: HybridWorkload) {
   }
 }
 
+export function hostedUsageBreakdown(price: HostedPrice, input: number, output: number, requests: number): CostBreakdownItem[] {
+  const read = input * (price.cachePricing?.readShare ?? 0)
+  const write = input * (price.cachePricing?.writeShare ?? 0)
+  return [
+    { label: 'Input token usage', monthlyCost: Math.max(0, input - read - write) / MILLION * finiteNonNegative(price.inputPerMillion), includedInMarginal: true },
+    ...(read > 0 ? [{ label: 'Cache-read input tokens', monthlyCost: read / MILLION * price.cacheReadPerMillion!, includedInMarginal: true }] : []),
+    ...(write > 0 ? [{ label: 'Cache-write input tokens', monthlyCost: write / MILLION * price.cacheWritePerMillion!, includedInMarginal: true }] : []),
+    { label: 'Output token usage', monthlyCost: output / MILLION * finiteNonNegative(price.outputPerMillion), includedInMarginal: true },
+    ...(price.requestPerRequest ? [{ label: 'API request fees', monthlyCost: requests * finiteNonNegative(price.requestPerRequest), includedInMarginal: true }] : []),
+  ]
+}
+
 export function hostedCostAtVolume(
   workload: HybridWorkload,
   hostedPrice: HostedPrice,
@@ -276,9 +292,9 @@ export function hostedCostAtVolume(
   volume: number,
 ): CostOption {
   const safeVolume = finiteNonNegative(volume)
-  const inputShare = workloadMix(workload).inputShare
-  const inputTokens = safeVolume * inputShare
-  const outputTokens = safeVolume - inputTokens
+  const mix = workloadMix(workload)
+  const inputTokens = safeVolume * mix.inputShare
+  const outputTokens = safeVolume * mix.outputShare
   const fixed = finiteNonNegative(assumptions.hostedFixedMonthly)
   const operations =
     finiteNonNegative(assumptions.hostedOperationsFte) *
@@ -288,9 +304,7 @@ export function hostedCostAtVolume(
     positive(assumptions.analysisMonths, 36)
   const requests = requestsAtVolume(workload, safeVolume)
   const breakdown: CostBreakdownItem[] = [
-    { label: 'Input token usage', monthlyCost: inputTokens / MILLION * finiteNonNegative(hostedPrice.inputPerMillion), includedInMarginal: true },
-    { label: 'Output token usage', monthlyCost: outputTokens / MILLION * finiteNonNegative(hostedPrice.outputPerMillion), includedInMarginal: true },
-    ...(hostedPrice.requestPerRequest ? [{ label: 'API request fees', monthlyCost: requests * finiteNonNegative(hostedPrice.requestPerRequest), includedInMarginal: true }] : []),
+    ...hostedUsageBreakdown(hostedPrice, inputTokens, outputTokens, requests),
     { label: 'Fixed hosted fees', monthlyCost: fixed, includedInMarginal: true },
     { label: 'Operations and vendor management', monthlyCost: operations, includedInMarginal: false },
     { label: 'Implementation amortization', monthlyCost: implementation, includedInMarginal: false },
@@ -361,17 +375,15 @@ function deploymentForVolume(
     candidate,
     assumptions.planningCapacityUsePct,
   )
-  // A demand of exactly k x capacity can land a few ULPs above k after the
-  // chained float arithmetic in candidateCapacityTokens; absorb sub-token
-  // noise (1e-12 relative) so an exact multiple does not deploy an extra
-  // replica, while a genuine extra token still does.
-  const replicaLoad = safeVolume / positive(capacityPerReplica)
-  const replicas = safeVolume > 0
-    ? Math.max(Math.ceil(replicaLoad - replicaLoad * 1e-12), 1)
-    : 0
+  // A sparse month does not make a smaller layout capable of the selected
+  // concurrency and response targets. Preserve the full simulated replica
+  // count, then add replicas when the monthly demand needs more throughput.
+  const minimumReplicas = Math.ceil(candidate.replicasNeeded)
+  const replicas = unitsAtVolume(safeVolume, positive(capacityPerReplica), minimumReplicas)
   const gpusPerReplica = Math.max(Math.ceil(positive(candidate.gpusPerReplica)), 1)
   return {
     capacityPerReplica,
+    minimumReplicas,
     replicas,
     gpuCount: replicas * gpusPerReplica,
     gpusPerReplica,
@@ -456,40 +468,18 @@ export function rentedCostForCandidate(
   if (effectiveBillingMode === 'scale-to-zero') {
     // Zero demand bills nothing under scale-to-zero, frozen deployment or not.
     if (safeVolume > 0) {
-      const equivalentOutputTokens =
-      requestsAtVolume(workload, safeVolume) * positive(workload.averageOutputTokens)
-    const outputTokensPerSecondPerReplica =
-      positive(candidate.clusterOutputTokensPerSecond) /
-      Math.max(Math.ceil(positive(candidate.replicasNeeded)), 1) *
-      Math.min(positive(assumptions.planningCapacityUsePct, 100), 100) / 100
-    const replicaHours = equivalentOutputTokens /
-      outputTokensPerSecondPerReplica /
-      SECONDS_PER_HOUR
-    /*
-     * Use the continuous replica load rather than the rounded replica count
-     * when crediting parallel work inside a whole cloud instance. Dividing by
-     * ceil(load) made billable runtime fall every time another replica became
-     * necessary, producing a saw-tooth curve where more demand could cost
-     * less. The continuous load keeps sparse traffic on one replica, credits
-     * genuinely usable parallelism as demand grows, and makes each offer's
-     * scale-to-zero cost monotonic.
-     */
-    const continuousReplicaLoad = safeVolume / positive(deployment.capacityPerReplica)
-    // capacityPerReplica is peak-adjusted, so continuousReplicaLoad is the
-    // number of replicas needed at the workload peak. Instance runtime is
-    // driven by average work, not by assuming that peak parallelism persists
-    // for the entire month. Divide the peak load by the peak-to-average ratio
-    // before crediting simultaneous replicas inside one whole instance.
-    const averageReplicaLoad = continuousReplicaLoad / positive(workload.peakToAverage)
-    const parallelReplicasPerInstance = Math.min(
-      layout.replicasPerInstance,
-      Math.max(averageReplicaLoad, 1),
-    )
-    billableInstanceHours =
-      replicaHours /
-      parallelReplicasPerInstance *
-      layout.instancesPerReplica *
-      (1 + finiteNonNegative(assumptions.cloudRuntimeBufferPct) / 100)
+      const baseline = rentedInstanceLayout(candidate, deployment.minimumReplicas)
+      if (!baseline) return null
+      // All reference instances must be up while serving. For sparse traffic
+      // credit one busy replica, not perfect batching across the whole fleet.
+      // At higher average load, keep the floor and charge for additional
+      // instance time as needed; short peaks size hardware, not running hours.
+      const averageReplicaLoad = safeVolume / deployment.capacityPerReplica / positive(workload.peakToAverage)
+      const servingHours = Math.min(averageReplicaLoad, 1) * positive(workload.activeHoursPerMonth)
+      const servingInstances = Math.max(baseline.billedInstances,
+        averageReplicaLoad / layout.replicasPerInstance * layout.instancesPerReplica)
+      billableInstanceHours = servingHours * servingInstances *
+        (1 + finiteNonNegative(assumptions.cloudRuntimeBufferPct) / 100)
     }
   } else if (effectiveBillingMode === 'active-window') {
     // No demand-derived guard: without a frozen layout the demand-derived
@@ -799,7 +789,7 @@ function candidateCurves(
 
     const rentedAtZero = rentedCostForCandidate(workload, candidate, assumptions, 0)
     if (rentedAtZero) {
-      const layout = rentedInstanceLayout(candidate, 1)
+      const layout = rentedInstanceLayout(candidate, Math.ceil(candidate.replicasNeeded))
       if (layout) {
         const billingMode = candidate.cloudRateKind === 'capacity_block'
           ? 'always-on' : assumptions.cloudBillingMode
@@ -807,22 +797,28 @@ function candidateCurves(
           const firstKnot = replicaCapacity * positive(workload.peakToAverage)
           const sample = Math.min(1, firstKnot / 2)
           const sampled = rentedCostForCandidate(workload, candidate, assumptions, sample)
-          if (sample > 0 && sampled) rented.push({
+          const compute = sampled?.breakdown.find(item => item.label === 'Cloud GPU compute')?.monthlyCost
+          if (sample > 0 && compute !== undefined) rented.push({
             kind: 'scale-to-zero',
             fixed: rentedAtZero.monthlyCost,
-            rate: (sampled.monthlyCost - rentedAtZero.monthlyCost) / sample,
+            rate: compute / sample,
             firstKnot,
-            parallelism: layout.replicasPerInstance,
+            parallelism: layout.billedInstances / layout.instancesPerReplica * layout.replicasPerInstance,
           })
         } else {
+          // A billable step is one packed instance or one entire
+          // multi-instance replica. Capacity, price and floor use that unit.
+          const minimumUnits = layout.billedInstances / layout.instancesPerReplica
           const capacity = replicaCapacity * layout.replicasPerInstance
           const sample = Math.min(1, capacity / 2)
           const sampled = rentedCostForCandidate(workload, candidate, assumptions, sample)
-          if (sample > 0 && sampled) rented.push({
+          const compute = sampled?.breakdown.find(item => item.label === 'Cloud GPU compute')?.monthlyCost
+          if (sample > 0 && compute !== undefined) rented.push({
             kind: 'step',
             fixed: rentedAtZero.monthlyCost,
-            increment: sampled.monthlyCost - rentedAtZero.monthlyCost,
+            increment: compute / minimumUnits,
             capacity,
+            minimumUnits,
           })
         }
       }
@@ -838,11 +834,12 @@ function candidateCurves(
       const capacity = replicaCapacity * Math.max(Math.floor(gpusPerServer / gpusPerReplica), 1)
       const sample = Math.min(1, capacity / 2)
       const sampled = ownedCostForCandidate(workload, candidate, assumptions, sample)
-      if (sample > 0 && sampled) owned.push({
+      if (sample > 0 && sampled?.deployment && sampled.deployment.wholeUnits > 0) owned.push({
         kind: 'step',
         fixed: ownedAtZero.monthlyCost,
-        increment: sampled.monthlyCost - ownedAtZero.monthlyCost,
+        increment: (sampled.monthlyCost - ownedAtZero.monthlyCost) / sampled.deployment.wholeUnits,
         capacity,
+        minimumUnits: sampled.deployment.wholeUnits,
       })
     }
   }
@@ -903,15 +900,17 @@ function chartVolumes(
     }
     if (curve.kind !== 'step') continue
     const addBoundary = (multiplier: number) => {
-      if (multiplier < 1) return
+      if (multiplier < (curve.minimumUnits ?? 1)) return
       const lastTokenBeforeStep = Math.floor(curve.capacity * multiplier)
       volumes.add(lastTokenBeforeStep)
       volumes.add(lastTokenBeforeStep + 1)
     }
     const boundaryCount = Math.floor(maximum / curve.capacity)
-    const shown = Math.min(boundaryCount, stepsPerCurve)
-    for (let index = 1; index <= shown; index += 1) {
-      addBoundary(Math.ceil(index * boundaryCount / shown))
+    const floor = curve.minimumUnits ?? 1
+    const boundaryTotal = Math.max(boundaryCount - floor + 1, 0)
+    const shown = Math.min(boundaryTotal, stepsPerCurve)
+    for (let index = 0; index < shown; index += 1) {
+      addBoundary(floor + Math.ceil(index * (boundaryTotal - 1) / Math.max(shown - 1, 1)))
     }
     for (const anchor of anchors) {
       addBoundary(Math.floor(anchor / curve.capacity))
@@ -925,7 +924,7 @@ function chartVolumes(
 
 export function calculateHybridComparison(
   workload: HybridWorkload,
-  hostedPrice: HostedPrice,
+  hostedPrice: HostedPrice | null,
   candidates: InfrastructureCandidate[],
   assumptions: CostAssumptions,
   selections: HardwareSelections = {},
@@ -933,12 +932,12 @@ export function calculateHybridComparison(
   const facts = workloadFacts(workload)
   const rentedCandidates = selectedCandidates('rented', workload, candidates, assumptions, facts.monthlyTokens, selections.rented)
   const ownedCandidates = selectedCandidates('owned', workload, candidates, assumptions, facts.monthlyTokens, selections.owned)
-  const hosted = hostedCostAtVolume(
+  const hosted = hostedPrice ? hostedCostAtVolume(
     workload,
     hostedPrice,
     assumptions,
     facts.monthlyTokens,
-  )
+  ) : null
   const rented = bestRentedAtVolume(
     workload,
     rentedCandidates,
@@ -956,14 +955,13 @@ export function calculateHybridComparison(
   )
   const cheapest = lowestCostOption(options)
   const curves = candidateCurves(workload, rentedCandidates, assumptions, ownedCandidates)
-  const inputShare = workloadMix(workload).inputShare
-  const hostedCurve: CostCurve = {
+  const { inputShare, outputShare } = workloadMix(workload)
+  const hostedCurve: CostCurve | null = hostedPrice ? {
     kind: 'linear',
     fixed: hostedCostAtVolume(workload, hostedPrice, assumptions, 0).monthlyCost,
-    rate: (inputShare * finiteNonNegative(hostedPrice.inputPerMillion)
-      + (1 - inputShare) * finiteNonNegative(hostedPrice.outputPerMillion)) / MILLION
-      + workloadMix(workload).requestsPerBilledToken * finiteNonNegative(hostedPrice.requestPerRequest ?? 0),
-  }
+    rate: hostedUsageBreakdown(hostedPrice, inputShare, outputShare, requestsAtVolume(workload, 1))
+      .reduce((sum, item) => sum + item.monthlyCost, 0),
+  } : null
   let rentedBreakEvenTokens: number | null = null
   let ownedBreakEvenTokens: number | null = null
   let rentedLowestCostTokens: number | null = null
@@ -974,14 +972,18 @@ export function calculateHybridComparison(
     // In that rare case the current-workload costs remain valid, but no
     // unverified transition may be labelled "not reached".
     const budget = { remaining: 10_000 }
-    rentedBreakEvenTokens = firstWinningVolume(curves.rented, [hostedCurve], DEFAULT_SEARCH_MAXIMUM, budget)
-    ownedBreakEvenTokens = firstWinningVolume(curves.owned, [hostedCurve], DEFAULT_SEARCH_MAXIMUM, budget)
-    rentedLowestCostTokens = firstWinningVolume(
-      curves.rented, [hostedCurve, ...curves.owned], DEFAULT_SEARCH_MAXIMUM, budget,
-    )
-    ownedLowestCostTokens = firstWinningVolume(
-      curves.owned, [hostedCurve, ...curves.rented], DEFAULT_SEARCH_MAXIMUM, budget,
-    )
+    if (hostedCurve) {
+      rentedBreakEvenTokens = firstWinningVolume(curves.rented, [hostedCurve], DEFAULT_SEARCH_MAXIMUM, budget)
+      ownedBreakEvenTokens = firstWinningVolume(curves.owned, [hostedCurve], DEFAULT_SEARCH_MAXIMUM, budget)
+      if (curves.rented.length && curves.owned.length) {
+        rentedLowestCostTokens = firstWinningVolume(
+          curves.rented, [hostedCurve, ...curves.owned], DEFAULT_SEARCH_MAXIMUM, budget,
+        )
+        ownedLowestCostTokens = firstWinningVolume(
+          curves.owned, [hostedCurve, ...curves.rented], DEFAULT_SEARCH_MAXIMUM, budget,
+        )
+      }
+    }
   } catch (error) {
     if (!(error instanceof TransitionSearchLimitError)) throw error
     transitionsVerified = false
@@ -1013,7 +1015,7 @@ export function calculateHybridComparison(
   )
     .map(tokens => ({
       tokens,
-      hosted: hostedCostAtVolume(workload, hostedPrice, assumptions, tokens).monthlyCost,
+      hosted: hostedPrice ? hostedCostAtVolume(workload, hostedPrice, assumptions, tokens).monthlyCost : null,
       rented: bestRentedAtVolume(workload, rentedCandidates, assumptions, tokens)?.monthlyCost ?? null,
       owned: bestOwnedAtVolume(workload, ownedCandidates, assumptions, tokens)?.monthlyCost ?? null,
     }))

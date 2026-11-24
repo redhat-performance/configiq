@@ -9,6 +9,8 @@
  */
 
 const MILLION = 1_000_000
+const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
+const decimal = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 })
 
 /**
  * Selected monthly cost per million requested output tokens.
@@ -36,8 +38,14 @@ export function outputTokensAtVolume(volume: number, outputShare: number): numbe
 
 /** Card display for the output-unit metric; undefined renders as text. */
 export function formatCostPerMillionOutputTokens(value: number | null): string {
-  if (value === null) return 'Not available'
-  if (value === 0) return '$0.00'
-  if (value < 0.01) return '<$0.01'
-  return `$${value.toFixed(2)}`
+  return value === null ? 'Not available' : formatHybridUsd(value)
+}
+
+/** Keep tiny nonzero estimates visibly distinct from zero. */
+export function formatHybridUsd(value: number): string {
+  return value > 0 && value < 0.01 ? '<$0.01' : usd.format(value)
+}
+
+export function formatPlanningCapacityUse(percent: number): string {
+  return percent > 0 && percent < 0.1 ? '<0.1%' : `${decimal.format(percent)}%`
 }

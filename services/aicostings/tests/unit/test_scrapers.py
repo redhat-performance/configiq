@@ -130,6 +130,17 @@ class TestParseOpenRouterModel:
                           {"min_prompt_tokens": 128000, "output_per_million": 4}], "unsupported": [],
         }
 
+    def test_preserves_cache_only_context_overrides_and_retention(self):
+        result = _parse_openrouter_model({"id": "owner/model", "name": "Model", "pricing": {
+            "prompt": "0.000001", "completion": "0.000002", "input_cache_write": "0.00000125",
+            "input_cache_write_1h": "0.000002",
+            "overrides": [{"min_prompt_tokens": 100000, "input_cache_read": "0", "input_cache_write": "0.000003"}],
+        }})
+        assert result["billing"]["cache_write_variant"] is True
+        assert result["billing"]["overrides"] == [{"min_prompt_tokens": 100000,
+            "input_cache_read_per_million": 0, "input_cache_write_per_million": 3}]
+        assert not result["billing"]["unsupported"]
+
     @pytest.mark.parametrize("pricing", [
         {"request": -1}, {"request": "NaN"}, {"input_cache_read": True}, {"internal_reasoning": "0.000001"},
         {"overrides": {}}, {"overrides": [None]},
@@ -334,6 +345,22 @@ class TestTokenPriceValidation:
         assert result["billing"]["request_price"] == 0.01
         assert result["billing"]["overrides"] == [{"min_prompt_tokens": 128000, "input_per_million": 3,
                                                     "output_per_million": 4}]
+        assert not result["billing"]["unsupported"]
+
+    def test_litellm_keeps_synchronous_cache_tiers_and_marks_alternate_retention(self):
+        result = _parse_litellm_model("provider/model", {
+            "mode": "chat", "litellm_provider": "provider",
+            "input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002,
+            "cache_creation_input_token_cost": 0.00000125,
+            "cache_creation_input_token_cost_above_1hr": 0.000002,
+            "cache_creation_input_token_cost_above_1hr_above_200k_tokens": 0.000004,
+            "cache_creation_input_token_cost_above_200k_tokens": 0.0000025,
+            "cache_read_input_token_cost_above_200k_tokens": 0,
+            "cache_read_input_token_cost_above_200k_tokens_batches": 0.0000003,
+        })
+        assert result["billing"]["cache_write_variant"] is True
+        assert result["billing"]["overrides"] == [{"min_prompt_tokens": 200000, "cache_write_variant": True,
+            "input_cache_read_per_million": 0, "input_cache_write_per_million": 2.5}]
         assert not result["billing"]["unsupported"]
 
     @pytest.mark.parametrize("extra", [

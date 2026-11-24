@@ -1070,6 +1070,82 @@ describe('deployment capacity and output-token economics', () => {
     expect(candidateCapacityTokens(capacityWorkload, capacityCandidate, 90)).toBeCloseTo(4_050_000, 6)
   })
 
+  it('keeps the simulated replica floor at sparse demand and adds whole units past capacity', () => {
+    const cluster = {
+      ...capacityCandidate, replicasNeeded: 3, clusterOutputTokensPerSecond: 150,
+      cloudGpusPerInstance: 4,
+    }
+    const capacity = candidateCapacityTokens(capacityWorkload, cluster, 90)
+    const rented = (volume: number) => rentedCostForCandidate(capacityWorkload, cluster, capacityAssumptions, volume)!
+    const owned = (volume: number) => ownedCostForCandidate(capacityWorkload, cluster, capacityAssumptions, volume)!
+    for (const cost of [rented, owned]) {
+      expect(cost(0).deployment?.wholeUnits).toBe(0)
+      expect(cost(1).deployment).toMatchObject({ requiredReplicas: 3, requiredGpus: 6, wholeUnits: 2, billedGpus: 8 })
+      expect(cost(4 * capacity).deployment).toMatchObject({ requiredReplicas: 4, wholeUnits: 2 })
+      expect(cost(4 * capacity + 1).deployment).toMatchObject({ requiredReplicas: 5, wholeUnits: 3 })
+      expect(cost(4 * capacity + 1).monthlyCost).toBeGreaterThan(cost(4 * capacity).monthlyCost)
+    }
+    expect(rented(1).deployment?.billableInstanceHours).toBe(2 * 730)
+  })
+
+  it('prices all reference instances during scale-to-zero serving time and scales after their average capacity', () => {
+    const cluster = { ...capacityCandidate, replicasNeeded: 3, clusterOutputTokensPerSecond: 150, cloudGpusPerInstance: 4 }
+    const settings: CostAssumptions = { ...capacityAssumptions, cloudBillingMode: 'scale-to-zero', cloudRuntimeBufferPct: 0 }
+    const capacity = candidateCapacityTokens(capacityWorkload, cluster, 90)
+    const rented = (volume: number) => rentedCostForCandidate(capacityWorkload, cluster, settings, volume)!
+    expect(rented(0).deployment?.billableInstanceHours).toBe(0)
+    // At 2x peak, 0.1 of peak-adjusted replica capacity means 0.5
+    // serving hours on each of the two full instances in the floor.
+    expect(rented(capacity / 10).deployment?.billableInstanceHours).toBeCloseTo(1)
+    expect(rented(capacity / 10).breakdown[0].monthlyCost).toBeCloseTo(16)
+    expect(rented(2 * capacity).deployment?.billableInstanceHours).toBeCloseTo(20)
+    expect(rented(8 * capacity).deployment?.billableInstanceHours).toBeCloseTo(20)
+    expect(rented(10 * capacity).deployment?.billableInstanceHours).toBeCloseTo(25)
+  })
+
+  it.each(['active-window', 'always-on', 'scale-to-zero'] as const)(
+    'locates and plots break-even using the same %s floor as the cost cards', cloudBillingMode => {
+      const cluster = { ...capacityCandidate, replicasNeeded: 3, clusterOutputTokensPerSecond: 150, cloudGpusPerInstance: 4 }
+      const settings = { ...capacityAssumptions, cloudBillingMode, rentedFixedMonthly: 13.87 }
+      const hosted = { ...hostedPrice, inputPerMillion: 4_018.731, outputPerMillion: 123.783 }
+      const result = calculateHybridComparison(capacityWorkload, hosted, [cluster], settings)
+      expect(result.transitionsVerified).toBe(true)
+      const current = result.chartPoints.find(point => point.tokens === result.monthlyTokens)!
+      for (const [key, atVolume, crossover] of [
+        ['rented', rentedCostForCandidate, result.rentedBreakEvenTokens],
+        ['owned', ownedCostForCandidate, result.ownedBreakEvenTokens],
+      ] as const) {
+        expect(current[key]).toBe(result.options.find(option => option.key === key)!.monthlyCost)
+        expect(crossover).not.toBeNull()
+        const tokenCount = crossover!
+        const delta = (volume: number) => atVolume(capacityWorkload, cluster, settings, volume)!.monthlyCost -
+          hostedCostAtVolume(capacityWorkload, hosted, settings, volume).monthlyCost
+        expect(delta(tokenCount - 1)).toBeGreaterThan(0)
+        expect(delta(tokenCount)).toBeLessThanOrEqual(0)
+        expect(result.chartPoints.find(point => point.tokens === tokenCount)![key]).toBe(atVolume(capacityWorkload, cluster, settings, tokenCount)!.monthlyCost)
+      }
+    },
+  )
+
+  it.each(['active-window', 'always-on'] as const)(
+    'does not invent a %s crossover when a replica bills two instances', cloudBillingMode => {
+      const cluster = { ...capacityCandidate, gpusPerReplica: 8, cloudGpusPerInstance: 4, cloudMaxInstancesPerReplica: 2 }
+      const settings = { ...capacityAssumptions, cloudBillingMode }
+      const capacity = candidateCapacityTokens(capacityWorkload, cluster, settings.planningCapacityUsePct)
+      const first = rentedCostForCandidate(capacityWorkload, cluster, settings, 1)!
+      const idle = rentedCostForCandidate(capacityWorkload, cluster, settings, 0)!
+      // Hosted usage rises at 80% of the true per-replica marginal rate:
+      // renting cannot win even at very high volume.
+      const rate = 0.8 * (first.monthlyCost - idle.monthlyCost) / (2 * capacity) * 1e6
+      const hosted = { ...hostedPrice, inputPerMillion: rate, outputPerMillion: rate }
+      const result = calculateHybridComparison(capacityWorkload, hosted, [cluster], settings)
+      expect(first.deployment?.wholeUnits).toBe(4)
+      expect(rentedCostForCandidate(capacityWorkload, cluster, settings, 2 * capacity + 1)?.deployment?.wholeUnits).toBe(6)
+      expect(result.transitionsVerified).toBe(true)
+      expect(result.rentedBreakEvenTokens).toBeNull()
+    },
+  )
+
   it('reports the whole-instance rented layout and utilization over all usable slots', () => {
     const result = bestRentedAtVolume(capacityWorkload, [capacityCandidate], capacityAssumptions, 8_100_000)
     const deployment = result?.deployment

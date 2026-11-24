@@ -86,16 +86,17 @@ def _request_rate(value: Any) -> float | None:
 
 
 def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the standard uncached text tariff; never guess other charges."""
+    """Normalize standard text rates and explicit prompt-cache tariffs."""
     billing: dict[str, Any] = {"currency": "USD", "request_price": 0, "overrides": [], "unsupported": []}
     fields = {"prompt": "input_per_million", "completion": "output_per_million", "request": "request_price"}
+    cache_fields = {"input_cache_read": "input_cache_read_per_million",
+                    "input_cache_write": "input_cache_write_per_million"}
     optional_prices = {"input_cache_read", "input_cache_write", "input_cache_write_1h", "input_audio_cache",
                        "image", "image_output", "audio", "audio_output", "web_search"}
     if pricing.keys() - {*fields, *optional_prices, "internal_reasoning", "overrides"}:
         billing["unsupported"].append("Unrecognized pricing fields")
     for source, target in {
-        "request": "request_price", "input_cache_read": "input_cache_read_per_million",
-        "input_cache_write": "input_cache_write_per_million",
+        "request": "request_price", **cache_fields,
     }.items():
         if source not in pricing:
             continue
@@ -104,6 +105,10 @@ def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
             billing["unsupported"].append(f"Invalid {source} rate")
         else:
             billing[target] = rate
+    if "input_cache_write_1h" in pricing:
+        alternate = _per_million(pricing["input_cache_write_1h"])
+        if alternate is None or alternate != billing.get("input_cache_write_per_million"):
+            billing["cache_write_variant"] = True
     if "internal_reasoning" in pricing and _request_rate(pricing["internal_reasoning"]) != 0:
         billing["unsupported"].append("Separately priced reasoning tokens require a reasoning-token volume")
     overrides = pricing.get("overrides", [])
@@ -114,9 +119,7 @@ def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(override, dict):
             billing["unsupported"].append("Invalid pricing override")
             continue
-        # Cache, tool and modality-specific prices do not apply to this text-only,
-        # uncached calculation. Time-window token tariffs cannot be guessed.
-        if not any(key in override for key in fields):
+        if not any(key in override for key in {*fields, *cache_fields, "input_cache_write_1h"}):
             continue
         threshold = override.get("min_prompt_tokens", 0)
         if type(threshold) is not int or threshold < 0 or any(
@@ -126,7 +129,7 @@ def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
             billing["unsupported"].append("Unsupported token-pricing condition")
             continue
         tier: dict[str, Any] = {"min_prompt_tokens": threshold}
-        for source, target in fields.items():
+        for source, target in {**fields, **cache_fields}.items():
             if source not in override:
                 continue
             rate = (_request_rate if source == "request" else _per_million)(override[source])
@@ -134,6 +137,10 @@ def _openrouter_billing(pricing: dict[str, Any]) -> dict[str, Any]:
                 billing["unsupported"].append(f"Invalid tier {source} rate")
             else:
                 tier[target] = rate
+        if "input_cache_write_1h" in override:
+            alternate = _per_million(override["input_cache_write_1h"])
+            if alternate is None or alternate != tier.get("input_cache_write_per_million"):
+                tier["cache_write_variant"] = True
         billing["overrides"].append(tier)
     return billing
 
@@ -154,8 +161,15 @@ def _litellm_billing(model: dict[str, Any]) -> dict[str, Any]:
     if "output_cost_per_reasoning_token" in model and _request_rate(model["output_cost_per_reasoning_token"]) != 0:
         billing["unsupported"].append("Separately priced reasoning tokens require a reasoning-token volume")
     tiers: dict[int, dict[str, Any]] = {}
+    retention_rates: list[tuple[int | None, Any]] = []
     for key, value in model.items():
-        match = re.fullmatch(r"(input|output)_cost_per_token_above_(\d+)k_tokens", key)
+        retention = re.fullmatch(r"cache_creation_input_token_cost_above_\d+hr(?:_above_(\d+)k_tokens)?", key)
+        if retention:
+            retention_rates.append((int(retention[1]) * 1000 if retention[1] else None, value))
+            continue
+        match = re.fullmatch(r"(input|output)_cost_per_token_above_(\d+)k_tokens", key) or re.fullmatch(
+            r"(cache_read_input_token|cache_creation_input_token)_cost_above_(\d+)k_tokens", key,
+        )
         if match:
             threshold = int(match[2]) * 1000
             tier = tiers.setdefault(threshold, {"min_prompt_tokens": threshold})
@@ -163,11 +177,20 @@ def _litellm_billing(model: dict[str, Any]) -> dict[str, Any]:
             if rate is None:
                 billing["unsupported"].append(f"Invalid {key} rate")
             else:
-                tier[f"{match[1]}_per_million"] = rate
+                field = {
+                    "cache_read_input_token": "input_cache_read_per_million",
+                    "cache_creation_input_token": "input_cache_write_per_million",
+                }.get(match[1], f"{match[1]}_per_million")
+                tier[field] = rate
         elif re.match(r"(?:input|output)_cost_per_token_above_", key) and not key.endswith(
             ("_batches", "_flex", "_priority", "_ultrafast", "_decisions")
         ):
             billing["unsupported"].append(f"Unsupported token-pricing condition: {key}")
+    for threshold, value in retention_rates:
+        target = billing if threshold is None else tiers.setdefault(threshold, {"min_prompt_tokens": threshold})
+        alternate = _per_million(value)
+        if alternate is None or alternate != target.get("input_cache_write_per_million"):
+            target["cache_write_variant"] = True
     billing["overrides"] = [tiers[threshold] for threshold in sorted(tiers)]
     return billing
 

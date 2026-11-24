@@ -89,6 +89,26 @@ export function analyzeRequestMix(workload: HybridWorkload): RequestMixAnalysis 
   }
 }
 
+/** Convert monthly self-hosted cache hits into a conservative sizing proxy. */
+export function estimateSelfHostedPrefix(cacheReadTokens: number, mix: RequestMixAnalysis): {
+  prefixTokens: number
+  issue: string | null
+} {
+  if (cacheReadTokens === 0) return { prefixTokens: 0, issue: null }
+  if (!Number.isSafeInteger(cacheReadTokens) || cacheReadTokens < 0) {
+    return { prefixTokens: 0, issue: 'Enter a whole number of cache-read tokens.' }
+  }
+  if (cacheReadTokens > mix.monthlyInputTokens) {
+    return { prefixTokens: 0, issue: 'Cache reads must be included in, and cannot exceed, monthly input tokens.' }
+  }
+  if (mix.sizingRequests === null || !Number.isFinite(mix.sizingRequests) || mix.sizingRequests <= 0) {
+    return { prefixTokens: 0, issue: 'Enter a valid request shape to estimate cache reuse.' }
+  }
+  // The larger implied request count is the one the cost engine sizes for.
+  // Round down to avoid modeling more reuse than the reported volume.
+  return { prefixTokens: Math.min(mix.averageInputTokens, Math.floor(cacheReadTokens / mix.sizingRequests)), issue: null }
+}
+
 export interface RequestMixAlignment {
   /** Deterministic proposal for averageInputTokens; null when not applicable. */
   proposedInputTokens: number | null

@@ -27,4 +27,20 @@ describe('hosted pricing API contract', () => {
     expect(() => parseHostedModels({ models: {} })).toThrow()
     expect(() => parseHostedModels({})).toThrow()
   })
+  it('preserves base and long-context cache tariffs and retention flags', () => {
+    const billing = {
+      currency: 'USD', request_price: 0, unsupported: [],
+      input_cache_read_per_million: 0.1, input_cache_write_per_million: 2.5,
+      cache_write_variant: true,
+      overrides: [{
+        min_prompt_tokens: 272000, input_per_million: 4,
+        input_cache_read_per_million: 0.2, input_cache_write_per_million: 5,
+        cache_write_variant: true,
+      }],
+    }
+    expect(parseHostedModels({ models: [{ ...model, billing }] }).models[0].billing).toEqual(billing)
+    expect(() => parseHostedModels({ models: [{
+      ...model, billing: { ...billing, overrides: [{ ...billing.overrides[0], input_cache_read_per_million: -1 }] },
+    }] })).toThrow()
+  })
 })

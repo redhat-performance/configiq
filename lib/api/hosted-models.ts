@@ -7,12 +7,16 @@ const billingSchema = z.object({
   request_price: rate.default(0),
   input_cache_read_per_million: rate.optional(),
   input_cache_write_per_million: rate.optional(),
+  cache_write_variant: z.boolean().optional(),
   // Conditions are evaluated per representative request, never monthly totals.
   overrides: z.array(z.object({
     min_prompt_tokens: z.number().int().nonnegative(),
     input_per_million: rate.optional(),
     output_per_million: rate.optional(),
     request_price: rate.optional(),
+    input_cache_read_per_million: rate.optional(),
+    input_cache_write_per_million: rate.optional(),
+    cache_write_variant: z.boolean().optional(),
   }).strict()).default([]),
   unsupported: z.array(z.string()).default([]),
 }).strict()

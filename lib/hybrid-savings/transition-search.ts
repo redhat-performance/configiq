@@ -1,7 +1,7 @@
 /** Cost shapes used only to locate transitions. Displayed costs still come from calc.ts. */
 export type CostCurve =
   | { kind: 'linear'; fixed: number; rate: number }
-  | { kind: 'step'; fixed: number; increment: number; capacity: number }
+  | { kind: 'step'; fixed: number; increment: number; capacity: number; minimumUnits?: number }
   | { kind: 'scale-to-zero'; fixed: number; rate: number; firstKnot: number; parallelism: number }
 
 type Line = { fixed: number; rate: number }
@@ -11,6 +11,12 @@ export class TransitionSearchLimitError extends Error {
 }
 
 export interface SearchBudget { remaining: number }
+
+/** Whole capacity units, avoiding floating-point noise at an exact boundary. */
+export function unitsAtVolume(volume: number, capacity: number, minimumUnits = 1): number {
+  const load = volume / capacity
+  return volume > 0 ? Math.max(minimumUnits, Math.ceil(load - load * 8 * Number.EPSILON)) : 0
+}
 
 function segment(curve: CostCurve, volume: number): number {
   if (curve.kind !== 'scale-to-zero') return 0
@@ -22,7 +28,7 @@ function segment(curve: CostCurve, volume: number): number {
 function lineAt(curve: CostCurve, volume: number): Line {
   if (curve.kind === 'linear') return { fixed: curve.fixed, rate: curve.rate }
   if (curve.kind === 'step') {
-    return { fixed: curve.fixed + curve.increment * Math.ceil(volume / curve.capacity), rate: 0 }
+    return { fixed: curve.fixed + curve.increment * unitsAtVolume(volume, curve.capacity, curve.minimumUnits), rate: 0 }
   }
   switch (segment(curve, volume)) {
     case 0: return { fixed: curve.fixed, rate: curve.rate }
@@ -37,26 +43,29 @@ export function costOnCurve(curve: CostCurve, volume: number): number {
 }
 
 function affineOver(curve: CostCurve, first: number, last: number): Line | null {
-  if (curve.kind === 'step' && Math.ceil(first / curve.capacity) !== Math.ceil(last / curve.capacity)) return null
+  if (curve.kind === 'step' && unitsAtVolume(first, curve.capacity, curve.minimumUnits) !== unitsAtVolume(last, curve.capacity, curve.minimumUnits)) return null
   if (curve.kind === 'scale-to-zero' && segment(curve, first) !== segment(curve, last)) return null
   return lineAt(curve, first)
 }
 
 function lowerCost(curve: CostCurve, volume: number): number {
   return curve.kind === 'step'
-    ? curve.fixed + curve.increment * volume / curve.capacity
+    ? curve.fixed + curve.increment * Math.max(curve.minimumUnits ?? 1, volume / curve.capacity)
     : costOnCurve(curve, volume)
 }
 
 function upperCost(curve: CostCurve, volume: number): number {
   return curve.kind === 'step'
-    ? curve.fixed + curve.increment * (volume / curve.capacity + 1)
+    ? curve.fixed + curve.increment * Math.max(curve.minimumUnits ?? 1, volume / curve.capacity + 1)
     : costOnCurve(curve, volume)
 }
 
 function integerKnots(curve: CostCurve, first: number, last: number): number[] {
-  if (curve.kind !== 'scale-to-zero') return []
-  return [curve.firstKnot, curve.firstKnot * curve.parallelism]
+  if (curve.kind === 'linear') return []
+  const knots = curve.kind === 'step'
+    ? [(curve.minimumUnits ?? 1) * curve.capacity, ((curve.minimumUnits ?? 1) - 1) * curve.capacity]
+    : [curve.firstKnot, curve.firstKnot * curve.parallelism]
+  return knots
     .flatMap(knot => [Math.floor(knot), Math.ceil(knot)])
     .filter(knot => knot > first && knot < last)
 }
@@ -71,6 +80,7 @@ function cannotBeat(
   if (
     target.kind === 'step' && competitor.kind === 'step' &&
     target.capacity <= competitor.capacity && target.increment >= competitor.increment &&
+    (target.minimumUnits ?? 1) >= (competitor.minimumUnits ?? 1) &&
     target.fixed + target.increment > competitor.fixed + competitor.increment
   ) return true
 

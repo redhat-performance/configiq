@@ -172,6 +172,14 @@ quadlets + nginx on IBM Cloud VMs). The `.dev` hosts follow `:dev`; the `.io`
 hosts follow `:latest`. The Triton quadlet is pinned to an immutable GHCR
 digest, and the same image digest is used by the K2 prefetch script.
 
+For the default 180-second min-GPU search, leave the web gateway's
+`AISIMULATORS_TIMEOUT_SECONDS` at 210 seconds (or update an older deployment
+override to match). Configure nginx `proxy_read_timeout` above that on the
+webapp and AISimulators request paths, for example `240s`, so nginx does not
+return a 504 before the app receives the result. Set an explicit shorter
+`MIN_GPUS_SEARCH_BUDGET_S` on AISimulators if the deployment cannot extend its
+proxy limits, and keep the gateway timeout above that shorter budget.
+
 To pull an image manually:
 
 **Production** (`:latest`):
