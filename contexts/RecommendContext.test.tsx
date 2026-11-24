@@ -213,7 +213,7 @@ describe('RecommendContext request construction', () => {
 describe('RecommendContext action modes', () => {
   const completed = (gpusNeeded = 4) => ({
     status: 'completed',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     mode: 'agg',
     recommendation: {
       gpusNeeded,
@@ -279,14 +279,14 @@ describe('RecommendContext action modes', () => {
     // The sizing half asks the same workload for its recommended config; the
     // sweep asks for the frontier. Both are kept on one run.
     const sizingBody = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)
-    expect(sizingBody).toMatchObject({ objective: 'min_gpus', simulator: 'aisimulate' })
+    expect(sizingBody).toMatchObject({ objective: 'min_gpus', simulator: 'aisim' })
     expect(sizingBody).not.toHaveProperty('mode')
 
     const frontier = vi.mocked(fetchFrontier)
     expect(frontier).toHaveBeenCalledTimes(1)
     expect(frontier.mock.calls[0][0]).toMatchObject({
       objective: 'pareto',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
 
     expect(latest.runMode).toBe('pareto')
@@ -309,7 +309,7 @@ describe('RecommendContext action modes', () => {
         objectives: { throughput_per_user: 22, throughput_per_gpu: 200 },
         transfer_delay_modeled: false,
         provenance_sources: ['sdk'],
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       }],
       views: { pareto_front: ['candidate-000001'], top_n: ['candidate-000001'] },
       sweep: null,
