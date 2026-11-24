@@ -1,4 +1,5 @@
 import { aggregateObservations, headToHead, type Observation } from './metrics';
+import type { DatasetRow } from '@/lib/validation/benchmark-types';
 import {
   SCORECARD_METRICS,
   SCORECARD_RELEASE_MATCH,
@@ -9,6 +10,7 @@ import {
   type ScorecardPoint,
   type ScorecardReleaseMatch,
   type ScorecardSource,
+  type ScorecardSourceOverlap,
   type ScorecardTotal,
 } from './types';
 
@@ -52,6 +54,52 @@ export function buildCoverage(points: readonly ScorecardPoint[]): ScorecardCover
   }
 
   return [...groups.values()].sort(compareSlice);
+}
+
+/**
+ * Count the (model, GPU) and (model, GPU, input, output) shapes that both
+ * measured sources contain at least one row for.
+ *
+ * The scorecard's Venn counts pairs from `coverage`; this is the separate
+ * workload question. Keeping it out of the per-simulator aggregate avoids
+ * inflating coverage with rows no simulator ever saw, and lets the page say
+ * plainly that overlapping pairs are not necessarily overlapping workloads.
+ */
+export function buildSourceOverlap(rows: readonly DatasetRow[]): ScorecardSourceOverlap {
+  const pairs: Record<ScorecardSource, Set<string>> = { redhat: new Set(), inferencex: new Set() };
+  const workloads: Record<ScorecardSource, Set<string>> = { redhat: new Set(), inferencex: new Set() };
+
+  for (const row of rows) {
+    const source: ScorecardSource = row.benchmark_source === 'inferencex' ? 'inferencex' : 'redhat';
+    const model = textValue(row.model);
+    const accelerator = textValue(row.accelerator);
+    const isl = textValue(row.isl);
+    const osl = textValue(row.osl);
+    if (!model || !accelerator || !isl || !osl) continue;
+    const pair = [model, accelerator].join('\u0000');
+    pairs[source].add(pair);
+    workloads[source].add([pair, isl, osl].join('\u0000'));
+  }
+
+  return {
+    sharedPairs: sharedCount(pairs.redhat, pairs.inferencex),
+    sharedWorkloads: sharedCount(workloads.redhat, workloads.inferencex),
+  };
+}
+
+function textValue(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() ? value.trim() : null;
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null;
+  if (typeof value === 'bigint') return value.toString();
+  return null;
+}
+
+function sharedCount(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
+  let shared = 0;
+  for (const value of left) {
+    if (right.has(value)) shared += 1;
+  }
+  return shared;
 }
 
 export function buildCells(points: readonly ScorecardPoint[]): ScorecardCell[] {

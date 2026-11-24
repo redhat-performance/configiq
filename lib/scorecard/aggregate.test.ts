@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCells, buildCoverage, buildHeadToHead, buildTotals } from './aggregate';
+import { buildCells, buildCoverage, buildHeadToHead, buildSourceOverlap, buildTotals } from './aggregate';
 import { point } from './__fixtures__/points';
 
 describe('buildCoverage', () => {
@@ -37,6 +37,65 @@ describe('buildCoverage', () => {
     expect(coverage).toHaveLength(2);
     expect(coverage.map(row => `${row.simulator}:${row.source}`).sort())
       .toEqual(['aisim:redhat', 'blis:inferencex']);
+  });
+});
+
+describe('buildSourceOverlap', () => {
+  function row(
+    benchmarkSource: string,
+    model: string,
+    accelerator: string,
+    isl: number,
+    osl: number,
+  ): Record<string, unknown> {
+    return {
+      benchmark_source: benchmarkSource,
+      model,
+      accelerator,
+      isl,
+      osl,
+    };
+  }
+
+  it('counts a pair once even when both sources measure it several times', () => {
+    const overlap = buildSourceOverlap([
+      row('redhat', 'org/model', 'H200', 1024, 128),
+      row('redhat', 'org/model', 'H200', 2048, 128),
+      row('inferencex', 'org/model', 'H200', 1024, 128),
+      row('inferencex', 'org/model', 'H200', 8192, 1024),
+      row('redhat', 'org/other', 'B200', 1024, 128),
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 1 });
+  });
+
+  it('does not call the same model on another GPU a shared pair', () => {
+    const overlap = buildSourceOverlap([
+      row('redhat', 'org/model', 'H200', 1024, 128),
+      row('inferencex', 'org/model', 'B200', 1024, 128),
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 0, sharedWorkloads: 0 });
+  });
+
+  it('needs the same input and output lengths, not just the same pair', () => {
+    const overlap = buildSourceOverlap([
+      row('redhat', 'org/model', 'H200', 8000, 1000),
+      row('inferencex', 'org/model', 'H200', 8192, 1024),
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 0 });
+  });
+
+  it('reads numeric fields and ignores a row without a complete shape', () => {
+    const overlap = buildSourceOverlap([
+      { benchmark_source: 'redhat', model: 'org/model', accelerator: 'H200', isl: 1024, osl: 128 },
+      { benchmark_source: 'inferencex', model: 'org/model', accelerator: 'H200', isl: '1024', osl: '128' },
+      { benchmark_source: 'redhat', model: 'org/model', accelerator: 'H200' },
+      { benchmark_source: 'inferencex', model: '', accelerator: 'H200', isl: 1024, osl: 128 },
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 1 });
   });
 });
 

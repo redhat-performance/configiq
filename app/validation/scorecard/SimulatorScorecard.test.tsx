@@ -555,6 +555,72 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).toContain('These totals cover every configuration in the snapshot');
   });
 
+  it('selects a coverage point into the model and GPU filters and shares it', async () => {
+    await mount(published({
+      coverage: [
+        coverageFor('aisim'),
+        coverageFor('blis', { supported: 1 }),
+        coverageFor('aisim', {
+          model: 'org/other',
+          accelerator: 'B200',
+          supported: 1,
+          unsupported: 0,
+          total: 1,
+        }),
+        coverageFor('blis', {
+          model: 'org/other',
+          accelerator: 'B200',
+          supported: 1,
+          unsupported: 0,
+          total: 1,
+        }),
+      ],
+      cells: [
+        cellFor('aisim', { metric: 'tpot', statistic: 'mdape', value: 0.11 }),
+        cellFor('blis', { metric: 'tpot', statistic: 'mdape', value: 0.19 }),
+        cellFor('aisim', {
+          model: 'org/other',
+          accelerator: 'B200',
+          metric: 'tpot',
+          statistic: 'mdape',
+          value: 0.3,
+        }),
+        cellFor('blis', {
+          model: 'org/other',
+          accelerator: 'B200',
+          metric: 'tpot',
+          statistic: 'mdape',
+          value: 0.4,
+        }),
+      ],
+    }));
+
+    const dot = container.querySelector<HTMLButtonElement>('button[aria-label="org/other, B200"]');
+    expect(dot).not.toBeNull();
+
+    await act(async () => {
+      dot!.click();
+      await Promise.resolve();
+    });
+
+    const model = container.querySelector<HTMLInputElement>('input[aria-label="Model"]');
+    const workload = container.querySelector<HTMLSelectElement>('select[aria-label="Workload"]');
+    expect(model?.value).toBe('org/other');
+    expect(gpuToggle().textContent).toContain('B200');
+    // A dot names a pair, not a shape: the workload is not part of the click.
+    expect(workload?.value).toBe('');
+
+    await act(async () => {
+      button('Copy link')?.click();
+      await Promise.resolve();
+    });
+
+    const params = new URL(clipboard.text).searchParams;
+    expect(params.get('model')).toBe('org/other');
+    expect(params.get('gpu')).toBe('B200');
+    expect(params.get('workload')).toBeNull();
+  });
+
   it('does not read the reader’s settings to decide what to show', async () => {
     // The page imports no settings hook. If it did, this mount would fail on
     // the missing provider rather than render every published simulator.

@@ -8,6 +8,7 @@ import type {
 import { summary } from '@/lib/scorecard/__fixtures__/points';
 import {
   buildChartRows,
+  buildCoverageSets,
   buildFilterOptions,
   buildHeadToHeadPairs,
   buildHeadToHeadSummary,
@@ -477,6 +478,67 @@ describe('buildHeadToHeadSummary', () => {
 
   it('returns no categories when the pair is absent from the slice', () => {
     expect(buildHeadToHeadSummary([], byModel).categories).toEqual([]);
+  });
+});
+
+describe('buildCoverageSets', () => {
+  // The universe comes from `coverage`, not from scored cells: a measured pair
+  // with no prediction still belongs on the map as the coverage gap.
+  const artifact = summary({
+    coverage: [
+      coverage({ simulator: 'aisim', model: 'org/model', accelerator: 'H200' }),
+      coverage({ simulator: 'blis', model: 'org/model', accelerator: 'H200', supported: 1 }),
+      coverage({ simulator: 'aisim', source: 'inferencex', model: 'org/model', accelerator: 'H200' }),
+      coverage({ simulator: 'aisim', model: 'org/unscored', accelerator: 'B200', supported: 0, unsupported: 2 }),
+      coverage({ simulator: 'aisim', source: 'inferencex', model: 'org/other', accelerator: 'H200' }),
+      coverage({ simulator: 'aisim', model: 'org/matched', accelerator: 'H200', releaseMatch: 'matched' }),
+    ],
+  });
+
+  it('counts one pair per model and GPU, not one per simulator or source', () => {
+    const sets = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' });
+
+    expect(sets.pairs.map(pair => [pair.model, pair.accelerator])).toEqual([
+      ['org/model', 'H200'],
+      ['org/other', 'H200'],
+      ['org/unscored', 'B200'],
+    ]);
+    expect(sets.notScored).toBe(1);
+  });
+
+  it('records every simulator that scored at least one level of the pair', () => {
+    const model = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' })
+      .pairs.find(pair => pair.model === 'org/model');
+
+    expect([...model!.simulators].sort()).toEqual(['aisim', 'blis']);
+    expect([...model!.sources].sort()).toEqual(['inferencex', 'redhat']);
+  });
+
+  it('leaves a measured pair out of every simulator set when nothing scored it', () => {
+    const unscored = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' })
+      .pairs.find(pair => pair.model === 'org/unscored');
+
+    expect(unscored!.simulators.size).toBe(0);
+    expect([...unscored!.sources]).toEqual(['redhat']);
+  });
+
+  it('follows the source filter', () => {
+    const redhat = buildCoverageSets(artifact, { source: 'redhat', releaseMatch: 'any' });
+
+    expect(redhat.pairs.map(pair => pair.model)).not.toContain('org/other');
+    expect(redhat.pairs.find(pair => pair.model === 'org/model')!.sources)
+      .toEqual(new Set(['redhat']));
+  });
+
+  it('follows the release slice rather than mixing it in', () => {
+    const matched = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'matched' });
+
+    expect(matched.pairs.map(pair => pair.model)).toEqual(['org/matched']);
+  });
+
+  it('returns nothing when the slice has no measured pair', () => {
+    expect(buildCoverageSets(summary(), { source: 'all', releaseMatch: 'any' }))
+      .toEqual({ pairs: [], notScored: 0 });
   });
 });
 

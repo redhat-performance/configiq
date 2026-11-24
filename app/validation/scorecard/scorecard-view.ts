@@ -5,6 +5,7 @@ import type {
   ScorecardHeadToHead,
   ScorecardMetric,
   ScorecardReleaseMatch,
+  ScorecardSource,
   ScorecardSourceFilter,
   ScorecardStatistic,
   ScorecardSummary,
@@ -96,6 +97,79 @@ export function sumCoverage(
 
 function recomputeTotal(counts: CoverageCounts): void {
   counts.total = counts.supported + counts.unsupported + counts.inconclusive + counts.ineligible;
+}
+
+/** One measured model + GPU pair, with who measured and who scored it. */
+export interface CoveragePair {
+  /** Stable key within a snapshot; the model can contain `/`, not `\u0000`. */
+  key: string;
+  model: string;
+  accelerator: string;
+  /** Simulator ids that scored at least one level of this pair. */
+  simulators: Set<string>;
+  /** Measured sources that contain a row for this pair. */
+  sources: Set<ScorecardSource>;
+}
+
+export interface CoverageSets {
+  /** Every pair the selected slice measured, scored or not. */
+  pairs: CoveragePair[];
+  /** Pairs measured in this slice that no simulator could score. */
+  notScored: number;
+}
+
+export interface CoverageSetOptions {
+  source: ScorecardSourceFilter;
+  releaseMatch: ScorecardReleaseMatch;
+}
+
+/**
+ * Build the coverage map's universe.
+ *
+ * The unit is a model + GPU pair, not a model: a simulator can score one GPU
+ * for a model and not another, and that difference is the point of the map.
+ * The universe comes from `coverage`, not `cells`, because a pair that no
+ * simulator scored still belongs on the map — it is the coverage gap, and
+ * hiding it would make the circles look like the whole measured population.
+ *
+ * A simulated set only contains a pair where that simulator returned a
+ * prediction for at least one measured level. A measured set contains a pair
+ * where that source has any row for it, including rows outside the scorecard's
+ * eligibility. The two memberships answer different questions and are never
+ * inferred from each other.
+ */
+export function buildCoverageSets(
+  summary: ScorecardSummary,
+  options: CoverageSetOptions,
+): CoverageSets {
+  const pairs = new Map<string, CoveragePair>();
+
+  for (const row of summary.coverage) {
+    if (row.releaseMatch !== options.releaseMatch) continue;
+    if (options.source !== 'all' && row.source !== options.source) continue;
+    if (row.total === 0) continue;
+
+    const key = [row.model, row.accelerator].join('\u0000');
+    const pair = pairs.get(key) ?? {
+      key,
+      model: row.model,
+      accelerator: row.accelerator,
+      simulators: new Set<string>(),
+      sources: new Set<ScorecardSource>(),
+    };
+    pair.sources.add(row.source);
+    if (row.supported > 0) pair.simulators.add(row.simulator);
+    pairs.set(key, pair);
+  }
+
+  const ordered = [...pairs.values()].sort((left, right) =>
+    left.model.localeCompare(right.model)
+    || left.accelerator.localeCompare(right.accelerator));
+
+  return {
+    pairs: ordered,
+    notScored: ordered.filter(pair => pair.simulators.size === 0).length,
+  };
 }
 
 export interface MatrixRow {

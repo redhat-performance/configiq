@@ -326,6 +326,13 @@ export const HELP_TOURS: HelpTour[] = [
         position: 'bottom',
       },
       {
+        target: '[data-tour="coverage"]',
+        title: 'Coverage map',
+        description:
+          'One dot per measured model + GPU pair. Select a scored dot to set the model and GPU filters, or open the table for the exact membership.',
+        position: 'bottom',
+      },
+      {
         target: '[data-tour="agreement"]',
         title: 'Agreement by simulator',
         description:

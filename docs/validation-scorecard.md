@@ -108,6 +108,37 @@ never lists is not a judgement about the hardware.
 The job never falls back to a different simulator. If a requested simulator does
 not answer, the point is `inconclusive` and the reason is published.
 
+### Coverage map
+
+The page draws the measured pairs as two two-set diagrams when the snapshot has
+exactly two simulators: one for the simulator pair, and one for the measured
+source pair. One dot is a model + GPU pair, not a model alone. A simulator can
+score one GPU for a model and not another, and that difference is the
+comparison.
+
+The universe comes from `coverage`, so a pair that no simulator scored still
+appears in the measured-data figure as a coverage gap. A pair sits in a
+simulator's circle when that simulator returned a prediction for at least one
+measured level of the pair. Selecting a scored dot sets the model and GPU
+filters and clears the workload, because the dot names a pair, not a shape. The
+table under the figures carries the exact four-way membership.
+
+The measured-data lens is **pair overlap, not workload overlap**. One source can
+measure a model and GPU at 8,000 input / 1,000 output while another measures the
+same pair at 8,192 / 1,024. When both sources loaded, the artifact publishes
+`sourceOverlap.sharedPairs` and `sourceOverlap.sharedWorkloads` as separate
+counts, and the page shows the shared-workload count beside the figure rather
+than letting the lens imply a like-for-like comparison. That count covers the
+whole snapshot: the circles and lens follow the selected source and release
+slice, but the workload note does not, and the note says so. The field is
+omitted when a source could not be read, and it is also omitted from snapshots
+published before it existed; in both cases the page says the count was not
+published instead of treating it as zero.
+
+Both figures follow the source and release filters. The metric and statistic
+selectors change the error numbers elsewhere; they do not change pair
+membership.
+
 ## Head to head
 
 Comparing two independent MAPEs over different coverage is not a comparison: the

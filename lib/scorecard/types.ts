@@ -74,6 +74,20 @@ export interface ScorecardDataset {
   rowCount: number;
 }
 
+/**
+ * How much the measured sources overlap.
+ *
+ * A shared model+GPU pair is not a shared workload: the two sources can measure
+ * the same parts at different input and output lengths. Both counts are
+ * therefore published separately, and the page never infers one from the other.
+ */
+export interface ScorecardSourceOverlap {
+  /** Distinct `(model, accelerator)` pairs measured by both sources. */
+  sharedPairs: number;
+  /** Distinct `(model, accelerator, isl, osl)` shapes measured by both sources. */
+  sharedWorkloads: number;
+}
+
 export interface ScorecardProvenance {
   schemaVersion: typeof SCORECARD_SCHEMA_VERSION;
   channel: ScorecardChannel;
@@ -88,6 +102,12 @@ export interface ScorecardProvenance {
   /** Points served from the incremental prediction cache. */
   cachedPoints: number;
   datasets: ScorecardDataset[];
+  /**
+   * Measured overlap between the sources. Optional so a snapshot published
+   * before this field existed still renders; the page falls back to pair
+   * coverage from `coverage` and says the workload count is not published.
+   */
+  sourceOverlap?: ScorecardSourceOverlap;
   simulators: ScorecardSimulator[];
   /**
    * Assumptions the sweep could not read from the measured row. They make the
@@ -257,6 +277,11 @@ const datasetSchema = z.object({
   rowCount: z.number().int().nonnegative(),
 });
 
+const sourceOverlapSchema = z.object({
+  sharedPairs: z.number().int().nonnegative(),
+  sharedWorkloads: z.number().int().nonnegative(),
+});
+
 const provenanceSchema = z.object({
   schemaVersion: z.literal(SCORECARD_SCHEMA_VERSION),
   channel: z.enum(SCORECARD_CHANNELS),
@@ -267,6 +292,7 @@ const provenanceSchema = z.object({
   answeredPoints: z.number().int().nonnegative(),
   cachedPoints: z.number().int().nonnegative(),
   datasets: z.array(datasetSchema),
+  sourceOverlap: sourceOverlapSchema.optional(),
   simulators: z.array(simulatorSchema),
   assumptions: z.object({
     ppSize: z.number().int().positive(),

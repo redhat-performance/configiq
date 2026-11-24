@@ -930,6 +930,211 @@
   width: 220px;
 }
 
+/* ── Coverage map ─────────────────────────────────────────────────────── */
+
+.coverageMap {
+  margin-bottom: 28px;
+}
+
+/*
+ * Two figures sit side by side when there is room. Each keeps its own legend
+ * and note, so a narrow view stacks them instead of merging two questions.
+ */
+.coverageFigures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--scorecard-gap);
+  margin-bottom: 8px;
+}
+
+.vennFigure {
+  margin: 0;
+  padding: 14px 16px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.vennTitle {
+  margin: 0 0 2px;
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/*
+ * The drawing uses a fixed viewBox and the dots are positioned as percentages
+ * of that same box. The component sets the aspect ratio from its viewBox
+ * constants; holding it is what keeps a dot on its region when the card is
+ * wider or narrower than the viewBox.
+ */
+.vennCanvas {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+  line-height: 0;
+}
+
+.vennSvg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.vennDot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid #ffffff;
+  border-radius: 50%;
+  background: var(--dot-color);
+  box-shadow: 0 0 0 1px rgba(21, 21, 21, 0.16);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+/* A larger invisible target than the mark, without letting neighbours merge. */
+.vennDot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+
+.vennDot:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.vennDotStatic {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.vennLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.vennLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vennSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vennSharedSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--first) 0 50%, var(--second) 50% 100%);
+}
+
+.vennCount {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.vennNote {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.coverageHover {
+  min-height: 20px;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.coverageHoverName {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.coverageTableSection {
+  margin-top: 2px;
+}
+
+/*
+ * A mark is a yes/no for one simulator or source. Colour repeats the legend
+ * so the table can be read without re-deriving which column is which.
+ */
+.markCell {
+  width: 1%;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.table thead th.markCell {
+  text-align: center;
+}
+
+.markOn,
+.markOff {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.markOn {
+  background: var(--mark-color, var(--success));
+}
+
+.markOff {
+  background: transparent;
+  border: 1px solid var(--border-strong, #b8bbbe);
+}
+
+/* The model name doubles as the control that applies the pair. */
+.pairButton {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--mono);
+  color: var(--link);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pairButton:hover {
+  text-decoration-thickness: 2px;
+}
+
+.pairButton:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* ── Method notes ─────────────────────────────────────────────────────── */
 
 .methodSection {

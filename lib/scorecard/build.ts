@@ -20,7 +20,7 @@ import {
 } from '../validation/benchmark-predictions';
 import { normalizeBackendVersion, UNREPORTED_VERSION } from '../validation/benchmark-versions';
 import type { DatasetConfiguration, DatasetRow } from '../validation/benchmark-types';
-import { buildCells, buildCoverage, buildHeadToHead, buildTotals } from './aggregate';
+import { buildCells, buildCoverage, buildHeadToHead, buildSourceOverlap, buildTotals } from './aggregate';
 import {
   eligibility,
   type Eligible,
@@ -625,7 +625,7 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
       });
       log(`inferencex dataset: ${dataset.rows.length} rows`);
     } catch (error: unknown) {
-      const reason = error instanceof Error ? error.message : 'private snapshot unavailable';
+      const reason = error instanceof Error ? error.message : 'snapshot unavailable';
       incomplete.push({ leg: 'inferencex', reason });
       log(`inferencex dataset unavailable: ${reason}`);
     }
@@ -779,6 +779,13 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
 
   const allPoints = [...points, ...skippedPoints];
   const answered = points.filter(point => point.status === 'supported').length;
+  // A shared count is only meaningful when both sources loaded. Emitting zero
+  // for a source that failed would read as "they have nothing in common",
+  // which is a different claim from "we could not read one of them".
+  const loadedSources = new Set(datasets.map(dataset => dataset.source));
+  const sourceOverlap = loadedSources.has('redhat') && loadedSources.has('inferencex')
+    ? buildSourceOverlap(rows)
+    : undefined;
 
   const summary: ScorecardSummary = {
     schemaVersion: SCORECARD_SCHEMA_VERSION,
@@ -790,6 +797,7 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
     answeredPoints: answered,
     cachedPoints: cacheHits,
     datasets,
+    ...(sourceOverlap ? { sourceOverlap } : {}),
     simulators: available.map(support => ({
       id: support.id,
       label: support.label,

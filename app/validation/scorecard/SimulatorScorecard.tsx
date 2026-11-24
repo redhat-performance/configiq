@@ -35,6 +35,7 @@ import {
   type ScorecardStatistic,
   type ScorecardSummary,
 } from '@/lib/scorecard/types';
+import CoverageMap from './CoverageMap';
 import ErrorBarChart from './ErrorBarChart';
 import HeadToHeadChart from './HeadToHeadChart';
 import {
@@ -51,6 +52,7 @@ import {
   sumCoverage,
   type ChartRow,
   type CoverageCounts,
+  type CoveragePair,
   type HeadToHeadPairOption,
   type HeadToHeadSummary,
   type MatrixRow,
@@ -328,6 +330,27 @@ export default function SimulatorScorecard() {
     [summary],
   );
 
+  // The coverage figures paint a simulator's brand colour, the same one its
+  // tile and chart series use, so the legend does not have to be relearned.
+  const coverageSimulators = React.useMemo(
+    () => linkedSimulators.map(simulator => ({
+      id: simulator.id,
+      label: simulator.label,
+      color: simulatorColor(simulator.id),
+    })),
+    [linkedSimulators, simulatorColor],
+  );
+
+  // A dot is a measured model + GPU pair, so choosing one should fill those two
+  // filters rather than inventing a third selection. Clearing the workload
+  // keeps the page on the pair the reader clicked instead of narrowing it to a
+  // shape the dot never named.
+  const selectCoveragePair = React.useCallback((pair: CoveragePair) => {
+    setModel(pair.model);
+    setGpu(pair.accelerator);
+    setWorkload('');
+  }, []);
+
   const formatStatistic = statistic === 'bias' ? formatSignedPercent : formatPercent;
   const statisticLabel = STATISTICS.find(entry => entry.value === statistic)?.label ?? statistic;
 
@@ -518,6 +541,42 @@ export default function SimulatorScorecard() {
                 Clear filters
               </Button>
             )}
+          </section>
+
+          <section aria-labelledby="scorecard-coverage-title" data-tour="coverage">
+            <div className={styles.sectionHead}>
+              <h2 id="scorecard-coverage-title">Coverage map</h2>
+              <JargonPopover
+                term="Coverage map"
+                explanation={
+                  <div className={styles.popoverBody}>
+                    <p>
+                      One dot is a measured model + GPU pair. A pair sits inside a
+                      simulator&apos;s circle when that simulator scored at least one
+                      measured level for it, so the overlap is the work both can score.
+                      The measured-data figure counts the pairs each source holds.
+                    </p>
+                    <p>
+                      A shared pair is not a shared workload: the two sources can
+                      measure the same model and GPU at different input and output
+                      lengths. The shared-workload count is reported separately.
+                    </p>
+                    <p>
+                      Select a scored dot to set the model and GPU filters. The table
+                      lists every pair and its exact membership.
+                    </p>
+                  </div>
+                }
+              />
+            </div>
+
+            <CoverageMap
+              summary={summary}
+              source={source}
+              releaseMatch={effectiveReleaseMatch}
+              simulators={coverageSimulators}
+              onSelectPair={selectCoveragePair}
+            />
           </section>
 
           <section aria-labelledby="scorecard-headline-title" data-tour="agreement">
