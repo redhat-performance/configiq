@@ -758,12 +758,7 @@ function MatrixFlipCard({
     >
       <div ref={frontRef} className={`${styles.flipFace} ${styles.flipFront}`} aria-hidden={flipped}>
         <div className={styles.chartHead}>
-          <div>
-            <h3>{statisticLabel} by measured configuration</h3>
-            <p className={styles.chartHint}>
-              {formatCount(chartRows.length)} {chartRows.length === 1 ? 'configuration' : 'configurations'} with a prediction, worst first
-            </p>
-          </div>
+          <h3>{statisticLabel} by measured configuration</h3>
           <span className={styles.chartUnit}>Lower is closer</span>
         </div>
         <ul className={styles.chartLegend} aria-label="Chart legend">
