@@ -1107,8 +1107,20 @@ export default function Sizing() {
     const systemOption = selectableGpus.find(option => option.systemId === params.system);
     const cloudRate = resolveCloudRate(costings.gpuCloudRates.get(params.system), preferredCloudProvider);
     const hardwareCost = costings.gpuHardwareCosts.get(params.system)?.new_usd ?? null;
+    // The submitted backend is a string; a link only names a backend its
+    // contract knows. An unrecognized one leaves the field out rather than
+    // claiming the current setting produced this run.
+    const runBackend = recommendLink.fields.backend.safeParse(params.backend ?? inferenceBackend);
     return buildRecommendEntry({
-      link: shared.build(),
+      // The link reads simulator and backend from current settings, which can
+      // move after a run without touching the form. Describe the run that
+      // produced the result, so replaying the saved link does not name a
+      // different simulator or engine than the snapshot.
+      link: shared.build({
+        simulator: result.simulator || undefined,
+        backend: runBackend.success ? runBackend.data : undefined,
+        backendVersion: params.backend_version ?? undefined,
+      }),
       model: params.model_path,
       system: params.system,
       systemLabel: systemOption?.label ?? params.system,

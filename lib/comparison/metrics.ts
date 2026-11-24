@@ -37,6 +37,11 @@ export function workloadLabel(entry: ComparisonEntry): string {
   return `ISL ${isl} · OSL ${osl} · ${concurrency} users`
 }
 
+/** A target keeps fractional input visible; an integer keeps grouped digits. */
+function goalNumber(value: number): string {
+  return Number.isInteger(value) ? formatNumber(value, 0) : String(value)
+}
+
 /** The target a sizing run was asked to meet; predict entries have none. */
 export function sizingGoalLabel(entry: ComparisonEntry): string {
   const goal = entry.goal
@@ -52,11 +57,11 @@ export function sizingGoalLabel(entry: ComparisonEntry): string {
       : `${formatNumber(goal.targetConcurrency, 0)} concurrent sequences`
   }
   if (goal.targetRequestLatencyMs != null) {
-    return `Request latency ≤ ${formatNumber(goal.targetRequestLatencyMs, 0)} ms`
+    return `Request latency ≤ ${goalNumber(goal.targetRequestLatencyMs)} ms`
   }
   const bounds = [
-    goal.targetTtftMs == null ? null : `TTFT ≤ ${formatNumber(goal.targetTtftMs, 0)} ms`,
-    goal.targetTpotMs == null ? null : `TPOT ≤ ${formatNumber(goal.targetTpotMs, 0)} ms`,
+    goal.targetTtftMs == null ? null : `TTFT ≤ ${goalNumber(goal.targetTtftMs)} ms`,
+    goal.targetTpotMs == null ? null : `TPOT ≤ ${goalNumber(goal.targetTpotMs)} ms`,
   ].filter((value): value is string => value != null)
   return bounds.length > 0 ? bounds.join(' · ') : 'latency target'
 }

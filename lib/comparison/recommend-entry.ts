@@ -168,16 +168,20 @@ export function buildRecommendEntry({
   const concurrency = result.performance.concurrency
   const memory = result.memoryAvailable ? result.memory.breakdown : null
   const kvUsed = finite(memory?.kvCacheGb)
-  const tokensPerSecond = finite(result.throughput.tokensPerSecond)
+  // A capacity run can size residency without a performance simulation. The
+  // adapter fills the absent latency and throughput fields with zero for the
+  // result panel to hide; a snapshot must not record those zeros as measured.
+  const performanceReported = result.capacity?.performanceAvailable !== false
+  const tokensPerSecond = performanceReported ? finite(result.throughput.tokensPerSecond) : null
 
   const figures: ComparisonFigures = {
     gpus,
-    ttftMs: finite(result.performance.ttftLatencyMs),
-    tpotMs: finite(result.performance.tpotMs),
-    requestLatencyMs: finite(result.performance.requestLatencyMs),
+    ttftMs: performanceReported ? finite(result.performance.ttftLatencyMs) : null,
+    tpotMs: performanceReported ? finite(result.performance.tpotMs) : null,
+    requestLatencyMs: performanceReported ? finite(result.performance.requestLatencyMs) : null,
     tokensPerSecond,
     tokensPerSecondPerGpu: tokensPerSecond != null && gpus > 0 ? tokensPerSecond / gpus : null,
-    tokensPerSecondPerUser: finite(result.throughput.tokensPerSecondPerUser),
+    tokensPerSecondPerUser: performanceReported ? finite(result.throughput.tokensPerSecondPerUser) : null,
     weightMemoryGb: finite(memory?.weightsGb),
     kvCachePerRequestMb: kvUsed != null && concurrency > 0 ? (kvUsed / concurrency) * 1000 : null,
     kvCacheUsedGb: kvUsed,

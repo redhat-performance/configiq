@@ -117,6 +117,23 @@ describe('comparison labels', () => {
     }))).toBe(`${formatNumber(64, 0)} concurrent sequences`)
   })
 
+  it('keeps a fractional latency target visible instead of rounding it to zero', () => {
+    const none = {
+      targetRequestLatencyMs: null,
+      targetTtftMs: null,
+      targetTpotMs: null,
+      targetRequestRate: null,
+      targetConcurrency: null,
+    }
+
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetTtftMs: 0.1, targetTpotMs: 0.4 },
+    }))).toBe('TTFT ≤ 0.1 ms · TPOT ≤ 0.4 ms')
+    expect(sizingGoalLabel(entry({
+      goal: { ...none, kind: 'latency', targetRequestLatencyMs: 1.5 },
+    }))).toBe('Request latency ≤ 1.5 ms')
+  })
+
   it('names the backend, or says it was not reported', () => {
     expect(backendLabel(entry())).toBe('vllm 0.9.0')
     expect(backendLabel(entry({ backend: 'vllm', backendVersion: null }))).toBe('vllm')

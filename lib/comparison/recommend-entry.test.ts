@@ -125,6 +125,53 @@ describe('buildRecommendEntry', () => {
     expect(entry.figures.cloudMonthlyUsd).toBeNull()
   })
 
+  it('leaves latency and throughput unavailable when a capacity run skipped the simulation', () => {
+    const entry = buildRecommendEntry({
+      ...base,
+      result: result({
+        capacity: {
+          targetConcurrency: 64,
+          contextPerSequenceTokens: 2176,
+          sharedPrefixTokens: 0,
+          capacityTokens: 150_000,
+          capacitySequences: 68,
+          fits: true,
+          shortfallSequences: null,
+          shortfallTokens: null,
+          minimumGpus: 2,
+          perRankTokens: 75_000,
+          replicas: 2,
+          attentionDp: 1,
+          evaluatedShapes: 5,
+          feasibleShapes: 5,
+          exhaustive: true,
+          performanceAvailable: false,
+          performanceUnavailableReason: 'The simulator reported no performance metrics.',
+          mode: 'agg',
+          prefillReplicas: null,
+          decodeReplicas: null,
+          prefillGpus: null,
+          decodeGpus: null,
+          simulator: 'aisimulate',
+        },
+        // The adapter fills the hidden fields with zero; the snapshot must not
+        // read those placeholders as measured.
+        performance: { ttftLatencyMs: 0, tpotMs: 0, requestLatencyMs: 0, concurrency: 64 },
+        throughput: { tokensPerSecond: 0, tokensPerSecondPerGpu: 0, tokensPerSecondPerUser: 0 },
+      }),
+    })
+
+    expect(entry.figures.ttftMs).toBeNull()
+    expect(entry.figures.tpotMs).toBeNull()
+    expect(entry.figures.requestLatencyMs).toBeNull()
+    expect(entry.figures.tokensPerSecond).toBeNull()
+    expect(entry.figures.tokensPerSecondPerGpu).toBeNull()
+    expect(entry.figures.tokensPerSecondPerUser).toBeNull()
+    // The residency answer is still a usable snapshot.
+    expect(entry.figures.gpus).toBe(4)
+    expect(entry.figures.weightMemoryGb).toBe(40)
+  })
+
   it('records both pools of a disaggregated recommendation', () => {
     const phase = (tp: number, workers: number) => ({
       workers,
