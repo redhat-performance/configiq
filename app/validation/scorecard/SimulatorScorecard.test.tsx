@@ -80,6 +80,7 @@ vi.mock('@patternfly/react-charts/victory', async () => {
     ChartAxis: () => React.createElement('span', { 'data-chart': 'axis' }),
     ChartGroup: ({ children }: ChartProps) => React.createElement('div', { 'data-chart': 'group' }, children),
     ChartBar: ({ name }: ChartProps) => React.createElement('span', { 'data-chart': 'bar', 'data-series': name }),
+    ChartLabel: () => React.createElement('span', { 'data-chart': 'label' }),
   };
 });
 
@@ -485,6 +486,15 @@ describe('Simulator scorecard page', () => {
 
     expect(container.querySelector('select[aria-label="Simulator pair"]')).toBeNull();
     expect(container.textContent).toContain('AISim vs BLIS');
+  });
+
+  it('explains agreement and coverage from a single help icon', async () => {
+    await mount(published());
+    const heading = container.querySelector('#scorecard-headline-title');
+    const head = heading?.parentElement;
+
+    expect(head?.querySelectorAll('button[aria-label^="Help for"]').length).toBe(1);
+    expect(head?.querySelector('[aria-label="Help for Agreement and coverage"]')).not.toBeNull();
   });
 
   it('disables the like-for-release view until a point matched a release', async () => {

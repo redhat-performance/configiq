@@ -511,7 +511,7 @@ export default function SimulatorScorecard() {
             <div className={styles.sectionHead}>
               <h2 id="scorecard-headline-title">Agreement by simulator</h2>
               <JargonPopover
-                term="How agreement is pooled"
+                term="Agreement and coverage"
                 explanation={[
                   `${metricLabel(metric)}, pooled over every measured configuration.`,
                   effectiveReleaseMatch === 'matched'
@@ -519,12 +519,7 @@ export default function SimulatorScorecard() {
                     : 'Measured on any release, so a large part of the error can be the release gap rather than the model.',
                   'The headline is MdAPE, the median configuration, so a few extreme misses do not decide the ranking. MAPE is shown beside it: a wide gap between the two means those extremes, not the typical run, drive the mean. p90 shows what a bad configuration reaches.',
                   'Engine settings the request does not carry, such as precision and speculative decoding, are not part of the comparison either.',
-                ].join(' ')}
-              />
-              <JargonPopover
-                term="Coverage"
-                explanation={[
-                  'Every attempt is counted once, in four buckets.',
+                  'Coverage counts every attempt once, in four buckets.',
                   'Predicted: the simulator returned a prediction, so the run is scored.',
                   'Unsupported: the catalog lists the parts, but the run is beyond what the simulator models.',
                   'Inconclusive: we asked and got no prediction — a timeout, a rate limit, or a service failure. That is our outage, not a capability gap.',

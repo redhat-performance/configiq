@@ -6,6 +6,7 @@ import {
   ChartAxis,
   ChartBar,
   ChartGroup,
+  ChartLabel,
 } from '@patternfly/react-charts/victory';
 import type { ChartRow } from './scorecard-view';
 import styles from './scorecard.module.css';
@@ -38,6 +39,15 @@ const ROW_HEIGHT = 34;
 
 /** Exported so the flip card can size itself to the chart it contains. */
 export const CHART_ROW_HEIGHT = ROW_HEIGHT;
+
+/**
+ * Vertical padding the category labels are centred against.
+ *
+ * Kept beside the height formula because the label offset is derived from the
+ * plot area: if one changes without the other, labels drift off their bars.
+ */
+const CHART_TOP_PADDING = 4;
+const CHART_BOTTOM_PADDING = 34;
 
 function truncateLabel(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
@@ -82,7 +92,7 @@ export default function ErrorBarChart({
 }: ErrorBarChartProps) {
   const { ref, width } = useChartWidth();
   const chartWidth = Math.max(240, width);
-  const height = rows.length * ROW_HEIGHT + 56;
+  const height = rows.length * ROW_HEIGHT + CHART_TOP_PADDING + CHART_BOTTOM_PADDING + 18;
   const labelWidth = Math.min(380, Math.max(120, Math.round(chartWidth * 0.44)));
   // Category labels are category keys; only the tick text is shortened, so a
   // narrow card keeps the bars and loses the tail of a long model name.
@@ -116,6 +126,24 @@ export default function ErrorBarChart({
       : [{ x: `${row.key}\u0000${simulator}`, y: value }];
   });
 
+  // Each configuration's label is a tick on its first simulator's slot, the
+  // only position a categorical axis can give it. Move it to the mean slot of
+  // the series that actually predicted this row, so two bars get a label
+  // between them and a row only one simulator answered gets a label on that
+  // bar. The plot height and the number of slots give the slot height without
+  // measuring the rendered SVG.
+  const plotHeight = height - CHART_TOP_PADDING - CHART_BOTTOM_PADDING;
+  const slotHeight = categories.length > 0 ? plotHeight / categories.length : 0;
+  const labelOffsets = rows.map(row => {
+    const slots = series
+      .map((entry, index) => (row.values.has(entry.simulator) ? index : null))
+      .filter((index): index is number => index !== null);
+    const meanSlot = slots.length > 0
+      ? slots.reduce((total, index) => total + index, 0) / slots.length
+      : 0;
+    return -meanSlot * slotHeight;
+  });
+
   return (
     <div className={styles.chartCanvas} ref={ref}>
       {width > 0 && rows.length > 0 && (
@@ -126,11 +154,21 @@ export default function ErrorBarChart({
           height={height}
           width={chartWidth}
           domain={{ y: [lowest - (lowest < 0 ? headroom : 0), highest + headroom] }}
-          padding={{ top: 4, bottom: 34, left: labelWidth, right: 84 }}
+          padding={{
+            top: CHART_TOP_PADDING,
+            bottom: CHART_BOTTOM_PADDING,
+            left: labelWidth,
+            right: 84,
+          }}
         >
           <ChartAxis
             tickValues={labelTicks}
             tickFormat={(value: string) => tickText.get(value) ?? ''}
+            tickLabelComponent={
+              <ChartLabel
+                dy={(props: { index?: string | number }) => labelOffsets[Number(props.index)] ?? 0}
+              />
+            }
             style={AXIS_STYLE}
           />
           <ChartAxis
