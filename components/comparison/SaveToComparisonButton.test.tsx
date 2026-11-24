@@ -58,7 +58,8 @@ async function render(buildEntry: () => ComparisonEntry | null, disabledReason: 
 }
 
 function button(): HTMLButtonElement {
-  const found = host.querySelector('button');
+  const found = Array.from(host.querySelectorAll('button'))
+    .find(candidate => candidate.closest('[aria-hidden="true"]') == null);
   if (!found) throw new Error('expected a button');
   return found;
 }
@@ -88,7 +89,21 @@ describe('SaveToComparisonButton', () => {
     expect(upsertComparisonEntry).toHaveBeenCalledWith(entry());
     expect(button().textContent).toContain('Saved');
     expect(host.textContent).toContain('Saved to comparison.');
-    expect(host.querySelector('a')?.getAttribute('href')).toBe('/compare');
+    // The feedback is the label and a hidden announcement, not a link or a
+    // status sentence in the header.
+    expect(host.querySelector('a')).toBeNull();
+  });
+
+  it('reserves one width for every label state', async () => {
+    await render(entry, null);
+
+    const ghosts = Array.from(host.querySelectorAll('[aria-hidden="true"]'))
+      .map(ghost => ghost.textContent);
+    expect(ghosts).toEqual(expect.arrayContaining([
+      'Save for comparison',
+      'Saved',
+      'Not saved',
+    ]));
   });
 
   it('explains why saving is unavailable and stays disabled', async () => {
@@ -109,6 +124,8 @@ describe('SaveToComparisonButton', () => {
 
     await act(async () => button().click());
 
+    expect(button().textContent).toContain('Not saved');
+    expect(button().getAttribute('title')).toBe('A comparison holds at most 100 results; this one has 101.');
     expect(host.textContent).toContain('A comparison holds at most 100 results');
     expect(host.textContent).not.toContain('Saved to comparison.');
   });
@@ -119,6 +136,8 @@ describe('SaveToComparisonButton', () => {
     await act(async () => button().click());
 
     expect(upsertComparisonEntry).not.toHaveBeenCalled();
+    expect(button().textContent).toContain('Not saved');
+    expect(button().getAttribute('title')).toBe('There is no result to save yet.');
     expect(host.textContent).toContain('There is no result to save yet.');
   });
 });

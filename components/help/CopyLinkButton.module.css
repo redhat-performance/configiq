@@ -1,0 +1,41 @@
+/* Copy-link control: the label reports the outcome without moving the layout. */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* Each label state shares one grid cell; the widest sets the control's width,
+   so swapping the label cannot nudge the actions beside it. */
+.stack {
+  display: inline-grid;
+  align-items: center;
+}
+
+.ghost {
+  display: contents;
+}
+
+.ghost > *,
+.stack > button {
+  grid-area: 1 / 1;
+  width: 100%;
+}
+
+.ghost > * {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Announcements reach assistive technology without occupying header space. */
+.status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

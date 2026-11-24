@@ -4,6 +4,11 @@ import * as React from 'react';
 import { Button } from '@patternfly/react-core';
 import CopyIcon from '@patternfly/react-icons/dist/esm/icons/copy-icon';
 
+import styles from './CopyLinkButton.module.css';
+
+const COPIED_LABEL = 'Copied';
+const FAILED_LABEL = 'Copy failed';
+
 interface CopyLinkButtonProps {
   /** Build the absolute or root-relative URL to copy. */
   getUrl: () => string | null;
@@ -11,8 +16,12 @@ interface CopyLinkButtonProps {
 }
 
 /**
- * Copies the current view as a shareable link. Renders an inline confirmation
- * rather than a toast so the result is announced to screen readers.
+ * Copies the current view as a shareable link.
+ *
+ * The control reports itself by swapping its label, so the toolbar never grows
+ * a status sentence and the actions beside it stay put. The full confirmation
+ * or failure is announced from a hidden live region, and a failure carries its
+ * reason on the button for sighted users.
  */
 export function CopyLinkButton({ getUrl, label = 'Copy link' }: CopyLinkButtonProps) {
   const [state, setState] = React.useState<'idle' | 'copied' | 'error'>('idle');
@@ -39,23 +48,33 @@ export function CopyLinkButton({ getUrl, label = 'Copy link' }: CopyLinkButtonPr
     }
   };
 
+  const visibleLabel = state === 'copied'
+    ? COPIED_LABEL
+    : state === 'error' ? FAILED_LABEL : label;
+
+  const announcement = state === 'copied'
+    ? 'Link copied to the clipboard.'
+    : state === 'error' ? 'Could not copy the link. Copy the address from the browser instead.' : '';
+
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-      <Button variant="link" icon={<CopyIcon />} onClick={handleClick}>
-        {label}
-      </Button>
-      <span
-        role="status"
-        aria-live="polite"
-        style={{
-          // The status is always mounted for announcements; only its message
-          // should take space, so an idle control leaves no trailing gap.
-          marginLeft: state === 'idle' ? undefined : 8,
-          fontSize: 13,
-          color: 'var(--gc-text-2)',
-        }}
-      >
-        {state === 'copied' ? 'Link copied' : state === 'error' ? 'Could not copy the link' : ''}
+    <span className={styles.root}>
+      <span className={styles.stack}>
+        {[label, COPIED_LABEL, FAILED_LABEL].map(text => (
+          <span key={text} className={styles.ghost} aria-hidden="true">
+            <Button component="span" variant="link" icon={<CopyIcon />}>{text}</Button>
+          </span>
+        ))}
+        <Button
+          variant="link"
+          icon={<CopyIcon />}
+          onClick={handleClick}
+          title={state === 'error' ? 'Could not copy the link' : undefined}
+        >
+          {visibleLabel}
+        </Button>
+      </span>
+      <span role="status" aria-live="polite" className={styles.status}>
+        {announcement}
       </span>
     </span>
   );
