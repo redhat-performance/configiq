@@ -339,7 +339,9 @@ export default function SimulatorScorecard() {
           <h1>Simulator scorecard</h1>
           <p className={styles.intro}>
             How closely each simulator&apos;s prediction agrees with a measurement of the
-            same run, across every benchmarked model and GPU. A lower number is closer.
+            same run, across every benchmarked model and GPU. A lower number means the
+            prediction is closer to the benchmarked measurement, indicating higher simulator
+            accuracy.
           </p>
         </div>
         <div className={styles.headingAside}>
