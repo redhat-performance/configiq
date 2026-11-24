@@ -217,7 +217,7 @@ function capabilityEnvelope(raw: unknown): SimulatorCapabilities | null {
  * Capabilities come from the entry itself when present, otherwise from the
  * legacy `simulatorSupport` map keyed by ID.
  */
-function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntry[] {
+export function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntry[] {
   const rawList = Array.isArray(data.simulators) ? data.simulators : [];
   const support = data.simulatorSupport && typeof data.simulatorSupport === 'object'
     ? data.simulatorSupport as Record<string, unknown>
@@ -229,7 +229,13 @@ function combinedSimulators(data: Record<string, unknown>): SimulatorCatalogEntr
     const value = raw as Record<string, unknown>;
     const id = catalogString(value, 'id');
     if (!id) continue;
-    const capabilities = capabilityEnvelope(value) ?? capabilityEnvelope(support[id]);
+    // An entry that explicitly reports unavailability is final. The legacy
+    // support map describes what a simulator could price, not whether it is
+    // serving now, so it must not turn an explicit `available: false` back on.
+    const explicitlyUnavailable = value.available === false;
+    const capabilities = explicitlyUnavailable
+      ? null
+      : capabilityEnvelope(value) ?? capabilityEnvelope(support[id]);
     entries.push({
       id,
       label: catalogString(value, 'label') ?? id,
@@ -306,7 +312,10 @@ async function simulatorCapabilities(
   if (!backends || !models || !systems) return null;
   // A simulator that models no fabric still returns an envelope; a missing
   // networks response means "no fabrics" rather than a reason to drop support.
-  const networks = catalogString(networksData, 'simulator') === descriptor.id
+  // A response that echoes another simulator is discarded whole: its list and
+  // its default both belong to that simulator.
+  const networksEcho = catalogString(networksData, 'simulator') === descriptor.id;
+  const networks = networksEcho
     ? (catalogList(networksData, 'networks') ?? [])
       .filter((network): network is string => typeof network === 'string' && network.trim().length > 0)
     : [];
@@ -320,7 +329,7 @@ async function simulatorCapabilities(
     models,
     systems,
     networks,
-    defaultNetwork: catalogString(networksData, 'default_network'),
+    defaultNetwork: networksEcho ? catalogString(networksData, 'default_network') : null,
     objectives: catalogObjectives(backendsData),
   };
 }
