@@ -8,7 +8,8 @@ Ask the repo owner to add you as a collaborator. Once you accept the email invit
 
 You will also need:
 
-- **Node.js 22.12 or later** — check with `node -v` (CI and the container image run Node 24 LTS)
+- **Node.js 24 LTS or 26+** — check with `node -v`; these are the versions `engines`
+  declares and the test runner supports, and CI and the container image run Node 24 LTS
 - **npm 10 or later** — check with `npm -v`
 - **Git** — check with `git --version`
 - **GitHub CLI (optional but useful)** — [cli.github.com](https://cli.github.com)

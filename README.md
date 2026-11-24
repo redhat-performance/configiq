@@ -55,7 +55,8 @@ and regression tests are under [scripts/tested_models](scripts/tested_models).
 
 ### Prerequisites
 
-- Node.js >= 22.12.0 (CI and the container image run Node 24 LTS)
+- Node.js 24 LTS or 26+ — the versions `engines` declares and the test runner
+  supports; CI and the container image run Node 24 LTS
 - npm >= 10
 
 ### Setup
