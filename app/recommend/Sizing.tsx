@@ -44,6 +44,8 @@ import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/teste
 import { resolveSearchFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { buildRecommendEntry, sizingGoalFrom } from '@/lib/comparison/recommend-entry';
 import { TourButton } from '@/components/help/TourButton';
 import { FABRIC_NONE } from '@/lib/deep-links/common';
 import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
@@ -1086,6 +1088,39 @@ export default function Sizing() {
   // caching does not shrink that, so it is not subtracted.
   const capacityContextTokens = maxSeqLen ?? isl + osl;
 
+  // A saved comparison is a result snapshot, so offer it only while the
+  // displayed result still matches the request that produced it. A sweep's
+  // frontier is many results, so it is not saved as one.
+  const comparisonDisabledReason =
+    runMode === 'pareto'
+      ? 'A Pareto sweep is not a single result; run Calculate to save one.'
+      : isLoading
+        ? 'A calculation is running; save when it finishes.'
+        : result == null || params == null
+          ? 'Run a calculation first; there is no result to save.'
+          : inputsDirty
+            ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
+            : null;
+
+  const buildComparisonEntry = () => {
+    if (result == null || params == null || isLoading || inputsDirty || runMode === 'pareto') return null;
+    const systemOption = selectableGpus.find(option => option.systemId === params.system);
+    const cloudRate = resolveCloudRate(costings.gpuCloudRates.get(params.system), preferredCloudProvider);
+    const hardwareCost = costings.gpuHardwareCosts.get(params.system)?.new_usd ?? null;
+    return buildRecommendEntry({
+      link: shared.build(),
+      model: params.model_path,
+      system: params.system,
+      systemLabel: systemOption?.label ?? params.system,
+      backend: params.backend ?? inferenceBackend,
+      backendVersion: params.backend_version ?? null,
+      goal: sizingGoalFrom(params),
+      cloudRatePerHour: cloudRate?.rate ?? null,
+      hardwareCostUsd: hardwareCost,
+      result,
+    });
+  };
+
   return (
     <div className={styles.page}>
       {/* ─── Header ─── */}
@@ -1098,6 +1133,10 @@ export default function Sizing() {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <SaveToComparisonButton
+              buildEntry={buildComparisonEntry}
+              disabledReason={comparisonDisabledReason}
+            />
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>

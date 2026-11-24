@@ -1,5 +1,6 @@
 import type { InferenceConfigResult } from '../gpu-math/inference-config/types'
 import { comparisonCost } from './cost'
+import { finite, newComparisonId } from './entry-common'
 import type {
   ComparisonEntry,
   ComparisonFigures,
@@ -29,17 +30,6 @@ export interface PredictEntryInput {
   /** Overrides for tests; the page uses the current time and a fresh id. */
   now?: Date
   id?: string
-}
-
-function newId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
-}
-
-function finite(value: number | null | undefined): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
 function topologyFor(result: InferenceConfigResult): ComparisonTopology {
@@ -91,7 +81,7 @@ export function buildPredictEntry({
   hardwareCostUsd,
   result,
   now = new Date(),
-  id = newId(),
+  id = newComparisonId(),
 }: PredictEntryInput): ComparisonEntry {
   const performance = result.performance ?? null
   const memory = result.memory_available ? result.memory_analysis : null

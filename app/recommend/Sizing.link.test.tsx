@@ -15,12 +15,15 @@ vi.mock('next/navigation', () => ({
 
 const startSizing = vi.hoisted(() => vi.fn());
 const startPareto = vi.hoisted(() => vi.fn());
-const recommendState = vi.hoisted(() => ({ isLoading: false }));
+const recommendState = vi.hoisted(() => ({
+  isLoading: false,
+  runMode: null as null | 'sizing' | 'pareto',
+}));
 
 vi.mock('@/contexts/RecommendContext', () => ({
   useRecommend: () => ({
     params: null,
-    runMode: null,
+    runMode: recommendState.runMode,
     isLoading: recommendState.isLoading,
     result: null,
     error: null,
@@ -218,6 +221,18 @@ vi.mock('@/components/help/CopyLinkButton', () => ({
 }));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
+// The page decides whether a result can be saved; the control's own rendering
+// and storage behaviour are tested with the component.
+const saveControl = vi.hoisted(() => ({
+  disabledReason: null as string | null,
+}));
+vi.mock('@/components/comparison/SaveToComparisonButton', () => ({
+  SaveToComparisonButton: (props: { disabledReason: string | null }) => {
+    saveControl.disabledReason = props.disabledReason;
+    return null;
+  },
+}));
+
 const { default: Sizing } = await import('./Sizing');
 
 let root: ReturnType<typeof createRoot>;
@@ -232,6 +247,8 @@ beforeEach(() => {
     for (const version of Object.keys(support)) delete support[version];
   }
   recommendState.isLoading = false;
+  recommendState.runMode = null;
+  saveControl.disabledReason = null;
   aisimulateFabric.required = false;
   aisimulateFabric.networks = [];
   aisimulateFabric.defaultNetwork = null;
@@ -360,6 +377,28 @@ async function acceptSharedSimulator() {
 }
 
 describe('recommend sizing shared views', () => {
+  it('asks for a result before offering to save one', async () => {
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('Run a calculation first');
+  })
+
+  it('does not offer to save a running calculation', async () => {
+    recommendState.isLoading = true;
+
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('A calculation is running');
+  })
+
+  it('does not save a Pareto sweep as a single result', async () => {
+    recommendState.runMode = 'pareto';
+
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('Pareto sweep is not a single result');
+  })
+
   it('forwards the per-pool context limits a legacy link carries', async () => {
     // A link written before the serving mode existed names pool lengths only.
     // The page keeps the pre-mode search, so those lengths apply to a

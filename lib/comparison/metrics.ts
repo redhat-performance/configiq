@@ -37,6 +37,30 @@ export function workloadLabel(entry: ComparisonEntry): string {
   return `ISL ${isl} · OSL ${osl} · ${concurrency} users`
 }
 
+/** The target a sizing run was asked to meet; predict entries have none. */
+export function sizingGoalLabel(entry: ComparisonEntry): string {
+  const goal = entry.goal
+  if (goal == null) return '—'
+  if (goal.kind === 'throughput') {
+    return goal.targetRequestRate == null
+      ? 'throughput target'
+      : `${formatNumber(goal.targetRequestRate, 1)} req/s`
+  }
+  if (goal.kind === 'concurrency') {
+    return goal.targetConcurrency == null
+      ? 'concurrency target'
+      : `${formatNumber(goal.targetConcurrency, 0)} concurrent sequences`
+  }
+  if (goal.targetRequestLatencyMs != null) {
+    return `Request latency ≤ ${formatNumber(goal.targetRequestLatencyMs, 0)} ms`
+  }
+  const bounds = [
+    goal.targetTtftMs == null ? null : `TTFT ≤ ${formatNumber(goal.targetTtftMs, 0)} ms`,
+    goal.targetTpotMs == null ? null : `TPOT ≤ ${formatNumber(goal.targetTpotMs, 0)} ms`,
+  ].filter((value): value is string => value != null)
+  return bounds.length > 0 ? bounds.join(' · ') : 'latency target'
+}
+
 export function precisionLabel(entry: ComparisonEntry): string {
   return `${entry.workload.weightPrecision} weights · ${entry.workload.kvPrecision} KV`
 }
@@ -91,6 +115,7 @@ export const COMPARISON_METRICS: readonly ComparisonMetric[] = [
   { id: 'backend', section: 'deployment', label: 'Backend', kind: 'text', value: backendLabel },
   { id: 'mode', section: 'deployment', label: 'Serving mode', kind: 'text', value: modeLabel },
   { id: 'workload', section: 'deployment', label: 'Workload', kind: 'text', value: workloadLabel },
+  { id: 'goal', section: 'deployment', label: 'Sizing goal', kind: 'text', value: sizingGoalLabel },
   { id: 'precision', section: 'deployment', label: 'Precision', kind: 'text', value: precisionLabel },
   { id: 'topology', section: 'deployment', label: 'Topology', kind: 'text', value: topologyLabel },
   { id: 'gpus', section: 'performance', label: 'GPUs', kind: 'number', digits: 0, value: entry => entry.figures.gpus },

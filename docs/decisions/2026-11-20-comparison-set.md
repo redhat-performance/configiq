@@ -41,6 +41,14 @@ amortization window. The replay record and its artifacts are not stored.
 version, and figures together. Re-saving the same result moves it rather than
 duplicating it; changing any of those parts makes it a different snapshot.
 
+**A sizing row keeps its target.** A recommendation is defined by what it was
+asked to achieve, so a sizing snapshot carries that goal — a latency bound
+(TTFT/TPOT or end-to-end), an arrival rate, or a resident-sequence count —
+beside the measured figures. Predict entries have no goal. The field is
+additive: documents written before it existed stay readable, and their rows
+show no goal. A sizing result does not report total VRAM, so that figure stays
+unavailable rather than being inferred from the catalog.
+
 **The set is bounded and refuses growth rather than evicting entries.** It holds
 at most 100 entries and 1 MB. Overflow is reported to the user and the save is
 refused: silently dropping a row the user chose to keep would make the

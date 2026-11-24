@@ -20,6 +20,15 @@ const phaseSchema = z.object({
   workers: positiveInt,
 })
 
+const goalSchema = z.object({
+  kind: z.enum(['latency', 'throughput', 'concurrency']),
+  targetRequestLatencyMs: nullableNumber,
+  targetTtftMs: nullableNumber,
+  targetTpotMs: nullableNumber,
+  targetRequestRate: nullableNumber,
+  targetConcurrency: nullableNumber,
+})
+
 const entrySchema = z.object({
   id: z.string().min(1),
   savedAt: z.string().min(1),
@@ -32,6 +41,7 @@ const entrySchema = z.object({
   engineVersion: z.string().nullable(),
   backend: z.string().nullable(),
   backendVersion: z.string().nullable(),
+  goal: goalSchema.nullable().optional(),
   mode: z.enum(['agg', 'disagg']),
   workload: z.object({
     isl: positiveInt,

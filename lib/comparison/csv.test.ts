@@ -80,6 +80,28 @@ describe('comparisonCsv', () => {
     expect(parse(csv).find(row => row[0] === 'TTFT (ms)')?.[1]).toBe('')
   })
 
+  it('writes the sizing goal as text, and nothing for a predicted result', () => {
+    const rows = parse(comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry({
+        goal: {
+          kind: 'latency',
+          targetRequestLatencyMs: null,
+          targetTtftMs: 300,
+          targetTpotMs: 30,
+          targetRequestRate: null,
+          targetConcurrency: null,
+        },
+      })],
+    }))
+
+    expect(rows.find(row => row[0] === 'Sizing goal')?.[1]).toBe('TTFT ≤ 300 ms · TPOT ≤ 30 ms')
+    expect(parse(comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry()],
+    })).find(row => row[0] === 'Sizing goal')?.[1]).toBe('—')
+  })
+
   it('quotes a name that contains a comma', () => {
     const csv = comparisonCsv({
       schemaVersion: COMPARISON_SCHEMA_VERSION,

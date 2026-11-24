@@ -99,6 +99,29 @@ describe('parseComparisonDocument', () => {
     if (parsed.ok) expect(parsed.document.entries).toHaveLength(1)
   })
 
+  it('accepts a snapshot with a sizing goal', () => {
+    const parsed = parseComparisonDocument(document([entry({
+      goal: {
+        kind: 'latency',
+        targetRequestLatencyMs: null,
+        targetTtftMs: 300,
+        targetTpotMs: 30,
+        targetRequestRate: null,
+        targetConcurrency: null,
+      },
+    })]))
+
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.entries[0].goal).toMatchObject({ kind: 'latency', targetTtftMs: 300 })
+  })
+
+  it('keeps an entry written before sizing goals existed', () => {
+    const parsed = parseComparisonDocument(document([entry()]))
+
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.entries[0].goal).toBeUndefined()
+  })
+
   it('names the version it cannot read instead of accepting a guess', () => {
     const parsed = parseComparisonDocument({ schemaVersion: 2, entries: [] })
 
