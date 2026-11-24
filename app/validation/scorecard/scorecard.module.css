@@ -422,6 +422,38 @@
   color: var(--text);
 }
 
+/* ── Agreement popover: one paragraph per idea, one line per bucket ───── */
+
+.popoverBody p {
+  margin: 0 0 8px;
+}
+
+.popoverBody p:last-of-type {
+  margin-bottom: 6px;
+}
+
+.popoverBuckets {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.popoverBuckets li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.popoverSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
 /* ── Flip card: chart front, table back ───────────────────────────────── */
 
 .flipCard {

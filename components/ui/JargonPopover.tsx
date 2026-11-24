@@ -8,7 +8,7 @@ import { findGlossaryEntry } from "@/lib/help/glossary";
 interface JargonPopoverProps {
   term: string;
   /** Page-specific explanation. Used when the term is not in the shared glossary. */
-  explanation?: string;
+  explanation?: React.ReactNode;
   /** Portal target for use inside clipped or transformed containers such as flip cards. */
   appendTo?: HTMLElement | ((ref?: HTMLElement) => HTMLElement) | "inline";
 }

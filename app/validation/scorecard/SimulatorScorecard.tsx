@@ -108,7 +108,7 @@ function formatSnapshotTime(value: string): string {
 }
 
 function metricLabel(metric: ScorecardMetric): string {
-  return metric === 'ttft' ? 'time to first token' : 'time per output token';
+  return metric === 'ttft' ? 'Time to first token' : 'Time per output token';
 }
 
 export default function SimulatorScorecard() {
@@ -512,19 +512,28 @@ export default function SimulatorScorecard() {
               <h2 id="scorecard-headline-title">Agreement by simulator</h2>
               <JargonPopover
                 term="Agreement and coverage"
-                explanation={[
-                  `${metricLabel(metric)}, pooled over every measured configuration.`,
-                  effectiveReleaseMatch === 'matched'
-                    ? 'Restricted to runs measured on the release the simulator models.'
-                    : 'Measured on any release, so a large part of the error can be the release gap rather than the model.',
-                  'The headline is MdAPE, the median configuration, so a few extreme misses do not decide the ranking. MAPE is shown beside it: a wide gap between the two means those extremes, not the typical run, drive the mean. p90 shows what a bad configuration reaches.',
-                  'Engine settings the request does not carry, such as precision and speculative decoding, are not part of the comparison either.',
-                  'Coverage counts every attempt once, in four buckets.',
-                  'Predicted: the simulator returned a prediction, so the run is scored.',
-                  'Unsupported: the catalog lists the parts, but the run is beyond what the simulator models.',
-                  'Inconclusive: we asked and got no prediction — a timeout, a rate limit, or a service failure. That is our outage, not a capability gap.',
-                  'Ineligible: the run is outside the catalogue entirely — no such GPU, model, or backend — so it says nothing about the hardware.',
-                ].join(' ')}
+                explanation={
+                  <div className={styles.popoverBody}>
+                    <p>
+                      {metricLabel(metric)}, pooled over every measured configuration.{' '}
+                      {effectiveReleaseMatch === 'matched'
+                        ? 'Restricted to runs measured on the release the simulator models.'
+                        : 'Measured on any release, so a large part of the error can be the release gap rather than the model.'}
+                    </p>
+                    <p>
+                      The headline is MdAPE, the median configuration, so a few extreme misses do
+                      not decide the ranking. MAPE is shown beside it: a wide gap between the two
+                      means those extremes, not the typical run, drive the mean. p90 shows what a
+                      bad configuration reaches.
+                    </p>
+                    <p>
+                      Engine settings the request does not carry, such as precision and
+                      speculative decoding, are not part of the comparison either.
+                    </p>
+                    <p>Coverage counts every attempt once, in four buckets:</p>
+                    <CoverageBuckets />
+                  </div>
+                }
               />
             </div>
 
@@ -950,6 +959,35 @@ const COVERAGE_SEGMENTS: {
     hint: 'The run is outside the catalogue entirely — no such GPU, model, or backend — so it says nothing about the hardware.',
   },
 ];
+
+/**
+ * The coverage buckets as prose, one line each.
+ *
+ * The swatch is the same colour the coverage bar draws for that bucket, so a
+ * reader can carry the colour from the popover to the legend and the bar. The
+ * explanation is the legend's own hint rather than a second copy that could
+ * drift from it.
+ */
+function CoverageBuckets() {
+  return (
+    <ul className={styles.popoverBuckets}>
+      {COVERAGE_SEGMENTS.map(segment => (
+        <li key={segment.key}>
+          <span
+            className={styles.popoverSwatch}
+            style={{ background: segment.color }}
+            aria-hidden="true"
+          />
+          <span>
+            <strong>{segment.label}</strong>
+            {': '}
+            {segment.hint}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function CoverageBar({ coverage }: { coverage: CoverageCounts }) {
   const total = coverage.total;
