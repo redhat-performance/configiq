@@ -401,6 +401,18 @@ describe('Simulator scorecard page', () => {
     expect(backTable?.textContent).toContain('org/model');
   });
 
+  it('sizes the error tile to its rows instead of reserving a blank box', async () => {
+    await mount(published());
+    const card = container.querySelector<HTMLElement>('[data-flip-card="scorecard-error"]');
+    const front = card?.querySelector<HTMLElement>('[class*="flipFront"]');
+
+    // The front face is in flow and caps its own content; the card has no
+    // fixed height, so a filtered view ends where the chart ends.
+    expect(card?.style.height).toBe('');
+    expect(card?.className).toContain('flipCardFit');
+    expect(front?.style.maxHeight).toBe('560px');
+  });
+
   it('flips the error tile to the table and back', async () => {
     await mount(published());
     const card = container.querySelector('[data-flip-card="scorecard-error"]') as HTMLElement;

@@ -93,8 +93,13 @@ const DEFAULT_METRIC: ScorecardMetric = 'tpot';
 const DEFAULT_STATISTIC: ScorecardStatistic = 'mdape';
 const DEFAULT_RELEASE_MATCH: ScorecardReleaseMatch = 'any';
 
-/** The card reserves one fixed box; both faces scroll inside it. */
-const CARD_HEIGHT = 560;
+/**
+ * The error chart becomes a fixed box only once it is tall; a filtered view
+ * with one or two rows should end where its content ends rather than leave a
+ * card-sized blank. The front face stays in flow to size the card, is capped
+ * at the old fixed height, and its chart canvas scrolls past that cap.
+ */
+const MAX_CARD_HEIGHT = 560;
 
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
@@ -749,9 +754,6 @@ function MatrixFlipCard({
     label: entry.label,
     color: color(entry.id),
   }));
-  // Faces are absolutely positioned, so the card reserves a fixed height and
-  // each face scrolls its own content inside the same box.
-  const cardHeight = CARD_HEIGHT;
 
   React.useEffect(() => {
     // Only the visible face may receive focus or be read by assistive tech.
@@ -761,9 +763,8 @@ function MatrixFlipCard({
 
   return (
     <div
-      className={`${styles.flipCard} ${flipped ? styles.flipped : ''}`}
+      className={`${styles.flipCard} ${styles.flipCardFit} ${flipped ? styles.flipped : ''}`}
       data-flip-card="scorecard-error"
-      style={{ height: cardHeight }}
       onClick={event => {
         const target = event.target as HTMLElement;
         // Keep tables and their controls interactive without flipping back.
@@ -771,7 +772,12 @@ function MatrixFlipCard({
         setFlipped(value => !value);
       }}
     >
-      <div ref={frontRef} className={`${styles.flipFace} ${styles.flipFront}`} aria-hidden={flipped}>
+      <div
+        ref={frontRef}
+        className={`${styles.flipFace} ${styles.flipFront}`}
+        style={{ maxHeight: MAX_CARD_HEIGHT }}
+        aria-hidden={flipped}
+      >
         <div className={styles.chartHead}>
           <h3>{statisticLabel} by measured configuration</h3>
           <span className={styles.chartUnit}>Lower is closer</span>

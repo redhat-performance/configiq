@@ -532,6 +532,9 @@
 
 .chartSizer {
   width: 100%;
+  /* The chart is an inline SVG: without this, its line box adds a few pixels
+     below the drawing and makes a correctly sized card show a scrollbar. */
+  line-height: 0;
 }
 
 .chartCanvas {
@@ -752,6 +755,23 @@
 }
 
 .flipCardAuto .flipFront {
+  position: relative;
+  inset: auto;
+  padding-bottom: 40px;
+}
+
+/*
+ * The error card: let the front face size the card from its chart, so a
+ * filtered view ends where its content ends instead of leaving a blank box.
+ * The face is capped inline at the same height the card used to reserve, and
+ * the chart canvas scrolls inside it once the list is taller than that.
+ */
+.flipCardFit {
+  min-height: 0;
+  height: auto;
+}
+
+.flipCardFit .flipFront {
   position: relative;
   inset: auto;
   padding-bottom: 40px;
