@@ -69,6 +69,41 @@ function versionStorageKey(simulator: Simulator): string {
   return `${STORAGE_KEYS.backendVersion}:${simulator || '_default'}`;
 }
 
+/**
+ * Move a version pin saved under a retired simulator id to the current one.
+ *
+ * Storage can be readable but not writable, in which case a copy throws. That
+ * must not stop the provider from hydrating: the caller still uses the pin
+ * from the returned map, and the retired key stays for the next load to retry.
+ * Only a successful copy removes it.
+ */
+function migrateRetiredVersions(): Map<string, string> {
+  const carried = new Map<string, string>();
+  for (const [retired, current] of simulatorIdMigrations()) {
+    const retiredKey = versionStorageKey(retired);
+    const retiredPin = localStorage.getItem(retiredKey);
+    if (retiredPin === null) continue;
+    const currentKey = versionStorageKey(current);
+    if (localStorage.getItem(currentKey) !== null) {
+      // The current key already holds the reader's choice; drop the stale
+      // retired copy so it cannot be migrated again later.
+      try {
+        localStorage.removeItem(retiredKey);
+      } catch {
+        // Keep it for a later attempt; it is stale, not lost.
+      }
+      continue;
+    }
+    try {
+      localStorage.setItem(currentKey, retiredPin);
+      localStorage.removeItem(retiredKey);
+    } catch {
+      carried.set(currentKey, retiredPin);
+    }
+  }
+  return carried;
+}
+
 interface SettingsState {
   hydrated: boolean;
   defaultModel: string;
@@ -179,23 +214,16 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // key on every load, so a profile that later switches to that simulator
       // still finds the reader's choice. An existing current-key value wins,
       // including an explicit empty string.
-      for (const [retired, current] of simulatorIdMigrations()) {
-        const retiredKey = versionStorageKey(retired);
-        const retiredPin = localStorage.getItem(retiredKey);
-        if (retiredPin === null) continue;
-        const currentKey = versionStorageKey(current);
-        if (localStorage.getItem(currentKey) === null) {
-          localStorage.setItem(currentKey, retiredPin);
-        }
-        localStorage.removeItem(retiredKey);
-      }
+      const carriedVersions = migrateRetiredVersions();
 
       const activeSimulator = savedSimulator || defaultSimulator;
       const activeVersionKey = versionStorageKey(activeSimulator);
       // The legacy unsuffixed key only ever held the default simulator's pin,
       // so migrate it to the simulator this profile actually resolves to.
       const legacyVersion = localStorage.getItem(STORAGE_KEYS.backendVersion);
-      const savedVersion = localStorage.getItem(activeVersionKey) ?? legacyVersion;
+      const savedVersion = localStorage.getItem(activeVersionKey)
+        ?? carriedVersions.get(activeVersionKey)
+        ?? legacyVersion;
       setBackendVersionState(savedVersion ?? '');
       if (legacyVersion !== null) {
         localStorage.setItem(activeVersionKey, legacyVersion);

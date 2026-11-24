@@ -78,6 +78,7 @@ afterEach(async () => {
   await act(async () => root.unmount())
   host.remove()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('Backend version persistence', () => {
@@ -190,6 +191,37 @@ describe('Backend version persistence', () => {
     expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('0.24.0')
     expect(localStorage.getItem(`${VERSION_KEY}:aisimulate`)).toBeNull()
     expect(localStorage.getItem(`${VERSION_KEY}:blis`)).toBe('1.3.0')
+  })
+
+  it('still hydrates with the retired pin when storage cannot take the copy', async () => {
+    // A full quota makes the copy throw. The provider must still hydrate and
+    // use the pin, and the retired key must stay so a later load can retry.
+    localStorage.setItem(`${VERSION_KEY}:aisimulate`, '0.24.0')
+    const real = window.localStorage
+    const failing: Storage = {
+      get length() {
+        return real.length
+      },
+      clear: () => real.clear(),
+      getItem: key => real.getItem(key),
+      key: index => real.key(index),
+      removeItem: key => real.removeItem(key),
+      setItem: (key, value) => {
+        if (key === `${VERSION_KEY}:aisim`) {
+          throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+        }
+        real.setItem(key, value)
+      },
+    }
+    vi.stubGlobal('localStorage', failing)
+
+    await render()
+    vi.unstubAllGlobals()
+
+    expect(state().hydrated).toBe(true)
+    expect(state().backendVersion).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisimulate`)).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBeNull()
   })
 
   it('keeps a persisted simulator instead of silently substituting one', async () => {
