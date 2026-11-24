@@ -144,8 +144,8 @@ GPU sizing formulas or call external service URLs directly from the browser.
    `versionFallback`; `mode=data` returns the aggregated benchmark rows for a
    resolved selection, plus `benchmarkVersion` / `inferencexVersion` reporting
    the normalized release each source's matched rows use.
-2. The route reads the public Red Hat Hugging Face Parquet files and a private
-   Hugging Face InferenceX snapshot with a server-side read token. It caches
+2. The route reads the public Red Hat Hugging Face Parquet files and the
+   InferenceX measured snapshot through server-side configuration. It caches
    both sources for five minutes and derives filter options from their union.
    Measured runtime configurations retain their source and serving settings; a
    selection returns only its own source's rows. If either dataset fails to
@@ -213,7 +213,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
 | `/api/catalog` | GET | Combined simulator list with each simulator's systems, models, backends, fabrics, and objectives |
-| `/api/validation/benchmark` | GET | Resolved benchmark filters, repairs, options, and source-specific aggregated measurements from Red Hat and private InferenceX datasets |
+| `/api/validation/benchmark` | GET | Resolved benchmark filters, repairs, options, and source-specific aggregated measurements from Red Hat and InferenceX measured datasets |
 | `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
 | `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs or a backend the pair was not measured on |
 | `/api/tested-models/dashboard/[pairId]` | GET | Sanitized measured graph data for one model/system pair |

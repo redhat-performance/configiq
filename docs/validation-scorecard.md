@@ -188,9 +188,9 @@ that look unrelated to it.
 Measurements are read from the two sources the rest of the app uses:
 
 - **Red Hat** — `redhat-performance/configiq-performance-upstream-data`
-- **InferenceX** — the private `configiq-inferencex-comparison` snapshot, read
-  with `INFERENCEX_HF_TOKEN`. The published artifact contains only derived
-  per-point values, never the raw private rows.
+- **InferenceX** — the `configiq-inferencex-comparison` measured snapshot. The
+  server reads it through its deployment configuration; the artifact contains
+  only derived per-point values, never the raw measured rows.
 
 The artifact records the revision of each source, the gateway it called, the
 simulator releases it used, and any leg that did not finish. A partial snapshot
