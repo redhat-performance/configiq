@@ -1,33 +1,37 @@
 /* Save-for-comparison control in a result page header. */
 
 .root {
+  position: relative;
   display: inline-flex;
   align-items: center;
   min-width: 0;
 }
 
-/* Every label state occupies the same cell, and the widest one sets the width.
-   The visible control stretches to that width, so its edges do not move when
-   the label changes; only the text inside changes. */
+/* Every label state is laid out in the same grid cell so the widest state sets
+   the control's size. Only the hidden copies are in flow: the visible control
+   is overlaid on the box they define, so its own label or icon can never grow
+   or shrink that box when the state changes. */
 .stack {
+  position: relative;
   display: inline-grid;
   align-items: center;
 }
 
 .ghost {
-  display: contents;
-}
-
-.ghost > *,
-.button,
-.disabled {
   grid-area: 1 / 1;
-  width: 100%;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .ghost > * {
-  visibility: hidden;
-  pointer-events: none;
+  white-space: nowrap;
+}
+
+.button,
+.disabled {
+  position: absolute;
+  inset: 0;
+  width: 100%;
 }
 
 /* Makes the tooltip's focus target match the button it explains. */
