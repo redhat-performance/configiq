@@ -43,7 +43,8 @@ const ROW_HEIGHT = 34;
  * Kept beside the height formula because the label offset is derived from the
  * plot area: if one changes without the other, labels drift off their bars.
  */
-const CHART_TOP_PADDING = 4;
+// Half a bar sits above the top category's point, so leave room for it.
+const CHART_TOP_PADDING = 6;
 const CHART_BOTTOM_PADDING = 34;
 
 /** Light wash on alternating configurations, so a pair of bars reads as one row. */

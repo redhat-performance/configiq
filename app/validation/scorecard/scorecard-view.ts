@@ -558,6 +558,13 @@ export function formatSignedPercent(value: number | null | undefined): string {
   return `${percent > 0 ? '+' : percent < 0 ? '−' : ''}${magnitude}%`;
 }
 
+/** A signed difference between percentages, already in percentage points. */
+export function formatSignedPoints(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+  const magnitude = Math.abs(value) >= 100 ? Math.round(Math.abs(value)) : Number(Math.abs(value).toFixed(1));
+  return `${value > 0 ? '+' : value < 0 ? '−' : ''}${magnitude} pp`;
+}
+
 /** How the page headline should describe a slice with no evidence. */
 export function emptyReason(
   coverage: CoverageCounts,

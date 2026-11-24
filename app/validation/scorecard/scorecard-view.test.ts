@@ -16,6 +16,7 @@ import {
   emptyReason,
   formatPercent,
   formatSignedPercent,
+  formatSignedPoints,
   selectTotals,
   sumCoverage,
   type CoverageCounts,
@@ -577,6 +578,19 @@ describe('formatSignedPercent', () => {
   it('renders a dash for missing evidence', () => {
     expect(formatSignedPercent(null)).toBe('—');
     expect(formatSignedPercent(Number.NaN)).toBe('—');
+  });
+});
+
+describe('formatSignedPoints', () => {
+  it('names the unit, because a gap is not a percentage', () => {
+    expect(formatSignedPoints(-10)).toBe('−10 pp');
+    expect(formatSignedPoints(2.5)).toBe('+2.5 pp');
+    expect(formatSignedPoints(0)).toBe('0 pp');
+  });
+
+  it('renders a dash for missing evidence', () => {
+    expect(formatSignedPoints(null)).toBe('—');
+    expect(formatSignedPoints(Number.NaN)).toBe('—');
   });
 });
 

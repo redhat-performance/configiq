@@ -47,6 +47,7 @@ import {
   emptyReason,
   formatPercent,
   formatSignedPercent,
+  formatSignedPoints,
   selectHeadToHeadRows,
   selectTotals,
   sumCoverage,
@@ -455,7 +456,7 @@ export default function SimulatorScorecard() {
                   term="Releases"
                   explanation={hasMatched
                     ? 'Like for release keeps only runs measured on the engine release the simulator models, which is the fair comparison. All releases includes runs on other releases, where part of the difference is the release gap rather than the model.'
-                    : 'No run matches the release this simulator models, so only the mixed comparison is available. Every configuration is scored, but a large part of the error can be the release gap rather than the model.'}
+                    : 'No run matches the release this simulator models, so only the mixed comparison is available. This view does not filter by release match, but a large part of the error can be the release gap rather than the model.'}
                 />
               </span>
               <ToggleGroup aria-label="Release comparison">
@@ -767,7 +768,7 @@ export default function SimulatorScorecard() {
                 pair={activePair.pair}
                 color={simulatorColor}
                 label={simulatorLabel}
-                formatGap={gap => formatSignedPercent(gap / 100)}
+                formatGap={formatSignedPoints}
                 source={source}
               />
             </section>
@@ -841,7 +842,7 @@ function MatrixFlipCard({
       >
         <div className={styles.chartHead}>
           <h3>{statisticLabel} by measured configuration</h3>
-          <span className={styles.chartUnit}>Lower is closer</span>
+          <span className={styles.chartUnit}>{statistic === 'bias' ? 'Closer to zero is better' : 'Lower is closer'}</span>
         </div>
         <ul className={styles.chartLegend} aria-label="Chart legend">
           {series.map(entry => (
@@ -1242,7 +1243,7 @@ function HeadToHeadFlipCard({
                   <td className={styles.numericCell}>{formatCount(row.firstWins)}</td>
                   <td className={styles.numericCell}>{formatCount(row.secondWins)}</td>
                   <td className={styles.numericCell}>{formatCount(row.ties)}</td>
-                  <td className={styles.numericCell}>{formatSignedPercent(row.medianDeltaPct / 100)}</td>
+                  <td className={styles.numericCell}>{formatSignedPoints(row.medianDeltaPct)}</td>
                 </tr>
               ))}
             </tbody>
