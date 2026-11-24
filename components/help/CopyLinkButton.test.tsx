@@ -58,6 +58,21 @@ describe('CopyLinkButton', () => {
     expect(container.textContent).toContain('Link copied to the clipboard.');
   });
 
+  it('passes an absolute URL through without prefixing the current origin', async () => {
+    await render(() => 'https://example.test/scorecard?v=1');
+    await click();
+
+    expect(writeText).toHaveBeenCalledWith('https://example.test/scorecard?v=1');
+  });
+
+  it('uses the label it was given', async () => {
+    await act(async () => {
+      root.render(<CopyLinkButton getUrl={() => '/predict'} label="Copy share link" />);
+    });
+
+    expect(container.querySelector('button')?.textContent).toContain('Copy share link');
+  });
+
   it('reports a link it could not build instead of copying the current page', async () => {
     await render(() => null);
     await click();
@@ -77,6 +92,17 @@ describe('CopyLinkButton', () => {
     expect(container.textContent).toContain('Could not copy the link');
   });
 
+  it('reports a browser with no clipboard instead of throwing', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
+    await render(() => '/predict?v=1');
+    await click();
+
+    expect(container.textContent).toContain('Could not copy the link');
+  });
+
   it('clears the confirmation after a moment', async () => {
     vi.useFakeTimers();
     await render(() => '/predict');
@@ -87,5 +113,49 @@ describe('CopyLinkButton', () => {
       vi.advanceTimersByTime(2600);
     });
     expect(container.textContent).not.toContain('Link copied');
+  });
+
+  it('restarts the confirmation timer when the reader copies again', async () => {
+    vi.useFakeTimers();
+    await render(() => '/predict');
+    await click();
+
+    // Two seconds after the first click, copy again.
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    await click();
+
+    // The first timer would have fired by now; the second has not.
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(container.textContent).toContain('Link copied');
+
+    await act(async () => {
+      vi.advanceTimersByTime(1600);
+    });
+    expect(container.textContent).not.toContain('Link copied');
+  });
+
+  it('clears its timer on unmount', async () => {
+    vi.useFakeTimers();
+    const clearTimeout = vi.spyOn(window, 'clearTimeout');
+    const local = document.createElement('div');
+    document.body.append(local);
+    const localRoot = createRoot(local);
+    await act(async () => {
+      localRoot.render(<CopyLinkButton getUrl={() => '/predict'} />);
+    });
+    await act(async () => {
+      local.querySelector('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    await act(async () => localRoot.unmount());
+    local.remove();
+
+    expect(clearTimeout).toHaveBeenCalled();
+    clearTimeout.mockRestore();
   });
 });

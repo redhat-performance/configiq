@@ -25,14 +25,18 @@ interface CopyLinkButtonProps {
  */
 export function CopyLinkButton({ getUrl, label = 'Copy link' }: CopyLinkButtonProps) {
   const [state, setState] = React.useState<'idle' | 'copied' | 'error'>('idle');
+  // Each attempt gets a new value so a second click re-arms the confirmation
+  // instead of letting the first click's timer hide it a moment later.
+  const [attempt, setAttempt] = React.useState(0);
 
   React.useEffect(() => {
     if (state === 'idle') return;
     const timer = window.setTimeout(() => setState('idle'), 2500);
     return () => window.clearTimeout(timer);
-  }, [state]);
+  }, [state, attempt]);
 
   const handleClick = async () => {
+    setAttempt(current => current + 1);
     const url = getUrl();
     if (!url) {
       setState('error');
