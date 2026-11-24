@@ -346,6 +346,19 @@ def test_serving_config_is_absent_when_the_result_has_no_deployment():
     assert blis_service._serving_config({"metrics": {}}) is None
 
 
+def test_aggregated_documents_leave_block_size_to_blis():
+    _scenario, deployment = build_documents(_scenario_request(
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            context_length=None,
+            origin="blis-catalog",
+        ),
+    ))
+
+    assert "block_size" not in deployment["pools"][0]["engine"]
+
+
 def test_half_cache_dtype_leaves_the_blis_model_default_unmodified():
     _scenario, deployment = build_documents(_scenario_request(cache_dtype="half"))
 

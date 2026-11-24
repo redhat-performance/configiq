@@ -319,8 +319,10 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
         if request.max_model_len is not None
         else request.model.context_length or request.isl + request.osl
     )
+    # No block_size: the request contract does not carry one, and BLIS resolves the
+    # size vLLM would pick for the model (16 for most models, a larger kernel block
+    # for sparse-attention families that refuse 16 at startup).
     engine: dict[str, Any] = {
-        "block_size": 16,
         "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
         "max_num_seqs": request.max_num_seqs or request.concurrency,
         "max_model_len": max_model_len,
