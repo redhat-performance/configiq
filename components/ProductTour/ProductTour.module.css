@@ -8,7 +8,9 @@
   cursor: default;
 }
 
-/* Spotlight cutout that highlights the target element. */
+/* Spotlight cutout that highlights the target element. No position
+   transition: during a smooth scroll the cutout is re-measured every frame and
+   must stay glued to its target, not chase it. */
 .spotlight {
   position: fixed;
   z-index: 9999;
@@ -20,7 +22,6 @@
     0 0 0 6px rgba(255, 255, 255, 0.4),
     0 0 20px 10px color-mix(in srgb, var(--gc-link) 30%, transparent),
     0 0 0 9999px rgba(8, 10, 14, 0.55);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   animation: pulse 2s ease-in-out infinite;
 }
 
