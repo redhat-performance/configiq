@@ -83,18 +83,26 @@ def local_artifact(source_dir: Path, channel: str) -> tuple[bytes, bytes]:
     return summary_path.read_bytes(), points_path.read_bytes()
 
 
-def download_file(repo_id: str, path_in_repo: str) -> bytes | None:
+def download_file(repo_id: str, path_in_repo: str, revision: str) -> bytes | None:
+    # The revision is resolved once by the caller. Two independent downloads
+    # could otherwise resolve different branch heads and pair a summary with
+    # another snapshot's points.
     try:
         return Path(
-            hf_hub_download(repo_id=repo_id, repo_type="dataset", filename=path_in_repo)
+            hf_hub_download(
+                repo_id=repo_id,
+                repo_type="dataset",
+                filename=path_in_repo,
+                revision=revision,
+            )
         ).read_bytes()
     except EntryNotFoundError:
         return None
 
 
-def published_artifact(repo_id: str, channel: str) -> tuple[bytes, bytes]:
-    summary = download_file(repo_id, f"{channel}/{SUMMARY_FILE}")
-    points = download_file(repo_id, f"{channel}/{POINTS_FILE}")
+def published_artifact(repo_id: str, channel: str, revision: str) -> tuple[bytes, bytes]:
+    summary = download_file(repo_id, f"{channel}/{SUMMARY_FILE}", revision)
+    points = download_file(repo_id, f"{channel}/{POINTS_FILE}", revision)
     if summary is None or points is None:
         raise SystemExit(f"Channel {channel!r} is not published in {repo_id}")
     return summary, points
@@ -115,8 +123,12 @@ def main() -> int:
         # break every deployment at once.
         raise SystemExit(f"Refusing to publish to private dataset {args.repo_id}; the page reads it anonymously")
 
+    # Pin every read to the commit resolved above so a summary and its points
+    # always come from the same snapshot.
+    revision = repo.sha
+
     if args.from_channel:
-        summary_bytes, points_bytes = published_artifact(args.repo_id, args.from_channel)
+        summary_bytes, points_bytes = published_artifact(args.repo_id, args.from_channel, revision)
         message = f"Promote scorecard snapshot from {args.from_channel} to {args.channel}"
     else:
         source_dir = args.source_dir or Path("artifacts/scorecard")
@@ -126,8 +138,8 @@ def main() -> int:
     # Both files are the artifact. A retry after a partial upload must see the
     # missing or stale half as a change, not report the channel current just
     # because the summary landed.
-    current_summary = download_file(args.repo_id, f"{args.channel}/{SUMMARY_FILE}")
-    current_points = download_file(args.repo_id, f"{args.channel}/{POINTS_FILE}")
+    current_summary = download_file(args.repo_id, f"{args.channel}/{SUMMARY_FILE}", revision)
+    current_points = download_file(args.repo_id, f"{args.channel}/{POINTS_FILE}", revision)
     if current_summary == summary_bytes and current_points == points_bytes:
         print(f"Channel {args.channel!r} is already current")
         write_output(args.github_output, {"changed": "false", "revision": ""})
@@ -155,10 +167,10 @@ def main() -> int:
             ),
         ],
     )
-    revision = commit.oid
+    published_revision = commit.oid
 
-    print(f"Published {args.repo_id}/{args.channel} at {revision}")
-    write_output(args.github_output, {"changed": "true", "revision": revision})
+    print(f"Published {args.repo_id}/{args.channel} at {published_revision}")
+    write_output(args.github_output, {"changed": "true", "revision": published_revision})
     return 0
 
 
