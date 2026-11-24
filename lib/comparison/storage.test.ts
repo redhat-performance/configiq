@@ -273,6 +273,18 @@ describe('snapshotKey', () => {
     expect(snapshotKey(entry({ engineVersion: '0.15.0' }))).not.toBe(base)
     expect(snapshotKey(entry({ figures: { ...entry().figures, ttftMs: 1 } }))).not.toBe(base)
   })
+
+  it('ignores cost figures filled in after the save', () => {
+    const saved = entry({ figures: {
+      ...entry().figures,
+      cloudMonthlyUsd: null,
+      cloudFiveYearUsd: null,
+      selfHostedMonthlyUsd: null,
+      selfHostedFiveYearUsd: null,
+    } })
+
+    expect(snapshotKey(saved)).toBe(snapshotKey(entry()))
+  })
 })
 
 describe('removeComparisonEntry and clearComparison', () => {

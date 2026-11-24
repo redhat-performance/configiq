@@ -202,12 +202,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/gpu-explorer"
               isActive={pathname === "/gpu-explorer"}
             />
-            <NavItemWithIcon
-              icon={ListIcon}
-              label="Compare results"
-              href="/compare"
-              isActive={pathname === "/compare"}
-            />
             {false && <NavItemWithIcon
               icon={HistoryIcon}
               label="History"
@@ -248,6 +242,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </>
             )}
+            <NavItemWithIcon
+              icon={ListIcon}
+              label="Saved results"
+              href="/compare"
+              isActive={pathname === "/compare"}
+            />
 
             <div style={groupLabelStyle}>SYSTEM</div>
 

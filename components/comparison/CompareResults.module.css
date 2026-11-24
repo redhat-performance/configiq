@@ -172,13 +172,21 @@
   border-top: 2px solid #c7c7c7;
 }
 
+.sectionRow th,
+.sectionRow td {
+  background: #e8e8e8;
+}
+
 .sectionRow th {
   text-align: left;
-  background: #e8e8e8;
   color: var(--t2);
   font: 500 11.5px var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.sectionRow td {
+  text-align: right;
 }
 
 .metricLabel {
@@ -206,8 +214,7 @@
 }
 
 .baselineTag {
-  display: block;
-  margin-top: 2px;
+  display: inline;
   font: 500 11.5px var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;

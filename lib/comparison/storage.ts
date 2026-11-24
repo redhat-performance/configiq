@@ -8,6 +8,7 @@ import {
   emptyComparisonDocument,
   type ComparisonDocument,
   type ComparisonEntry,
+  type ComparisonFigures,
 } from './types'
 
 const nullableNumber = z.number().finite().nullable()
@@ -232,12 +233,20 @@ export function writeComparison(document: ComparisonDocument): ComparisonWrite {
 
 /**
  * Identity of a snapshot: the view it came from, the simulator and engine that
- * produced it, and the figures themselves. Saving the same result again moves
- * it to the front instead of adding a duplicate; a different figure is a
- * different result and stays a second entry.
+ * produced it, and the measured figures themselves. Saving the same result
+ * again moves it to the front instead of adding a duplicate; a different figure
+ * is a different result and stays a second entry.
+ *
+ * Cost figures are left out: a run saved with costings off and the same run
+ * opened later with price data filled in are one result, not two.
  */
 export function snapshotKey(entry: ComparisonEntry): string {
-  return JSON.stringify([entry.link, entry.simulator, entry.engineVersion, entry.figures])
+  const measured: Partial<ComparisonFigures> = { ...entry.figures }
+  delete measured.cloudMonthlyUsd
+  delete measured.cloudFiveYearUsd
+  delete measured.selfHostedMonthlyUsd
+  delete measured.selfHostedFiveYearUsd
+  return JSON.stringify([entry.link, entry.simulator, entry.engineVersion, measured])
 }
 
 /** Add a snapshot, or refresh the existing one with the same identity. */

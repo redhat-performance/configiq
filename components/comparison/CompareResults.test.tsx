@@ -4,7 +4,8 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writeComparison } from '@/lib/comparison/storage';
+import { writeComparison, loadComparison } from '@/lib/comparison/storage';
+import type { ComparisonCostSources } from '@/lib/comparison/backfill';
 import {
   COMPARISON_SCHEMA_VERSION,
   type ComparisonDocument,
@@ -74,9 +75,37 @@ function doc(entries: ComparisonEntry[]): ComparisonDocument {
   return { schemaVersion: COMPARISON_SCHEMA_VERSION, entries };
 }
 
-async function render() {
+function costSources({ onDemand = 2.5 }: { onDemand?: number } = {}): ComparisonCostSources {
+  return {
+    gpuCloudRates: new Map([['h200', {
+      'aws.us-east-1': {
+        on_demand: onDemand,
+        reserved_1yr: null,
+        reserved_3yr: null,
+        spot_median: null,
+        rate_basis: 'gpu_hour',
+        gpus_per_instance: 1,
+      },
+    }]]),
+    gpuHardwareCosts: new Map([['h200', {
+      new_usd: 20_000,
+      new_usd_low: null,
+      new_usd_high: null,
+      indicative: true,
+      source_label: null,
+      source_url: null,
+      source_date: null,
+    }]]),
+    preferredProvider: null,
+  };
+}
+
+async function render(
+  costSources?: ComparisonCostSources,
+  load?: () => ReturnType<typeof loadComparison>,
+) {
   await act(async () => {
-    root.render(<CompareResults />);
+    root.render(<CompareResults costSources={costSources} load={load} />);
   });
 }
 
@@ -94,6 +123,12 @@ function cellsFor(label: string): string[] {
   const row = rowFor(label);
   if (!row) throw new Error(`expected a ${label} row`);
   return Array.from(row.querySelectorAll('td')).map(cell => cell.textContent ?? '');
+}
+
+function sectionMarks(label: string): string[] {
+  const row = rowFor(label);
+  if (!row) throw new Error(`expected a ${label} section row`);
+  return Array.from(row.querySelectorAll('td')).map(cell => cell.textContent?.trim() ?? '');
 }
 
 beforeEach(() => {
@@ -136,6 +171,16 @@ describe('CompareResults', () => {
     expect(columns[1].textContent).toContain('blis');
   });
 
+  it('shows the simulator, backend, and engine in one deployment row', async () => {
+    writeComparison(doc([entry()]));
+    await render();
+
+    expect(rowFor('Simulator / backend / engine')?.textContent).toContain('AISim · vLLM 0.14.0');
+    expect(rowFor('Simulator')).toBeUndefined();
+    expect(rowFor('Engine version')).toBeUndefined();
+    expect(rowFor('Backend')).toBeUndefined();
+  });
+
   it('shows absolute values until a baseline is chosen', async () => {
     writeComparison(doc([entry(), entry({ id: 'b', link: '/predict?n=2', figures: { ...entry().figures, gpus: 16 } })]));
     await render();
@@ -150,8 +195,23 @@ describe('CompareResults', () => {
     const baseline = host.querySelector<HTMLInputElement>('#baseline-a');
     await act(async () => baseline?.click());
 
-    expect(cellsFor('GPUs')).toEqual(['8baseline', '16▲ 8']);
+    expect(cellsFor('GPUs')).toEqual(['8', '16▲ 8']);
+    expect(sectionMarks('Deployment')).toEqual(['baseline', '']);
+    expect(sectionMarks('Cost')).toEqual(['baseline', '']);
     expect(host.textContent).toContain('Clear baseline');
+  });
+
+  it('moves the baseline mark above the column when the baseline changes', async () => {
+    writeComparison(doc([entry(), entry({ id: 'b', link: '/predict?n=2', figures: { ...entry().figures, gpus: 16 } })]));
+    await render();
+
+    await act(async () => host.querySelector<HTMLInputElement>('#baseline-a')?.click());
+    expect(sectionMarks('Deployment')).toEqual(['baseline', '']);
+
+    await act(async () => host.querySelector<HTMLInputElement>('#baseline-b')?.click());
+
+    expect(sectionMarks('Deployment')).toEqual(['', 'baseline']);
+    expect(cellsFor('GPUs')).toEqual(['8▼ 8', '16']);
   });
 
   it('removes one result', async () => {
@@ -242,5 +302,82 @@ describe('CompareResults', () => {
     expect(click).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:comparison');
     click.mockRestore();
+  });
+
+  describe('cost backfill', () => {
+    const uncosted = () => entry({ figures: {
+      ...entry().figures,
+      cloudMonthlyUsd: null,
+      cloudFiveYearUsd: null,
+      selfHostedMonthlyUsd: null,
+      selfHostedFiveYearUsd: null,
+    } });
+
+    it('fills a missing cost from the catalogue and keeps it saved', async () => {
+      writeComparison(doc([uncosted()]));
+
+      await render(costSources());
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBe(14_600);
+    });
+
+    it('leaves a figure the saved result already had', async () => {
+      writeComparison(doc([entry()]));
+
+      await render(costSources({ onDemand: 9 }));
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+    });
+
+    it('keeps a missing figure visible as unavailable when no price is published', async () => {
+      writeComparison(doc([uncosted()]));
+
+      await render({ gpuCloudRates: new Map(), gpuHardwareCosts: new Map(), preferredProvider: null });
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['—']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBeNull();
+    });
+
+    it('updates the open details view with a filled figure', async () => {
+      writeComparison(doc([uncosted()]));
+      await render();
+      await act(async () => buttonByText('Details')?.click());
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+      await render(costSources());
+
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('$14.6K');
+    });
+
+    it('does not drop a result another tab saved', async () => {
+      writeComparison(doc([uncosted()]));
+      await render();
+      const added = entry({ id: 'second', link: '/predict?n=2' });
+      writeComparison(doc([uncosted(), added]));
+
+      await render(costSources());
+
+      expect(loadComparison().document.entries.map(saved => saved.id))
+        .toEqual(['a', 'second']);
+      expect(cellsFor('Cloud cost / month')).toHaveLength(2);
+    });
+
+    it('shows figures but refuses to write when storage cannot be re-read', async () => {
+      writeComparison(doc([uncosted()]));
+      const initial = loadComparison();
+      const load = vi.fn()
+        .mockReturnValueOnce(initial)
+        .mockReturnValue({
+          document: initial.document,
+          problem: 'The saved set could not be read.',
+        });
+
+      await render(costSources(), load);
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBeNull();
+      expect(host.textContent).toContain('could not be saved');
+    });
   });
 });

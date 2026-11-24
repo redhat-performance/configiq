@@ -71,6 +71,19 @@ describe('comparisonCsv', () => {
     expect(rows.find(row => row[0] === 'TTFT (ms)')?.[1]).toBe('180')
   })
 
+  it('writes the runtime as one row', () => {
+    const rows = parse(comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry()],
+    }))
+
+    expect(rows.find(row => row[0] === 'Simulator / backend / engine')?.[1])
+      .toBe('AISim · vLLM 0.14.0 (requested 0.9.0)')
+    expect(rows.some(row => row[0] === 'Simulator')).toBe(false)
+    expect(rows.some(row => row[0] === 'Engine version')).toBe(false)
+    expect(rows.some(row => row[0] === 'Backend')).toBe(false)
+  })
+
   it('leaves an unreported metric empty', () => {
     const csv = comparisonCsv({
       schemaVersion: COMPARISON_SCHEMA_VERSION,

@@ -100,6 +100,27 @@ it('isolates models-only caching and keeps the existing full-data default for ot
   expect(view.state.gpuCloudRates.size).toBe(0)
 })
 
+it('reads only infrastructure prices for a systems-only consumer', async () => {
+  const view = await harness(true, 'merged', 'systems')
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/models'))).toBe(false)
+  expect(view.state.models).toEqual([])
+  expect(view.state.gpuCloudRates.size).toBe(1)
+  expect(view.state.gpuHardwareCosts.size).toBe(1)
+  // The catalogue is complete for this scope, so a healthy read is cached.
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(2)
+})
+
+it('ignores hosted-model health for systems-only pricing', async () => {
+  reply = url => url.includes('/health') ? Response.json({ status: 'ok', version: 'test', sources: {
+    'models.litellm': { last_success: null, last_error: null, stale: true },
+  } }) : healthyResponse(url)
+  await harness(true, 'merged', 'systems')
+  await act(async () => vi.advanceTimersByTimeAsync(60_000))
+  expect(fetch).toHaveBeenCalledTimes(2)
+})
+
 it('deduplicates simultaneous consumers of the same pricing scope', async () => {
   const { useCostings } = await import('./useCostings')
   function Consumer() { useCostings(true); return null }

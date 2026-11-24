@@ -73,7 +73,7 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
   },
   {
     path: '/compare',
-    name: 'Compare results',
+    name: 'Saved results',
     sharedView: {
       kind: 'none',
       reason:

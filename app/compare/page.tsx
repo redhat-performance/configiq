@@ -1,5 +1,5 @@
-import { CompareResults } from '@/components/comparison/CompareResults';
+import SavedResultsPage from './SavedResults';
 
 export default function Page() {
-  return <CompareResults />;
+  return <SavedResultsPage />;
 }

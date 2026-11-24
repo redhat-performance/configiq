@@ -27,6 +27,11 @@ import Link from 'next/link';
 
 import { comparisonCsv } from '@/lib/comparison/csv';
 import {
+  backfillComparisonCosts,
+  mergeCostFigures,
+  type ComparisonCostSources,
+} from '@/lib/comparison/backfill';
+import {
   COMPARISON_SECTIONS,
   formatMetric,
   formatNumber,
@@ -40,6 +45,7 @@ import {
   importComparison,
   loadComparison,
   removeComparisonEntry,
+  writeComparison,
 } from '@/lib/comparison/storage';
 import {
   MAX_COMPARISON_ENTRIES,
@@ -57,6 +63,11 @@ type Notice =
 interface CompareResultsProps {
   /** Overrides for tests; the page reads the browser's own set. */
   load?: () => ReturnType<typeof loadComparison>;
+  /**
+   * Prices that can complete a saved result whose cost figures were missing,
+   * or null when no catalogue has loaded yet.
+   */
+  costSources?: ComparisonCostSources | null;
 }
 
 function timestamp(date: string): string {
@@ -159,12 +170,12 @@ function EntryColumn({ entry, isBaseline, onBaseline, onDetails, onRemove }: Ent
   );
 }
 
-export function CompareResults({ load = loadComparison }: CompareResultsProps) {
+export function CompareResults({ load = loadComparison, costSources = null }: CompareResultsProps) {
   const [document, setDocument] = React.useState<ComparisonDocument>(emptyComparisonDocument);
   const [loaded, setLoaded] = React.useState(false);
   const [baselineId, setBaselineId] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice>(null);
-  const [details, setDetails] = React.useState<ComparisonEntry | null>(null);
+  const [detailsId, setDetailsId] = React.useState<string | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
 
@@ -177,12 +188,49 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
     }
   }, [load]);
 
+  // A saved result keeps the cost figures its page could see. Completing a
+  // missing one here means an old or costings-off snapshot still shows a price,
+  // and the table and an export of it agree because both read this document.
+  React.useEffect(() => {
+    if (!loaded || costSources == null) return;
+    const backfilled = backfillComparisonCosts(document, costSources);
+    if (backfilled.filled === 0) return;
+
+    // Another tab may have saved or removed a result since this page loaded.
+    // Read the set that is in storage now and copy only the completed figures
+    // onto it, so this write neither restores what was removed nor drops what
+    // was added.
+    const current = load();
+    if (current.problem != null) {
+      setDocument(backfilled.document);
+      setNotice({
+        kind: 'danger',
+        message: `Cost figures are shown but could not be saved: ${current.problem}`,
+      });
+      return;
+    }
+
+    const merged = mergeCostFigures(current.document, backfilled.document);
+    setDocument(merged);
+    const written = writeComparison(merged);
+    if (!written.ok) {
+      setNotice({
+        kind: 'danger',
+        message: `Cost figures are shown but could not be saved: ${written.problem}`,
+      });
+    }
+  }, [loaded, costSources, document, load]);
+
   const entries = document.entries;
   const baseline = entries.find(entry => entry.id === baselineId) ?? null;
+  // The modal reads the same document as the table, so a figure completed
+  // while it is open updates there too.
+  const details = entries.find(entry => entry.id === detailsId) ?? null;
 
   const replaceDocument = (next: ComparisonDocument) => {
     setDocument(next);
     if (!next.entries.some(entry => entry.id === baselineId)) setBaselineId(null);
+    if (!next.entries.some(entry => entry.id === detailsId)) setDetailsId(null);
   };
 
   const handleExportCsv = () => {
@@ -308,7 +356,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
   const detailsModal = details != null && (
     <Modal
       isOpen
-      onClose={() => setDetails(null)}
+      onClose={() => setDetailsId(null)}
       variant="medium"
       aria-labelledby="comparison-details-title"
     >
@@ -331,7 +379,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
       </ModalBody>
       <ModalFooter>
         <Link href={details.link}>Open the view behind this result</Link>
-        <Button variant="link" onClick={() => setDetails(null)}>
+        <Button variant="link" onClick={() => setDetailsId(null)}>
           Close
         </Button>
       </ModalFooter>
@@ -373,7 +421,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
     <div className={styles.page}>
       <div className={styles.header}>
         <div>
-          <h1 className={styles.pageTitle}>Compare results</h1>
+          <h1 className={styles.pageTitle}>Saved results</h1>
           <p className={styles.subtitle}>
             Results you saved from a result page, side by side. The set lives in this
             browser only and is never sent to a ConfigIQ service.
@@ -428,7 +476,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
                       entry={entry}
                       isBaseline={entry.id === baselineId}
                       onBaseline={setBaselineId}
-                      onDetails={setDetails}
+                      onDetails={entry => setDetailsId(entry.id)}
                       onRemove={handleRemove}
                     />
                   ))}
@@ -437,9 +485,19 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
               {COMPARISON_SECTIONS.map(section => (
                 <tbody key={section.id} className={styles.section}>
                   <tr className={styles.sectionRow}>
-                    <th scope="colgroup" colSpan={entries.length + 1}>
+                    <th scope="rowgroup">
                       {section.label}
                     </th>
+                    {/* The baseline sits above the column it belongs to, once
+                        per section, so it does not add a line to every metric
+                        row. Empty cells keep the section band full width. */}
+                    {entries.map(entry => (
+                      <td key={entry.id}>
+                        {entry.id === baselineId ? (
+                          <span className={styles.baselineTag}>baseline</span>
+                        ) : null}
+                      </td>
+                    ))}
                   </tr>
                   {metricsFor(section.id).map(metric => (
                     <tr key={metric.id}>
@@ -456,7 +514,6 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
                             className={metric.kind === 'number' ? styles.numeric : styles.text}
                           >
                             <span className={styles.value}>{formatMetric(metric, value)}</span>
-                            {isBaseline && <span className={styles.baselineTag}>baseline</span>}
                             {delta != null && <span className={styles.delta}>{delta}</span>}
                           </td>
                         );
