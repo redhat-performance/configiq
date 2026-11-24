@@ -100,9 +100,12 @@ function costSources({ onDemand = 2.5 }: { onDemand?: number } = {}): Comparison
   };
 }
 
-async function render(costSources?: ComparisonCostSources) {
+async function render(
+  costSources?: ComparisonCostSources,
+  load?: () => ReturnType<typeof loadComparison>,
+) {
   await act(async () => {
-    root.render(<CompareResults costSources={costSources} />);
+    root.render(<CompareResults costSources={costSources} load={load} />);
   });
 }
 
@@ -334,6 +337,47 @@ describe('CompareResults', () => {
 
       expect(cellsFor('Cloud cost / month')).toEqual(['—']);
       expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBeNull();
+    });
+
+    it('updates the open details view with a filled figure', async () => {
+      writeComparison(doc([uncosted()]));
+      await render();
+      await act(async () => buttonByText('Details')?.click());
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+      await render(costSources());
+
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain('$14.6K');
+    });
+
+    it('does not drop a result another tab saved', async () => {
+      writeComparison(doc([uncosted()]));
+      await render();
+      const added = entry({ id: 'second', link: '/predict?n=2' });
+      writeComparison(doc([uncosted(), added]));
+
+      await render(costSources());
+
+      expect(loadComparison().document.entries.map(saved => saved.id))
+        .toEqual(['a', 'second']);
+      expect(cellsFor('Cloud cost / month')).toHaveLength(2);
+    });
+
+    it('shows figures but refuses to write when storage cannot be re-read', async () => {
+      writeComparison(doc([uncosted()]));
+      const initial = loadComparison();
+      const load = vi.fn()
+        .mockReturnValueOnce(initial)
+        .mockReturnValue({
+          document: initial.document,
+          problem: 'The saved set could not be read.',
+        });
+
+      await render(costSources(), load);
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBeNull();
+      expect(host.textContent).toContain('could not be saved');
     });
   });
 });

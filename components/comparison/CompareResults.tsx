@@ -26,7 +26,11 @@ import TrashIcon from '@patternfly/react-icons/dist/esm/icons/trash-icon';
 import Link from 'next/link';
 
 import { comparisonCsv } from '@/lib/comparison/csv';
-import { backfillComparisonCosts, type ComparisonCostSources } from '@/lib/comparison/backfill';
+import {
+  backfillComparisonCosts,
+  mergeCostFigures,
+  type ComparisonCostSources,
+} from '@/lib/comparison/backfill';
 import {
   COMPARISON_SECTIONS,
   formatMetric,
@@ -171,7 +175,7 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
   const [loaded, setLoaded] = React.useState(false);
   const [baselineId, setBaselineId] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice>(null);
-  const [details, setDetails] = React.useState<ComparisonEntry | null>(null);
+  const [detailsId, setDetailsId] = React.useState<string | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
 
@@ -191,22 +195,42 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
     if (!loaded || costSources == null) return;
     const backfilled = backfillComparisonCosts(document, costSources);
     if (backfilled.filled === 0) return;
-    setDocument(backfilled.document);
-    const written = writeComparison(backfilled.document);
+
+    // Another tab may have saved or removed a result since this page loaded.
+    // Read the set that is in storage now and copy only the completed figures
+    // onto it, so this write neither restores what was removed nor drops what
+    // was added.
+    const current = load();
+    if (current.problem != null) {
+      setDocument(backfilled.document);
+      setNotice({
+        kind: 'danger',
+        message: `Cost figures are shown but could not be saved: ${current.problem}`,
+      });
+      return;
+    }
+
+    const merged = mergeCostFigures(current.document, backfilled.document);
+    setDocument(merged);
+    const written = writeComparison(merged);
     if (!written.ok) {
       setNotice({
         kind: 'danger',
         message: `Cost figures are shown but could not be saved: ${written.problem}`,
       });
     }
-  }, [loaded, costSources, document]);
+  }, [loaded, costSources, document, load]);
 
   const entries = document.entries;
   const baseline = entries.find(entry => entry.id === baselineId) ?? null;
+  // The modal reads the same document as the table, so a figure completed
+  // while it is open updates there too.
+  const details = entries.find(entry => entry.id === detailsId) ?? null;
 
   const replaceDocument = (next: ComparisonDocument) => {
     setDocument(next);
     if (!next.entries.some(entry => entry.id === baselineId)) setBaselineId(null);
+    if (!next.entries.some(entry => entry.id === detailsId)) setDetailsId(null);
   };
 
   const handleExportCsv = () => {
@@ -332,7 +356,7 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
   const detailsModal = details != null && (
     <Modal
       isOpen
-      onClose={() => setDetails(null)}
+      onClose={() => setDetailsId(null)}
       variant="medium"
       aria-labelledby="comparison-details-title"
     >
@@ -355,7 +379,7 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
       </ModalBody>
       <ModalFooter>
         <Link href={details.link}>Open the view behind this result</Link>
-        <Button variant="link" onClick={() => setDetails(null)}>
+        <Button variant="link" onClick={() => setDetailsId(null)}>
           Close
         </Button>
       </ModalFooter>
@@ -452,7 +476,7 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
                       entry={entry}
                       isBaseline={entry.id === baselineId}
                       onBaseline={setBaselineId}
-                      onDetails={setDetails}
+                      onDetails={entry => setDetailsId(entry.id)}
                       onRemove={handleRemove}
                     />
                   ))}

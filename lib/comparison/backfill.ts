@@ -59,7 +59,10 @@ function filledFigures(
   // Each pair is one quantity in two windows. When one side is already saved,
   // the other follows it rather than the catalogue, so a row cannot show a
   // monthly figure and a five-year total that disagree.
-  figures.cloudMonthlyUsd = figures.cloudMonthlyUsd ?? computed.cloudMonthlyUsd
+  figures.cloudMonthlyUsd = figures.cloudMonthlyUsd
+    ?? (figures.cloudFiveYearUsd == null
+      ? computed.cloudMonthlyUsd
+      : figures.cloudFiveYearUsd / AMORT_MONTHS_5YR)
   figures.cloudFiveYearUsd = figures.cloudFiveYearUsd
     ?? (figures.cloudMonthlyUsd == null ? null : figures.cloudMonthlyUsd * AMORT_MONTHS_5YR)
 
@@ -99,4 +102,38 @@ export function backfillComparisonCosts(
     document: filled === 0 ? document : { ...document, entries },
     filled,
   }
+}
+
+/**
+ * Copy completed cost figures onto the set that is in storage now.
+ *
+ * The set this page loaded can be out of date by the time prices arrive: another
+ * tab may have saved or removed a result. Writing the loaded set back would
+ * restore what was removed or drop what was added, so the filled figures are
+ * matched to the current entries by id and everything else is left as stored.
+ * Entries that appeared after the load are untouched and gain their own figures
+ * on the next pass.
+ */
+export function mergeCostFigures(
+  current: ComparisonDocument,
+  filled: ComparisonDocument,
+): ComparisonDocument {
+  const completed = new Map(filled.entries.map(entry => [entry.id, entry]))
+  let changed = false
+
+  const entries = current.entries.map(entry => {
+    const source = completed.get(entry.id)
+    if (source == null) return entry
+    const figures: ComparisonFigures = { ...entry.figures }
+    for (const field of COST_FIELDS) {
+      if (figures[field] == null && source.figures[field] != null) {
+        figures[field] = source.figures[field]
+      }
+    }
+    if (COST_FIELDS.every(field => figures[field] === entry.figures[field])) return entry
+    changed = true
+    return { ...entry, figures }
+  })
+
+  return changed ? { ...current, entries } : current
 }

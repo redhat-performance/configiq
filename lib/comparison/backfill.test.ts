@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { backfillComparisonCosts, missingCost, type ComparisonCostSources } from './backfill'
+import { backfillComparisonCosts, mergeCostFigures, missingCost, type ComparisonCostSources } from './backfill'
 import { COMPARISON_SCHEMA_VERSION, type ComparisonEntry } from './types'
 
 function entry(overrides: Partial<ComparisonEntry> = {}): ComparisonEntry {
@@ -117,6 +117,17 @@ describe('backfillComparisonCosts', () => {
     expect(figures.selfHostedMonthlyUsd).toBeCloseTo((8 * 20_000) / 60)
   })
 
+  it('derives a missing monthly cloud cost from the saved five-year total', () => {
+    const saved = entry({ figures: { ...entry().figures, cloudFiveYearUsd: 6_000 } })
+
+    const figures = backfillComparisonCosts(doc([saved]), sources()).document.entries[0].figures
+
+    // The pair must agree, so the catalogue rate does not override the saved
+    // five-year figure even though a rate is published.
+    expect(figures.cloudMonthlyUsd).toBe(6_000 / 60)
+    expect(figures.cloudFiveYearUsd).toBe(6_000)
+  })
+
   it('leaves a figure null when no catalogue price is published', () => {
     const result = backfillComparisonCosts(doc([entry()]), sources({
       gpuCloudRates: new Map(),
@@ -150,5 +161,43 @@ describe('backfillComparisonCosts', () => {
 
     expect(result.filled).toBe(0)
     expect(result.document).toBe(document)
+  })
+})
+
+describe('mergeCostFigures', () => {
+  it('copies completed figures onto the set that is in storage now', () => {
+    const stored = entry({ id: 'a' })
+    const filled = entry({ id: 'a', figures: { ...entry().figures, cloudMonthlyUsd: 14_600 } })
+
+    const merged = mergeCostFigures(doc([stored]), doc([filled]))
+
+    expect(merged.entries[0].figures.cloudMonthlyUsd).toBe(14_600)
+    // The current entry keeps its own identity and measured figures.
+    expect(merged.entries[0].link).toBe(stored.link)
+    expect(merged.entries[0].figures.ttftMs).toBe(stored.figures.ttftMs)
+  })
+
+  it('keeps a result another tab saved after this page loaded', () => {
+    const added = entry({ id: 'b', link: '/predict?n=2' })
+
+    const merged = mergeCostFigures(doc([entry({ id: 'a' }), added]), doc([entry({ id: 'a' })]))
+
+    expect(merged.entries.map(saved => saved.id)).toEqual(['a', 'b'])
+    expect(merged.entries[1]).toBe(added)
+  })
+
+  it('does not restore a result another tab removed', () => {
+    const merged = mergeCostFigures(
+      doc([entry({ id: 'b' })]),
+      doc([entry({ id: 'a' }), entry({ id: 'b' })]),
+    )
+
+    expect(merged.entries.map(saved => saved.id)).toEqual(['b'])
+  })
+
+  it('leaves the document alone when the current set has nothing to complete', () => {
+    const current = doc([entry({ id: 'a' })])
+
+    expect(mergeCostFigures(current, doc([]))).toBe(current)
   })
 })

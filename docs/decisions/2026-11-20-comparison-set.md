@@ -51,8 +51,11 @@ saved-results page reads the infrastructure catalogue unconditionally and fills
 only the gaps: a figure the page computed is never replaced, a snapshot with no
 published price stays unavailable rather than becoming zero, and each monthly /
 five-year pair is derived from the other when only one was saved so the two
-cannot disagree. The completed document is written back, and the table, the
-detail view, and an export all read that one document.
+cannot disagree. Before writing, the page re-reads the stored set and copies the
+completed figures onto it by entry id, so a result another tab added or removed
+in the meantime is left alone. The detail view holds the entry's id rather than a
+copy and reads the completed document, so it cannot show a stale figure while it
+is open. The table, the detail view, and an export all read that one document.
 
 **A sizing row keeps its target.** A recommendation is defined by what it was
 asked to achieve, so a sizing snapshot carries that goal — a latency bound
