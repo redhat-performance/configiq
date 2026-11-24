@@ -26,6 +26,7 @@ import TrashIcon from '@patternfly/react-icons/dist/esm/icons/trash-icon';
 import Link from 'next/link';
 
 import { comparisonCsv } from '@/lib/comparison/csv';
+import { backfillComparisonCosts, type ComparisonCostSources } from '@/lib/comparison/backfill';
 import {
   COMPARISON_SECTIONS,
   formatMetric,
@@ -40,6 +41,7 @@ import {
   importComparison,
   loadComparison,
   removeComparisonEntry,
+  writeComparison,
 } from '@/lib/comparison/storage';
 import {
   MAX_COMPARISON_ENTRIES,
@@ -57,6 +59,11 @@ type Notice =
 interface CompareResultsProps {
   /** Overrides for tests; the page reads the browser's own set. */
   load?: () => ReturnType<typeof loadComparison>;
+  /**
+   * Prices that can complete a saved result whose cost figures were missing,
+   * or null when no catalogue has loaded yet.
+   */
+  costSources?: ComparisonCostSources | null;
 }
 
 function timestamp(date: string): string {
@@ -159,7 +166,7 @@ function EntryColumn({ entry, isBaseline, onBaseline, onDetails, onRemove }: Ent
   );
 }
 
-export function CompareResults({ load = loadComparison }: CompareResultsProps) {
+export function CompareResults({ load = loadComparison, costSources = null }: CompareResultsProps) {
   const [document, setDocument] = React.useState<ComparisonDocument>(emptyComparisonDocument);
   const [loaded, setLoaded] = React.useState(false);
   const [baselineId, setBaselineId] = React.useState<string | null>(null);
@@ -176,6 +183,23 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
       setNotice({ kind: 'danger', message: loadedSet.problem });
     }
   }, [load]);
+
+  // A saved result keeps the cost figures its page could see. Completing a
+  // missing one here means an old or costings-off snapshot still shows a price,
+  // and the table and an export of it agree because both read this document.
+  React.useEffect(() => {
+    if (!loaded || costSources == null) return;
+    const backfilled = backfillComparisonCosts(document, costSources);
+    if (backfilled.filled === 0) return;
+    setDocument(backfilled.document);
+    const written = writeComparison(backfilled.document);
+    if (!written.ok) {
+      setNotice({
+        kind: 'danger',
+        message: `Cost figures are shown but could not be saved: ${written.problem}`,
+      });
+    }
+  }, [loaded, costSources, document]);
 
   const entries = document.entries;
   const baseline = entries.find(entry => entry.id === baselineId) ?? null;
@@ -373,7 +397,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
     <div className={styles.page}>
       <div className={styles.header}>
         <div>
-          <h1 className={styles.pageTitle}>Compare results</h1>
+          <h1 className={styles.pageTitle}>Saved results</h1>
           <p className={styles.subtitle}>
             Results you saved from a result page, side by side. The set lives in this
             browser only and is never sent to a ConfigIQ service.

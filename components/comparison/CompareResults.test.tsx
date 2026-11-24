@@ -4,7 +4,8 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writeComparison } from '@/lib/comparison/storage';
+import { writeComparison, loadComparison } from '@/lib/comparison/storage';
+import type { ComparisonCostSources } from '@/lib/comparison/backfill';
 import {
   COMPARISON_SCHEMA_VERSION,
   type ComparisonDocument,
@@ -74,9 +75,34 @@ function doc(entries: ComparisonEntry[]): ComparisonDocument {
   return { schemaVersion: COMPARISON_SCHEMA_VERSION, entries };
 }
 
-async function render() {
+function costSources({ onDemand = 2.5 }: { onDemand?: number } = {}): ComparisonCostSources {
+  return {
+    gpuCloudRates: new Map([['h200', {
+      'aws.us-east-1': {
+        on_demand: onDemand,
+        reserved_1yr: null,
+        reserved_3yr: null,
+        spot_median: null,
+        rate_basis: 'gpu_hour',
+        gpus_per_instance: 1,
+      },
+    }]]),
+    gpuHardwareCosts: new Map([['h200', {
+      new_usd: 20_000,
+      new_usd_low: null,
+      new_usd_high: null,
+      indicative: true,
+      source_label: null,
+      source_url: null,
+      source_date: null,
+    }]]),
+    preferredProvider: null,
+  };
+}
+
+async function render(costSources?: ComparisonCostSources) {
   await act(async () => {
-    root.render(<CompareResults />);
+    root.render(<CompareResults costSources={costSources} />);
   });
 }
 
@@ -273,5 +299,41 @@ describe('CompareResults', () => {
     expect(click).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:comparison');
     click.mockRestore();
+  });
+
+  describe('cost backfill', () => {
+    const uncosted = () => entry({ figures: {
+      ...entry().figures,
+      cloudMonthlyUsd: null,
+      cloudFiveYearUsd: null,
+      selfHostedMonthlyUsd: null,
+      selfHostedFiveYearUsd: null,
+    } });
+
+    it('fills a missing cost from the catalogue and keeps it saved', async () => {
+      writeComparison(doc([uncosted()]));
+
+      await render(costSources());
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBe(14_600);
+    });
+
+    it('leaves a figure the saved result already had', async () => {
+      writeComparison(doc([entry()]));
+
+      await render(costSources({ onDemand: 9 }));
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['$14.6K']);
+    });
+
+    it('keeps a missing figure visible as unavailable when no price is published', async () => {
+      writeComparison(doc([uncosted()]));
+
+      await render({ gpuCloudRates: new Map(), gpuHardwareCosts: new Map(), preferredProvider: null });
+
+      expect(cellsFor('Cloud cost / month')).toEqual(['—']);
+      expect(loadComparison().document.entries[0].figures.cloudMonthlyUsd).toBeNull();
+    });
   });
 });
