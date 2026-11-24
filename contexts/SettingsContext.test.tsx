@@ -164,6 +164,34 @@ describe('Backend version persistence', () => {
     expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('')
   })
 
+  it('migrates the retired pin when the profile never chose a simulator', async () => {
+    // The default simulator was renamed too, and its pin was written under
+    // the retired id. Without the migration the profile would read no pin at
+    // the current key and fall back to the catalog default.
+    localStorage.setItem(`${VERSION_KEY}:aisimulate`, '0.24.0')
+
+    await render()
+
+    expect(state().backendVersion).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisimulate`)).toBeNull()
+  })
+
+  it('migrates the retired pin even when another simulator is chosen', async () => {
+    // The pin belongs to the renamed simulator, not to the resting one.
+    localStorage.setItem(SIMULATOR_KEY, 'blis')
+    localStorage.setItem(`${VERSION_KEY}:aisimulate`, '0.24.0')
+    localStorage.setItem(`${VERSION_KEY}:blis`, '1.3.0')
+
+    await render()
+
+    expect(state().simulator).toBe('blis')
+    expect(state().backendVersion).toBe('1.3.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisimulate`)).toBeNull()
+    expect(localStorage.getItem(`${VERSION_KEY}:blis`)).toBe('1.3.0')
+  })
+
   it('keeps a persisted simulator instead of silently substituting one', async () => {
     // Compatibility is surfaced by the Settings UI and enforced by the API;
     // the context never rewrites the user's simulator choice.

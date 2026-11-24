@@ -3,7 +3,7 @@
 import * as React from 'react';
 import { loadAppConfig } from '@/lib/app-config';
 import { useCatalog } from '@/lib/hooks/useCatalog';
-import { normalizeSimulatorId } from '@/lib/simulator-ids';
+import { normalizeSimulatorId, simulatorIdMigrations } from '@/lib/simulator-ids';
 
 export type InferenceBackend = 'vllm' | 'tensorrt-llm' | 'sglang';
 
@@ -173,27 +173,30 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       const savedSimulator = normalizeSimulatorId(rawSimulator);
       setSimulatorChoiceState(savedSimulator);
 
+      // A pin saved before a simulator rename sits under the retired id,
+      // whichever simulator the profile rests on: an explicit choice, or the
+      // catalog default the retired id used to name. Move it to the current
+      // key on every load, so a profile that later switches to that simulator
+      // still finds the reader's choice. An existing current-key value wins,
+      // including an explicit empty string.
+      for (const [retired, current] of simulatorIdMigrations()) {
+        const retiredKey = versionStorageKey(retired);
+        const retiredPin = localStorage.getItem(retiredKey);
+        if (retiredPin === null) continue;
+        const currentKey = versionStorageKey(current);
+        if (localStorage.getItem(currentKey) === null) {
+          localStorage.setItem(currentKey, retiredPin);
+        }
+        localStorage.removeItem(retiredKey);
+      }
+
       const activeSimulator = savedSimulator || defaultSimulator;
-      // The saved pin is keyed by the simulator id it was written under. When
-      // that id was renamed, carry its pin to the current key rather than
-      // reading an empty value and letting the default replace the user's
-      // choice. An existing current-key value wins, including an explicit
-      // empty string.
       const activeVersionKey = versionStorageKey(activeSimulator);
-      const retiredVersionKey = rawSimulator !== activeSimulator
-        ? versionStorageKey(rawSimulator)
-        : null;
-      const activeVersion = localStorage.getItem(activeVersionKey);
-      const retiredVersion = retiredVersionKey ? localStorage.getItem(retiredVersionKey) : null;
       // The legacy unsuffixed key only ever held the default simulator's pin,
       // so migrate it to the simulator this profile actually resolves to.
       const legacyVersion = localStorage.getItem(STORAGE_KEYS.backendVersion);
-      const savedVersion = activeVersion ?? retiredVersion ?? legacyVersion;
+      const savedVersion = localStorage.getItem(activeVersionKey) ?? legacyVersion;
       setBackendVersionState(savedVersion ?? '');
-      if (retiredVersionKey && retiredVersion !== null && activeVersion === null) {
-        localStorage.setItem(activeVersionKey, retiredVersion);
-        localStorage.removeItem(retiredVersionKey);
-      }
       if (legacyVersion !== null) {
         localStorage.setItem(activeVersionKey, legacyVersion);
         localStorage.removeItem(STORAGE_KEYS.backendVersion);

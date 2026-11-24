@@ -34,3 +34,11 @@ const LEGACY_SIMULATOR_LABELS = new Map<string, string>([
 export function normalizeSimulatorLabel(id: string, label: string): string {
   return LEGACY_SIMULATOR_LABELS.get(id) ?? label;
 }
+
+/**
+ * Retired id → current id, for migrating values this app stored under the old
+ * id. A caller copies a retired key's value to the current key and drops it.
+ */
+export function simulatorIdMigrations(): ReadonlyArray<readonly [string, string]> {
+  return [...LEGACY_SIMULATOR_IDS.entries()];
+}

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeSimulatorId, normalizeSimulatorLabel } from './simulator-ids';
+import {
+  normalizeSimulatorId,
+  normalizeSimulatorLabel,
+  simulatorIdMigrations,
+} from './simulator-ids';
 
 describe('normalizeSimulatorId', () => {
   it('reads the retired id as the current one', () => {
@@ -33,5 +37,11 @@ describe('normalizeSimulatorLabel', () => {
   it('does not resolve inherited object properties', () => {
     expect(normalizeSimulatorLabel('__proto__', 'AISim')).toBe('AISim');
     expect(normalizeSimulatorLabel('constructor', 'AISim')).toBe('AISim');
+  });
+});
+
+describe('simulatorIdMigrations', () => {
+  it('lists every retired id with the id that replaced it', () => {
+    expect(simulatorIdMigrations()).toEqual([['aisimulate', 'aisim']]);
   });
 });
