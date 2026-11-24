@@ -70,6 +70,9 @@ export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToCom
     </Button>
   );
 
+  // The status sits beside the control in a nowrap box: the box may grow when a
+  // message appears, but it cannot wrap the empty live region onto a second
+  // line, which would push the button above its neighbours in the header row.
   return (
     <div className={styles.root}>
       {disabledReason == null ? button : (
