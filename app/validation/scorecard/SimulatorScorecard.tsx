@@ -398,7 +398,13 @@ export default function SimulatorScorecard() {
                 Statistic
                 <JargonPopover
                   term="Statistic"
-                  explanation={STATISTICS.map(entry => `${entry.label}: ${entry.hint}`).join(' ')}
+                  explanation={(
+                    <>
+                      {STATISTICS.map(entry => (
+                        <div key={entry.value}>{entry.label}: {entry.hint}</div>
+                      ))}
+                    </>
+                  )}
                 />
               </span>
               <FormSelect
