@@ -30,13 +30,17 @@ describe('buildCoverage', () => {
   });
 
   it('keeps sources and simulators apart', () => {
+    // Every simulator/source combination must survive grouping. Varying both
+    // at once would still pass if either field were dropped from the key.
     const coverage = buildCoverage([
-      point({ simulator: 'aisim', source: 'redhat' }),
-      point({ simulator: 'blis', source: 'inferencex' }),
+      point({ simulator: 'aisim', source: 'redhat', identity: 'a-r' }),
+      point({ simulator: 'aisim', source: 'inferencex', identity: 'a-i' }),
+      point({ simulator: 'blis', source: 'redhat', identity: 'b-r' }),
+      point({ simulator: 'blis', source: 'inferencex', identity: 'b-i' }),
     ]);
-    expect(coverage).toHaveLength(2);
+    expect(coverage).toHaveLength(4);
     expect(coverage.map(row => `${row.simulator}:${row.source}`).sort())
-      .toEqual(['aisim:redhat', 'blis:inferencex']);
+      .toEqual(['aisim:inferencex', 'aisim:redhat', 'blis:inferencex', 'blis:redhat']);
   });
 });
 

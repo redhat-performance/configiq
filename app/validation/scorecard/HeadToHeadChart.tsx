@@ -91,8 +91,8 @@ function HeadToHeadRow({
   const secondWidth = category.secondShare * 100;
   const description = [
     `${category.label}:`,
-    `${first.label} best on ${formatPercent(category.firstShare)} of paired levels`,
-    `${second.label} best on ${formatPercent(category.secondShare)}`,
+    `${first.label} mean best share ${formatPercent(category.firstShare)} across configurations`,
+    `${second.label} mean best share ${formatPercent(category.secondShare)} across configurations`,
     `${formatCount(category.configurations)} ${category.configurations === 1 ? 'configuration' : 'configurations'}`,
     `${formatCount(category.paired)} paired levels`,
     category.ties > 0 ? `${formatCount(category.ties)} ties` : null,

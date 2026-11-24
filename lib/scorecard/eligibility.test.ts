@@ -76,6 +76,14 @@ describe('systemForAccelerator', () => {
     expect(systemForAccelerator([{ id: 'other', label: 'NVIDIA GB200' }], 'B200')).toBeNull();
   });
 
+  it('prefers an exact label over an earlier entry that only matches by token', () => {
+    const systems = [
+      { id: 'h200_token', label: 'NVIDIA H200' },
+      { id: 'h200_exact', label: 'H200' },
+    ];
+    expect(systemForAccelerator(systems, 'H200')?.id).toBe('h200_exact');
+  });
+
   it('returns null for an empty label', () => {
     expect(systemForAccelerator([{ id: 'h200_sxm', label: 'NVIDIA H200' }], '  ')).toBeNull();
   });

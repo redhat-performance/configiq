@@ -593,10 +593,15 @@ describe('Simulator scorecard page', () => {
           value: 0.4,
         }),
       ],
-    }));
+    }), '?workload=1024%2F128');
 
     const dot = container.querySelector<HTMLButtonElement>('button[aria-label="org/other, B200"]');
     expect(dot).not.toBeNull();
+
+    // Start with a workload selected: the click has to clear it, and a test
+    // that began with nothing selected could not tell that it did.
+    const workloadBefore = container.querySelector<HTMLSelectElement>('select[aria-label="Workload"]');
+    expect(workloadBefore?.value).toBe('1024/128');
 
     await act(async () => {
       dot!.click();
