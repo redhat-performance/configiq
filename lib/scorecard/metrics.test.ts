@@ -133,6 +133,25 @@ describe('headToHead', () => {
     expect(ttft!.medianDeltaPct).toBeCloseTo(-10);
   });
 
+  it('keeps configurations with the same workload in separate rows', () => {
+    // Two runtime configurations measured at the same model, GPU, and
+    // workload. Pooling them would let one long sweep decide the row and
+    // would deny the page the per-configuration range it draws.
+    const first = point({ identity: 'config-a-level', configurationKey: 'A', concurrency: 8 });
+    const second = point({ identity: 'config-b-level', configurationKey: 'B', concurrency: 8 });
+    const rows = headToHead([
+      { ...first, simulator: 'aisim', predicted: { ttftMs: 110, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
+      { ...first, simulator: 'blis', predicted: { ttftMs: 120, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
+      { ...second, simulator: 'aisim', predicted: { ttftMs: 120, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
+      { ...second, simulator: 'blis', predicted: { ttftMs: 110, tpotMs: 10, requestLatencyMs: null, outputTokensPerSecond: null } },
+    ]);
+
+    const ttft = rows.filter(row => row.metric === 'ttft');
+    expect(ttft).toHaveLength(2);
+    expect(ttft.map(row => row.paired)).toEqual([1, 1]);
+    expect(ttft.map(row => row.firstWins).sort()).toEqual([0, 1]);
+  });
+
   it('does not compare across different measured levels', () => {
     const rows = headToHead([
       point({ identity: 'level-1', simulator: 'aisim' }),

@@ -40,9 +40,12 @@ quantisation will move the prediction.
 ### Release matching
 
 The measured row names the engine release it ran. When the simulator's catalogue
-lists that release for that GPU, the request names it and the point is tagged
-`matched`. When it does not, the request omits the field so the service resolves
-its own default, and the point is tagged as a mixed-release comparison.
+lists that release for that GPU, the request names it. The point is tagged
+`matched` only when the answer reports that same release: a service that resolves
+a different one did not predict the measured run. A point with no answer is never
+matched. When the catalogue does not list the release, the request omits the
+field so the service resolves its own default, and the point is tagged as a
+mixed-release comparison.
 
 `matched` is therefore a **dimension of the view, not a filter applied while
 scoring**. Both slices are published:
@@ -65,7 +68,11 @@ signed     = (predicted − measured) / measured
 ```
 
 Aggregation is **per configuration first, then across configurations**. A run
-swept at twelve concurrency levels does not outvote one swept at three.
+swept at twelve concurrency levels does not outvote one swept at three. A
+configuration is one measured series: a runtime configuration at one input and
+output length and one tensor parallel size. The same runtime configuration
+measured at two shapes or two parallel sizes is two votes, because those are two
+different predictions and two different measurements.
 
 | Statistic | Meaning |
 | --- | --- |
@@ -146,8 +153,10 @@ simulator that skipped the hard points would look better. The head-to-head view
 uses only the measured levels **both** simulators predicted, and reports how many
 those were.
 
-A row in the artifact is one measured configuration (source, model, GPU, workload)
-for one simulator pair. It carries the number of paired concurrency levels, how
+A row in the artifact is one measured configuration (source, model, GPU, workload,
+runtime configuration, and tensor parallel size) for one simulator pair. Two
+configurations of the same model and GPU can therefore share a workload and still
+be separate rows. A row carries the number of paired concurrency levels, how
 often each simulator was best, the ties, and the median gap between their errors. A tie
 is equality to six decimal places of relative error; it counts for neither
 simulator and stays visible as its own count.
@@ -207,9 +216,11 @@ npm run scorecard:build -- --concurrency 6 --out artifacts/scorecard
 ```
 
 The CLI writes `scorecard-<channel>.json`, `scorecard-points-<channel>.json`, and
-a prediction cache. The cache is keyed by simulator, simulator release, and
-request body, so a re-run only pays for new points or a changed simulator
-release. Nothing is uploaded.
+a prediction cache. The cache is keyed by simulator, its release, its revision,
+and the request body, so a re-run only pays for new points or a changed simulator
+build. Only a settled answer is cached: an inconclusive point is asked again on
+the next sweep instead of being frozen as a permanent outage. Nothing is
+uploaded.
 
 To preview an unpublished snapshot, serve the artifact directory and point the
 app at it:
@@ -230,6 +241,10 @@ One daily job against the dev gateway writes the `dev` channel. A release
 promotes the latest dev snapshot to `prod` unchanged — it is the same data, so
 there is no reason to re-run a sweep and produce a second, slightly different
 answer.
+
+Both artifact files are uploaded in one commit, so a reader never sees a summary
+paired with the previous snapshot's points. A channel is reported current only
+when both files match what the run produced.
 
 Promotion is a copy, not a rebuild:
 

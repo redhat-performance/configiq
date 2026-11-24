@@ -210,11 +210,16 @@ export function headToHead(points: readonly ScorecardPoint[]): HeadToHeadRow[] {
 
           const firstApe = percentageError(firstValues.predictedMs, firstValues.measuredMs, metric)!;
           const secondApe = percentageError(secondValues.predictedMs, secondValues.measuredMs, metric)!;
+          // One row is one measured configuration, so configurations that
+          // share a model, GPU, and workload must not be pooled here: the
+          // page weights configurations equally and draws their range.
           const key = [
             firstPoint.source,
             firstPoint.model,
             firstPoint.accelerator,
             firstPoint.workload,
+            firstPoint.configurationKey,
+            String(firstPoint.tp),
             metric,
             simulators[first],
             simulators[second],

@@ -97,6 +97,26 @@ describe('buildSourceOverlap', () => {
 
     expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 1 });
   });
+
+  it('counts a shared pair even when one source records no lengths', () => {
+    const overlap = buildSourceOverlap([
+      { benchmark_source: 'redhat', model: 'org/model', accelerator: 'H200' },
+      { benchmark_source: 'inferencex', model: 'org/model', accelerator: 'H200', isl: 1024, osl: 128 },
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 0 });
+  });
+
+  it('does not treat two variable-length mixes as one fixed workload', () => {
+    // A nonpositive length is the dataset's marker for mean prompt/output
+    // lengths, not a shape both sources measured.
+    const overlap = buildSourceOverlap([
+      row('redhat', 'org/model', 'H200', 0, 0),
+      row('inferencex', 'org/model', 'H200', 0, 0),
+    ]);
+
+    expect(overlap).toEqual({ sharedPairs: 1, sharedWorkloads: 0 });
+  });
 });
 
 describe('buildCells', () => {
@@ -154,6 +174,18 @@ describe('buildTotals', () => {
     expect(mape('all')?.configurations).toBe(2);
     expect(mape('redhat')?.value).toBeCloseTo(0.1);
     expect(mape('inferencex')?.value).toBeCloseTo(0.2);
+  });
+
+  it('counts one vote per workload shape and parallel size', () => {
+    // The same runtime configuration measured at two shapes is two measured
+    // configurations for "one configuration, one vote".
+    const totals = buildTotals([
+      point({ configurationKey: 'A', isl: 1024, osl: 128, tp: 4, identity: 'shape-1' }),
+      point({ configurationKey: 'A', isl: 8192, osl: 1024, tp: 8, identity: 'shape-2' }),
+    ]);
+    const mape = totals.find(total =>
+      total.source === 'redhat' && total.metric === 'ttft' && total.statistic === 'mape' && total.releaseMatch === 'any');
+    expect(mape?.configurations).toBe(2);
   });
 
   it('publishes all four statistics from one aggregation', () => {

@@ -56,8 +56,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The prediction cache is keyed by simulator, simulator release, and
-      # request body, so a daily run only pays for new points or a new release.
+      # The prediction cache is keyed by simulator, release, revision, and
+      # request body, so a daily run only pays for new points or a new build.
       - name: Restore prediction cache
         uses: actions/cache@v4
         with:

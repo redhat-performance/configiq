@@ -28,6 +28,20 @@ function included(point: ScorecardPoint, releaseMatch: ScorecardReleaseMatch): b
   return releaseMatch === 'any' || point.releaseMatch;
 }
 
+/**
+ * The measured series an observation belongs to.
+ *
+ * `configurationKey` names a runtime configuration, but the same configuration
+ * is measured at several input/output lengths and parallel sizes. Each of
+ * those is its own configuration for "one configuration, one vote": averaging
+ * two workloads into one vote would let the runtime configuration dominate the
+ * statistic and would take a single vote away from a shape that was measured
+ * on its own.
+ */
+function seriesKey(point: Pick<ScorecardPoint, 'configurationKey' | 'isl' | 'osl' | 'tp'>): string {
+  return [point.configurationKey, point.isl, point.osl, point.tp].join('\u0000');
+}
+
 export function buildCoverage(points: readonly ScorecardPoint[]): ScorecardCoverage[] {
   const groups = new Map<string, ScorecardCoverage>();
 
@@ -73,11 +87,18 @@ export function buildSourceOverlap(rows: readonly DatasetRow[]): ScorecardSource
     const source: ScorecardSource = row.benchmark_source === 'inferencex' ? 'inferencex' : 'redhat';
     const model = textValue(row.model);
     const accelerator = textValue(row.accelerator);
-    const isl = textValue(row.isl);
-    const osl = textValue(row.osl);
-    if (!model || !accelerator || !isl || !osl) continue;
+    // A pair is shared when both sources measured the same model on the same
+    // GPU, whether or not either recorded a usable workload shape.
+    if (!model || !accelerator) continue;
     const pair = [model, accelerator].join('\u0000');
     pairs[source].add(pair);
+
+    // A nonpositive length is the dataset's marker for variable-length
+    // traffic, not a fixed shape. Two different mixes must not share a
+    // workload just because both record the marker.
+    const isl = positiveLength(row.isl);
+    const osl = positiveLength(row.osl);
+    if (isl === null || osl === null) continue;
     workloads[source].add([pair, isl, osl].join('\u0000'));
   }
 
@@ -92,6 +113,14 @@ function textValue(value: unknown): string | null {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null;
   if (typeof value === 'bigint') return value.toString();
   return null;
+}
+
+/** A fixed token length, or null for a missing or variable-length marker. */
+function positiveLength(value: unknown): string | null {
+  const text = textValue(value);
+  if (text === null) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : null;
 }
 
 function sharedCount(left: ReadonlySet<string>, right: ReadonlySet<string>): number {
@@ -125,7 +154,7 @@ export function buildCells(points: readonly ScorecardPoint[]): ScorecardCell[] {
           const predictedMs = metric === 'ttft' ? point.predicted.ttftMs : point.predicted.tpotMs;
           if (measuredMs !== null) {
             group.observations.push({
-              configurationKey: point.configurationKey,
+              configurationKey: seriesKey(point),
               metric,
               measuredMs,
               predictedMs,
@@ -205,7 +234,7 @@ export function buildTotals(points: readonly ScorecardPoint[]): ScorecardTotal[]
             observations: [],
           };
           bucket.observations.push({
-            configurationKey: point.configurationKey,
+            configurationKey: seriesKey(point),
             metric,
             measuredMs,
             predictedMs,

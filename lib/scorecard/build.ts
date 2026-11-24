@@ -18,7 +18,7 @@ import {
   predictionFabric,
   type ServingMode,
 } from '../validation/benchmark-predictions';
-import { normalizeBackendVersion, UNREPORTED_VERSION } from '../validation/benchmark-versions';
+import { backendVersionsComparable, normalizeBackendVersion, UNREPORTED_VERSION } from '../validation/benchmark-versions';
 import type { DatasetConfiguration, DatasetRow } from '../validation/benchmark-types';
 import { buildCells, buildCoverage, buildHeadToHead, buildSourceOverlap, buildTotals } from './aggregate';
 import {
@@ -236,11 +236,13 @@ interface WorkUnit {
   plan: Eligible;
   /** Release of the simulator itself; part of the prediction cache key. */
   simulatorVersion: string | null;
+  /** Revision of the simulator build; a new build is a new answer. */
+  simulatorRevision: string | null;
   body: Record<string, unknown>;
 }
 
 interface SkippedUnit {
-  base: Omit<WorkUnit, 'plan' | 'body' | 'simulatorVersion' | 'releaseMatch'>;
+  base: Omit<WorkUnit, 'plan' | 'body' | 'simulatorVersion' | 'simulatorRevision' | 'releaseMatch'>;
   simulator: string;
   status: 'ineligible' | 'unsupported';
   reason: string;
@@ -265,14 +267,36 @@ function identityOf(entry: PlannedUnit): string {
   return entry.kind === 'work' ? entry.unit.identity : entry.unit.base.identity;
 }
 
-function groupConfigurations(rows: readonly DatasetRow[]): Map<string, { values: DatasetConfiguration; rows: DatasetRow[] }> {
-  const groups = new Map<string, { values: DatasetConfiguration; rows: DatasetRow[] }>();
+/**
+ * A measured series: one runtime configuration at one workload shape.
+ *
+ * `configurationKey` alone is not enough to group rows for a prediction. The
+ * same runtime configuration is measured at several input/output lengths and
+ * tensor-parallel sizes, and a prediction is made for one of each. Folding
+ * those rows together would take the shape from whichever row came first and
+ * average measurements from several workloads into one series.
+ */
+interface ConfigurationGroup {
+  values: DatasetConfiguration;
+  configurationId: string;
+  rows: DatasetRow[];
+}
+
+function groupConfigurations(rows: readonly DatasetRow[]): Map<string, ConfigurationGroup> {
+  const groups = new Map<string, ConfigurationGroup>();
   for (const row of rows) {
     const values = configurationForRow(row);
-    const key = configurationKey(values);
-    const existing = groups.get(key) ?? { values, rows: [] };
+    const configurationId = configurationKey(values);
+    // Normalized filter values keep `8192` and `'8192'` in one series.
+    const seriesKey = [
+      configurationId,
+      benchmarkFilterValue(row, 'isl') ?? '',
+      benchmarkFilterValue(row, 'osl') ?? '',
+      benchmarkFilterValue(row, 'tp') ?? '',
+    ].join('\u0000');
+    const existing = groups.get(seriesKey) ?? { values, configurationId, rows: [] };
     existing.rows.push(row);
-    groups.set(key, existing);
+    groups.set(seriesKey, existing);
   }
   return groups;
 }
@@ -364,44 +388,71 @@ async function mapWithLimit<T, R>(
   return results;
 }
 
-class ModelConfigStore {
-  private readonly cache = new Map<string, Promise<Record<string, unknown> | null>>();
+/**
+ * The outcome of reading a model's public config.
+ *
+ * "The host does not have this file" and "the host failed to answer" are
+ * different facts: the first is stable, the second must be retried rather than
+ * cached as if the model had no config at all.
+ */
+type ModelConfigLookup =
+  | { status: 'found'; config: Record<string, unknown> }
+  | { status: 'absent' }
+  | { status: 'failed' };
 
-  get(model: string): Promise<Record<string, unknown> | null> {
+class ModelConfigStore {
+  private readonly cache = new Map<string, Promise<ModelConfigLookup>>();
+
+  get(model: string): Promise<ModelConfigLookup> {
     const cached = this.cache.get(model);
     if (cached) return cached;
-    const pending = this.fetch(model);
+    const pending = this.fetch(model).then(lookup => {
+      // A transient failure must not become a permanent verdict: drop it so
+      // the next point asks again.
+      if (lookup.status === 'failed') this.cache.delete(model);
+      return lookup;
+    });
     this.cache.set(model, pending);
     return pending;
   }
 
-  private async fetch(model: string): Promise<Record<string, unknown> | null> {
+  private async fetch(model: string): Promise<ModelConfigLookup> {
     try {
       const response = await fetch(`https://huggingface.co/${model}/raw/main/config.json`, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(15_000),
       });
-      if (!response.ok) return null;
+      if (response.status === 404 || response.status === 410) return { status: 'absent' };
+      if (!response.ok) return { status: 'failed' };
       const data: unknown = await response.json();
-      return data && typeof data === 'object' && !Array.isArray(data)
-        ? data as Record<string, unknown>
-        : null;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return { status: 'failed' };
+      return { status: 'found', config: data as Record<string, unknown> };
     } catch {
-      return null;
+      return { status: 'failed' };
     }
   }
 }
 
-function cacheKey(simulatorId: string, simulatorVersion: string | null, body: Record<string, unknown>): string {
-  return hash([simulatorId, simulatorVersion ?? '', JSON.stringify(body)]);
+function cacheKey(
+  simulatorId: string,
+  simulatorVersion: string | null,
+  simulatorRevision: string | null,
+  body: Record<string, unknown>,
+): string {
+  // A revision can change while the release label stays the same, so the
+  // revision is part of the identity too. Otherwise a rebuilt simulator would
+  // be published with predictions from the build it replaced.
+  return hash([simulatorId, simulatorVersion ?? '', simulatorRevision ?? '', JSON.stringify(body)]);
 }
 
 function retriable(outcome: PredictOutcome): boolean {
   if (outcome.status !== 'inconclusive') return false;
-  // A 422 is a verdict; anything else is us failing to get an answer.
+  // A 422 is a verdict; anything else is us failing to get an answer. A 2xx
+  // that did not carry a usable body is a transport failure too.
   return outcome.httpStatus === null
     || outcome.httpStatus === 429
-    || outcome.httpStatus >= 500;
+    || outcome.httpStatus >= 500
+    || (outcome.httpStatus >= 200 && outcome.httpStatus < 300);
 }
 
 async function runPrediction(
@@ -410,9 +461,9 @@ async function runPrediction(
   cache: PredictionCache,
   modelConfigs: ModelConfigStore,
 ): Promise<{ outcome: PredictOutcome; cached: boolean }> {
-  const key = cacheKey(unit.plan.simulator, unit.simulatorVersion, unit.body);
+  const key = cacheKey(unit.plan.simulator, unit.simulatorVersion, unit.simulatorRevision, unit.body);
   const hit = cache.entries[key];
-  if (hit) {
+  if (hit && hit.status !== 'inconclusive') {
     return {
       outcome: {
         status: hit.status,
@@ -426,6 +477,9 @@ async function runPrediction(
       cached: true,
     };
   }
+  // An inconclusive entry is a record of our own outage. Reuse it and the next
+  // sweep would report the same failure without asking again, so drop it.
+  if (hit) delete cache.entries[key];
 
   const call = (body: Record<string, unknown>) => predictPoint(options.gatewayUrl, body, {
     timeoutSeconds: options.timeoutSeconds,
@@ -433,28 +487,48 @@ async function runPrediction(
   });
 
   let outcome = await call(unit.body);
+  let durationMs = outcome.durationMs;
   for (let attempt = 1; attempt < MAX_ATTEMPTS && retriable(outcome); attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
     outcome = await call(unit.body);
+    durationMs += outcome.durationMs;
   }
 
   // A 422 that asks for the model configuration is our omission, not the
   // simulator's verdict. Fetch the public config once and try again.
   if (outcome.status === 'unsupported' && isModelConfigRejection(outcome.reason)) {
-    const config = await modelConfigs.get(unit.model);
-    if (config) {
-      const withConfig = { ...unit.body, model_config: config };
-      outcome = await call(withConfig);
+    const lookup = await modelConfigs.get(unit.model);
+    if (lookup.status === 'found') {
+      outcome = await call({ ...unit.body, model_config: lookup.config });
+      durationMs += outcome.durationMs;
+    } else if (lookup.status === 'failed') {
+      // The simulator asked for a config we could not read. That is an
+      // incomplete request, not a capability verdict, so the point stays
+      // inconclusive and is asked again on the next sweep.
+      outcome = {
+        status: 'inconclusive',
+        reason: `Could not read the model configuration for ${unit.model}.`,
+        prediction: null,
+        engineVersion: null,
+        simulator: unit.plan.simulator,
+        httpStatus: null,
+        durationMs: 0,
+      };
     }
   }
 
-  cache.entries[key] = {
-    status: outcome.status,
-    reason: outcome.reason,
-    prediction: outcome.prediction,
-    engineVersion: outcome.engineVersion,
-  };
-  return { outcome, cached: false };
+  const reported: PredictOutcome = { ...outcome, durationMs };
+  // Only a settled answer is reusable. Publishing an outage as a cached
+  // verdict would keep it in the artifact long after the service recovered.
+  if (reported.status !== 'inconclusive') {
+    cache.entries[key] = {
+      status: reported.status,
+      reason: reported.reason,
+      prediction: reported.prediction,
+      engineVersion: reported.engineVersion,
+    };
+  }
+  return { outcome: reported, cached: false };
 }
 
 /**
@@ -513,7 +587,14 @@ export async function scoreWorkUnits(
       workload: unit.workload,
       configurationKey: unit.configurationKey,
       measuredRelease: unit.measuredRelease,
-      releaseMatch: unit.releaseMatch,
+      // The request planned the measured release, but the answer says which
+      // release actually ran. A simulator that resolved a different one did
+      // not predict the measured run and must stay out of the matched slice.
+      releaseMatch: unit.releaseMatch
+        && outcome.status === 'supported'
+        && unit.measuredRelease !== null
+        && outcome.engineVersion !== null
+        && backendVersionsComparable(outcome.engineVersion, unit.measuredRelease),
       servingMode: unit.servingMode,
       simulator: unit.plan.simulator,
       status: outcome.status,
@@ -637,8 +718,9 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
 
   const plan: PlannedUnit[] = [];
 
-  for (const [configurationId, group] of groupConfigurations(rows)) {
+  for (const group of groupConfigurations(rows).values()) {
     const first = group.rows[0];
+    const configurationId = group.configurationId;
     const source = rowSource(first);
     const model = benchmarkFilterValue(first, 'model');
     const accelerator = benchmarkFilterValue(first, 'accelerator');
@@ -689,7 +771,16 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
         const measured = measurements[index];
         const workload = `${isl}/${osl}`;
         const base = {
-          identity: hash([source, model, accelerator, configurationId, String(level.concurrency)]),
+          identity: hash([
+            source,
+            model,
+            accelerator,
+            configurationId,
+            String(isl),
+            String(osl),
+            String(tp),
+            String(level.concurrency),
+          ]),
           source,
           model,
           accelerator,
@@ -719,6 +810,7 @@ export async function buildScorecard(options: BuildOptions): Promise<BuildResult
             releaseMatch: decision.plan.releaseMatch,
             plan: decision.plan,
             simulatorVersion: support.version,
+            simulatorRevision: support.revision,
             body: requestBody(decision.plan, {
               model,
               systemId: decision.plan.systemId,
