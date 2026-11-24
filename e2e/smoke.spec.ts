@@ -387,7 +387,7 @@ test('Saved and copy feedback keeps each control where it was', async ({ page, c
   await stubApi(page, {
     '/api/predict': {
       status: 'success',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       memory_breakdown: {
         weights_bytes: 16 * 1_073_741_824,
         kv_cache_bytes: 2 * 1_073_741_824,
