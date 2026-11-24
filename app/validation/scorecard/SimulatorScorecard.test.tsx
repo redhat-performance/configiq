@@ -360,7 +360,7 @@ describe('Simulator scorecard page', () => {
     // MAPE stays visible beside it, as 0.15 and 0.22.
     expect(container.textContent).toContain('15.0%');
     expect(container.textContent).toContain('22.0%');
-    expect(container.textContent).toContain('p90');
+    expect(container.textContent).toContain('P90');
     expect(container.textContent).toContain('Bias');
   });
 

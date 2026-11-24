@@ -78,7 +78,7 @@ const METRICS: { value: ScorecardMetric; label: string }[] = [
 const STATISTICS: { value: ScorecardStatistic; label: string; hint: string }[] = [
   { value: 'mape', label: 'MAPE', hint: 'Mean absolute percentage error. Every configuration counts once.' },
   { value: 'mdape', label: 'MdAPE', hint: 'Median absolute percentage error. Less moved by a single bad configuration.' },
-  { value: 'p90', label: 'p90', hint: 'The error a bad configuration reaches: 90% of configurations are better than this.' },
+  { value: 'p90', label: 'P90', hint: 'The error a bad configuration reaches: 90% of configurations are better than this.' },
   { value: 'bias', label: 'Bias', hint: 'Signed error. Negative means the simulator predicts faster than the measurement.' },
 ];
 
@@ -98,13 +98,6 @@ const CARD_HEIGHT = 560;
 
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
-}
-
-function formatSnapshotTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime())
-    ? value
-    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function metricLabel(metric: ScorecardMetric): string {
@@ -385,8 +378,6 @@ export default function SimulatorScorecard() {
 
       {summary && (
         <>
-          <Provenance summary={summary} />
-
           <section className={styles.controls} aria-label="Scorecard filters" data-tour="filters">
             <div className={styles.controlGroup}>
               <span className={styles.controlLabel}>Metric</span>
@@ -532,7 +523,7 @@ export default function SimulatorScorecard() {
                     <p>
                       The headline is MdAPE, the median configuration, so a few extreme misses do
                       not decide the ranking. MAPE is shown beside it: a wide gap between the two
-                      means those extremes, not the typical run, drive the mean. p90 shows what a
+                      means those extremes, not the typical run, drive the mean. P90 shows what a
                       bad configuration reaches.
                     </p>
                     <p>
@@ -563,9 +554,9 @@ export default function SimulatorScorecard() {
                       aria-hidden="true"
                     />
                     <h3>{simulator.label}</h3>
-                    <span className={styles.tileVersion}>
-                      {simulator.version ? `${simulator.id} ${simulator.version}` : simulator.id}
-                    </span>
+                    {simulator.version && (
+                      <span className={styles.tileVersion}>{simulator.version}</span>
+                    )}
                   </header>
 
                   <div className={styles.tileValueRow}>
@@ -581,7 +572,7 @@ export default function SimulatorScorecard() {
                           <dd>{formatPercent(totals.values.mape)}</dd>
                         </div>
                         <div>
-                          <dt>p90</dt>
+                          <dt>P90</dt>
                           <dd>{formatPercent(totals.values.p90)}</dd>
                         </div>
                         <div>
@@ -653,7 +644,7 @@ export default function SimulatorScorecard() {
               <h2 id="scorecard-matrix-title">Where the error sits</h2>
               <JargonPopover
                 term="Where the error sits"
-                explanation={`One bar per measured configuration, grouped by simulator, showing each simulator's ${statisticLabel.toLowerCase()} for that run. The table behind the flip lists every configuration; a dash means that simulator returned no prediction for the run.`}
+                explanation={`One bar per measured configuration, grouped by simulator, showing each simulator's ${statisticLabel} value for that run. The table behind the flip lists every configuration; a dash means that simulator returned no prediction for the run.`}
               />
             </div>
 
@@ -879,26 +870,6 @@ function MatrixFlipCard({
         </div>
       </div>
     </div>
-  );
-}
-
-function Provenance({ summary }: { summary: ScorecardSummary }) {
-  const attempted = summary.attemptedPoints;
-  const answered = summary.answeredPoints;
-  return (
-    <section className={styles.provenance} aria-label="Snapshot provenance">
-      <div className={styles.provenanceItem}>
-        <span className={styles.provenanceLabel}>Snapshot</span>
-        <span>{formatSnapshotTime(summary.generatedAt)}</span>
-      </div>
-      <div className={styles.provenanceItem}>
-        <span className={styles.provenanceLabel}>Attempts</span>
-        <span>
-          {formatCount(answered)} answered of {formatCount(attempted)}
-          {summary.cachedPoints > 0 ? ` · ${formatCount(summary.cachedPoints)} reused from cache` : ''}
-        </span>
-      </div>
-    </section>
   );
 }
 

@@ -329,7 +329,7 @@ export const HELP_TOURS: HelpTour[] = [
         target: '[data-tour="agreement"]',
         title: 'Agreement by simulator',
         description:
-          'Each simulator gets a score. MdAPE is the headline, with MAPE, p90, and bias beside it, plus a coverage bar counting every attempt.',
+          'Each simulator gets a score. MdAPE is the headline, with MAPE, P90, and Bias beside it, plus a coverage bar counting every attempt.',
         position: 'bottom',
       },
       {

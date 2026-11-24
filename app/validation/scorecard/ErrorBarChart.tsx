@@ -29,7 +29,7 @@ export interface ErrorSeries {
 interface ErrorBarChartProps {
   rows: ChartRow[];
   series: ErrorSeries[];
-  /** "MAPE", "MdAPE", "p90", or "Bias" — what the bar length means. */
+  /** "MAPE", "MdAPE", "P90", or "Bias" — what the bar length means. */
   statisticLabel: string;
   /** Formats a fraction as the page's percentage, keeping a bias sign. */
   formatValue: (value: number) => string;

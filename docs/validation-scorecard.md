@@ -71,7 +71,7 @@ swept at twelve concurrency levels does not outvote one swept at three.
 | --- | --- |
 | MAPE | Mean of per-configuration mean APE |
 | MdAPE | Median of per-configuration mean APE |
-| p90 | 90th percentile of per-configuration mean APE |
+| P90 | 90th percentile of per-configuration mean APE |
 | Bias | Mean of per-configuration mean signed error; negative means the simulator predicts faster than the measurement |
 
 A point whose measured value is below a floor (1 ms TTFT, 0.05 ms TPOT) is not
@@ -80,7 +80,7 @@ scored: dividing by a sub-millisecond value turns measurement noise into a
 
 The page opens on **TPOT** and **MdAPE**. TPOT is the metric a reader tunes at
 steady state, and MdAPE is the headline because a handful of extreme misses
-should not decide the ranking. MAPE, p90, and Bias sit beside it so the tail
+should not decide the ranking. MAPE, P90, and Bias sit beside it so the tail
 stays visible: a wide gap between MdAPE and MAPE means those extremes, not the
 typical run, drive the mean. The metric and statistic selectors change the
 chart and tables too, so what is ranked is what is charted.
