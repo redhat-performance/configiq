@@ -117,12 +117,15 @@ function parseSummary(data: unknown): ScorecardSummary {
   return normalizeScorecardSummary(parsed.data);
 }
 
-function parsePoints(data: unknown): ScorecardPoint[] {
+function parsePoints(data: unknown): { generatedAt: string; points: ScorecardPoint[] } {
   const parsed = scorecardPointsSchema.safeParse(data);
   if (!parsed.success) {
     throw new Error(`The published point detail does not match the contract: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
   }
-  return normalizeScorecardPoints(parsed.data.points);
+  return {
+    generatedAt: parsed.data.generatedAt,
+    points: normalizeScorecardPoints(parsed.data.points),
+  };
 }
 
 async function read(options: ReadOptions): Promise<ScorecardReadResult> {
@@ -145,7 +148,20 @@ async function read(options: ReadOptions): Promise<ScorecardReadResult> {
     const pointsResponse = await fetchJson(urls.points);
     if (!pointsResponse.ok) return { ok: false, error: pointsResponse.error };
     try {
-      points = parsePoints(pointsResponse.data);
+      const detail = parsePoints(pointsResponse.data);
+      // Both files are read from the same branch in two requests. A publish
+      // between them would pair one snapshot's aggregates with another's
+      // points, and the page now folds the two together to answer a filter.
+      if (detail.generatedAt !== summary.generatedAt) {
+        return {
+          ok: false,
+          error: {
+            kind: 'unavailable',
+            message: 'The published scorecard changed while it was being read. Try again.',
+          },
+        };
+      }
+      points = detail.points;
     } catch (error: unknown) {
       return {
         ok: false,

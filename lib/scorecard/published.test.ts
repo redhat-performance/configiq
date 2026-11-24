@@ -100,6 +100,20 @@ describe('readPublishedScorecard', () => {
     expect(result.value.points[0].simulator).toBe('aisim');
   });
 
+  it('refuses a summary and point detail from different snapshots', async () => {
+    stubFetch(url => (
+      url.endsWith('/points.json')
+        ? jsonResponse({ ...pointsDocument, generatedAt: '2026-11-21T10:20:00.000Z' })
+        : jsonResponse(summary())
+    ));
+
+    const result = await readPublishedScorecard({ channel: 'dev', includePoints: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe('unavailable');
+    expect(result.error.message).toContain('changed');
+  });
+
   it('reports a missing snapshot rather than an empty one', async () => {
     stubFetch(() => jsonResponse({ error: 'not found' }, 404));
     const result = await readPublishedScorecard({ channel: 'prod' });

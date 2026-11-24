@@ -4,18 +4,23 @@ import type {
   ScorecardCoverage,
   ScorecardHeadToHead,
   ScorecardMetric,
+  ScorecardPoint,
   ScorecardReleaseMatch,
   ScorecardSource,
   ScorecardSourceFilter,
   ScorecardStatistic,
   ScorecardSummary,
+  ScorecardTotal,
 } from '@/lib/scorecard/types';
 
 /**
  * Pure selectors for the scorecard page.
  *
- * The page never recomputes a statistic. It selects the slice the sweep already
- * published, so a reader on any client sees the number the job produced.
+ * With no row filter the page selects the rollup the sweep already published.
+ * A model, GPU, or workload filter selects the published point detail and the
+ * page folds it with the same per-configuration rule the sweep uses, because
+ * the artifact publishes no per-model, per-GPU, or per-workload total. Either
+ * way the inputs are published observations, never a second sweep.
  */
 
 export interface CoverageCounts {
@@ -47,8 +52,11 @@ export interface SelectTotalsOptions {
 }
 
 /** The four statistics for one simulator slice, or null when it has no evidence. */
-export function selectTotals(summary: ScorecardSummary, options: SelectTotalsOptions): TotalsSlice | null {
-  const rows = summary.totals.filter(total =>
+export function selectTotals(
+  totals: readonly ScorecardTotal[],
+  options: SelectTotalsOptions,
+): TotalsSlice | null {
+  const rows = totals.filter(total =>
     total.simulator === options.simulator
     && total.source === options.source
     && total.metric === options.metric
@@ -124,6 +132,34 @@ export interface CoverageSetOptions {
 }
 
 /**
+ * The point attempts a row filter selects.
+ *
+ * An empty choice means "every value" rather than "match the empty string".
+ * The page filters the published point detail with this before folding it, so
+ * a model, GPU, and workload choice selects exactly the runs a reader asked
+ * for, including the attempts that did not produce a prediction.
+ */
+export interface PointFilter {
+  /** An exact model name, or an empty string for every model. */
+  model: string;
+  /** An exact accelerator name, or an empty string for every GPU. */
+  gpu: string;
+  /** An exact `input/output` workload, or an empty string for all. */
+  workload: string;
+}
+
+export function selectPoints(
+  points: readonly ScorecardPoint[],
+  filter: PointFilter,
+): ScorecardPoint[] {
+  if (!filter.model && !filter.gpu && !filter.workload) return [...points];
+  return points.filter(point =>
+    (!filter.model || point.model === filter.model)
+    && (!filter.gpu || point.accelerator === filter.gpu)
+    && (!filter.workload || point.workload === filter.workload));
+}
+
+/**
  * Build the coverage map's universe.
  *
  * The unit is a model + GPU pair, not a model: a simulator can score one GPU
@@ -139,12 +175,12 @@ export interface CoverageSetOptions {
  * inferred from each other.
  */
 export function buildCoverageSets(
-  summary: ScorecardSummary,
+  coverage: readonly ScorecardCoverage[],
   options: CoverageSetOptions,
 ): CoverageSets {
   const pairs = new Map<string, CoveragePair>();
 
-  for (const row of summary.coverage) {
+  for (const row of coverage) {
     if (row.releaseMatch !== options.releaseMatch) continue;
     if (options.source !== 'all' && row.source !== options.source) continue;
     if (row.total === 0) continue;

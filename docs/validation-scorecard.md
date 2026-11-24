@@ -125,12 +125,19 @@ source pair. One dot is a model + GPU pair, not a model alone. A simulator can
 score one GPU for a model and not another, and that difference is the
 comparison.
 
-The universe comes from `coverage`, so a pair that no simulator scored still
-appears in the measured-data figure as a coverage gap. A pair sits in a
-simulator's circle when that simulator returned a prediction for at least one
-measured level of the pair. Selecting a scored dot sets the model and GPU
+The universe comes from the published coverage, so a pair that no simulator
+scored still appears in the measured-data figure as a coverage gap. A pair sits
+in a simulator's circle when that simulator returned a prediction for at least
+one measured level of the pair. Selecting a scored dot sets the model and GPU
 filters and clears the workload, because the dot names a pair, not a shape. The
 table under the figures carries the exact four-way membership.
+
+The map sits above the filter panel, but the model, GPU, and workload row filters
+do not shrink it: the Venn diagrams stay a whole-snapshot view, because a
+restricted diagram makes the overlap hard to read across filter changes. Those
+row filters narrow the agreement numbers, the chart, and the table instead. The
+source and release selectors still choose which measured-data lens and release
+slice the map shows.
 
 The measured-data lens is **pair overlap, not workload overlap**. One source can
 measure a model and GPU at 8,000 input / 1,000 output while another measures the
@@ -138,15 +145,15 @@ same pair at 8,192 / 1,024. When both sources loaded, the artifact publishes
 `sourceOverlap.sharedPairs` and `sourceOverlap.sharedWorkloads` as separate
 counts, and the page shows the shared-workload count beside the figure rather
 than letting the lens imply a like-for-like comparison. That count covers the
-whole snapshot: the circles and lens follow the selected source and release
-slice, but the workload note does not, and the note says so. The field is
-omitted when a source could not be read, and it is also omitted from snapshots
-published before it existed; in both cases the page says the count was not
-published instead of treating it as zero.
+whole snapshot: the circles and lens follow the selected source and release, but
+the workload note does not, and the note says so. The field is omitted when a
+source could not be read, and it is also omitted from snapshots published before
+it existed; in both cases the page says the count was not published instead of
+treating it as zero.
 
-Both figures follow the source and release filters. The metric and statistic
-selectors change the error numbers elsewhere; they do not change pair
-membership.
+Both figures follow the source and release controls in the panel below them. The
+model, GPU, and workload row filters and the metric and statistic selectors
+change the error numbers elsewhere; they do not change pair membership.
 
 ## Head to head
 
@@ -186,13 +193,17 @@ values present in the selected slice — a part the snapshot did not measure is
 not offered, because picking it could only produce an empty table. Workload is a
 plain dropdown over the same slice.
 
-The three filters narrow the error chart and its table; they do **not** change
-the headline tiles, and they do not narrow head to head, which has its own
-by-model and by-GPU panels. The artifact publishes totals pooled over every
-configuration and nothing finer, so a per-model or per-GPU total would have to be
-recomputed in the browser, from a different population than the published one.
-The page says this in place rather than letting a filtered table sit under totals
-that look unrelated to it.
+The three filters narrow the agreement tiles, the error chart, and its table.
+They do not narrow the coverage map, which stays a whole-snapshot view, or head
+to head, which has its own by-model and by-GPU panels. The artifact publishes
+totals pooled over every configuration and nothing finer, so no per-model,
+per-GPU, or per-workload total is available from the summary alone. When a row
+filter is active the page reads the point detail the same artifact already
+publishes and folds that slice with the sweep's own per-configuration rule, so
+the tiles cover exactly the runs the table lists. While the detail loads it says
+it is applying the row filters rather than showing pooled totals under a
+narrower table; if the detail cannot be read it keeps the pooled totals under an
+explicit warning.
 
 ## Where the numbers come from
 

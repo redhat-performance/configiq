@@ -244,9 +244,9 @@ const scorecardCensus: RequestCensus = {
     statistic: 'selects a column of the published totals; not a request field',
     releaseMatch: 'selects the matched or mixed slice the artifact already contains',
     source: 'selects one measured source from the same artifact',
-    model: 'narrows rows the browser already holds; it never changes what is fetched',
-    gpu: 'narrows rows the browser already holds; it never changes what is fetched',
-    workload: 'narrows rows the browser already holds; it never changes what is fetched',
+    model: 'selects a slice of the published point detail the page fetches when a row filter is active',
+    gpu: 'selects a slice of the published point detail the page fetches when a row filter is active',
+    workload: 'selects a slice of the published point detail the page fetches when a row filter is active',
     pair: 'selects one comparison pair the artifact already contains; not a request field',
   },
 };

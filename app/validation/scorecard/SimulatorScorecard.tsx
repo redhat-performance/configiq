@@ -26,6 +26,7 @@ import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { scorecardLink } from '@/lib/deep-links/pages';
 import { findCatalogGpu } from '@/lib/validation/gpu-catalog';
 import { predictionColor } from '@/lib/ui/simulator-colors';
+import { buildCoverage, buildTotals } from '@/lib/scorecard/aggregate';
 import {
   SCORECARD_SOURCE_FILTERS,
   type ScorecardCell,
@@ -49,6 +50,7 @@ import {
   formatSignedPercent,
   formatSignedPoints,
   selectHeadToHeadRows,
+  selectPoints,
   selectTotals,
   sumCoverage,
   type ChartRow,
@@ -113,7 +115,17 @@ function metricLabel(metric: ScorecardMetric): string {
 }
 
 export default function SimulatorScorecard() {
-  const { summary, notPublished, error, isLoading, reload } = useScorecard();
+  const {
+    summary,
+    points,
+    pointsLoading,
+    pointsError,
+    notPublished,
+    error,
+    isLoading,
+    reload,
+    loadPoints,
+  } = useScorecard();
   // Only the GPU catalog is read from the gateway: it supplies the vendor and
   // architecture groups and the memory line for a measured accelerator. It is
   // not the reader's Settings, so the scorecard stays Settings-independent.
@@ -245,21 +257,61 @@ export default function SimulatorScorecard() {
     [filterOptions.accelerators, catalogGpus],
   );
 
-  // A row filter narrows the matrix and the chart. The published snapshot has
-  // no per-model, per-GPU, or per-workload totals, so the tiles stay pooled.
+  // A row filter narrows the matrix and the chart, and it narrows the coverage
+  // map and the agreement tiles too. The snapshot publishes no per-model,
+  // per-GPU, or per-workload total, so the page reads the point detail the
+  // same artifact publishes and folds the filtered population with the sweep's
+  // own per-configuration rule.
   const rowFilterActive = Boolean(model || gpu || workload);
+  const rowFilterFailed = rowFilterActive && pointsError !== null;
+  // While the point detail is in flight the page does not fall back to the
+  // pooled totals: an unfiltered number under a filtered table is the reading
+  // this view exists to avoid. It says it is updating instead.
+  const rowFilterPending = rowFilterActive && !points && !pointsError;
+
+  React.useEffect(() => {
+    if (rowFilterActive && !points && !pointsLoading && !pointsError) loadPoints();
+  }, [rowFilterActive, points, pointsLoading, pointsError, loadPoints]);
+
+  const filteredTotals = React.useMemo(
+    () => (rowFilterActive && points
+      ? buildTotals(selectPoints(points, { model, gpu, workload }))
+      : null),
+    [rowFilterActive, points, model, gpu, workload],
+  );
+
+  const filteredCoverage = React.useMemo(
+    () => (rowFilterActive && points
+      ? buildCoverage(selectPoints(points, { model, gpu, workload }))
+      : null),
+    [rowFilterActive, points, model, gpu, workload],
+  );
+
+  // When the point detail could not be read, the whole-snapshot rows stay
+  // visible under an explicit warning rather than pretending they are the
+  // filtered slice.
+  const totalsRows = React.useMemo(
+    () => filteredTotals
+      ?? (rowFilterActive && !rowFilterFailed ? [] : summary?.totals ?? []),
+    [filteredTotals, rowFilterActive, rowFilterFailed, summary],
+  );
+  const coverageRows = React.useMemo(
+    () => filteredCoverage
+      ?? (rowFilterActive && !rowFilterFailed ? [] : summary?.coverage ?? []),
+    [filteredCoverage, rowFilterActive, rowFilterFailed, summary],
+  );
 
   const simulators = React.useMemo(() => {
     if (!summary) return [];
     return summary.simulators
       .map((simulator, index) => {
-        const totals = selectTotals(summary, {
+        const totals = selectTotals(totalsRows, {
           simulator: simulator.id,
           source,
           metric,
           releaseMatch: effectiveReleaseMatch,
         });
-        const coverage = sumCoverage(summary.coverage, {
+        const coverage = sumCoverage(coverageRows, {
           simulator: simulator.id,
           source,
           releaseMatch: effectiveReleaseMatch,
@@ -272,7 +324,7 @@ export default function SimulatorScorecard() {
         if (!right.totals) return -1;
         return left.totals.values.mdape - right.totals.values.mdape || left.index - right.index;
       });
-  }, [summary, source, metric, effectiveReleaseMatch]);
+  }, [summary, totalsRows, coverageRows, source, metric, effectiveReleaseMatch]);
 
   const matrix = React.useMemo(
     () => (summary
@@ -407,8 +459,58 @@ export default function SimulatorScorecard() {
         </Alert>
       )}
 
+      {rowFilterFailed && (
+        <Alert variant="warning" isInline title="The row filter could not be applied" className={styles.notice}>
+          <p>
+            The published point detail could not be loaded, so the coverage map and the
+            agreement numbers still cover the whole snapshot.
+          </p>
+          <Button variant="link" onClick={reload}>Try again</Button>
+        </Alert>
+      )}
+
       {summary && (
         <>
+          <section aria-labelledby="scorecard-coverage-title" data-tour="coverage">
+            <div className={styles.sectionHead}>
+              <h2 id="scorecard-coverage-title">Coverage map</h2>
+              <JargonPopover
+                term="Coverage map"
+                explanation={
+                  <div className={styles.popoverBody}>
+                    <p>
+                      One dot is a measured model + GPU pair. A pair sits inside a
+                      simulator&apos;s circle when that simulator scored at least one
+                      measured level for it, so the overlap is the work both can score.
+                      The measured-data figure counts the pairs each source holds.
+                    </p>
+                    <p>
+                      A shared pair is not a shared workload: the two sources can
+                      measure the same model and GPU at different input and output
+                      lengths. The shared-workload count is reported separately.
+                    </p>
+                    <p>
+                      The map follows the benchmark data and release choices below it,
+                      so the Venn diagrams stay a whole-snapshot view. The model, GPU,
+                      and workload row filters narrow the agreement numbers and the
+                      table instead. Select a scored dot to set the model and GPU
+                      filters; the table lists every pair and its exact membership.
+                    </p>
+                  </div>
+                }
+              />
+            </div>
+
+            <CoverageMap
+              coverage={summary.coverage}
+              sharedWorkloads={summary.sourceOverlap?.sharedWorkloads}
+              source={source}
+              releaseMatch={effectiveReleaseMatch}
+              simulators={coverageSimulators}
+              onSelectPair={selectCoveragePair}
+            />
+          </section>
+
           <section className={styles.controls} aria-label="Scorecard filters" data-tour="filters">
             <div className={styles.controlGroup}>
               <span className={styles.controlLabel}>Metric</span>
@@ -544,42 +646,6 @@ export default function SimulatorScorecard() {
             )}
           </section>
 
-          <section aria-labelledby="scorecard-coverage-title" data-tour="coverage">
-            <div className={styles.sectionHead}>
-              <h2 id="scorecard-coverage-title">Coverage map</h2>
-              <JargonPopover
-                term="Coverage map"
-                explanation={
-                  <div className={styles.popoverBody}>
-                    <p>
-                      One dot is a measured model + GPU pair. A pair sits inside a
-                      simulator&apos;s circle when that simulator scored at least one
-                      measured level for it, so the overlap is the work both can score.
-                      The measured-data figure counts the pairs each source holds.
-                    </p>
-                    <p>
-                      A shared pair is not a shared workload: the two sources can
-                      measure the same model and GPU at different input and output
-                      lengths. The shared-workload count is reported separately.
-                    </p>
-                    <p>
-                      Select a scored dot to set the model and GPU filters. The table
-                      lists every pair and its exact membership.
-                    </p>
-                  </div>
-                }
-              />
-            </div>
-
-            <CoverageMap
-              summary={summary}
-              source={source}
-              releaseMatch={effectiveReleaseMatch}
-              simulators={coverageSimulators}
-              onSelectPair={selectCoveragePair}
-            />
-          </section>
-
           <section aria-labelledby="scorecard-headline-title" data-tour="agreement">
             <div className={styles.sectionHead}>
               <h2 id="scorecard-headline-title">Agreement by simulator</h2>
@@ -588,10 +654,16 @@ export default function SimulatorScorecard() {
                 explanation={
                   <div className={styles.popoverBody}>
                     <p>
-                      {metricLabel(metric)}, pooled over every measured configuration.{' '}
+                      {metricLabel(metric)}, pooled over the measured configurations this
+                      view selects.{' '}
                       {effectiveReleaseMatch === 'matched'
                         ? 'Restricted to runs measured on the release the simulator models.'
                         : 'Measured on any release, so a large part of the error can be the release gap rather than the model.'}
+                    </p>
+                    <p>
+                      The model, GPU, and workload choices narrow these numbers as well as
+                      the chart and table. When one is set, the page folds the published
+                      point detail with the same per-configuration rule the sweep uses.
                     </p>
                     <p>
                       The headline is MdAPE, the median configuration, so a few extreme misses do
@@ -610,63 +682,62 @@ export default function SimulatorScorecard() {
               />
             </div>
 
-            {rowFilterActive && (
-              <p className={styles.filterNote}>
-                These totals cover every configuration in the snapshot. The model, GPU, and
-                workload choices narrow the chart and the table below.
+            {rowFilterPending ? (
+              <p className={styles.sectionNote} role="status" aria-live="polite">
+                <Spinner size="sm" /> Applying the row filters…
               </p>
-            )}
+            ) : (
+              <div className={styles.tiles}>
+                {simulators.map(({ simulator, index, totals, coverage }) => (
+                  <article key={simulator.id} className={styles.tile}>
+                    <header className={styles.tileHead}>
+                      <span
+                        className={styles.swatch}
+                        style={{ background: predictionColor(simulator.id, index) }}
+                        aria-hidden="true"
+                      />
+                      <h3>{simulator.label}</h3>
+                      {simulator.version && (
+                        <span className={styles.tileVersion}>{simulator.version}</span>
+                      )}
+                    </header>
 
-            <div className={styles.tiles}>
-              {simulators.map(({ simulator, index, totals, coverage }) => (
-                <article key={simulator.id} className={styles.tile}>
-                  <header className={styles.tileHead}>
-                    <span
-                      className={styles.swatch}
-                      style={{ background: predictionColor(simulator.id, index) }}
-                      aria-hidden="true"
-                    />
-                    <h3>{simulator.label}</h3>
-                    {simulator.version && (
-                      <span className={styles.tileVersion}>{simulator.version}</span>
+                    <div className={styles.tileValueRow}>
+                      <span className={styles.tileValue}>{formatPercent(totals?.values.mdape)}</span>
+                      <span className={styles.tileValueLabel}>MdAPE</span>
+                    </div>
+
+                    {totals ? (
+                      <>
+                        <dl className={styles.tileStats}>
+                          <div>
+                            <dt>MAPE</dt>
+                            <dd>{formatPercent(totals.values.mape)}</dd>
+                          </div>
+                          <div>
+                            <dt>P90</dt>
+                            <dd>{formatPercent(totals.values.p90)}</dd>
+                          </div>
+                          <div>
+                            <dt>Bias</dt>
+                            <dd>{formatSignedPercent(totals.values.bias)}</dd>
+                          </div>
+                        </dl>
+                        <p className={styles.tileFoot}>
+                          {formatCount(totals.configurations)} configurations
+                          {' · '}
+                          {formatCount(totals.points)} measured levels
+                        </p>
+                      </>
+                    ) : (
+                      <p className={styles.tileEmpty}>{emptyReason(coverage)}</p>
                     )}
-                  </header>
 
-                  <div className={styles.tileValueRow}>
-                    <span className={styles.tileValue}>{formatPercent(totals?.values.mdape)}</span>
-                    <span className={styles.tileValueLabel}>MdAPE</span>
-                  </div>
-
-                  {totals ? (
-                    <>
-                      <dl className={styles.tileStats}>
-                        <div>
-                          <dt>MAPE</dt>
-                          <dd>{formatPercent(totals.values.mape)}</dd>
-                        </div>
-                        <div>
-                          <dt>P90</dt>
-                          <dd>{formatPercent(totals.values.p90)}</dd>
-                        </div>
-                        <div>
-                          <dt>Bias</dt>
-                          <dd>{formatSignedPercent(totals.values.bias)}</dd>
-                        </div>
-                      </dl>
-                      <p className={styles.tileFoot}>
-                        {formatCount(totals.configurations)} configurations
-                        {' · '}
-                        {formatCount(totals.points)} measured levels
-                      </p>
-                    </>
-                  ) : (
-                    <p className={styles.tileEmpty}>{emptyReason(coverage)}</p>
-                  )}
-
-                  <CoverageBar coverage={coverage} />
-                </article>
-              ))}
-            </div>
+                    <CoverageBar coverage={coverage} />
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
 
           <section aria-label="What this measures, and what it does not">
@@ -690,6 +761,12 @@ export default function SimulatorScorecard() {
                   <li>
                     Statistics are computed per configuration, then across configurations, so a
                     run swept at many concurrency levels does not dominate one swept at few.
+                  </li>
+                  <li>
+                    With no row filter these are the pooled totals the sweep published. With a
+                    model, GPU, or workload filter, the page folds the published point detail
+                    with the same per-configuration rule, so the number covers exactly the runs
+                    the table lists.
                   </li>
                   <li>
                     This is agreement with a measurement under these inputs, not an absolute

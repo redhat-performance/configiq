@@ -3,8 +3,7 @@ import * as React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ScorecardCoverage, ScorecardSummary } from '@/lib/scorecard/types';
-import { summary } from '@/lib/scorecard/__fixtures__/points';
+import type { ScorecardCoverage } from '@/lib/scorecard/types';
 import CoverageMap from './CoverageMap';
 
 function coverage(overrides: Partial<ScorecardCoverage> = {}): ScorecardCoverage {
@@ -23,23 +22,19 @@ function coverage(overrides: Partial<ScorecardCoverage> = {}): ScorecardCoverage
   };
 }
 
-function artifact(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary {
-  return summary({
-    coverage: [
-      coverage(),
-      coverage({ simulator: 'blis' }),
-      coverage({ model: 'org/crescent', accelerator: 'B200' }),
-      // Measured but never scored: the coverage gap the map has to show.
-      coverage({ model: 'org/gap', accelerator: 'H200', supported: 0, unsupported: 1, total: 1 }),
-      coverage({ model: 'org/shared', accelerator: 'H200' }),
-      coverage({ simulator: 'blis', model: 'org/shared', accelerator: 'H200' }),
-      coverage({ source: 'inferencex', model: 'org/shared', accelerator: 'H200' }),
-      coverage({ source: 'inferencex', simulator: 'blis', model: 'org/shared', accelerator: 'H200' }),
-      coverage({ source: 'inferencex', model: 'org/other', accelerator: 'B200' }),
-    ],
-    sourceOverlap: { sharedPairs: 1, sharedWorkloads: 0 },
-    ...overrides,
-  });
+function defaultCoverage(): ScorecardCoverage[] {
+  return [
+    coverage(),
+    coverage({ simulator: 'blis' }),
+    coverage({ model: 'org/crescent', accelerator: 'B200' }),
+    // Measured but never scored: the coverage gap the map has to show.
+    coverage({ model: 'org/gap', accelerator: 'H200', supported: 0, unsupported: 1, total: 1 }),
+    coverage({ model: 'org/shared', accelerator: 'H200' }),
+    coverage({ simulator: 'blis', model: 'org/shared', accelerator: 'H200' }),
+    coverage({ source: 'inferencex', model: 'org/shared', accelerator: 'H200' }),
+    coverage({ source: 'inferencex', simulator: 'blis', model: 'org/shared', accelerator: 'H200' }),
+    coverage({ source: 'inferencex', model: 'org/other', accelerator: 'B200' }),
+  ];
 }
 
 const SIMULATORS = [
@@ -69,17 +64,23 @@ afterEach(async () => {
 
 async function mount(
   options: {
-    summary?: ScorecardSummary;
+    coverage?: readonly ScorecardCoverage[];
+    /** `null` mounts the snapshot that never published a workload count. */
+    sharedWorkloads?: number | null;
     source?: 'all' | 'redhat' | 'inferencex';
     releaseMatch?: 'any' | 'matched';
     onSelectPair?: (pair: { model: string; accelerator: string }) => void;
   } = {},
 ): Promise<ReturnType<typeof vi.fn>> {
   const onSelectPair = vi.fn(options.onSelectPair);
+  const sharedWorkloads = options.sharedWorkloads === null
+    ? undefined
+    : options.sharedWorkloads ?? 0;
   await act(async () => {
     root.render(
       <CoverageMap
-        summary={options.summary ?? artifact()}
+        coverage={options.coverage ?? defaultCoverage()}
+        sharedWorkloads={sharedWorkloads}
         source={options.source ?? 'all'}
         releaseMatch={options.releaseMatch ?? 'any'}
         simulators={SIMULATORS}
@@ -109,9 +110,7 @@ describe('CoverageMap', () => {
   });
 
   it('does not claim a shared pair is a shared workload', async () => {
-    await mount({
-      summary: artifact({ sourceOverlap: { sharedPairs: 1, sharedWorkloads: 0 } }),
-    });
+    await mount({ sharedWorkloads: 0 });
 
     const sources = container.querySelectorAll('figure')[1];
     // One shared pair, no shared shape: both facts have to appear.
@@ -120,9 +119,7 @@ describe('CoverageMap', () => {
   });
 
   it('says when the snapshot does not publish a workload count', async () => {
-    const older = artifact();
-    delete older.sourceOverlap;
-    await mount({ summary: older });
+    await mount({ sharedWorkloads: null });
 
     expect(normalized(container)).toContain('Workload overlap not published in this snapshot');
   });
@@ -221,12 +218,10 @@ describe('CoverageMap', () => {
 
   it('follows the release slice', async () => {
     await mount({
-      summary: artifact({
-        coverage: [
-          coverage({ releaseMatch: 'matched' }),
-          coverage({ simulator: 'blis', releaseMatch: 'matched' }),
-        ],
-      }),
+      coverage: [
+        coverage({ releaseMatch: 'matched' }),
+        coverage({ simulator: 'blis', releaseMatch: 'matched' }),
+      ],
       releaseMatch: 'matched',
     });
 
@@ -235,7 +230,7 @@ describe('CoverageMap', () => {
   });
 
   it('says plainly when the slice has no pair', async () => {
-    await mount({ summary: artifact({ coverage: [] }) });
+    await mount({ coverage: [] });
 
     expect(container.textContent).toContain('No measured model + GPU pair in this view.');
     expect(container.querySelector('figure')).toBeNull();
