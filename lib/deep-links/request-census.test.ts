@@ -247,6 +247,7 @@ const scorecardCensus: RequestCensus = {
     model: 'narrows rows the browser already holds; it never changes what is fetched',
     gpu: 'narrows rows the browser already holds; it never changes what is fetched',
     workload: 'narrows rows the browser already holds; it never changes what is fetched',
+    pair: 'selects one comparison pair the artifact already contains; not a request field',
   },
 };
 

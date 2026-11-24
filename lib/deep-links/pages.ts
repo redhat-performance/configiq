@@ -167,6 +167,9 @@ export const scorecardLink = defineLink('/validation/scorecard', {
   model: text(200),
   gpu: text(64),
   workload: text(64),
+  // The artifact decides which pairs exist, so this is an opaque key
+  // (`aisim|blis`), not a pair of ids the link has to interpret.
+  pair: text(MAX_ID_LENGTH),
 });
 
 export type RecommendLinkValues = LinkValues<typeof recommendLink.fields>;

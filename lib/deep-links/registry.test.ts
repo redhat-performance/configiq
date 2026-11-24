@@ -248,6 +248,7 @@ describe('golden links', () => {
       model: 'openai/gpt-oss-120b',
       gpu: 'H200',
       workload: '8192/1024',
-    })).toMatchInlineSnapshot(`"/validation/scorecard?v=1&metric=tpot&statistic=mdape&releaseMatch=any&source=redhat&model=openai%2Fgpt-oss-120b&gpu=H200&workload=8192%2F1024"`);
+      pair: 'aisim|blis',
+    })).toMatchInlineSnapshot(`"/validation/scorecard?v=1&metric=tpot&statistic=mdape&releaseMatch=any&source=redhat&model=openai%2Fgpt-oss-120b&gpu=H200&workload=8192%2F1024&pair=aisim%7Cblis"`);
   });
 });

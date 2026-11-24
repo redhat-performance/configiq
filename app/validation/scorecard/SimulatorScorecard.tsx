@@ -131,6 +131,18 @@ export default function SimulatorScorecard() {
 
   React.useEffect(() => setMounted(true), []);
 
+  // Derived before the accessors because the shared view asks the pair field
+  // what the page is showing right now.
+  const headToHeadPairs = React.useMemo(
+    () => (summary ? buildHeadToHeadPairs(summary.headToHead, { metric, source }) : []),
+    [summary, metric, source],
+  );
+
+  const activePair = React.useMemo<HeadToHeadPairOption | null>(() => {
+    if (headToHeadPairs.length === 0) return null;
+    return headToHeadPairs.find(entry => entry.key === pairKey) ?? headToHeadPairs[0];
+  }, [headToHeadPairs, pairKey]);
+
   const accessors = defineAccessors(scorecardLink, {
     metric: { read: () => metric, write: value => setMetric(value) },
     statistic: { read: () => statistic, write: value => setStatistic(value) },
@@ -139,6 +151,13 @@ export default function SimulatorScorecard() {
     model: { read: () => (model || undefined), write: value => setModel(value) },
     gpu: { read: () => (gpu || undefined), write: value => setGpu(value) },
     workload: { read: () => (workload || undefined), write: value => setWorkload(value) },
+    // Only the pair the reader chose is shared. A key that no longer exists in
+    // the current slice falls back to the first pair on screen, and a link that
+    // named it should describe that fallback, not the stale choice.
+    pair: {
+      read: () => (pairKey && activePair?.key === pairKey ? pairKey : undefined),
+      write: value => setPairKey(value),
+    },
   });
 
   const shared = useSharedView(scorecardLink, {
@@ -260,16 +279,6 @@ export default function SimulatorScorecard() {
       : []),
     [summary, metric, statistic, effectiveReleaseMatch, source, model, gpu, workload],
   );
-
-  const headToHeadPairs = React.useMemo(
-    () => (summary ? buildHeadToHeadPairs(summary.headToHead, { metric, source }) : []),
-    [summary, metric, source],
-  );
-
-  const activePair = React.useMemo<HeadToHeadPairOption | null>(() => {
-    if (headToHeadPairs.length === 0) return null;
-    return headToHeadPairs.find(entry => entry.key === pairKey) ?? headToHeadPairs[0];
-  }, [headToHeadPairs, pairKey]);
 
   const headToHeadRows = React.useMemo(
     () => (summary && activePair

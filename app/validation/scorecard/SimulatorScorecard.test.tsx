@@ -617,6 +617,63 @@ describe('Simulator scorecard shared view', () => {
     expect(url.searchParams.get('releaseMatch')).toBeNull();
   });
 
+  it('applies the comparison pair from a link and copies it back', async () => {
+    await mount(published(), '?v=1&pair=aisim%7Cother');
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Simulator pair"]');
+    expect(select?.value).toBe('aisim|other');
+
+    await act(async () => {
+      button('Copy link')?.click();
+      await Promise.resolve();
+    });
+
+    expect(new URL(clipboard.text).searchParams.get('pair')).toBe('aisim|other');
+  });
+
+  it('shares the pair the reader picks from the selector', async () => {
+    await mount(published());
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Simulator pair"]');
+
+    await act(async () => {
+      select!.value = 'aisim|other';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => {
+      button('Copy link')?.click();
+      await Promise.resolve();
+    });
+
+    expect(new URL(clipboard.text).searchParams.get('pair')).toBe('aisim|other');
+  });
+
+  it('does not share a pair the reader never chose', async () => {
+    await mount(published());
+
+    await act(async () => {
+      button('Copy link')?.click();
+      await Promise.resolve();
+    });
+
+    expect(new URL(clipboard.text).searchParams.get('pair')).toBeNull();
+  });
+
+  it('falls back to the first pair and shares that fallback when a link names one the snapshot lacks', async () => {
+    await mount(published(), '?v=1&pair=aisim%7Cghost');
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Simulator pair"]');
+    expect(select?.value).toBe('aisim|blis');
+
+    // The link named a pair this snapshot does not contain, so the view is the
+    // first pair, and the copied link must describe that view rather than the
+    // stale choice it arrived with.
+    await act(async () => {
+      button('Copy link')?.click();
+      await Promise.resolve();
+    });
+    expect(new URL(clipboard.text).searchParams.get('pair')).toBeNull();
+  });
+
   it('warns about and drops an unknown parameter rather than failing the view', async () => {
     await mount(published(), '?v=1&unexpected=1');
     expect(container.textContent).toContain('Part of this link was ignored');
