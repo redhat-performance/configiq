@@ -1631,11 +1631,11 @@ export default function Performance() {
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <CopyLinkButton getUrl={shared.build} />
             <SaveToComparisonButton
               buildEntry={buildComparisonEntry}
               disabledReason={comparisonDisabledReason}
             />
+            <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
         </div>

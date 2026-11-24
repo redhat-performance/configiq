@@ -17,6 +17,14 @@
   outline-offset: 2px;
 }
 
+/* PatternFly's disabled link is lighter than the legibility floor; keep the
+   label readable and let the tooltip explain why it is unavailable. */
+.button:disabled {
+  color: var(--gc-text-3, #54585c);
+  --pf-v6-c-button--disabled__icon--Color: var(--gc-text-3, #54585c);
+  opacity: 1;
+}
+
 .status {
   display: inline-flex;
   align-items: center;

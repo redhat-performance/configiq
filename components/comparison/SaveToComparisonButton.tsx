@@ -60,7 +60,8 @@ export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToCom
 
   const button = (
     <Button
-      variant="secondary"
+      variant="link"
+      className={styles.button}
       icon={state.kind === 'saved' ? <CheckIcon /> : <BookmarkIcon />}
       onClick={handleClick}
       isDisabled={disabledReason != null}

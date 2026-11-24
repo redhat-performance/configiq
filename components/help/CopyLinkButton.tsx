@@ -40,11 +40,21 @@ export function CopyLinkButton({ getUrl, label = 'Copy link' }: CopyLinkButtonPr
   };
 
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
       <Button variant="link" icon={<CopyIcon />} onClick={handleClick}>
         {label}
       </Button>
-      <span role="status" aria-live="polite" style={{ fontSize: 13, color: 'var(--gc-text-2)' }}>
+      <span
+        role="status"
+        aria-live="polite"
+        style={{
+          // The status is always mounted for announcements; only its message
+          // should take space, so an idle control leaves no trailing gap.
+          marginLeft: state === 'idle' ? undefined : 8,
+          fontSize: 13,
+          color: 'var(--gc-text-2)',
+        }}
+      >
         {state === 'copied' ? 'Link copied' : state === 'error' ? 'Could not copy the link' : ''}
       </span>
     </span>
