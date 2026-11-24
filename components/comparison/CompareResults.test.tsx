@@ -96,6 +96,12 @@ function cellsFor(label: string): string[] {
   return Array.from(row.querySelectorAll('td')).map(cell => cell.textContent ?? '');
 }
 
+function sectionMarks(label: string): string[] {
+  const row = rowFor(label);
+  if (!row) throw new Error(`expected a ${label} section row`);
+  return Array.from(row.querySelectorAll('td')).map(cell => cell.textContent?.trim() ?? '');
+}
+
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.stubGlobal('localStorage', memoryStorage());
@@ -136,6 +142,16 @@ describe('CompareResults', () => {
     expect(columns[1].textContent).toContain('blis');
   });
 
+  it('shows the simulator, backend, and engine in one deployment row', async () => {
+    writeComparison(doc([entry()]));
+    await render();
+
+    expect(rowFor('Simulator / backend / engine')?.textContent).toContain('AISim · vLLM 0.14.0');
+    expect(rowFor('Simulator')).toBeUndefined();
+    expect(rowFor('Engine version')).toBeUndefined();
+    expect(rowFor('Backend')).toBeUndefined();
+  });
+
   it('shows absolute values until a baseline is chosen', async () => {
     writeComparison(doc([entry(), entry({ id: 'b', link: '/predict?n=2', figures: { ...entry().figures, gpus: 16 } })]));
     await render();
@@ -150,8 +166,23 @@ describe('CompareResults', () => {
     const baseline = host.querySelector<HTMLInputElement>('#baseline-a');
     await act(async () => baseline?.click());
 
-    expect(cellsFor('GPUs')).toEqual(['8baseline', '16▲ 8']);
+    expect(cellsFor('GPUs')).toEqual(['8', '16▲ 8']);
+    expect(sectionMarks('Deployment')).toEqual(['baseline', '']);
+    expect(sectionMarks('Cost')).toEqual(['baseline', '']);
     expect(host.textContent).toContain('Clear baseline');
+  });
+
+  it('moves the baseline mark above the column when the baseline changes', async () => {
+    writeComparison(doc([entry(), entry({ id: 'b', link: '/predict?n=2', figures: { ...entry().figures, gpus: 16 } })]));
+    await render();
+
+    await act(async () => host.querySelector<HTMLInputElement>('#baseline-a')?.click());
+    expect(sectionMarks('Deployment')).toEqual(['baseline', '']);
+
+    await act(async () => host.querySelector<HTMLInputElement>('#baseline-b')?.click());
+
+    expect(sectionMarks('Deployment')).toEqual(['', 'baseline']);
+    expect(cellsFor('GPUs')).toEqual(['8▼ 8', '16']);
   });
 
   it('removes one result', async () => {

@@ -1,3 +1,4 @@
+import { backendDisplayLabel } from '../backend-labels'
 import { simulatorDisplayLabel } from '../simulator-labels'
 import type { ComparisonEntry } from './types'
 
@@ -70,9 +71,34 @@ export function precisionLabel(entry: ComparisonEntry): string {
   return `${entry.workload.weightPrecision} weights · ${entry.workload.kvPrecision} KV`
 }
 
-export function backendLabel(entry: ComparisonEntry): string {
-  if (entry.backend == null) return 'not reported'
-  return entry.backendVersion == null ? entry.backend : `${entry.backend} ${entry.backendVersion}`
+/**
+ * The runtime that produced a result: simulator, serving backend, and the
+ * engine release it reported.
+ *
+ * These three answer one question, so they share a row instead of repeating a
+ * column header three times. The reported release wins over the version the
+ * request pinned; when the two differ, the pinned version is named so the
+ * snapshot does not hide the discrepancy.
+ */
+export function runtimeLabel(entry: ComparisonEntry): string {
+  const simulator = simulatorLabel(entry)
+  const reported = entry.engineVersion
+  const requested = entry.backendVersion
+  const engine = reported ?? requested
+  const parts = [simulator]
+
+  if (entry.backend == null) {
+    parts.push('backend not reported')
+    if (engine != null) parts.push(`engine ${engine}`)
+  } else {
+    const backend = backendDisplayLabel(entry.backend)
+    parts.push(engine == null ? backend : `${backend} ${engine}`)
+  }
+
+  const runtime = parts.join(' · ')
+  return reported != null && requested != null && reported !== requested
+    ? `${runtime} (requested ${requested})`
+    : runtime
 }
 
 export function modeLabel(entry: ComparisonEntry): string {
@@ -115,9 +141,7 @@ export function formatMetric(metric: ComparisonMetric, value: number | string | 
 export const COMPARISON_METRICS: readonly ComparisonMetric[] = [
   { id: 'model', section: 'deployment', label: 'Model', kind: 'text', value: entry => entry.model },
   { id: 'gpu', section: 'deployment', label: 'GPU system', kind: 'text', value: entry => entry.systemLabel },
-  { id: 'simulator', section: 'deployment', label: 'Simulator', kind: 'text', value: simulatorLabel },
-  { id: 'engine', section: 'deployment', label: 'Engine version', kind: 'text', value: entry => entry.engineVersion ?? 'not reported' },
-  { id: 'backend', section: 'deployment', label: 'Backend', kind: 'text', value: backendLabel },
+  { id: 'runtime', section: 'deployment', label: 'Simulator / backend / engine', kind: 'text', value: runtimeLabel },
   { id: 'mode', section: 'deployment', label: 'Serving mode', kind: 'text', value: modeLabel },
   { id: 'workload', section: 'deployment', label: 'Workload', kind: 'text', value: workloadLabel },
   { id: 'goal', section: 'deployment', label: 'Sizing goal', kind: 'text', value: sizingGoalLabel },

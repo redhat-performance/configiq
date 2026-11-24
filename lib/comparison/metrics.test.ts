@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest'
 import {
   COMPARISON_METRICS,
   COMPARISON_SECTIONS,
-  backendLabel,
   formatMetric,
   formatNumber,
   formatUsd,
   metricsFor,
   modeLabel,
   precisionLabel,
+  runtimeLabel,
   simulatorLabel,
   sizingGoalLabel,
   topologyLabel,
@@ -134,10 +134,14 @@ describe('comparison labels', () => {
     }))).toBe('Request latency ≤ 1.5 ms')
   })
 
-  it('names the backend, or says it was not reported', () => {
-    expect(backendLabel(entry())).toBe('vllm 0.9.0')
-    expect(backendLabel(entry({ backend: 'vllm', backendVersion: null }))).toBe('vllm')
-    expect(backendLabel(entry({ backend: null, backendVersion: null }))).toBe('not reported')
+  it('combines the simulator, backend, and reported engine release', () => {
+    expect(runtimeLabel(entry())).toBe('AISim · vLLM 0.14.0 (requested 0.9.0)')
+    expect(runtimeLabel(entry({ engineVersion: null }))).toBe('AISim · vLLM 0.9.0')
+    expect(runtimeLabel(entry({ engineVersion: null, backendVersion: null }))).toBe('AISim · vLLM')
+    expect(runtimeLabel(entry({ backend: null })))
+      .toBe('AISim · backend not reported · engine 0.14.0 (requested 0.9.0)')
+    expect(runtimeLabel(entry({ backendVersion: '0.8.0' })))
+      .toBe('AISim · vLLM 0.14.0 (requested 0.8.0)')
   })
 
   it('shortens the simulator label it was given', () => {

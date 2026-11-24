@@ -437,9 +437,19 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
               {COMPARISON_SECTIONS.map(section => (
                 <tbody key={section.id} className={styles.section}>
                   <tr className={styles.sectionRow}>
-                    <th scope="colgroup" colSpan={entries.length + 1}>
+                    <th scope="rowgroup">
                       {section.label}
                     </th>
+                    {/* The baseline sits above the column it belongs to, once
+                        per section, so it does not add a line to every metric
+                        row. Empty cells keep the section band full width. */}
+                    {entries.map(entry => (
+                      <td key={entry.id}>
+                        {entry.id === baselineId ? (
+                          <span className={styles.baselineTag}>baseline</span>
+                        ) : null}
+                      </td>
+                    ))}
                   </tr>
                   {metricsFor(section.id).map(metric => (
                     <tr key={metric.id}>
@@ -456,7 +466,6 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
                             className={metric.kind === 'number' ? styles.numeric : styles.text}
                           >
                             <span className={styles.value}>{formatMetric(metric, value)}</span>
-                            {isBaseline && <span className={styles.baselineTag}>baseline</span>}
                             {delta != null && <span className={styles.delta}>{delta}</span>}
                           </td>
                         );
