@@ -5,6 +5,7 @@ import {
   type ScorecardPoint,
   type ScorecardSummary,
 } from './types';
+import { normalizeScorecardPoints, normalizeScorecardSummary } from './normalize';
 
 /**
  * Reader for the published scorecard artifact.
@@ -113,7 +114,7 @@ function parseSummary(data: unknown): ScorecardSummary {
   if (!parsed.success) {
     throw new Error(`The published scorecard does not match the contract: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
   }
-  return parsed.data;
+  return normalizeScorecardSummary(parsed.data);
 }
 
 function parsePoints(data: unknown): ScorecardPoint[] {
@@ -121,7 +122,7 @@ function parsePoints(data: unknown): ScorecardPoint[] {
   if (!parsed.success) {
     throw new Error(`The published point detail does not match the contract: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
   }
-  return parsed.data.points;
+  return normalizeScorecardPoints(parsed.data.points);
 }
 
 async function read(options: ReadOptions): Promise<ScorecardReadResult> {

@@ -78,6 +78,28 @@ describe('readPublishedScorecard', () => {
     expect(result.value.points[0].identity).toBe('point-1');
   });
 
+  it('reads a snapshot published before a simulator rename under the current identity', async () => {
+    stubFetch(url => (
+      url.endsWith('/points.json')
+        ? jsonResponse({ ...pointsDocument, points: [point({ simulator: 'aisimulate' })] })
+        : jsonResponse(summary({
+          simulators: [{
+            id: 'aisimulate',
+            label: 'AISimulate',
+            version: '0.14.0',
+            revision: null,
+            available: true,
+          }],
+        }))
+    ));
+
+    const result = await readPublishedScorecard({ channel: 'dev', includePoints: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.summary.simulators[0]).toMatchObject({ id: 'aisim', label: 'AISim' });
+    expect(result.value.points[0].simulator).toBe('aisim');
+  });
+
   it('reports a missing snapshot rather than an empty one', async () => {
     stubFetch(() => jsonResponse({ error: 'not found' }, 404));
     const result = await readPublishedScorecard({ channel: 'prod' });
