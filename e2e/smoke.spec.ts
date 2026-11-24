@@ -361,6 +361,71 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   await expect(page.getByTestId('predict-throughput')).toContainText('37.8 tok/s')
 })
 
+test('Saved and copy feedback keeps each control where it was', async ({ page, context }) => {
+  // The copy control must succeed here, or the test would only prove that a
+  // failure label also keeps its place.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await stubApi(page, {
+    '/api/predict': {
+      status: 'success',
+      simulator: 'aisimulate',
+      memory_breakdown: {
+        weights_bytes: 16 * 1_073_741_824,
+        kv_cache_bytes: 2 * 1_073_741_824,
+      },
+      ttft: 640,
+      tpot: 24,
+      tokens_per_second: 37.8,
+      serving_config: {
+        tensor_parallel_size: 1,
+        max_model_len: 864,
+        max_num_seqs: 32,
+        gpu_memory_utilization: 0.9,
+        enable_chunked_prefill: false,
+        enable_prefix_caching: false,
+        quantization: 'auto',
+      },
+    },
+  })
+  await page.goto('/predict')
+  await selectModel(page, 'predict-performance-model')
+  await selectSystem(page, 'predict-performance-gpu')
+
+  const responsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/predict' && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: 'Calculate', exact: true }).click()
+  await responsePromise
+
+  for (const width of [768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+
+    const save = page.getByRole('button', { name: /Save for comparison|Saved|Not saved/ })
+    const copy = page.getByRole('button', { name: /Copy link|Copied|Copy failed/ })
+    // Each width measures the idle-to-success transition. Wait out the previous
+    // pass's feedback so this is not a success-to-success comparison.
+    await expect(save).toHaveText('Save for comparison', { timeout: 10_000 })
+    await expect(copy).toHaveText('Copy link', { timeout: 10_000 })
+
+    await expect(save).toBeVisible()
+    const saveBefore = await save.boundingBox()
+    await save.click()
+    await expect(save).toHaveText(/Saved/)
+    const saveAfter = await save.boundingBox()
+    expect(Math.abs((saveAfter?.x ?? 0) - (saveBefore?.x ?? 0))).toBeLessThan(0.5)
+    expect(Math.abs((saveAfter?.width ?? 0) - (saveBefore?.width ?? 0))).toBeLessThan(0.5)
+
+    const copyBefore = await copy.boundingBox()
+    await copy.click()
+    await expect(copy).toHaveText(/Copied/)
+    const copyAfter = await copy.boundingBox()
+    expect(Math.abs((copyAfter?.x ?? 0) - (copyBefore?.x ?? 0))).toBeLessThan(0.5)
+    expect(Math.abs((copyAfter?.width ?? 0) - (copyBefore?.width ?? 0))).toBeLessThan(0.5)
+  }
+  // Feedback is not printed into the header.
+  await expect(page.getByText('View comparison')).toHaveCount(0)
+})
+
 test('Recommend submits selected workload inputs and renders the mocked sizing result', async ({ page }) => {
   const api = await stubApi(page, {
     '/api/recommend': recommendResponse,

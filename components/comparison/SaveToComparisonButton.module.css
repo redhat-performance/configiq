@@ -1,14 +1,43 @@
 /* Save-for-comparison control in a result page header. */
 
 .root {
+  position: relative;
   display: inline-flex;
   align-items: center;
   min-width: 0;
 }
 
+/* Every label state is laid out in the same grid cell so the widest state sets
+   the control's size. Only the hidden copies are in flow: the visible control
+   is overlaid on the box they define, so its own label or icon can never grow
+   or shrink that box when the state changes. */
+.stack {
+  position: relative;
+  display: inline-grid;
+  align-items: center;
+}
+
+.ghost {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ghost > * {
+  white-space: nowrap;
+}
+
+.button,
+.disabled {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+
 /* Makes the tooltip's focus target match the button it explains. */
 .disabled {
-  display: inline-flex;
+  display: flex;
+  justify-content: center;
   border-radius: 4px;
 }
 
@@ -25,20 +54,15 @@
   opacity: 1;
 }
 
+/* Announcements reach assistive technology without occupying header space. */
 .status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 320px;
-  font: 400 12.5px var(--gc-font-sans, "Red Hat Text", system-ui, sans-serif);
-  color: var(--gc-text-2, #3c3f42);
-}
-
-/* An empty live region stays in the DOM but must not add space. */
-.status:not(:empty) {
-  margin-left: 10px;
-}
-
-.status a {
-  color: var(--gc-link, #0066cc);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

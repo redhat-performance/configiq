@@ -5,7 +5,6 @@ import { Button, Tooltip } from '@patternfly/react-core';
 import BookmarkIcon from '@patternfly/react-icons/dist/esm/icons/bookmark-icon';
 import CheckIcon from '@patternfly/react-icons/dist/esm/icons/check-icon';
 import ExclamationCircleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-circle-icon';
-import Link from 'next/link';
 
 import { upsertComparisonEntry } from '@/lib/comparison/storage';
 import type { ComparisonEntry } from '@/lib/comparison/types';
@@ -13,6 +12,10 @@ import type { ComparisonEntry } from '@/lib/comparison/types';
 import styles from './SaveToComparisonButton.module.css';
 
 const FEEDBACK_MS = 4000;
+
+const IDLE_LABEL = 'Save for comparison';
+const SAVED_LABEL = 'Saved';
+const ERROR_LABEL = 'Not saved';
 
 type SaveState =
   | { kind: 'idle' }
@@ -34,8 +37,10 @@ interface SaveToComparisonButtonProps {
  * Save the current result to the browser-local comparison set.
  *
  * The snapshot is written on this device only; nothing is sent to a ConfigIQ
- * service. A refusal (full set, storage disabled) is shown inline beside the
- * button rather than as a toast, so the reason stays readable and announced.
+ * service. Feedback is the control's own label, so the header never grows a
+ * status sentence and the neighbouring actions do not move. A refusal is
+ * announced in a hidden live region and its reason is available on the button
+ * itself, rather than printed inline where it would reflow the toolbar.
  */
 export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToComparisonButtonProps) {
   const [state, setState] = React.useState<SaveState>({ kind: 'idle' });
@@ -58,41 +63,51 @@ export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToCom
       : { kind: 'error', message: written.problem });
   };
 
+  const label = state.kind === 'saved'
+    ? SAVED_LABEL
+    : state.kind === 'error' ? ERROR_LABEL : IDLE_LABEL;
+
+  const announcement = state.kind === 'saved'
+    ? 'Saved to comparison.'
+    : state.kind === 'error' ? `Not saved. ${state.message}` : '';
+
   const button = (
     <Button
       variant="link"
       className={styles.button}
-      icon={state.kind === 'saved' ? <CheckIcon /> : <BookmarkIcon />}
+      icon={state.kind === 'saved'
+        ? <CheckIcon />
+        : state.kind === 'error' ? <ExclamationCircleIcon /> : <BookmarkIcon />}
       onClick={handleClick}
       isDisabled={disabledReason != null}
-      aria-label={disabledReason == null ? 'Save for comparison' : `Save for comparison unavailable. ${disabledReason}`}
+      title={state.kind === 'error' ? state.message : undefined}
+      aria-label={disabledReason == null ? undefined : `Save for comparison unavailable. ${disabledReason}`}
     >
-      {state.kind === 'saved' ? 'Saved' : 'Save for comparison'}
+      {label}
     </Button>
   );
 
-  // The status sits beside the control in a nowrap box: the box may grow when a
-  // message appears, but it cannot wrap the empty live region onto a second
-  // line, which would push the button above its neighbours in the header row.
+  // A hidden copy of each label reserves the widest state inside one grid cell,
+  // so swapping the label never changes the control's width or nudges the
+  // actions beside it. The live region is off-screen for the same reason.
   return (
     <div className={styles.root}>
-      {disabledReason == null ? button : (
-        <Tooltip content={disabledReason}>
-          <span tabIndex={0} className={styles.disabled}>
-            {button}
+      <span className={styles.stack}>
+        {[IDLE_LABEL, SAVED_LABEL, ERROR_LABEL].map(text => (
+          <span key={text} className={styles.ghost} aria-hidden="true">
+            <Button component="span" variant="link" icon={<BookmarkIcon />}>{text}</Button>
           </span>
-        </Tooltip>
-      )}
+        ))}
+        {disabledReason == null ? button : (
+          <Tooltip content={disabledReason}>
+            <span tabIndex={0} className={styles.disabled}>
+              {button}
+            </span>
+          </Tooltip>
+        )}
+      </span>
       <span role="status" aria-live="polite" className={styles.status}>
-        {state.kind === 'saved' ? (
-          <>
-            Saved to comparison. <Link href="/compare">View comparison</Link>
-          </>
-        ) : state.kind === 'error' ? (
-          <>
-            <ExclamationCircleIcon /> {state.message}
-          </>
-        ) : ''}
+        {announcement}
       </span>
     </div>
   );

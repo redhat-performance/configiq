@@ -34,11 +34,16 @@ async function render(getUrl: () => string | null) {
   });
 }
 
+function visibleButton(): HTMLButtonElement {
+  const found = Array.from(container.querySelectorAll('button'))
+    .find(candidate => candidate.closest('[aria-hidden="true"]') == null);
+  if (!found) throw new Error('expected a button');
+  return found;
+}
+
 async function click() {
-  const button = container.querySelector('button');
-  expect(button).not.toBeNull();
   await act(async () => {
-    button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    visibleButton().dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
   });
 }
@@ -49,7 +54,8 @@ describe('CopyLinkButton', () => {
     await click();
 
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/predict?v=1&model=m`);
-    expect(container.textContent).toContain('Link copied');
+    expect(visibleButton().textContent).toContain('Copied');
+    expect(container.textContent).toContain('Link copied to the clipboard.');
   });
 
   it('reports a link it could not build instead of copying the current page', async () => {
@@ -57,6 +63,8 @@ describe('CopyLinkButton', () => {
     await click();
 
     expect(writeText).not.toHaveBeenCalled();
+    expect(visibleButton().textContent).toContain('Copy failed');
+    expect(visibleButton().getAttribute('title')).toBe('Could not copy the link');
     expect(container.textContent).toContain('Could not copy the link');
   });
 
@@ -65,6 +73,7 @@ describe('CopyLinkButton', () => {
     await render(() => '/kv-cache?v=1');
     await click();
 
+    expect(visibleButton().textContent).toContain('Copy failed');
     expect(container.textContent).toContain('Could not copy the link');
   });
 
