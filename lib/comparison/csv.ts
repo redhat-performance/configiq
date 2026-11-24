@@ -15,9 +15,18 @@ const IDENTITY_ROWS: readonly { label: string; value: (entry: ComparisonEntry) =
   { label: 'Link', value: entry => entry.link },
 ]
 
+/**
+ * A leading one of these makes a spreadsheet treat the cell as a formula.
+ * A name or link can come from an imported file, so text that starts with one
+ * is prefixed with an apostrophe, which spreadsheets read as literal text.
+ * Numbers are written unaltered so a negative figure stays numeric.
+ */
+const FORMULA_LEADING = /^[=+\-@\t\r\n]/
+
 function csvCell(value: string | number | null): string {
   if (value == null) return ''
-  const text = String(value)
+  if (typeof value === 'number') return String(value)
+  const text = FORMULA_LEADING.test(value) ? `'${value}` : value
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 

@@ -134,6 +134,19 @@ export function parseComparisonDocument(value: unknown): ParseResult {
     }
   }
 
+  // An identifier names exactly one saved result; two entries sharing one would
+  // be removed or refreshed together.
+  const ids = new Set<string>()
+  for (const entry of parsed.data.entries) {
+    if (ids.has(entry.id)) {
+      return {
+        ok: false,
+        problem: `Two results share the identifier ${entry.id}; each saved result needs its own.`,
+      }
+    }
+    ids.add(entry.id)
+  }
+
   const serialized = JSON.stringify(parsed.data)
   if (bytes(serialized) > MAX_COMPARISON_BYTES) {
     return {
@@ -219,22 +232,30 @@ export function snapshotKey(entry: ComparisonEntry): string {
 
 /** Add a snapshot, or refresh the existing one with the same identity. */
 export function upsertComparisonEntry(entry: ComparisonEntry): ComparisonWrite {
-  const current = loadComparison().document
+  const current = loadComparison()
+  if (current.problem != null) {
+    // Writing would replace a set this build could not read. Replacing it stays
+    // an explicit import or clear.
+    return { ok: false, problem: `${current.problem} This result was not saved.` }
+  }
   const key = snapshotKey(entry)
-  const existing = current.entries.find(candidate => snapshotKey(candidate) === key)
-  const rest = current.entries.filter(candidate => candidate.id !== existing?.id)
+  const existing = current.document.entries.find(candidate => snapshotKey(candidate) === key)
+  const rest = current.document.entries.filter(candidate => candidate.id !== existing?.id)
   const next: ComparisonDocument = {
-    ...current,
+    ...current.document,
     entries: [{ ...entry, id: existing?.id ?? entry.id }, ...rest],
   }
   return writeComparison(next)
 }
 
 export function removeComparisonEntry(id: string): ComparisonWrite {
-  const current = loadComparison().document
+  const current = loadComparison()
+  if (current.problem != null) {
+    return { ok: false, problem: `${current.problem} Nothing was removed.` }
+  }
   return writeComparison({
-    ...current,
-    entries: current.entries.filter(entry => entry.id !== id),
+    ...current.document,
+    entries: current.document.entries.filter(entry => entry.id !== id),
   })
 }
 

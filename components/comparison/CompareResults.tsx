@@ -237,6 +237,24 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
     setNotice({ kind: 'info', message: 'Cleared every saved result.' });
   };
 
+  // The same control serves the toolbar and the empty state: a fresh browser
+  // restores an exported set before it has anything saved.
+  const importControl = (
+    <>
+      <Button variant="secondary" icon={<FileImportIcon />} onClick={() => fileInput.current?.click()}>
+        Import JSON
+      </Button>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/json,.json"
+        className={styles.fileInput}
+        aria-label="Import a comparison set"
+        onChange={handleImport}
+      />
+    </>
+  );
+
   const toolbar = (
     <Toolbar id="comparison-toolbar" ouiaId="ComparisonToolbar">
       <ToolbarContent>
@@ -272,17 +290,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
           </Button>
         </ToolbarItem>
         <ToolbarItem>
-          <Button variant="secondary" icon={<FileImportIcon />} onClick={() => fileInput.current?.click()}>
-            Import JSON
-          </Button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept="application/json,.json"
-            className={styles.fileInput}
-            aria-label="Import a comparison set"
-            onChange={handleImport}
-          />
+          {importControl}
         </ToolbarItem>
         <ToolbarItem>
           <Button
@@ -398,6 +406,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
               <Link href="/recommend" className={styles.emptyActionSecondary}>
                 Recommend sizing
               </Link>
+              {importControl}
             </EmptyStateActions>
           </EmptyStateFooter>
         </EmptyState>

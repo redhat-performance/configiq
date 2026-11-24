@@ -473,6 +473,10 @@ export default function Performance() {
   // to aggregated rather than letting the request fail.
   React.useEffect(() => {
     if (servingMode === 'disagg' && !disaggSupported) {
+      // Discard a disagg calculation still in flight: its completion must not
+      // be stored against the aggregated mode.
+      calcGenRef.current += 1;
+      setIsCalculating(false);
       setServingMode('agg');
       setTestResult(null); setTestClassifierInput(null);
     }
@@ -1203,7 +1207,9 @@ export default function Performance() {
         isl: testISL,
         osl: testOSL,
         concurrency: testConcurrentUsers,
-        weightPrecision: testWeightPrecision,
+        // The request and the page use the model's effective precision, which
+        // a quantization config can override.
+        weightPrecision: actualWeightPrecision,
         kvPrecision: testKVCachePrecision,
       },
       gpus: realGpuCount,
@@ -1526,6 +1532,8 @@ export default function Performance() {
         if (servingPolicyOverride) {
            setServingPolicyOverride(false);
            setServingManualContextLimit(null);
+           // Back to the computed limit, which this result may not have used.
+           markInputsDirty();
         } else {
           setServingPolicyOverride(true);
            if (testResult) {
@@ -1544,7 +1552,7 @@ export default function Performance() {
           term: 'maxModelLen',
           readonly: !servingPolicyOverride,
           type: servingPolicyOverride ? 'number' as const : undefined,
-          onChange: servingPolicyOverride ? (val: string) => setServingManualContextLimit(parseInt(val) || 1) : undefined,
+          onChange: servingPolicyOverride ? (val: string) => { setServingManualContextLimit(parseInt(val) || 1); markInputsDirty(); } : undefined,
         },
         {
           label: 'Prefix caching',
@@ -1567,6 +1575,8 @@ export default function Performance() {
            setVllmOverride(false);
            setVllmManualMaxNumSeqs(null);
            setVllmManualChunkedPrefill(null);
+           // Back to the computed engine settings, which this result may not have used.
+           markInputsDirty();
         } else {
           // Enable manual override - initialize with current computed values
            setVllmOverride(true);
@@ -1591,7 +1601,7 @@ export default function Performance() {
           term: 'maxNumSeqs',
           readonly: !vllmOverride,
           type: vllmOverride ? 'number' as const : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualMaxNumSeqs(parseInt(val) || 1) : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualMaxNumSeqs(parseInt(val) || 1); markInputsDirty(); } : undefined
         },
         {
           label: 'enable_chunked_prefill',
@@ -1604,7 +1614,7 @@ export default function Performance() {
           readonly: !vllmOverride,
           type: vllmOverride ? 'select' as const : undefined,
           options: vllmOverride ? ['Yes', 'No'] : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualChunkedPrefill(val === 'Yes') : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualChunkedPrefill(val === 'Yes'); markInputsDirty(); } : undefined
         },
       ],
     },
@@ -2557,7 +2567,16 @@ export default function Performance() {
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
                             aria-pressed={servingMode === 'agg'}
-                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
+                            onClick={() => {
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
+                              setServingMode('agg');
+                              setTestResult(null);
+                              setTestClassifierInput(null);
+                              setInputsDirty(false);
+                            }}
                           >
                             Aggregated
                           </Button>
@@ -2569,6 +2588,10 @@ export default function Performance() {
                             isDisabled={!disaggSupported}
                             onClick={() => {
                               if (!disaggSupported) return;
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
                               setServingMode('disagg');
                               setTestResult(null);
                               setTestClassifierInput(null);

@@ -180,6 +180,25 @@ describe('CompareResults', () => {
     expect(host.textContent).toContain('No results saved yet');
   });
 
+  it('imports a saved set while the comparison is empty', async () => {
+    await render();
+    expect(host.textContent).toContain('No results saved yet');
+
+    const incoming: ComparisonDocument = doc([entry({ id: 'imported', link: '/predict?n=9' })]);
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error('expected a file input');
+    const file = new File([JSON.stringify(incoming)], 'set.json', { type: 'application/json' });
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain('Imported 1 result from set.json.');
+    expect(host.querySelectorAll('[aria-label^="Remove "]')).toHaveLength(1);
+  });
+
   it('reports an import that fails validation without changing the set', async () => {
     writeComparison(doc([entry()]));
     await render();

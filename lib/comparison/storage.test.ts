@@ -223,6 +223,16 @@ describe('upsertComparisonEntry', () => {
     expect(loadComparison().document.entries).toHaveLength(2)
   })
 
+  it('refuses to save over a stored set it could not read', () => {
+    window.localStorage.setItem(COMPARISON_STORAGE_KEY, '{not json')
+
+    const written = upsertComparisonEntry(entry({ id: 'a' }))
+
+    expect(written.ok).toBe(false)
+    if (!written.ok) expect(written.problem).toContain('not valid JSON')
+    expect(window.localStorage.getItem(COMPARISON_STORAGE_KEY)).toBe('{not json')
+  })
+
   it('keeps a snapshot from a different simulator as its own entry', () => {
     upsertComparisonEntry(entry({ id: 'a' }))
     upsertComparisonEntry(entry({ id: 'b', simulator: 'blis' }))
@@ -251,6 +261,15 @@ describe('removeComparisonEntry and clearComparison', () => {
     expect(loadComparison().document.entries.map(saved => saved.id)).toEqual(['b'])
   })
 
+  it('refuses to remove from a stored set it could not read', () => {
+    window.localStorage.setItem(COMPARISON_STORAGE_KEY, '{not json')
+
+    const written = removeComparisonEntry('a')
+
+    expect(written.ok).toBe(false)
+    expect(window.localStorage.getItem(COMPARISON_STORAGE_KEY)).toBe('{not json')
+  })
+
   it('clears every entry', () => {
     writeComparison(document([entry()]))
 
@@ -275,6 +294,20 @@ describe('importComparison', () => {
 
     expect(result.ok).toBe(false)
     expect(loadComparison().document.entries).toHaveLength(1)
+  })
+
+  it('refuses a document whose entries share an identifier', () => {
+    writeComparison(document([entry({ id: 'a' })]))
+    const incoming = document([
+      entry({ id: 'same', link: '/predict?n=1' }),
+      entry({ id: 'same', link: '/predict?n=2' }),
+    ])
+
+    const result = importComparison(JSON.stringify(incoming))
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.problem).toContain('Two results share the identifier same')
+    expect(loadComparison().document.entries.map(saved => saved.id)).toEqual(['a'])
   })
 
   it('replaces the saved set with a valid document', () => {

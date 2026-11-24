@@ -89,6 +89,33 @@ describe('comparisonCsv', () => {
     expect(csv.split('\n')[0]).toBe('Metric,"Llama, H200"')
   })
 
+  it('neutralises a name a spreadsheet would evaluate as a formula', () => {
+    const csv = comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry({ name: '=HYPERLINK("http://example.test")' })],
+    })
+
+    expect(csv.split('\n')[0]).toBe('Metric,"\'=HYPERLINK(""http://example.test"")"')
+  })
+
+  it('neutralises a link that starts with a formula character', () => {
+    const csv = comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry({ link: '@SUM(1)' })],
+    })
+
+    expect(csv.split('\n')[2]).toBe("Link,'@SUM(1)")
+  })
+
+  it('writes a negative figure as a number, not as text', () => {
+    const csv = comparisonCsv({
+      schemaVersion: COMPARISON_SCHEMA_VERSION,
+      entries: [entry({ figures: { ...entry().figures, cloudMonthlyUsd: -1200 } })],
+    })
+
+    expect(parse(csv).find(row => row[0] === 'Cloud cost / month')?.[1]).toBe('-1200')
+  })
+
   it('ends with a newline', () => {
     expect(comparisonCsv({ schemaVersion: COMPARISON_SCHEMA_VERSION, entries: [] }).endsWith('\n')).toBe(true)
   })
