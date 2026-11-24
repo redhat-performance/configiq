@@ -80,6 +80,7 @@ afterEach(async () => {
 describe('SaveToComparisonButton', () => {
   it('saves the snapshot built on the click and confirms it', async () => {
     await render(entry, null);
+    expect(button().textContent).toContain('Save for comparison');
 
     await act(async () => button().click());
 

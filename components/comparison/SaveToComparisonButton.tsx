@@ -60,13 +60,13 @@ export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToCom
 
   const button = (
     <Button
-      variant="control"
+      variant="secondary"
       icon={state.kind === 'saved' ? <CheckIcon /> : <BookmarkIcon />}
       onClick={handleClick}
       isDisabled={disabledReason != null}
-      aria-label={disabledReason == null ? 'Save to comparison' : `Save to comparison unavailable. ${disabledReason}`}
+      aria-label={disabledReason == null ? 'Save for comparison' : `Save for comparison unavailable. ${disabledReason}`}
     >
-      {state.kind === 'saved' ? 'Saved' : 'Save to comparison'}
+      {state.kind === 'saved' ? 'Saved' : 'Save for comparison'}
     </Button>
   );
 

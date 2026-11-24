@@ -394,7 +394,7 @@ export function CompareResults({ load = loadComparison }: CompareResultsProps) {
       {entries.length === 0 ? (
         <EmptyState className={styles.empty} titleText="No results saved yet" headingLevel="h2">
           <EmptyStateBody>
-            Open a result page and choose <strong>Save to comparison</strong> to keep its
+            Open a result page and choose <strong>Save for comparison</strong> to keep its
             figures here. Saved results can be shown side by side, exported, and imported
             again later.
           </EmptyStateBody>
