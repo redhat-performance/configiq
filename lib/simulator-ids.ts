@@ -5,14 +5,17 @@
  * A profile saved before the rename, and a link shared before it, still carry
  * the old id. Reading it as the new one is a one-time data migration, not a
  * capability rule: nothing here decides what a simulator accepts.
+ *
+ * This is a Map, not an object literal, so an external value such as
+ * `__proto__` is looked up as a string and never resolves an inherited member.
  */
-const LEGACY_SIMULATOR_IDS: Record<string, string> = {
-  aisimulate: 'aisim',
-};
+const LEGACY_SIMULATOR_IDS = new Map<string, string>([
+  ['aisimulate', 'aisim'],
+]);
 
 /** The current id for a simulator, accepting ids from earlier releases. */
 export function normalizeSimulatorId(id: string): string {
-  return LEGACY_SIMULATOR_IDS[id] ?? id;
+  return LEGACY_SIMULATOR_IDS.get(id) ?? id;
 }
 
 /**
@@ -23,11 +26,11 @@ export function normalizeSimulatorId(id: string): string {
  * id to the current label when rendering; a current id keeps whatever label
  * its snapshot carries.
  */
-const LEGACY_SIMULATOR_LABELS: Record<string, string> = {
-  aisimulate: 'AISim',
-};
+const LEGACY_SIMULATOR_LABELS = new Map<string, string>([
+  ['aisimulate', 'AISim'],
+]);
 
 /** A simulator's display label, accepting labels from earlier releases. */
 export function normalizeSimulatorLabel(id: string, label: string): string {
-  return LEGACY_SIMULATOR_LABELS[id] ?? label;
+  return LEGACY_SIMULATOR_LABELS.get(id) ?? label;
 }

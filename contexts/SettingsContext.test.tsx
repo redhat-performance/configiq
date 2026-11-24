@@ -140,6 +140,30 @@ describe('Backend version persistence', () => {
     expect(state().simulator).toBe('aisim')
   })
 
+  it('carries a saved version pin across the simulator rename', async () => {
+    // The pin was written under the id the profile had at the time. Losing it
+    // would silently replace the user's choice with the simulator default.
+    localStorage.setItem(SIMULATOR_KEY, 'aisimulate')
+    localStorage.setItem(`${VERSION_KEY}:aisimulate`, '0.24.0')
+
+    await render()
+
+    expect(state().backendVersion).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('0.24.0')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisimulate`)).toBeNull()
+  })
+
+  it('keeps an explicit current pin over the retired one', async () => {
+    localStorage.setItem(SIMULATOR_KEY, 'aisimulate')
+    localStorage.setItem(`${VERSION_KEY}:aisim`, '')
+    localStorage.setItem(`${VERSION_KEY}:aisimulate`, '0.24.0')
+
+    await render()
+
+    expect(state().backendVersion).toBe('')
+    expect(localStorage.getItem(`${VERSION_KEY}:aisim`)).toBe('')
+  })
+
   it('keeps a persisted simulator instead of silently substituting one', async () => {
     // Compatibility is surfaced by the Settings UI and enforced by the API;
     // the context never rewrites the user's simulator choice.

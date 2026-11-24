@@ -169,19 +169,33 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       // explicit error instead of being silently replaced with another
       // simulator here. The one exception is an id this app itself renamed:
       // reading it as the current id is a data migration, not a substitution.
-      const savedSimulator = normalizeSimulatorId(
-        localStorage.getItem(STORAGE_KEYS.simulator) ?? '',
-      );
+      const rawSimulator = localStorage.getItem(STORAGE_KEYS.simulator) ?? '';
+      const savedSimulator = normalizeSimulatorId(rawSimulator);
       setSimulatorChoiceState(savedSimulator);
 
+      const activeSimulator = savedSimulator || defaultSimulator;
+      // The saved pin is keyed by the simulator id it was written under. When
+      // that id was renamed, carry its pin to the current key rather than
+      // reading an empty value and letting the default replace the user's
+      // choice. An existing current-key value wins, including an explicit
+      // empty string.
+      const activeVersionKey = versionStorageKey(activeSimulator);
+      const retiredVersionKey = rawSimulator !== activeSimulator
+        ? versionStorageKey(rawSimulator)
+        : null;
+      const activeVersion = localStorage.getItem(activeVersionKey);
+      const retiredVersion = retiredVersionKey ? localStorage.getItem(retiredVersionKey) : null;
       // The legacy unsuffixed key only ever held the default simulator's pin,
       // so migrate it to the simulator this profile actually resolves to.
-      const activeSimulator = savedSimulator || defaultSimulator;
       const legacyVersion = localStorage.getItem(STORAGE_KEYS.backendVersion);
-      const savedVersion = localStorage.getItem(versionStorageKey(activeSimulator)) ?? legacyVersion;
+      const savedVersion = activeVersion ?? retiredVersion ?? legacyVersion;
       setBackendVersionState(savedVersion ?? '');
+      if (retiredVersionKey && retiredVersion !== null && activeVersion === null) {
+        localStorage.setItem(activeVersionKey, retiredVersion);
+        localStorage.removeItem(retiredVersionKey);
+      }
       if (legacyVersion !== null) {
-        localStorage.setItem(versionStorageKey(activeSimulator), legacyVersion);
+        localStorage.setItem(activeVersionKey, legacyVersion);
         localStorage.removeItem(STORAGE_KEYS.backendVersion);
       }
 
