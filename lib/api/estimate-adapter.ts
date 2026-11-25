@@ -338,25 +338,29 @@ export async function fetchEstimateAsInferenceResult(
   // snapshot records the submitted value.
   const submittedConcurrency = Math.max(0, Math.floor(input.batch_size))
   // `/predict` simulates `requests_per_load_unit` requests per concurrency slot
-  // and exactly one request in total when the field is omitted. That count, not
-  // the batch width, is what a per-request rate can be scaled by.
+  // and exactly one request in total when the field is omitted. Those requests
+  // run in waves of at most `batch_size`, so the aggregate rate is the
+  // per-request rate at the in-flight width, not at the total request count.
   const simulatedRequests = input.requests_per_load_unit != null
     ? Math.max(1, Math.round(input.batch_size * input.requests_per_load_unit))
     : 1
+  const waves = Math.max(1, Math.ceil(simulatedRequests / Math.max(1, submittedConcurrency)))
+  const inFlight = simulatedRequests / waves
+  const inFlightLabel = Number.isInteger(inFlight) ? String(inFlight) : inFlight.toFixed(1)
   // `tokens_per_second` is the benchmark-level rate. When a simulator omits it,
   // the only remaining figure is one request's output rate, so multiply by the
-  // requests it actually ran: presenting a per-request rate as aggregate
-  // throughput would understate the server by the simulated width.
+  // requests it ran concurrently: presenting a per-request rate as aggregate
+  // throughput would understate the server by the in-flight width.
   const reportedThroughput = typeof data.tokens_per_second === 'number' && Number.isFinite(data.tokens_per_second)
     ? data.tokens_per_second
     : null
   const perRequestThroughput = hasTiming && input.osl > 0 && requestLatency > 0
     ? (input.osl * 1000) / requestLatency
     : 0
-  const throughput = reportedThroughput ?? perRequestThroughput * simulatedRequests
+  const throughput = reportedThroughput ?? perRequestThroughput * inFlight
   if (reportedThroughput == null && throughput > 0) {
     warnings.push(
-      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${simulatedRequests} simulated request${simulatedRequests === 1 ? '' : 's'}. Treat it as an estimate, not a measured aggregate.`,
+      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${inFlightLabel} concurrent request${inFlight === 1 ? '' : 's'} across ${waves} wave${waves === 1 ? '' : 's'}. Treat it as an estimate, not a measured aggregate.`,
     )
   }
 

@@ -719,7 +719,7 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     // simulate a single request regardless of the batch width.
     expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(48.12, 1)
     expect(result.warnings.some(warning => warning.includes('Throughput was not reported'))).toBe(true)
-    expect(result.warnings.some(warning => warning.includes('at 1 simulated request'))).toBe(true)
+    expect(result.warnings.some(warning => warning.includes('at 1 concurrent request across 1 wave'))).toBe(true)
     // concurrency is the submitted batch the prediction is compared at
     expect(result.performance?.concurrency).toBe(32)
   })
@@ -737,10 +737,10 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     // cap and the submitted batch do not inflate the derived rate.
     expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(48.12, 1)
     expect(result.performance?.concurrency).toBe(16)
-    expect(result.warnings.some(warning => warning.includes('at 1 simulated request'))).toBe(true)
+    expect(result.warnings.some(warning => warning.includes('at 1 concurrent request across 1 wave'))).toBe(true)
   })
 
-  it('scales a derived throughput by the simulated request count', async () => {
+  it('scales a derived throughput by the concurrent requests, not the total', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
 
@@ -750,9 +750,10 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
       requests_per_load_unit: 4,
     })
 
-    // max(1, round(16 × 4)) = 64 simulated requests.
-    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(3079.7, 1)
-    expect(result.warnings.some(warning => warning.includes('at 64 simulated requests'))).toBe(true)
+    // max(1, round(16 × 4)) = 64 requests run as four waves of 16, so the
+    // aggregate rate is 16 requests in flight, not all 64 requests.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(769.9, 1)
+    expect(result.warnings.some(warning => warning.includes('at 16 concurrent requests across 4 waves'))).toBe(true)
   })
 
   it('treats an omitted TTFT or TPOT as missing timing', async () => {
