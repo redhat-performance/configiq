@@ -21,29 +21,63 @@ export const TEMPLATE_PATH = resolve(
   'pull_request_template.md',
 )
 
+const FENCE = /^\s*```/
+
 /**
  * HTML comments are guidance for the author, never content.
  *
  * A single regular-expression replace is not enough: overlapping or repeated
  * comment openers can survive it, so the check would read text the author
- * meant to hide. Scan instead, dropping each comment from its `<!--` through
- * the next `-->`, and drop an unterminated opener to the end of the document.
+ * meant to hide. Scan line by line instead, dropping each comment from its
+ * `<!--` through the next `-->`, and drop an unterminated opener to the end of
+ * the document.
+ *
+ * Fenced code blocks are the exception: `sections` already ignores them, so a
+ * literal opener in an example must survive. Stripping it would also swallow
+ * the closing fence and every section after it.
  */
 export function stripComments(markdown) {
-  let result = ''
-  let index = 0
-  while (index < markdown.length) {
-    const start = markdown.indexOf('<!--', index)
-    if (start === -1) return result + markdown.slice(index)
-    result += markdown.slice(index, start)
-    const end = markdown.indexOf('-->', start + 4)
-    if (end === -1) return result
-    index = end + 3
+  const kept = []
+  let fenced = false
+  let inComment = false
+
+  for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+    if (fenced) {
+      kept.push(line)
+      if (FENCE.test(line)) fenced = false
+      continue
+    }
+
+    let rest = line
+    let output = ''
+    while (rest !== '') {
+      if (inComment) {
+        const end = rest.indexOf('-->')
+        if (end === -1) {
+          rest = ''
+          break
+        }
+        rest = rest.slice(end + 3)
+        inComment = false
+        continue
+      }
+      const start = rest.indexOf('<!--')
+      if (start === -1) {
+        output += rest
+        break
+      }
+      output += rest.slice(0, start)
+      rest = rest.slice(start + 4)
+      inComment = true
+    }
+
+    if (!inComment && FENCE.test(output)) fenced = true
+    kept.push(output)
   }
-  return result
+
+  return kept.join('\n')
 }
 
-const FENCE = /^\s*```/
 const HEADING = /^##\s+(.+?)\s*$/
 const ITEM_START = /^-\s+\[([ xX])\]\s+(.*)$/
 

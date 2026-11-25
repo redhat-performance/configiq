@@ -187,6 +187,17 @@ describe('pull request description check', () => {
     expect(stripComments('a<!-- <!-- hidden -->b-->c')).toBe('ab-->c')
   })
 
+  it('keeps a comment opener that an author put in a fenced example', () => {
+    // `sections` ignores fenced blocks, so the literal opener is harmless.
+    // Treating it as a real comment would swallow the closing fence and the
+    // checklist that follows.
+    const example = '```html\n<!--\n```\n\n'
+    const body = completed().replace('## Checks\n', `${example}## Checks\n`)
+
+    expect(stripComments(example)).toContain('<!--')
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
   it('reads CRLF descriptions', () => {
     expect(checkDescription(completed().replace(/\n/g, '\r\n'), template)).toEqual([])
   })
