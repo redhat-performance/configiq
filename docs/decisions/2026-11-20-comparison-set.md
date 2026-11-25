@@ -90,7 +90,7 @@ generic table component does not express without overriding most of it. The
 chosen baseline is marked once per section band, above its column, rather than
 repeated in every cell.
 
-The page is **Saved results**, under Storage in the navigation. `/compare`
+The page is **Saved results**, under Estimate in the navigation. `/compare`
 keeps its path so existing links continue to work. It is registered in the
 shared-view registry and its route labels, but it has no view of its own to
 share: the set is browser-local, so a link cannot name it. Each entry instead
