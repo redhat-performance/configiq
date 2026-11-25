@@ -9,7 +9,6 @@ describe('GET /api/version', () => {
     expect(body).toEqual({
       version: VERSION.number,
       gitCommit: VERSION.gitCommit,
-      environment: VERSION.environment,
     })
   })
 })

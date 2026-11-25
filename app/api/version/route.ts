@@ -14,6 +14,5 @@ export async function GET() {
   return NextResponse.json({
     version: VERSION.number,
     gitCommit: VERSION.gitCommit,
-    environment: VERSION.environment,
   })
 }
