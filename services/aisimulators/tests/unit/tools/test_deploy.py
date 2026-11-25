@@ -410,9 +410,13 @@ class TestLlmdArtifact:
         preflight = _files(client.post("/deploy", json=_body("llm-d", _engine("agg", "0.31.0"))).json())[
             "preflight.sh"
         ]
+        required = {
+            line.split("require_crd ", 1)[1].strip().strip("'\"")
+            for line in preflight.splitlines()
+            if line.startswith("require_crd ")
+        }
 
-        assert "inferencepools.inference.networking.k8s.io" in preflight
-        assert "inferenceservices.inference.networking.x-k8s.io" not in preflight
+        assert required == {"inferencepools.inference.networking.k8s.io"}
 
 
 class TestSuppliedModelConfig:
