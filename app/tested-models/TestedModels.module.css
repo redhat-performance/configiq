@@ -293,6 +293,137 @@
   min-height: 280px;
 }
 
+/* ---------- chart controls ---------- */
+.chartControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.chartControl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 260px;
+  max-width: 420px;
+}
+.chartControlLabel {
+  color: var(--t2);
+  font: 500 12px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.chartControlNote {
+  flex: 1 1 300px;
+  min-width: 240px;
+  color: var(--t2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.inlineButton {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--blue);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.inlineButton:hover { color: #004080; }
+
+/* ---------- chart legend ---------- */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+.legendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  padding: 3px 6px;
+  color: var(--t2);
+  font: 12px var(--sans);
+  text-align: left;
+}
+button.legendItem { cursor: pointer; }
+button.legendItem:hover { border-color: var(--line2); }
+.legendItemActive { border-color: var(--line2); background: var(--bg2); }
+.legendStatic { cursor: default; }
+.legendSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.legendDiamond { font-size: 12px; line-height: 1; }
+.legendName { font-weight: 600; color: var(--t); white-space: nowrap; }
+.legendMeta {
+  color: var(--t2);
+  font: 11.5px var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- prediction comparison ---------- */
+.compareGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin: 12px 0 16px;
+}
+.compareStat {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.compareValue {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--t);
+}
+.checkList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.checkList li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--t2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.checkList strong { color: var(--t); }
+.checkPass { border-left: 4px solid #3e8635 !important; }
+.checkWarn { border-left: 4px solid #f0ab00 !important; }
+.checkMark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font: 700 11.5px var(--mono);
+  flex-shrink: 0;
+}
+.checkPass .checkMark { background: #e9f5e9; color: #3e8635; }
+.checkWarn .checkMark { background: #fff4d6; color: #8a5a00; }
+
 /* ---------- feature importance ---------- */
 .barRow {
   display: grid;
@@ -373,6 +504,7 @@
   .summaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .twoColumn { grid-template-columns: 1fr; }
   .metricList { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .compareGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 760px) {
   .page { padding: 24px 16px 48px; }
@@ -388,4 +520,6 @@
 @media (max-width: 520px) {
   .summaryGrid { grid-template-columns: 1fr; }
   .metricList { grid-template-columns: 1fr; }
+  .compareGrid { grid-template-columns: 1fr; }
+  .chartControl { min-width: 100%; }
 }

@@ -138,7 +138,6 @@ export function buildFeatureValues(input: CanonicalClassifierInput): Record<stri
     backend: effective.backend,
     version: normalizeBackendVersion(effective.backend, effective.backend_version),
     accelerator: systemFamily(effective.system_id),
-    request_type: 'unknown',
     precision: dtypeValue(effective),
     weight_quantization: canonicalQuantization('weight_quantization', effective.gemm_quant_mode),
     kv_quantization: canonicalQuantization('kv_quantization', effective.kvcache_quant_mode),

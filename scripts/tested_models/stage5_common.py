@@ -22,7 +22,7 @@ MEASUREMENT_COLUMNS = {
     "tpot_p1", "itl_p1", "guidellm_start_time_ms", "guidellm_end_time_ms",
 }
 ID_COLUMNS = {"run", "uuid", "mlflow_run_id", "mlflow_experiment_id", "pair_id"}
-CAT_FIELDS = ("model_id", "system_id", "backend", "version", "accelerator", "request_type", "precision", "weight_quantization", "kv_quantization")
+CAT_FIELDS = ("model_id", "system_id", "backend", "version", "accelerator", "precision", "weight_quantization", "kv_quantization")
 NUM_FIELDS = ("tp", "pp", "dp", "ep", "cp", "isl", "osl", "concurrency", "shared_prefix", "prefix_caching", "prefix_tokens", "prefix_count", "moe_num_experts", "moe_top_k")
 
 
@@ -59,6 +59,47 @@ def _column(frame: pd.DataFrame, name: str, default: Any) -> pd.Series:
     return value if value is not None else pd.Series(default, index=frame.index)
 
 
+def measurement_kinds(frame: pd.DataFrame) -> pd.Series:
+    """Classify every row's throughput measurement family.
+
+    ``aggregate``
+        The run records a benchmark-level request rate (the ``measured rps``
+        field is present, even when a failed run reports zero), so
+        ``output_tok/sec`` is the total output rate across all in-flight
+        requests.
+    ``per_turn``
+        A multi-turn run also emits one window per turn. Those windows report a
+        single request's rate (about ``1000 / tpot_median``) and carry no
+        benchmark rate, so they must not be compared with aggregate rows or
+        used to fit envelope labels or coverage.
+
+    A row with neither a benchmark rate nor a multi-turn marker is ambiguous:
+    its ``output_tok/sec`` could belong to either family. Extraction fails
+    instead of guessing, because a wrong guess silently changes every median
+    that follows.
+    """
+    throughput = pd.to_numeric(_column(frame, "output_tok/sec", np.nan), errors="coerce")
+    rps = pd.to_numeric(_column(frame, "measured rps", np.nan), errors="coerce")
+    turns = pd.to_numeric(_column(frame, "turns", np.nan), errors="coerce")
+    has_rate = rps.notna()
+    per_turn = ~has_rate & (turns > 1)
+    ambiguous = ~has_rate & ~per_turn & throughput.notna()
+    if bool(ambiguous.any()):
+        raise ValueError(
+            f"{int(ambiguous.sum())} row(s) report output throughput without a measured "
+            "request rate or a multi-turn marker; cannot tell aggregate from per-request "
+            "throughput"
+        )
+    kinds = pd.Series("aggregate", index=frame.index, dtype="object")
+    kinds[per_turn] = "per_turn"
+    return kinds
+
+
+def aggregate_measurements(frame: pd.DataFrame) -> pd.Series:
+    """Boolean mask of rows whose throughput is a benchmark-level aggregate."""
+    return measurement_kinds(frame).eq("aggregate")
+
+
 def normalize_features(frame: pd.DataFrame) -> pd.DataFrame:
     """Create only configuration features; benchmark outcomes are deliberately excluded."""
     result = pd.DataFrame(index=frame.index)
@@ -75,7 +116,6 @@ def normalize_features(frame: pd.DataFrame) -> pd.DataFrame:
         for version, backend in zip(raw_version, result["backend"])
     ]
     result["accelerator"] = _column(frame, "accelerator", "unknown").fillna("unknown").astype(str)
-    result["request_type"] = _column(frame, "request_type", "unknown").fillna("unknown").astype(str)
 
     aliases = {"tp": ("tp", "TP", "tensor_parallel_size"), "pp": ("pp", "PP", "pipeline_parallel_size"),
                "dp": ("dp", "DP", "data_parallel_size"), "ep": ("ep", "EP", "expert_parallel_size"),

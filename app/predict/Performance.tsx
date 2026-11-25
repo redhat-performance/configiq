@@ -1857,7 +1857,14 @@ export default function Performance() {
         </div>
       )}
 
-      <TestedPerformanceFeedback prediction={classifierPrediction} isLoading={classifierLoading} modelId={testClassifierInput?.effective.model_id ?? model} systemId={testClassifierInput?.effective.system_id ?? gpu} />
+      <TestedPerformanceFeedback
+        prediction={classifierPrediction}
+        isLoading={classifierLoading}
+        modelId={testClassifierInput?.effective.model_id ?? model}
+        systemId={testClassifierInput?.effective.system_id ?? gpu}
+        predictionInput={testClassifierInput}
+        predictionThroughput={testResult?.performance?.throughput_tokens_per_sec ?? null}
+      />
 
       {/* ---------- result tiles ---------- */}
       {!testResult && !isCalculating && !testError}

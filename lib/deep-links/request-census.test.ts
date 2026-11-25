@@ -17,6 +17,7 @@ import {
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
+import { testedModelLink } from './tested-models';
 import { auditRequestCensus, type RequestCensus } from './request-census';
 
 /**
@@ -315,6 +316,13 @@ describe('pages that submit no request', () => {
 
   it('/gpu-explorer filters a catalog response it has already received', () => {
     expect(Object.keys(gpuExplorerLink.fields).length).toBeGreaterThan(0);
+  });
+
+  it('/tested-models/[pairId] plots a dashboard payload it reads by path segment', () => {
+    // The pair id is the route, not a link field, and the dashboard is read by
+    // path. A shared link therefore narrows a payload the recipient already
+    // holds instead of describing a request body.
+    expect(Object.keys(testedModelLink.fields).length).toBeGreaterThan(0);
   });
 });
 

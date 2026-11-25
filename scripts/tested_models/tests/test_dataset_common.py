@@ -4,7 +4,8 @@ import json
 
 import pandas as pd
 import pytest
-from dataset_common import load_approved_models, normalize_rows
+from dataset_common import load_approved_models, normalize_rows, validate_public_frame
+from stage5_common import aggregate_measurements, measurement_kinds
 
 
 def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> None:
@@ -62,6 +63,7 @@ def test_normalize_rows_keeps_allowlisted_fields_and_parses_runtime_values() -> 
         "kv_quantization",
         "runtime_args", "env_vars",
         "guidellm_version",
+        "measurement_kind",
     }
 
 
@@ -259,3 +261,43 @@ def test_load_approved_models_rejects_an_empty_or_duplicate_list(tmp_path) -> No
     config.write_text(json.dumps({"approvedModels": ["org/model", "org/model"]}))
     with pytest.raises(ValueError, match="duplicate approved model"):
         load_approved_models(config)
+
+
+def test_measurement_kinds_separate_aggregate_runs_from_per_turn_windows() -> None:
+    frame = pd.DataFrame([
+        {"turns": 1, "measured rps": 2.0, "output_tok/sec": 2000.0},
+        {"turns": 5, "measured rps": None, "output_tok/sec": 12.0},
+        {"turns": 5, "measured rps": 1.5, "output_tok/sec": 1500.0},
+    ])
+
+    assert measurement_kinds(frame).tolist() == ["aggregate", "per_turn", "aggregate"]
+    assert aggregate_measurements(frame).tolist() == [True, False, True]
+
+
+def test_measurement_kinds_reject_ambiguous_throughput() -> None:
+    frame = pd.DataFrame([{"turns": 1, "output_tok/sec": 12.0}])
+
+    with pytest.raises(ValueError, match="cannot tell aggregate from per-request"):
+        measurement_kinds(frame)
+
+
+def test_normalize_rows_marks_measurement_kind() -> None:
+    rows = [
+        {"model": "llama", "version": "vllm-0.6.2", "turns": 1, "measured rps": 2.0, "output_tok/sec": 2000.0},
+        {"model": "llama", "version": "vllm-0.6.2", "turns": 5, "output_tok/sec": 12.0},
+    ]
+
+    normalized = normalize_rows(rows, "org/model", "H200")
+
+    assert normalized["measurement_kind"].tolist() == ["aggregate", "per_turn"]
+
+
+def test_validate_public_frame_rejects_a_stale_measurement_kind() -> None:
+    frame = pd.DataFrame([{
+        "turns": 5,
+        "output_tok/sec": 12.0,
+        "measurement_kind": "aggregate",
+    }])
+
+    with pytest.raises(ValueError, match="measurement_kind"):
+        validate_public_frame(frame)

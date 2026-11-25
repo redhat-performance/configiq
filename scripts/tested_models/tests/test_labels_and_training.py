@@ -5,11 +5,12 @@ import sys
 
 import label_data
 import pandas as pd
+import pytest
 import train_classifiers
 
 
 def test_labels_do_not_flag_latency_when_training_baseline_is_missing() -> None:
-    train = pd.DataFrame([{"model_id": "model", "accelerator": "H200", "tp": 1, "output_tok/sec": 10}])
+    train = pd.DataFrame([{"model_id": "model", "accelerator": "H200", "tp": 1, "isl": 1000, "osl": 1000, "concurrency": 1, "measured rps": 1.0, "output_tok/sec": 10}])
     validation = train.copy()
     test = train.copy()
 
@@ -18,6 +19,40 @@ def test_labels_do_not_flag_latency_when_training_baseline_is_missing() -> None:
     assert rules["train_latency_baseline"] is None
     assert labeled["train"]["label_latency"].tolist() == [0]
     assert labeled["train"]["within_tested_region"].tolist() == [1]
+
+
+def test_labels_exclude_per_turn_windows_from_every_split() -> None:
+    aggregate = {
+        "model_id": "model", "accelerator": "H200", "tp": 1,
+        "isl": 1000, "osl": 1000, "turns": 1, "concurrency": 10,
+        "measured rps": 2.0, "output_tok/sec": 2000.0,
+    }
+    per_turn = {
+        **aggregate,
+        "turns": 5,
+        "measured rps": None,
+        "output_tok/sec": 10.0,
+    }
+    frame = pd.DataFrame([aggregate, per_turn])
+
+    labeled, rules = label_data.label_pair(frame, frame, frame)
+
+    for split in ("train", "validation", "test"):
+        assert labeled[split]["output_tok/sec"].tolist() == [2000.0]
+    assert rules["train_aggregate_rows"] == 1
+    assert rules["train_rows_excluded"] == 1
+    assert rules["train_median_efficiency"] == 2000.0
+
+
+def test_labels_reject_a_split_without_aggregate_measurements() -> None:
+    frame = pd.DataFrame([{
+        "model_id": "model", "accelerator": "H200", "tp": 1,
+        "isl": 1000, "osl": 1000, "turns": 5, "concurrency": 10,
+        "measured rps": None, "output_tok/sec": 10.0,
+    }])
+
+    with pytest.raises(ValueError, match="no aggregate measurements"):
+        label_data.label_pair(frame, frame, frame)
 
 
 def test_training_reports_single_class_train_data_without_fitting(tmp_path, monkeypatch) -> None:

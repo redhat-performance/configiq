@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildFeatureVector, normalizeBackendVersion } from './feature-vector'
+import { buildFeatureValues, buildFeatureVector, normalizeBackendVersion } from './feature-vector'
 import type { CanonicalClassifierInput } from './types'
 
 const input: CanonicalClassifierInput = {
@@ -48,6 +48,12 @@ const input: CanonicalClassifierInput = {
 }
 
 describe('buildFeatureVector', () => {
+  it('does not carry request_type as a classifier input', () => {
+    // The training pipeline dropped request_type: it described how a row was
+    // measured, not the serving configuration being classified.
+    expect(buildFeatureValues(input)).not.toHaveProperty('request_type')
+  })
+
   it('uses the recorded feature order and derived values', () => {
     const vector = buildFeatureVector(input, {
       feature_names: ['model_id=org/model', 'system_id=h200_sxm', 'backend=vllm', 'version=vLLM-0.24', 'accelerator=H200', 'tp', 'memory_pressure', 'prefix_caching', 'unseen_numeric'],

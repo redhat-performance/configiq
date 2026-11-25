@@ -714,8 +714,10 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result.performance?.tpot_ms).toBe(20)
     // request_latency_ms = ttft + tpot * osl = 100 + 20 * 128 = 2660
     expect(result.performance?.request_latency_ms).toBe(2660)
-    // throughput_tokens_per_sec = (osl * 1000) / request_latency_ms = (128 * 1000) / 2660 ≈ 48.1
-    expect(result.performance?.throughput_tokens_per_sec).toBeGreaterThan(0)
+    // No aggregate rate was reported, so the fallback is one request's rate
+    // multiplied by the resolved concurrency: ((128 * 1000) / 2660) * 32.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(1539.85, 1)
+    expect(result.warnings.some(warning => warning.includes('Throughput was not reported'))).toBe(true)
     // concurrency = floor(max_num_seqs) = floor(32) from serving_config
     expect(result.performance?.concurrency).toBe(32)
   })
@@ -732,6 +734,7 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
 
     expect(result.performance?.throughput_tokens_per_sec).toBe(1000)
     expect(result.performance?.throughput_tokens_per_sec_per_user).toBe(31.25)
+    expect(result.warnings.some(warning => warning.includes('Throughput was not reported'))).toBe(false)
   })
 
   it('leaves per-user throughput null when the simulator omits it', async () => {

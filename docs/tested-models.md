@@ -58,6 +58,41 @@ that list: it returns `no_measurements` with a reason instead of applying an
 envelope trained on a different runtime. Bundles that predate `backends` are
 treated as unknown and stay permissive.
 
+### Measurement families
+
+Rows come in two throughput families that must never be averaged together:
+
+- **aggregate** — the run records a benchmark-level request rate in
+  `measured rps` (present even when a failed run reports zero). Its
+  `output_tok/sec` is the total output rate across all in-flight requests.
+- **per_turn** — a multi-turn run also emits one window per turn. Those rows
+  carry no `measured rps`, and their `output_tok/sec` is a single request's
+  rate (about `1000 / tpot_median`).
+
+Every public row carries `measurement_kind` so downstream consumers can tell
+the two apart. Extraction fails when a row reports output throughput with
+neither a benchmark rate nor a multi-turn marker, because guessing would
+silently change every median that follows. Labels, coverage, and throughput
+curves are fitted from aggregate rows only; per-turn windows stay in the public
+dataset but never define an envelope.
+
+### Dashboard schema v2
+
+Each `dashboard/<pair-id>.json` payload has `schemaVersion: 2`. Its
+`throughputCurves` array replaces the old `throughputLatencyByConcurrency`
+series, which grouped rows by concurrency alone and therefore mixed workloads,
+tensor-parallel widths, turn counts, backend configurations, and throughput
+units into one median.
+
+A curve is one fixed workload (`isl`, `osl`, `turns`), one `tp`, and one run
+configuration identified by `sweepId`. The sweep id hashes the configuration
+fields (backend and version, parallelism, quantisation, memory and sequencing
+knobs) but not the workload, TP, concurrency, or measured outcomes, so two
+points on a curve were produced by the same run configuration. Each point
+records the median `throughput`, its `throughputMin` / `throughputMax` spread,
+the number of `observations`, and the median `latency`. `kneePoints` include
+`turns` for the same reason.
+
 The classifier's `version` feature is a backend-scoped major.minor family, not
 a raw label. Training rows (`vLLM-0.24.0`) and runtime catalog versions
 (`0.24.0`) both normalize to `vLLM-0.24`;
@@ -274,7 +309,9 @@ Feature order, categorical vocabularies, numeric medians, and decision
 thresholds are recorded in each model's metadata. Configuration groups are
 assigned as a unit so repeated measurements cannot cross train/validation/test
 splits. Throughput, latency, identifiers, runtime arguments, and other
-measurements are excluded from classifier inputs to avoid leakage.
+measurements are excluded from classifier inputs to avoid leakage. So is
+`request_type`: it described how a row was measured, not the serving
+configuration being classified.
 
 `split-summary.json` records, per version family, the rows and configuration
 groups that landed in each split. A family that only appears in one split
@@ -297,14 +334,24 @@ pairs, the active validation gate, and approved models without measurements.
 Filters accept `?model=<modelId>` and `?system=<systemId>`.
 
 Each pair has a canonical graph at `/tested-models/<pair-id>` with `#coverage`,
-`#boundary`, and `#metrics` anchors. Legacy `?pair=<pair-id>` links redirect to
-the canonical route. The sizing pages link problematic-input feedback to the
-exact model/system pair:
+`#boundary`, `#metrics`, and `#prediction` anchors. Legacy `?pair=<pair-id>`
+links redirect to the canonical route. The pair page is also a shared view: its
+link selects the measured workload on the chart (`isl`, `osl`, `turns`, `tp`)
+and may carry a prediction snapshot (`pred*` fields: workload, concurrency,
+tensor-parallel width, predicted throughput, verdict, confidence, backend, and
+serving mode). The snapshot is a description, not a request: opening the link
+plots the prediction and never re-runs a simulator, and the page labels it as
+coming from the shared prediction. New fields are additive, so `LINK_VERSION`
+stays `1`. The sizing pages link problematic-input feedback to the exact
+model/system pair:
 
 - validated or measured-only pair: `/tested-models/<pair-id>`
 - approved or measured model without a pair for that system:
   `/tested-models?model=<modelId>&system=<systemId>`
 
 The classifier API returns `dashboard_href` and `boundary_href` for the same
-locations. It never substitutes a different simulator or classifier; a pair
-without a validated envelope returns `measured_no_envelope` with no verdict.
+locations. When the prediction carries an aggregate throughput, the sizing
+pages build the pair link with the snapshot above so the reader sees their own
+point against the measured curve. The API never substitutes a different
+simulator or classifier; a pair without a validated envelope returns
+`measured_no_envelope` with no verdict.

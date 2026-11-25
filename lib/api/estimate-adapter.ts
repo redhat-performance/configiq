@@ -330,10 +330,23 @@ export async function fetchEstimateAsInferenceResult(
       ? data.request_latency
       : ttft + tpot * input.osl
     : 0
-  const throughput = typeof data.tokens_per_second === 'number'
-    ? data.tokens_per_second
-    : hasTiming && input.osl > 0 && requestLatency > 0 ? (input.osl * 1000) / requestLatency : 0
   const concurrency = Math.max(0, Math.floor(maxNumSeqs))
+  // `tokens_per_second` is the benchmark-level rate. When a simulator omits it,
+  // the only remaining figure is one request's output rate, so multiply by the
+  // resolved concurrency: presenting a per-request rate as aggregate throughput
+  // would understate the server by the batch width.
+  const reportedThroughput = typeof data.tokens_per_second === 'number' && Number.isFinite(data.tokens_per_second)
+    ? data.tokens_per_second
+    : null
+  const perRequestThroughput = hasTiming && input.osl > 0 && requestLatency > 0
+    ? (input.osl * 1000) / requestLatency
+    : 0
+  const throughput = reportedThroughput ?? perRequestThroughput * concurrency
+  if (reportedThroughput == null && throughput > 0) {
+    warnings.push(
+      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${concurrency} concurrent sequences. Treat it as an estimate, not a measured aggregate.`,
+    )
+  }
 
   const result: InferenceConfigResult = {
     simulator,

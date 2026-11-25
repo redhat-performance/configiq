@@ -9,6 +9,7 @@ why there is no verdict instead of the pair disappearing from the UI.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,161 @@ from pathlib import Path
 import pandas as pd
 from build_registry import coverage_for, evaluate_gate, system_id
 from xgboost import XGBClassifier
+
+# Columns that identify one measured sweep. Workload (isl/osl/turns), the
+# parallelism width (tp), and the x-axis (concurrency) are separate keys, and
+# outcomes are deliberately absent. Two rows with the same sweep id were run
+# under the same configuration, so their medians are comparable.
+_SWEEP_COLUMNS = (
+    "backend",
+    "backend_version",
+    "pp",
+    "dp",
+    "ep",
+    "cp",
+    "precision",
+    "weight_quantization",
+    "kv_quantization",
+    "gpu_memory_utilization",
+    "max_num_seqs",
+    "max_seq_len",
+    "chunked_prefill_enabled",
+    "spec_decoding",
+    "prefix_caching",
+    "prefix_tokens",
+    "prefix_count",
+    "moe_num_experts",
+    "moe_top_k",
+)
+
+_SWEEP_LABELS = (
+    ("precision", "precision"),
+    ("weight_quantization", "weights"),
+    ("kv_quantization", "KV cache"),
+    ("chunked_prefill_enabled", "chunked prefill"),
+)
+
+_UNKNOWN_VALUES = {"", "nan", "none", "unknown"}
+
+
+def _json_number(value: float) -> int | float:
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
+def _numeric(frame: pd.DataFrame, name: str, default: float = float("nan")) -> pd.Series:
+    value = frame.get(name)
+    if value is None:
+        return pd.Series(float(default), index=frame.index)
+    return pd.to_numeric(value, errors="coerce")
+
+
+def _sweep_string(frame: pd.DataFrame) -> pd.Series:
+    """Stable per-row identity for the run configuration, excluding the x-axis."""
+    values = []
+    for column in _SWEEP_COLUMNS:
+        if column in frame:
+            series = frame[column].map(lambda value: "" if pd.isna(value) else str(value))
+        else:
+            series = pd.Series("", index=frame.index)
+        values.append(series)
+    return pd.concat(values, axis=1).agg("|".join, axis=1)
+
+
+def _config_label(group: pd.DataFrame) -> str:
+    versions = sorted({
+        str(value).strip()
+        for value in group.get("backend_version", pd.Series(dtype=object)).dropna()
+        if str(value).strip().lower() not in _UNKNOWN_VALUES
+    })
+    parts = [", ".join(versions) if versions else "unknown backend"]
+    for column, label in _SWEEP_LABELS:
+        if column not in group:
+            continue
+        details = []
+        for value in group[column].dropna().unique():
+            if isinstance(value, bool):
+                details.append(f"{label} {'on' if value else 'off'}")
+                continue
+            text = str(value).strip()
+            if text.lower() in _UNKNOWN_VALUES:
+                continue
+            details.append(f"{label} {text}")
+        parts.extend(sorted(set(details)))
+    return " · ".join(parts)
+
+
+def _throughput_curves(frame: pd.DataFrame) -> list[dict]:
+    """One clean throughput curve per sweep, never mixing workloads or units.
+
+    Grouping by concurrency alone mixes ISL/OSL, tensor-parallel width, turn
+    count, backend configuration, and — when multi-turn windows are present —
+    per-request rates with benchmark aggregates. Each of those produces a
+    different line, so the median over the mixture alternates between them and
+    draws a saw-tooth that no run measured.
+    """
+    work = frame.assign(
+        _throughput=_numeric(frame, "output_tok/sec"),
+        _latency=_numeric(frame, "request_latency_median"),
+        _concurrency=_numeric(frame, "concurrency"),
+        _measured=_numeric(frame, "measured concurrency"),
+        _turns=_numeric(frame, "turns").fillna(1),
+        _isl=_numeric(frame, "isl").fillna(0),
+        _osl=_numeric(frame, "osl").fillna(0),
+        _tp=_numeric(frame, "tp").fillna(1),
+    )
+    work["_sweep"] = _sweep_string(work)
+    work = work.dropna(subset=["_concurrency", "_throughput"])
+
+    curves = []
+    for (isl, osl, turns, tp, sweep), group in work.groupby(
+        ["_isl", "_osl", "_turns", "_tp", "_sweep"], dropna=False,
+    ):
+        points = []
+        for concurrency, level in group.groupby("_concurrency"):
+            throughput = level["_throughput"].dropna()
+            if throughput.empty:
+                continue
+            latency = level["_latency"].dropna()
+            measured = level["_measured"].dropna()
+            points.append({
+                "concurrency": _json_number(concurrency),
+                "measuredConcurrency": _json_number(measured.median()) if not measured.empty else None,
+                "throughput": float(throughput.median()),
+                "throughputMin": float(throughput.min()),
+                "throughputMax": float(throughput.max()),
+                "latency": float(latency.median()) if not latency.empty else None,
+                "observations": int(throughput.size),
+            })
+        if not points:
+            continue
+        points.sort(key=lambda point: point["concurrency"])
+        backends = sorted({
+            str(value).strip()
+            for value in group.get("backend", pd.Series(dtype=object)).dropna()
+            if str(value).strip().lower() not in _UNKNOWN_VALUES
+        })
+        versions = sorted({
+            str(value).strip()
+            for value in group.get("backend_version", pd.Series(dtype=object)).dropna()
+            if str(value).strip().lower() not in _UNKNOWN_VALUES
+        })
+        curves.append({
+            "isl": _json_number(isl),
+            "osl": _json_number(osl),
+            "turns": int(turns),
+            "tp": int(tp),
+            "sweepId": hashlib.sha256(sweep.encode()).hexdigest()[:16],
+            "backend": backends[0] if backends else None,
+            "backendVersions": versions,
+            "configLabel": _config_label(group),
+            "points": points,
+        })
+
+    curves.sort(key=lambda curve: (
+        curve["isl"], curve["osl"], curve["turns"], curve["tp"], curve["sweepId"],
+    ))
+    return curves
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +214,10 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
         frame = _labeled_frame(pair_id, labeled_dir)
         if frame is None:
             continue
+        # Defense in depth: a labeled frame produced before the measurement-family
+        # split may still carry per-turn windows.
+        if "measurement_kind" in frame:
+            frame = frame.loc[frame["measurement_kind"].astype(str) != "per_turn"]
 
         metadata_path = model_dir / f"{pair_id}.metadata.json"
         model_path = model_dir / f"{pair_id}.json"
@@ -65,25 +225,22 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
         coverage = coverage_for(pair_id, labeled_dir, int(pair.get("records", len(frame))))
         validated = evaluate_gate(metadata, coverage)["passed"]
 
-        throughput = pd.to_numeric(frame.get("output_tok/sec"), errors="coerce")
-        latency = pd.to_numeric(frame.get("request_latency_median"), errors="coerce")
-        curves = []
-        for concurrency, group in frame.assign(_throughput=throughput, _latency=latency).groupby("concurrency", dropna=True):
-            curves.append({
-                "concurrency": float(concurrency),
-                "throughput": float(group["_throughput"].median()) if group["_throughput"].notna().any() else None,
-                "latency": float(group["_latency"].median()) if group["_latency"].notna().any() else None,
-                "points": len(group),
-            })
-        knee_columns = [column for column in ("isl", "osl", "concurrency", "tp") if column in frame]
+        knee_columns = [column for column in ("isl", "osl", "turns", "concurrency", "tp") if column in frame]
         knees = []
         if "label_knee" in frame:
             for _, row in frame[frame["label_knee"].astype(bool)].iterrows():
-                knees.append({column: row[column] for column in knee_columns})
+                point = {}
+                for column in knee_columns:
+                    value = row[column]
+                    if pd.isna(value):
+                        point[column] = 1 if column == "turns" else None
+                    else:
+                        point[column] = _json_number(value)
+                knees.append(point)
 
         within = int(frame["within_tested_region"].sum()) if "within_tested_region" in frame else 0
         payload = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "generatedAt": datetime.now(UTC).isoformat(),
             "id": pair_id,
             "modelId": pair["model_id"],
@@ -95,7 +252,7 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
                 "within": within,
                 "outside": len(frame) - within,
             },
-            "throughputLatencyByConcurrency": sorted(curves, key=lambda item: item["concurrency"]),
+            "throughputCurves": _throughput_curves(frame),
             "kneePoints": knees[:100],
             "featureImportance": _feature_importance(metadata, model_path) if validated else [],
         }

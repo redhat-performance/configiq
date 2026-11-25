@@ -22,6 +22,7 @@ import {
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
+import { testedModelLink } from './tested-models';
 
 export interface SharedViewRoute {
   /** The route as served, with dynamic segments written literally. */
@@ -76,6 +77,11 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     path: '/validation/compare',
     name: 'Validation compare',
     sharedView: { kind: 'link', fields: Object.keys(validationCompareLink.fields) },
+  },
+  {
+    path: '/tested-models/[pairId]',
+    name: 'Tested model detail',
+    sharedView: { kind: 'link', fields: Object.keys(testedModelLink.fields) },
   },
   {
     path: '/compare',
@@ -141,14 +147,6 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     sharedView: {
       kind: 'none',
       reason: 'it browses the tested-model registry, whose rows are addressed in the URL already',
-    },
-  },
-  {
-    path: '/tested-models/[pairId]',
-    name: 'Tested model detail',
-    sharedView: {
-      kind: 'none',
-      reason: 'the row it shows is named by the path segment, not by query parameters',
     },
   },
 ];

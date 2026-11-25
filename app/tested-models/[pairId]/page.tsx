@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation'
+import { Suspense } from 'react'
 import { readTestedModelsRegistry } from '@/lib/tested-models/registry'
 import type {
   PublicRegistryPair,
@@ -39,5 +40,10 @@ export default async function TestedModelPairPage({ params }: TestedModelPairPag
     metrics: pair.metrics,
   }
 
-  return <TestedModelPair pair={publicPair} gate={gate} dataset={dataset} />
+  return (
+    // The pair view reads its shared-view link with `useSearchParams`.
+    <Suspense fallback={null}>
+      <TestedModelPair pair={publicPair} gate={gate} dataset={dataset} />
+    </Suspense>
+  )
 }

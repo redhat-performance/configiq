@@ -1722,6 +1722,8 @@ export default function Sizing() {
         isLoading={classifierLoading}
         modelId={params?.model_path ?? model}
         systemId={params?.system ?? gpuSystem}
+        predictionInput={classifierInput}
+        predictionThroughput={result?.throughput.tokensPerSecond ?? null}
         headerRight={result ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
             <SimulatorBadge simulator={result.simulator} />

@@ -12,6 +12,7 @@ import {
 } from './pages';
 import { predictLink, buildPredictLink } from './predict';
 import { PAGE_REGISTRY, sharedViewRoutes } from './registry';
+import { testedModelLink } from './tested-models';
 
 /**
  * Every route under `app/` that renders a page.
@@ -73,6 +74,7 @@ describe('the page registry', () => {
         hybridSavingsLink.path,
         validationCompareLink.path,
         scorecardLink.path,
+        testedModelLink.path,
       ].sort(),
     );
   });
@@ -250,5 +252,26 @@ describe('golden links', () => {
       workload: '8192/1024',
       pair: 'aisim|blis',
     })).toMatchInlineSnapshot(`"/validation/scorecard?v=1&metric=tpot&statistic=mdape&releaseMatch=any&source=redhat&model=openai%2Fgpt-oss-120b&gpu=H200&workload=8192%2F1024&pair=aisim%7Cblis"`);
+  });
+
+  it('/tested-models/[pairId]', () => {
+    expect(testedModelLink.build({
+      isl: 1000,
+      osl: 1000,
+      turns: 1,
+      tp: 2,
+      predIsl: 1000,
+      predOsl: 1000,
+      predConcurrency: 32,
+      predTp: 2,
+      predThroughput: 1234.5,
+      predStatus: 'within_validated_range',
+      predConfidence: 0.87,
+      predBackend: 'vllm',
+      predBackendVersion: '0.24.0',
+      predServingMode: 'agg',
+    }, '/tested-models/google_gemma_4_31b_it__h200')).toMatchInlineSnapshot(
+      `"/tested-models/google_gemma_4_31b_it__h200?v=1&isl=1000&osl=1000&turns=1&tp=2&predIsl=1000&predOsl=1000&predConcurrency=32&predTp=2&predThroughput=1234.5&predStatus=within_validated_range&predConfidence=0.87&predBackend=vllm&predBackendVersion=0.24.0&predServingMode=agg"`,
+    );
   });
 });

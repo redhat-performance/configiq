@@ -132,3 +132,19 @@ def test_normalize_features_uses_the_backend_scoped_version_family() -> None:
     result = normalize_features(frame)
 
     assert result["version"].tolist() == ["vLLM-0.24", "vLLM-0.24", "sglang-0.5"]
+
+
+def test_request_type_is_not_a_training_feature() -> None:
+    frame = pd.DataFrame([
+        {
+            "model_id": "model",
+            "accelerator": "H200",
+            "tp": 1,
+            "concurrency": 8,
+            "request_type": "/v1/chat/completions",
+        }
+    ])
+
+    assert "request_type" not in normalize_features(frame).columns
+    _, info = feature_matrix(frame, frame)
+    assert not [name for name in info["feature_names"] if name.startswith("request_type=")]

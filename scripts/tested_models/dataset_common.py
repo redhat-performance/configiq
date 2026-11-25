@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 import requests
 from quantization import canonical_quantization
+from stage5_common import measurement_kinds
 
 DATASET_REPO_ENV = "TESTED_DATASET_REPO"
 DEFAULT_DATASET_REPO = "redhat-performance/configiq-performance-upstream-data"
@@ -46,7 +47,7 @@ CLASSIFICATION_COLUMNS = {
     "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe", "vllm_rocm_use_aiter_moe_situv2",
     "chunked_prefill_enabled", "prefix_caching", "turns", "turn_index", "prefix_tokens", "prefix_count",
     "request_type", "spec_decoding", "precision", "weight_quantization", "kv_quantization",
-    "moe_num_experts", "moe_top_k", "max_seq_len",
+    "moe_num_experts", "moe_top_k", "max_seq_len", "measurement_kind",
     "runtime_args", "env_vars", "guidellm_version",
 }
 
@@ -341,6 +342,11 @@ def normalize_rows(rows: list[dict[str, Any]], model_id: str, accelerator: str) 
             )
     frame = frame[[column for column in frame.columns if column in CLASSIFICATION_COLUMNS]]
 
+    # Systems report two throughput families: aggregate benchmark rates and the
+    # per-request rate of one turn in a multi-turn run. Keep the family on every
+    # public row so downstream consumers cannot average them together.
+    frame["measurement_kind"] = measurement_kinds(frame)
+
     frame["model_id"] = model_id
     frame["accelerator"] = accelerator
     frame["pair_id"] = pair_id(model_id, accelerator)
@@ -363,6 +369,15 @@ def validate_public_frame(frame: pd.DataFrame) -> None:
     sensitive_values = string_values[string_values.str.contains(SENSITIVE_VALUE_PATTERN, regex=True)]
     if not sensitive_values.empty:
         raise ValueError("ground-truth parquet contains potentially sensitive URL, email, or internal-host values")
+    expected_kinds = measurement_kinds(frame)
+    if "measurement_kind" in frame:
+        stored = frame["measurement_kind"].astype(str)
+        mismatched = int((stored != expected_kinds).sum())
+        if mismatched:
+            raise ValueError(
+                f"ground-truth parquet has {mismatched} row(s) whose measurement_kind "
+                "does not match its throughput source"
+            )
 
 
 def dataframe_sha256(frame: pd.DataFrame) -> str:

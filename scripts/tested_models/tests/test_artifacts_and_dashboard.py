@@ -15,6 +15,10 @@ def _write_labeled_pair(labeled_dir, pair: str, *, records: int = 600) -> None:
     levels = (1, 2, 4, 8, 16)
     frame = pd.DataFrame(
         {
+            "isl": [1000.0] * records,
+            "osl": [1000.0] * records,
+            "turns": [1.0] * records,
+            "tp": [1.0] * records,
             "concurrency": [levels[index % len(levels)] for index in range(records)],
             "output_tok/sec": [float(index % 100) for index in range(records)],
             "request_latency_median": [float(index % 50) for index in range(records)],
@@ -259,6 +263,10 @@ def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkey
     levels = (1, 2, 4, 8, 16)
     rows = [
         {
+            "isl": 1000.0,
+            "osl": 1000.0,
+            "turns": 1.0,
+            "tp": 1.0,
             "concurrency": levels[index % len(levels)],
             "output_tok/sec": float(index % 100),
             "request_latency_median": float(index % 50),
@@ -300,9 +308,12 @@ def test_dashboard_payload_contains_only_sanitized_derived_data(tmp_path, monkey
     assert "secret.invalid" not in serialized
     assert payload["records"] == 360
     assert payload["hasEnvelope"] is True
+    assert payload["schemaVersion"] == 2
     assert payload["labelDistribution"] == {"within": 240, "outside": 120}
     assert payload["featureImportance"] == [{"feature": "tp", "importance": 1.0}]
     assert payload["test"] == {"roc_auc": 0.88, "f1": 0.7}
+    assert payload["throughputCurves"]
+    assert "throughputLatencyByConcurrency" not in payload
 
 
 def test_dashboard_hides_classifier_evidence_for_gate_failing_pairs(tmp_path, monkeypatch) -> None:
@@ -336,7 +347,7 @@ def test_dashboard_hides_classifier_evidence_for_gate_failing_pairs(tmp_path, mo
     assert "validation" not in payload
     assert "test" not in payload
     assert payload["featureImportance"] == []
-    assert payload["throughputLatencyByConcurrency"]
+    assert payload["throughputCurves"]
 
 
 def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -> None:
@@ -360,6 +371,60 @@ def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -
     assert payload["trainingStatus"] == "skipped_single_class_train"
     assert payload["featureImportance"] == []
     assert payload["records"] == 3
+
+
+def test_dashboard_curves_separate_workloads_sweeps_and_turn_counts(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200"}]}))
+    labeled_dir = tmp_path / "labeled"
+    model_dir = tmp_path / "models"
+    labeled_dir.mkdir()
+    model_dir.mkdir()
+    base = {
+        "isl": 1000.0, "osl": 1000.0, "turns": 1.0, "tp": 1.0,
+        "within_tested_region": 1,
+        "backend": "vllm",
+    }
+    rows = [
+        {**base, "concurrency": 10.0, "output_tok/sec": 1000.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
+        {**base, "concurrency": 20.0, "output_tok/sec": 1800.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
+        # Same workload and TP, different run configuration: a second sweep.
+        {**base, "concurrency": 10.0, "output_tok/sec": 1200.0, "backend_version": "vLLM-0.31.0", "chunked_prefill_enabled": True, "measurement_kind": "aggregate"},
+        # Same workload and sweep, different TP: its own line.
+        {**base, "tp": 2.0, "concurrency": 10.0, "output_tok/sec": 2000.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
+        # A multi-turn aggregate run is a different workload.
+        {**base, "turns": 5.0, "concurrency": 10.0, "output_tok/sec": 1500.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
+        # A per-turn window belongs to neither family and must never be plotted.
+        {**base, "turns": 5.0, "concurrency": 10.0, "output_tok/sec": 10.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "per_turn"},
+    ]
+    frame = pd.DataFrame(rows)
+    for split in ("train", "validation", "test"):
+        frame.to_parquet(labeled_dir / f"{pair}.{split}.parquet", index=False)
+    (model_dir / f"{pair}.metadata.json").write_text(json.dumps({"status": "skipped_single_class_train"}))
+
+    output_dir = tmp_path / "dashboard"
+    assert build_dashboard.build_dashboard(manifest, labeled_dir, model_dir, output_dir) == 1
+
+    payload = json.loads((output_dir / f"{pair}.json").read_text())
+    curves = payload["throughputCurves"]
+    assert all(
+        point["throughput"] != 10.0
+        for curve in curves
+        for point in curve["points"]
+    )
+
+    single_turn = [curve for curve in curves if curve["turns"] == 1 and curve["tp"] == 1]
+    assert len(single_turn) == 2
+    assert {tuple(curve["backendVersions"]) for curve in single_turn} == {
+        ("vLLM-0.24.0",),
+        ("vLLM-0.31.0",),
+    }
+
+    assert any(curve["turns"] == 1 and curve["tp"] == 2 for curve in curves)
+    multi_turn = [curve for curve in curves if curve["turns"] == 5]
+    assert len(multi_turn) == 1
+    assert [point["throughput"] for point in multi_turn[0]["points"]] == [1500.0]
 
 
 def test_gate_rejects_non_finite_metrics() -> None:

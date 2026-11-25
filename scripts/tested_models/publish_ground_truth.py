@@ -39,7 +39,7 @@ pretty_name: ConfigIQ tested-model performance data
 
 # ConfigIQ tested-model performance data
 
-Sanitized aggregate GuideLLM measurements used to train and assess ConfigIQ's
+Sanitized GuideLLM measurements used to train and assess ConfigIQ's
 model/hardware performance-envelope classifiers.
 Only rows labeled with plain upstream vLLM release versions are included.
 Each selected run has one whole-run summary (`turn_index` is null) and any
@@ -48,6 +48,9 @@ workload and serving setup match at one concurrency, the newest run is selected.
 Published configuration fields, concurrency, and turn index identify each row
 without run identifiers. They do not attest that unrecorded vLLM defaults or
 settings were identical. Compare and classifier training use summary rows only.
+Rows carry a `measurement_kind`: `aggregate` rows report benchmark-level
+throughput, while `per_turn` rows report one request's rate from a multi-turn
+run.
 
 - Model/hardware pairs: {pair_count}
 - Published summary and per-turn rows: {row_count}
@@ -83,6 +86,7 @@ def _schema() -> dict:
             "runtime_args", "env_vars", "guidellm_version",
         ],
         "measurement_families": ["throughput", "request rate", "TTFT", "TPOT", "ITL", "request latency", "reliability"],
+        "measurement_kind_values": ["aggregate", "per_turn"],
     }
 
 

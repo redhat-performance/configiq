@@ -3,14 +3,24 @@
 import { Label } from '@patternfly/react-core'
 import Link from 'next/link'
 import type { ReactNode } from 'react'
-import type { ClassifierStatus, ClassifierPrediction } from '@/lib/tested-models/types'
+import type {
+  CanonicalClassifierInput,
+  ClassifierStatus,
+  ClassifierPrediction,
+} from '@/lib/tested-models/types'
 import { testedPairHref, testedModelsFilterHref } from '@/lib/tested-models/links'
+import { buildValidated } from '@/lib/deep-links/common'
+import { testedModelLink } from '@/lib/deep-links/tested-models'
 
 interface TestedPerformanceFeedbackProps {
   prediction: ClassifierPrediction | null
   isLoading?: boolean
   modelId?: string
   systemId?: string
+  /** The canonical input the classifier ran on, used to describe the shared prediction. */
+  predictionInput?: CanonicalClassifierInput | null
+  /** Predicted aggregate output throughput, plotted against the measured curve. */
+  predictionThroughput?: number | null
   /** Result provenance shown right-aligned on the status row, e.g. the simulator badge. */
   headerRight?: ReactNode
   /** Supporting detail shown below the validation message, e.g. search summary. */
@@ -34,7 +44,68 @@ const BORDER_COLOR: Record<'green' | 'orange' | 'red' | 'blue' | 'grey', string>
   grey: '#8a8d90',
 }
 
-export function TestedPerformanceFeedback({ prediction, isLoading = false, modelId, systemId, headerRight, children }: TestedPerformanceFeedbackProps) {
+const LINK_BACKENDS = new Set(['vllm', 'tensorrt-llm', 'sglang'])
+
+/**
+ * The measured-envelope link carrying this prediction as a snapshot.
+ *
+ * The snapshot is built from the configuration the classifier actually ran on,
+ * so a later edit to the form cannot change what the shared link describes. It
+ * is a description, not a request: the pair page plots it and never re-runs a
+ * simulator. Any value the contract cannot accept makes the link fall back to
+ * the plain envelope link instead of carrying a partial snapshot.
+ */
+function predictionSnapshotHref(
+  prediction: ClassifierPrediction,
+  input: CanonicalClassifierInput | null | undefined,
+  throughput: number | null | undefined,
+): string | null {
+  if (!prediction.pair_id || !input) return null
+  if (typeof throughput !== 'number' || !Number.isFinite(throughput) || throughput <= 0) return null
+  const effective = input.effective
+  if (effective.concurrency < 1) return null
+  const tp = effective.tp_size || 1
+  const snapshot = buildValidated(testedModelLink, {
+    isl: effective.isl,
+    osl: effective.osl,
+    turns: 1,
+    tp,
+    predIsl: effective.isl,
+    predOsl: effective.osl,
+    predConcurrency: effective.concurrency,
+    predTp: tp,
+    predThroughput: throughput,
+    predStatus: prediction.status,
+    predConfidence: prediction.confidence ?? undefined,
+    predBackend: LINK_BACKENDS.has(effective.backend)
+      ? effective.backend as 'vllm' | 'tensorrt-llm' | 'sglang'
+      : undefined,
+    predBackendVersion: effective.backend_version ?? undefined,
+    predServingMode: effective.serving_mode,
+  })
+  // The overlay needs all five point coordinates. If the contract rejected any
+  // of them, showing no overlay is better than plotting a partial snapshot.
+  const required = [
+    snapshot.values.predIsl,
+    snapshot.values.predOsl,
+    snapshot.values.predConcurrency,
+    snapshot.values.predTp,
+    snapshot.values.predThroughput,
+  ]
+  if (required.some(value => value === undefined)) return null
+  return testedModelLink.build(snapshot.values, testedPairHref(prediction.pair_id))
+}
+
+export function TestedPerformanceFeedback({
+  prediction,
+  isLoading = false,
+  modelId,
+  systemId,
+  predictionInput,
+  predictionThroughput,
+  headerRight,
+  children,
+}: TestedPerformanceFeedbackProps) {
   if (!prediction && !isLoading && !headerRight && !children) return null
   if (!prediction && isLoading) {
     if (!headerRight && !children) {
@@ -82,10 +153,13 @@ export function TestedPerformanceFeedback({ prediction, isLoading = false, model
     : modelId
       ? testedModelsFilterHref({ modelId, systemId })
       : null
-  const href = prediction.dashboard_href ?? fallbackHref
-  const linkLabel = prediction.status === 'measured_no_envelope' || prediction.status === 'no_measurements'
-    ? 'View tested coverage'
-    : 'View the measured performance envelope'
+  const snapshotHref = predictionSnapshotHref(prediction, predictionInput, predictionThroughput)
+  const href = snapshotHref ?? prediction.dashboard_href ?? fallbackHref
+  const linkLabel = snapshotHref
+    ? 'View your prediction on the measured envelope'
+    : prediction.status === 'measured_no_envelope' || prediction.status === 'no_measurements'
+      ? 'View tested coverage'
+      : 'View the measured performance envelope'
 
   return (
     <div style={{ marginBottom: 20, padding: '14px 18px', border: '1px solid #d2d2d2', borderLeft: `4px solid ${BORDER_COLOR[detail.color]}`, background: '#fff' }}>
