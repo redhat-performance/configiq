@@ -7,10 +7,11 @@ import type {
   ScorecardCell,
   ScorecardCoverage,
   ScorecardHeadToHead,
+  ScorecardPoint,
   ScorecardSummary,
   ScorecardTotal,
 } from '@/lib/scorecard/types';
-import { summary } from '@/lib/scorecard/__fixtures__/points';
+import { point, summary } from '@/lib/scorecard/__fixtures__/points';
 
 // The page reads its shared view through `useSearchParams`. Tests mount it
 // directly, so supply the current window search rather than the app router.
@@ -23,21 +24,30 @@ vi.mock('next/navigation', () => ({
 const scorecardState = vi.hoisted(() => {
   type State = {
     summary: import('@/lib/scorecard/types').ScorecardSummary | null;
+    points: import('@/lib/scorecard/types').ScorecardPoint[] | null;
+    pointsLoading: boolean;
+    pointsError: string | null;
     notPublished: boolean;
     error: string | null;
     isLoading: boolean;
     reload: () => void;
+    loadPoints: () => void;
   };
-  let current: State = {
+  const base: State = {
     summary: null,
+    points: null,
+    pointsLoading: false,
+    pointsError: null,
     notPublished: false,
     error: null,
     isLoading: true,
     reload: () => {},
+    loadPoints: () => {},
   };
+  let current: State = base;
   return {
-    set(next: State) {
-      current = next;
+    set(next: Partial<State>) {
+      current = { ...base, ...next };
     },
     get: () => current,
   };
@@ -269,6 +279,79 @@ function published(overrides: Partial<ScorecardSummary> = {}): ScorecardSummary 
   });
 }
 
+/**
+ * Point detail for a row filter.
+ *
+ * Every point is one configuration at workload `1024/128`, so a workload
+ * filter selects all four. The errors are distinct per simulator and GPU so a
+ * filtered tile cannot be mistaken for the pooled one: the first simulator's
+ * H200 TPOT MdAPE is 25.0% here and 11.0% in the pooled totals.
+ */
+function publishedPoints(): ScorecardPoint[] {
+  return [
+    point({
+      identity: 'point-aisim-h200',
+      simulator: 'aisim',
+      model: 'org/model',
+      accelerator: 'H200',
+      workload: '1024/128',
+      configurationKey: 'configuration-aisim-h200',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: {
+        ttftMs: 144,
+        tpotMs: 12.5,
+        requestLatencyMs: null,
+        outputTokensPerSecond: 80,
+      },
+    }),
+    point({
+      identity: 'point-blis-h200',
+      simulator: 'blis',
+      model: 'org/model',
+      accelerator: 'H200',
+      workload: '1024/128',
+      configurationKey: 'configuration-blis-h200',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: {
+        ttftMs: 150,
+        tpotMs: 13.5,
+        requestLatencyMs: null,
+        outputTokensPerSecond: 74,
+      },
+    }),
+    point({
+      identity: 'point-aisim-b200',
+      simulator: 'aisim',
+      model: 'org/other',
+      accelerator: 'B200',
+      workload: '1024/128',
+      configurationKey: 'configuration-aisim-b200',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: {
+        ttftMs: 160,
+        tpotMs: 18,
+        requestLatencyMs: null,
+        outputTokensPerSecond: 56,
+      },
+    }),
+    point({
+      identity: 'point-blis-b200',
+      simulator: 'blis',
+      model: 'org/other',
+      accelerator: 'B200',
+      workload: '1024/128',
+      configurationKey: 'configuration-blis-b200',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: {
+        ttftMs: 170,
+        tpotMs: 19,
+        requestLatencyMs: null,
+        outputTokensPerSecond: 53,
+      },
+    }),
+  ];
+}
+
 let root: Root;
 let container: HTMLDivElement;
 
@@ -299,15 +382,34 @@ afterEach(async () => {
   window.history.replaceState({}, '', '/validation/scorecard');
 });
 
-async function mount(preloaded: ScorecardSummary | null, search = ''): Promise<void> {
+interface MountOptions {
+  /** `null` leaves the point detail unfetched; `undefined` uses the fixture. */
+  points?: ScorecardPoint[] | null;
+  pointsLoading?: boolean;
+  pointsError?: string | null;
+  loadPoints?: () => void;
+  reload?: () => void;
+}
+
+async function mount(
+  preloaded: ScorecardSummary | null,
+  search = '',
+  options: MountOptions = {},
+): Promise<void> {
   window.history.replaceState({}, '', `/validation/scorecard${search}`);
   navigation.search = window.location.search;
   scorecardState.set({
     summary: preloaded,
+    points: options.points === undefined
+      ? (preloaded ? publishedPoints() : null)
+      : options.points,
+    pointsLoading: options.pointsLoading ?? false,
+    pointsError: options.pointsError ?? null,
     notPublished: preloaded === null,
     error: null,
     isLoading: false,
-    reload: vi.fn(),
+    reload: options.reload ?? vi.fn(),
+    loadPoints: options.loadPoints ?? vi.fn(),
   });
   await act(async () => {
     root.render(<SimulatorScorecard />);
@@ -346,6 +448,19 @@ describe('Simulator scorecard page', () => {
     await mount(null);
     expect(container.textContent).toContain('No scorecard snapshot is published yet');
     expect(container.textContent).not.toContain('Agreement by simulator');
+  });
+
+  it('puts the coverage map above the filter panel', async () => {
+    await mount(published());
+
+    const coverage = container.querySelector('[data-tour="coverage"]');
+    const filters = container.querySelector('[data-tour="filters"]');
+
+    expect(coverage).not.toBeNull();
+    expect(filters).not.toBeNull();
+    expect(
+      coverage!.compareDocumentPosition(filters!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it('leads with one agreement tile per simulator', async () => {
@@ -568,7 +683,14 @@ describe('Simulator scorecard page', () => {
   });
 
   it('offers the measured models and GPUs as searchable choices, not a free-text box', async () => {
-    await mount(published());
+    await mount(published({
+      coverage: [
+        coverageFor('aisim'),
+        coverageFor('blis', { supported: 1 }),
+        coverageFor('aisim', { model: 'org/other', accelerator: 'B200', supported: 1, unsupported: 0 }),
+        coverageFor('blis', { model: 'org/other', accelerator: 'B200', supported: 1, unsupported: 0 }),
+      ],
+    }));
 
     const model = container.querySelector<HTMLInputElement>('input[aria-label="Model"]');
     const workload = container.querySelector<HTMLSelectElement>('select[aria-label="Workload"]');
@@ -592,9 +714,44 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).toContain('4.8 TB/s · 989 TFLOPS');
     expect(button('Clear filters')).toBeDefined();
     expect(container.textContent).toContain('filtered');
-    // The tiles cannot follow a row filter: the snapshot holds no per-model or
-    // per-GPU totals, so the page says so instead of looking broken.
-    expect(container.textContent).toContain('These totals cover every configuration in the snapshot');
+
+    // The row filter reaches the agreement tiles: the point detail folds to
+    // the H200 slice rather than leaving pooled totals above a filtered table.
+    const agreement = container.querySelector('[data-tour="agreement"]');
+    expect(agreement?.textContent).toContain('25.0%');
+    expect(agreement?.textContent).toContain('35.0%');
+    expect(agreement?.textContent).not.toContain('11.0%');
+
+    // The coverage map stays a whole-snapshot view: a row filter must not
+    // shrink the Venn diagrams, or their overlap stops describing the data.
+    const coverage = container.querySelector('[data-tour="coverage"]');
+    expect(coverage?.textContent).toContain('org/model');
+    expect(coverage?.textContent).toContain('org/other');
+    expect(coverage?.textContent).not.toContain('Applying the row filters');
+  });
+
+  it('asks for the point detail when a row filter is active and it is not loaded', async () => {
+    const loadPoints = vi.fn();
+    await mount(published(), '?v=1&gpu=H200', { points: null, loadPoints });
+
+    expect(loadPoints).toHaveBeenCalled();
+    expect(container.textContent).toContain('Applying the row filters');
+    // The status replaces the tiles while the detail loads, so it has to be
+    // announced rather than only rendered.
+    const status = container.querySelector('[data-tour="agreement"] [role="status"]');
+    expect(status?.textContent).toContain('Applying the row filters');
+  });
+
+  it('keeps the whole-snapshot numbers under a warning when the point detail fails', async () => {
+    await mount(published(), '?v=1&gpu=H200', {
+      points: null,
+      pointsError: 'The point detail could not be loaded.',
+    });
+
+    expect(container.textContent).toContain('The row filter could not be applied');
+    // The pooled totals are still visible, but under an explicit warning
+    // rather than silently presented as the filtered slice.
+    expect(container.querySelector('[data-tour="agreement"]')?.textContent).toContain('11.0%');
   });
 
   it('selects a coverage point into the model and GPU filters and shares it', async () => {
@@ -681,9 +838,10 @@ describe('Simulator scorecard shared view', () => {
   it('applies metric, statistic, source, and row filters from a link', async () => {
     await mount(published(), '?v=1&metric=ttft&statistic=mape&source=redhat&workload=1024%2F128');
 
-    // The selected slice is the redhat ttft/MAPE total, not the default
-    // tpot/MdAPE one.
-    expect(container.textContent).toContain('44.0%');
+    // The selected slice is redhat TTFT MAPE over the two AISim configurations
+    // the workload filter keeps (44% and 60%), not the default TPOT MdAPE
+    // pooled total (11.0%).
+    expect(container.textContent).toContain('52.0%');
     expect(container.textContent).toContain('filtered');
   });
 

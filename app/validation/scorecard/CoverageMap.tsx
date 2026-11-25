@@ -2,10 +2,10 @@ import * as React from 'react';
 import { ExpandableSection } from '@patternfly/react-core';
 import {
   SCORECARD_SOURCES,
+  type ScorecardCoverage,
   type ScorecardReleaseMatch,
   type ScorecardSource,
   type ScorecardSourceFilter,
-  type ScorecardSummary,
 } from '@/lib/scorecard/types';
 import { buildCoverageSets, type CoveragePair } from './scorecard-view';
 import {
@@ -53,7 +53,10 @@ export interface CoverageSimulator {
 }
 
 export interface CoverageMapProps {
-  summary: ScorecardSummary;
+  /** The coverage rows for the slice the page is showing. */
+  coverage: readonly ScorecardCoverage[];
+  /** The snapshot-level shared-workload count, when it was published. */
+  sharedWorkloads?: number;
   source: ScorecardSourceFilter;
   releaseMatch: ScorecardReleaseMatch;
   simulators: readonly CoverageSimulator[];
@@ -61,15 +64,16 @@ export interface CoverageMapProps {
 }
 
 export default function CoverageMap({
-  summary,
+  coverage,
+  sharedWorkloads,
   source,
   releaseMatch,
   simulators,
   onSelectPair,
 }: CoverageMapProps) {
   const sets = React.useMemo(
-    () => buildCoverageSets(summary, { source, releaseMatch }),
-    [summary, source, releaseMatch],
+    () => buildCoverageSets(coverage, { source, releaseMatch }),
+    [coverage, source, releaseMatch],
   );
   const [hovered, setHovered] = React.useState<CoveragePair | null>(null);
 
@@ -109,7 +113,6 @@ export default function CoverageMap({
     && simulatorSets.every(entry => entry.count > 0);
   const showSourceVenn = sourceSets.length === 2
     && sourceSets.every(entry => entry.count > 0);
-  const sharedWorkloads = summary.sourceOverlap?.sharedWorkloads;
 
   return (
     <div className={styles.coverageMap}>

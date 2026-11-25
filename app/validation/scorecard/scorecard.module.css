@@ -193,13 +193,6 @@
   white-space: nowrap;
 }
 
-/* Explains why the pooled tiles do not move when a row filter is applied. */
-.filterNote {
-  margin: -4px 0 14px;
-  font-size: 13px;
-  color: var(--text-2);
-}
-
 /* ── Section headings ─────────────────────────────────────────────────── */
 
 .sectionHead {

@@ -5,7 +5,8 @@ import type {
   ScorecardHeadToHead,
   ScorecardTotal,
 } from '@/lib/scorecard/types';
-import { summary } from '@/lib/scorecard/__fixtures__/points';
+import { buildTotals } from '@/lib/scorecard/aggregate';
+import { point, summary } from '@/lib/scorecard/__fixtures__/points';
 import {
   buildChartRows,
   buildCoverageSets,
@@ -17,6 +18,7 @@ import {
   formatPercent,
   formatSignedPercent,
   formatSignedPoints,
+  selectPoints,
   selectTotals,
   sumCoverage,
   type CoverageCounts,
@@ -99,7 +101,7 @@ describe('selectTotals', () => {
       ],
     });
 
-    expect(selectTotals(artifact, {
+    expect(selectTotals(artifact.totals, {
       simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     })).toEqual({
       values: { mape: 0.1, mdape: 0.08, p90: 0.2, bias: -0.03 },
@@ -109,7 +111,7 @@ describe('selectTotals', () => {
   });
 
   it('returns null when the slice has no evidence', () => {
-    expect(selectTotals(summary(), {
+    expect(selectTotals(summary().totals, {
       simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     })).toBeNull();
   });
@@ -121,17 +123,70 @@ describe('selectTotals', () => {
         total({ source: 'redhat', releaseMatch: 'matched', statistic: 'mape', value: 0.5 }),
       ],
     });
-    expect(selectTotals(artifact, {
+    expect(selectTotals(artifact.totals, {
       simulator: 'aisim', source: 'redhat', metric: 'ttft', releaseMatch: 'any',
     })).toBeNull();
   });
 
   it('fills a missing statistic with NaN so the page renders a dash, not zero', () => {
     const artifact = summary({ totals: [total({ statistic: 'mape' })] });
-    const slice = selectTotals(artifact, {
+    const slice = selectTotals(artifact.totals, {
       simulator: 'aisim', source: 'all', metric: 'ttft', releaseMatch: 'any',
     });
     expect(slice!.values.mdape).toBeNaN();
+  });
+});
+
+describe('selectPoints', () => {
+  const points = [
+    point({ model: 'org/a', accelerator: 'H200', workload: '1024/128', configurationKey: 'a' }),
+    point({
+      identity: 'point-2',
+      model: 'org/a',
+      accelerator: 'B200',
+      workload: '1024/128',
+      configurationKey: 'a2',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: { ttftMs: 130, tpotMs: 13, requestLatencyMs: null, outputTokensPerSecond: 80 },
+    }),
+    point({
+      identity: 'point-3',
+      model: 'org/b',
+      accelerator: 'B200',
+      workload: '2048/256',
+      configurationKey: 'b',
+      measured: { ttftMs: 100, tpotMs: 10, outputTokensPerSecond: 100 },
+      predicted: { ttftMs: 90, tpotMs: 9, requestLatencyMs: null, outputTokensPerSecond: 110 },
+    }),
+  ];
+
+  it('selects the runs a model, GPU, and workload choice names', () => {
+    expect(selectPoints(points, { model: 'org/a', gpu: '', workload: '' }).map(entry => entry.identity))
+      .toEqual(['point-1', 'point-2']);
+    expect(selectPoints(points, { model: '', gpu: 'B200', workload: '' }).map(entry => entry.identity))
+      .toEqual(['point-2', 'point-3']);
+    expect(selectPoints(points, { model: '', gpu: '', workload: '2048/256' }).map(entry => entry.identity))
+      .toEqual(['point-3']);
+    expect(selectPoints(points, { model: 'org/a', gpu: 'B200', workload: '1024/128' }))
+      .toHaveLength(1);
+  });
+
+  it('leaves the population untouched when no row filter is set', () => {
+    expect(selectPoints(points, { model: '', gpu: '', workload: '' })).toEqual(points);
+  });
+
+  it('folds the selected runs rather than averaging published slices', () => {
+    const totals = buildTotals(selectPoints(points, { model: 'org/b', gpu: '', workload: '' }));
+    const mape = totals.find(total =>
+      total.source === 'redhat'
+      && total.metric === 'ttft'
+      && total.statistic === 'mape'
+      && total.releaseMatch === 'any');
+
+    // org/b is one configuration with a 10% error, not the mean of the three
+    // points' errors and not an average of per-slice statistics.
+    expect(mape?.value).toBeCloseTo(0.1);
+    expect(mape?.configurations).toBe(1);
   });
 });
 
@@ -499,7 +554,7 @@ describe('buildCoverageSets', () => {
   });
 
   it('counts one pair per model and GPU, not one per simulator or source', () => {
-    const sets = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' });
+    const sets = buildCoverageSets(artifact.coverage, { source: 'all', releaseMatch: 'any' });
 
     expect(sets.pairs.map(pair => [pair.model, pair.accelerator])).toEqual([
       ['org/model', 'H200'],
@@ -510,7 +565,7 @@ describe('buildCoverageSets', () => {
   });
 
   it('records every simulator that scored at least one level of the pair', () => {
-    const model = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' })
+    const model = buildCoverageSets(artifact.coverage, { source: 'all', releaseMatch: 'any' })
       .pairs.find(pair => pair.model === 'org/model');
 
     expect([...model!.simulators].sort()).toEqual(['aisim', 'blis']);
@@ -518,7 +573,7 @@ describe('buildCoverageSets', () => {
   });
 
   it('leaves a measured pair out of every simulator set when nothing scored it', () => {
-    const unscored = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'any' })
+    const unscored = buildCoverageSets(artifact.coverage, { source: 'all', releaseMatch: 'any' })
       .pairs.find(pair => pair.model === 'org/unscored');
 
     expect(unscored!.simulators.size).toBe(0);
@@ -526,7 +581,7 @@ describe('buildCoverageSets', () => {
   });
 
   it('follows the source filter', () => {
-    const redhat = buildCoverageSets(artifact, { source: 'redhat', releaseMatch: 'any' });
+    const redhat = buildCoverageSets(artifact.coverage, { source: 'redhat', releaseMatch: 'any' });
 
     expect(redhat.pairs.map(pair => pair.model)).not.toContain('org/other');
     expect(redhat.pairs.find(pair => pair.model === 'org/model')!.sources)
@@ -534,13 +589,13 @@ describe('buildCoverageSets', () => {
   });
 
   it('follows the release slice rather than mixing it in', () => {
-    const matched = buildCoverageSets(artifact, { source: 'all', releaseMatch: 'matched' });
+    const matched = buildCoverageSets(artifact.coverage, { source: 'all', releaseMatch: 'matched' });
 
     expect(matched.pairs.map(pair => pair.model)).toEqual(['org/matched']);
   });
 
   it('returns nothing when the slice has no measured pair', () => {
-    expect(buildCoverageSets(summary(), { source: 'all', releaseMatch: 'any' }))
+    expect(buildCoverageSets(summary().coverage, { source: 'all', releaseMatch: 'any' }))
       .toEqual({ pairs: [], notScored: 0 });
   });
 });
