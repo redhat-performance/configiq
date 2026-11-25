@@ -1,6 +1,7 @@
 import appConfig from '../public/config.json'
 import { DEFAULT_WORKLOAD, type WorkloadPreset } from '../lib/workload-presets'
 import type { ConcurrencyPreset } from '../lib/concurrency-presets'
+import type { CatalogSystem } from './live-catalog'
 
 // The live UI matrix checks each of these tested GPU systems explicitly.
 export const coveredSystems = [
@@ -109,3 +110,34 @@ export const modelParallelism: Record<string, number> = {
   'moonshotai/Kimi-K2.5': 8,
   'moonshotai/Kimi-K3': 32,
 }
+
+// A simulator that is not the profile default is exercised against its own
+// catalogue, so the case needs a pairing that simulator lists rather than one
+// from the tested-model matrix. Prefer an approved model when the simulator
+// prices it, then a small widely published model so one GPU is enough. The
+// names are test inputs, not sizing formulas; a simulator that lists none of
+// them falls back to the first model it reports.
+const parityModelPreference: readonly string[] = [
+  ...appConfig.approvedModels,
+  'llama-3.1-8b-instruct',
+  'meta-llama/Llama-3.1-8B-Instruct',
+  'qwen2.5-7b-instruct',
+  'Qwen/Qwen2.5-7B-Instruct',
+]
+
+export function parityModel(models: readonly string[]): string {
+  const preferred = parityModelPreference.find(model => models.includes(model))
+  if (preferred) return preferred
+  if (models.length === 0) throw new Error('The simulator lists no models to check')
+  return models[0]
+}
+
+// Prefer a system the tested-model matrix already runs, then the largest device
+// the simulator lists, so a parity case does not depend on a sizing search.
+export function paritySystem(systems: readonly CatalogSystem[]): string {
+  if (systems.length === 0) throw new Error('The simulator lists no GPU systems to check')
+  const tested = coveredSystems.find(id => systems.some(system => system.id === id))
+  if (tested) return tested
+  return [...systems].sort((a, b) => (b.memory_bytes ?? 0) - (a.memory_bytes ?? 0))[0].id
+}
+

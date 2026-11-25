@@ -1,8 +1,9 @@
-import { test, type TestInfo } from '@playwright/test'
+import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import appConfig from '../public/config.json'
 import { DEFAULT_WORKLOAD } from '../lib/workload-presets'
+import { readSimulatorCatalogs } from './live-catalog'
 import { checkKvCache, checkPredict, checkRecommend, goalLabels, type CaseOptions, type RecommendScenario } from './live-ui'
-import { baselineConcurrencyPreset, modelParallelism, sampledSystemForModel } from './test-matrix'
+import { baselineConcurrencyPreset, modelParallelism, parityModel, paritySystem, sampledSystemForModel } from './test-matrix'
 
 // Deployment sanity for the release-tracking host. It runs one workload on one
 // sampled GPU per approved model across all three tools, plus one case for each
@@ -87,3 +88,55 @@ for (const [index, scenario] of extraScenarios.entries()) {
     await checkRecommend(page, testInfo, model, sanityWorkload, systemId, scenario, requireSuccess)
   })
 }
+
+// The cases above run against the profile a fresh browser starts with: the
+// catalog's default simulator. Every other simulator the deployment advertises
+// is selectable from Settings and must answer the same pages with its own
+// result. Each case names the simulator it selected and checks both the request
+// and the response, so an answer from another simulator fails rather than
+// passing as a fallback. A simulator the deployment does not advertise cannot
+// be selected, so there is nothing to check. The pairing comes from that
+// simulator's own catalogue, not the tested-model matrix.
+async function advertisedAlternates(page: Page) {
+  const alternates = (await readSimulatorCatalogs(page)).filter(entry => !entry.default)
+  if (alternates.length === 0) test.skip(true, 'The deployment advertises only its default simulator')
+  for (const entry of alternates) {
+    expect(entry.available, `${entry.label} is advertised but its capabilities could not be read`).toBe(true)
+  }
+  return alternates
+}
+
+// Each selected simulator drives the page once, and the per-case timeout is
+// sized for one run. Give the step loop room for every alternates' case instead
+// of letting the second one inherit a budget the first one already spent.
+const parityBudget = (count: number) => test.setTimeout(300_000 * Math.max(1, count))
+
+test('Predict performance / every advertised simulator / parity', async ({ page }, testInfo) => {
+  const alternates = await advertisedAlternates(page)
+  parityBudget(alternates.length)
+  for (const entry of alternates) {
+    await test.step(entry.label, async () => {
+      const model = parityModel(entry.models)
+      const parallelism = modelParallelism[model] ?? 1
+      await checkPredict(page, testInfo, model, sanityWorkload, paritySystem(entry.systems), baselineConcurrencyPreset, parallelism, {
+        requireSuccess: true,
+        simulator: entry.id,
+      })
+    })
+  }
+})
+
+test('KV cache / every advertised simulator / parity', async ({ page }, testInfo) => {
+  const alternates = await advertisedAlternates(page)
+  parityBudget(alternates.length)
+  for (const entry of alternates) {
+    await test.step(entry.label, async () => {
+      const model = parityModel(entry.models)
+      const parallelism = modelParallelism[model] ?? 1
+      await checkKvCache(page, testInfo, model, sanityWorkload, paritySystem(entry.systems), baselineConcurrencyPreset, parallelism, {
+        requireSuccess: true,
+        simulator: entry.id,
+      })
+    })
+  }
+})

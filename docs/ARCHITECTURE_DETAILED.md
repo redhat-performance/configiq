@@ -40,7 +40,7 @@ services, typically behind nginx. See [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)
 | App shell | `components/layout/AppShell.tsx` | PatternFly page, masthead, and sidebar |
 | Predict workflow | `app/predict/` | Explicit `/api/predict` performance requests and result display |
 | Recommend workflow | `app/recommend/` | GPU sizing requests, including streamed progress |
-| Simulator setting | `contexts/SettingsContext.tsx`, `app/settings/` | Persisted global simulator selection for Predict, Recommend and Hybrid Savings |
+| Simulator setting | `contexts/SettingsContext.tsx`, `app/settings/` | Persisted global simulator selection for Predict, Recommend, KV cache, and Hybrid Savings |
 | KV cache calculator | `app/kv-cache/` | `/api/memory` requests and memory breakdown display |
 | Catalog hook | `lib/hooks/useCatalog.ts` | Same-origin GPU, model, and backend catalog |
 | Costings hook | `lib/hooks/useCostings.ts` | Same-origin pricing and health data |
@@ -65,6 +65,24 @@ GPU sizing formulas or call external service URLs directly from the browser.
    AISimulators `/predict` endpoint server-side.
 4. The adapter normalizes timing, memory, serving configuration, and warnings
    into the `InferenceConfigResult` shape used by the page.
+5. With `include=memory`, the response carries the memory the run's own pools
+   hold. Each record describes one GPU; a disaggregated worker also states its
+   own peak, and the headline figure is the larger per-GPU peak. A run that
+   reports no pool memory says so rather than borrowing another simulator's
+   answer.
+
+### KV cache memory
+
+1. `app/kv-cache/KvCacheCalc.tsx` sends the model, system, workload,
+   parallelism, backend, simulator, and memory-fraction choice to `/api/memory`.
+2. `lib/api/kv-cache-calc.ts` forwards the request to AISimulators `/memory` and
+   normalizes the per-rank summary, the four-bucket per-GPU breakdown, warnings,
+   and simulator provenance. A memory fraction the view does not state is
+   omitted, so the simulator's own default applies and the response reports the
+   setting as unstated.
+3. The page renders the size one rank (one GPU) holds, labels the result with
+   the simulator that answered, and never accepts a response that names a
+   different simulator than the request.
 
 ### Recommend sizing
 
