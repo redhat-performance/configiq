@@ -18,8 +18,13 @@ interface CatalogResponse {
   objectives?: string[]
 }
 
+// The catalog aggregates every simulator's systems and model metadata, so it is
+// slower than a page request. Give it room rather than failing a case that is
+// otherwise fine when several workers hit the deployment at once.
+const CATALOG_TIMEOUT_MS = 60_000
+
 export async function readAisimulateCatalogDetails(page: Page): Promise<{ systems: CatalogSystem[]; objectives: string[] }> {
-  const response = await page.request.get('/api/catalog')
+  const response = await page.request.get('/api/catalog', { timeout: CATALOG_TIMEOUT_MS })
   expect(response.ok(), 'The deployed catalog must be available').toBeTruthy()
   const catalog = await response.json() as CatalogResponse
   if (Array.isArray(catalog.simulators)) {

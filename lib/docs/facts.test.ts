@@ -152,7 +152,9 @@ function documentedFiles(): string[] {
     'services/mcp-gateway/README.md',
     'services/aisimulators/docs/api/openapi.yaml',
     '.github/workflows/build.yml',
-    '.github/workflows/ui-tested-models.yml',
+    '.github/workflows/ui-tested-models-nightly.yml',
+    '.github/workflows/ui-tested-models-weekly.yml',
+    '.github/workflows/ui-release-sanity.yml',
     'playwright.config.ts',
   ];
 }
