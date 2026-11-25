@@ -264,12 +264,10 @@ function derivedAssumptions(
     servingMode: mode === 'disagg' && disaggAvailable ? 'disagg' : 'agg',
     weightPrecision: quantLabel(configuration?.values.weight_quantization ?? configuration?.values.precision),
     kvCachePrecision: quantLabel(configuration?.values.kv_quantization),
-    // Benchmark rows do not record PP, DP, or MoE widths. Default to a single
-    // stage and the simulator's own width resolution, and say so in the UI.
-    ppSize: '1',
-    dpSize: '1',
-    moeTpSize: '',
-    moeEpSize: '',
+    ppSize: configuration?.values.pp ?? '1',
+    dpSize: configuration?.values.dp ?? '1',
+    moeTpSize: configuration?.values.moe_tp_size ?? '',
+    moeEpSize: configuration?.values.moe_ep_size ?? '',
     fabric: defaultFabric,
   }
 }
@@ -397,6 +395,7 @@ export default function BenchmarkComparisonPage() {
   const [isResolving, setIsResolving] = React.useState(true)
   const [isComparing, setIsComparing] = React.useState(false)
   const [notice, setNotice] = React.useState<Notice | null>(null)
+  const [linkedConfigurationMissing, setLinkedConfigurationMissing] = React.useState(false)
   const [overrideAssumptions, setOverrideAssumptions] = React.useState(false)
   const [assumptionInputs, setAssumptionInputs] = React.useState<PredictionAssumptions | null>(null)
   const [assumptionsOpen, setAssumptionsOpen] = React.useState(false)
@@ -427,6 +426,7 @@ export default function BenchmarkComparisonPage() {
     const currentRequest = requestId.current + 1
     requestId.current = currentRequest
     setIsResolving(true)
+    setLinkedConfigurationMissing(false)
     try {
       const params = buildResolveParams(next, inferenceBackend, backendVersion)
       const response = await fetch(`/api/validation/benchmark?${params.toString()}`, { cache: 'no-store' })
@@ -454,6 +454,7 @@ export default function BenchmarkComparisonPage() {
       const nextConfiguration = selectConfiguration(configurations, requestedKey, previous)
       configurationRef.current = nextConfiguration
       setConfigurationKey(nextConfiguration?.key ?? '')
+      setLinkedConfigurationMissing(Boolean(requestedKey && nextConfiguration?.key !== requestedKey))
 
       if (data.unavailable) {
         setNotice({
@@ -968,7 +969,7 @@ export default function BenchmarkComparisonPage() {
             <div className={styles.sourceBadges}>
               {source && <div className={styles.sourceBadge}>
                 <a href={source.url} target="_blank" rel="noreferrer">Benchmark data from Red Hat · Hugging Face</a>
-                <span>{source.rowCount.toLocaleString('en-US')} rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
+                <span>{source.rowCount.toLocaleString('en-US')} summary and per-turn rows · CC BY 4.0{datasetDate ? ` · updated ${datasetDate}` : ''}</span>
               </div>}
               {inferencexSource && <div className={styles.sourceBadge}>
                 {isHttpsUrl(inferencexSource.url)
@@ -1006,6 +1007,11 @@ export default function BenchmarkComparisonPage() {
           {notice.variant === 'danger' && !source && !inferencexSource && (
             <Button variant="link" onClick={() => void resolve(selection)}>Retry dataset load</Button>
           )}
+        </Alert>
+      )}
+      {linkedConfigurationMissing && !isResolving && (
+        <Alert variant="warning" isInline title="Linked configuration is no longer available" className={styles.notice}>
+          <p>The measured dataset has changed since this link was created. Review the selected runtime configuration before comparing runs.</p>
         </Alert>
       )}
 
@@ -1301,8 +1307,8 @@ export default function BenchmarkComparisonPage() {
               </div>
 
               <p className={`${styles.assumptionNote} ${styles.assumptionsFootnote}`}>
-                Benchmark rows do not record pipeline, data, or expert parallelism. Predictions therefore start from
-                PP 1, DP 1, and the simulator&apos;s own MoE width resolution. Changing them is an explicit override.
+                Recorded parallel sizes from the selected benchmark run are used when available. Where a size was not
+                recorded, predictions use PP 1, DP 1, or the simulator&apos;s MoE width resolution. Changing them is an explicit override.
               </p>
             </AccordionContent>
           </AccordionItem>

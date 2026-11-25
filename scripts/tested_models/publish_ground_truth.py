@@ -20,6 +20,7 @@ from dataset_common import (
 )
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.errors import EntryNotFoundError
+from import_s3_ground_truth import PUBLIC_CURVE_FIELDS
 
 PAIR_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
@@ -41,14 +42,24 @@ pretty_name: ConfigIQ tested-model performance data
 Sanitized aggregate GuideLLM measurements used to train and assess ConfigIQ's
 model/hardware performance-envelope classifiers.
 Only rows labeled with plain upstream vLLM release versions are included.
+Each selected run has one whole-run summary (`turn_index` is null) and any
+available per-turn detail rows (`turn_index` is 0-based). When the published
+workload and serving setup match at one concurrency, the newest run is selected.
+Published configuration fields, concurrency, and turn index identify each row
+without run identifiers. They do not attest that unrecorded vLLM defaults or
+settings were identical. Compare and classifier training use summary rows only.
 
 - Model/hardware pairs: {pair_count}
-- Aggregate benchmark rows: {row_count}
+- Published summary and per-turn rows: {row_count}
 - Format: one Parquet file per model/hardware pair
 - License: CC BY 4.0
 
 The dataset excludes run IDs, UUIDs, MLflow identifiers, timestamps, raw runtime
-arguments, internal endpoints, and other administrative metadata. `manifest.json`
+arguments and environment values, internal endpoints, and other administrative metadata.
+The `runtime_args` and `env_vars` JSON columns retain recorded settings with
+reviewed scalar values; settings with unreviewed or unsafe values are omitted.
+The recorded GuideLLM version is retained for workload provenance.
+`manifest.json`
 records pair identity, row count, columns, and checksums. This dataset provides
 benchmark observations, not performance guarantees, and is supplied without warranty.
 """
@@ -58,11 +69,18 @@ def _schema() -> dict:
     return {
         "schema_version": 1,
         "layout": "pairs/<pair-id>/ground_truth.parquet",
-        "identity_fields": ["model_id", "accelerator", "pair_id"],
+        "identity_fields": ["pair_id", *PUBLIC_CURVE_FIELDS, "concurrency", "turn_index"],
         "configuration_fields": [
-            "backend", "backend_version", "tp", "pp", "dp", "ep", "cp", "isl", "osl",
-            "concurrency", "max_seq_len", "max_num_seqs", "prefix_caching", "prefix_tokens",
-            "prefix_count", "precision", "weight_quantization", "kv_quantization",
+            "backend", "backend_version", "tp", "pp", "dp", "ep", "cp",
+            "tp_prefill", "tp_decode", "moe_tp_size", "moe_ep_size", "enable_expert_parallel",
+            "isl", "osl",
+            "concurrency", "max_seq_len", "max_num_seqs", "max_num_batched_tokens",
+            "gpu_memory_utilization", "chunked_prefill_enabled", "prefix_caching",
+            "prefix_tokens", "prefix_count", "precision", "weight_quantization",
+            "kv_quantization", "spec_decoding", "request_type", "turns",
+            "vllm_rocm_use_aiter", "vllm_rocm_use_aiter_moe",
+            "vllm_rocm_use_aiter_moe_situv2",
+            "runtime_args", "env_vars", "guidellm_version",
         ],
         "measurement_families": ["throughput", "request rate", "TTFT", "TPOT", "ITL", "request latency", "reliability"],
     }
@@ -84,6 +102,11 @@ def parse_args() -> argparse.Namespace:
         "--allow-removal",
         action="store_true",
         help="Allow an upload to delete pairs that exist only in the remote dataset.",
+    )
+    parser.add_argument(
+        "--allow-row-reduction",
+        action="store_true",
+        help="Allow an upload when any existing model/GPU pair has fewer rows after review.",
     )
     parser.add_argument(
         "--github-output",
@@ -146,6 +169,18 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
             raise FileNotFoundError(source_path)
         frame = pd.read_parquet(source_path)
         validate_public_frame(frame)
+        if "concurrency" not in frame or frame["concurrency"].isna().any() or frame["concurrency"].map(
+            lambda value: isinstance(value, str) and not value.strip()
+        ).any():
+            raise ValueError(f"pair {pair_id} requires nonblank concurrency")
+        if "turn_index" not in frame:
+            raise ValueError(f"pair {pair_id} requires turn_index to distinguish summary and per-turn rows")
+        turns = frame["turn_index"].dropna()
+        if ((turns < 0) | (turns % 1 != 0)).any():
+            raise ValueError(f"pair {pair_id} has invalid turn indexes")
+        published_fields = [field for field in PUBLIC_CURVE_FIELDS if field in frame]
+        if frame.duplicated([*published_fields, "concurrency", "turn_index"]).any():
+            raise ValueError(f"pair {pair_id} has repeated published settings, concurrency, and turn rows")
         if "version" not in frame or not frame["version"].map(is_upstream_vllm_version).all():
             raise ValueError(f"pair {pair_id} contains a non-upstream vLLM version")
         if "backend" not in frame or not frame["backend"].eq("vllm").fillna(False).all():
@@ -200,6 +235,20 @@ def _missing_remote_pairs(local_manifest: dict, remote_manifest: dict) -> list[s
     return sorted(remote_ids - local_ids)
 
 
+def _row_reductions(local_manifest: dict, remote_manifest: dict) -> list[tuple[str, int, int]]:
+    """Find shrinking pairs even when growth elsewhere masks the reduction."""
+    old = {pair["id"]: pair["records"] for pair in remote_manifest.get("pairs", [])}
+    return sorted(
+        (pair["id"], old[pair["id"]], pair["records"])
+        for pair in local_manifest.get("pairs", [])
+        if pair["id"] in old and pair["records"] < old[pair["id"]]
+    )
+
+
+def _reduction_message(reductions: list[tuple[str, int, int]]) -> str:
+    return ", ".join(f"{pair_id}: {old} → {new}" for pair_id, old, new in reductions)
+
+
 def main() -> int:
     args = parse_args()
     args.repo_id = resolve_dataset_repo_id(args.repo_id)
@@ -224,8 +273,11 @@ def main() -> int:
         write_github_output(github_output, changed="false", revision=parent_commit, check_only=str(args.check_only).lower())
         return 0
     missing = _missing_remote_pairs(manifest, remote_manifest)
+    reductions = _row_reductions(manifest, remote_manifest)
     if missing and args.check_only:
         print(f"prepared data would remove remote pairs: {', '.join(missing)}")
+    if reductions and args.check_only:
+        print(f"prepared data would reduce rows in pairs: {_reduction_message(reductions)}")
     if args.check_only:
         print(f"ground truth differs from {args.repo_id}@{parent_commit}; upload was not attempted")
         write_github_output(github_output, changed="true", revision=parent_commit, check_only="true")
@@ -235,6 +287,11 @@ def main() -> int:
             "prepared data would remove pairs present in the remote dataset: "
             f"{', '.join(missing)}. Run the complete extraction, or pass --allow-removal "
             "to remove them intentionally."
+        )
+    if reductions and not args.allow_row_reduction:
+        raise SystemExit(
+            f"prepared data would reduce rows in pairs: {_reduction_message(reductions)}. "
+            "Review the deduplication, then pass --allow-row-reduction to publish intentionally."
         )
     commit = api.upload_folder(
         repo_id=args.repo_id,

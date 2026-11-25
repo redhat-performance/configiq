@@ -4,6 +4,7 @@ import {
   getConfigurationOptions,
   getFilterOptions,
   normalizeBackendVersion,
+  rowMatchesConfiguration,
 } from '../benchmark-dataset'
 import type { DatasetRow, BenchmarkFilters } from '../benchmark-types'
 
@@ -42,6 +43,54 @@ describe('shared measured backend filters', () => {
     ])
     expect(configurations.find(option => option.values.measurement_source === 'Red Hat')?.values.benchmark_version)
       .toBe('GT release 2')
+  })
+
+  it('distinguishes explicit ROCm and batch-limit settings', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, max_num_batched_tokens: 8192 },
+      { ...internal, max_num_batched_tokens: 8192, vllm_rocm_use_aiter: '1' },
+      { ...internal, max_num_batched_tokens: 16384 },
+    ]
+    const options = getConfigurationOptions(rows)
+    expect(options).toHaveLength(3)
+    expect(options.map(option => option.label)).toEqual([
+      expect.stringContaining('max batched tokens'),
+      expect.stringContaining('max batched tokens'),
+      expect.stringContaining('max batched tokens'),
+    ])
+    expect(options.some(option => option.label.includes('ROCm AITER 1'))).toBe(true)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1])
+  })
+
+  it('keeps measured parallel serving configurations separate', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, pp: 1, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2 },
+      { ...internal, pp: 2, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2 },
+      { ...internal, pp: 2, tp_prefill: 2, tp_decode: 4, moe_tp_size: 2, moe_ep_size: 2, enable_expert_parallel: '1' },
+    ]
+    const options = getConfigurationOptions(rows)
+
+    expect(options).toHaveLength(3)
+    expect(options.some(option => option.label.includes('PP 2') && option.label.includes('expert parallel 1'))).toBe(true)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1])
+  })
+
+  it('does not combine runs distinguished by published runtime or workload settings', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"debug"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '4' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.9.0', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{"VLLM_ROCM_USE_AITER":"1"}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2', moe_num_experts: '16' },
+    ]
+    const options = getConfigurationOptions(rows)
+
+    expect(options).toHaveLength(6)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1, 1, 1, 1])
   })
 
   it('does not equate unknown or nightly tags with a numbered release', () => {

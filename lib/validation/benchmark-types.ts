@@ -25,6 +25,22 @@ export interface DatasetConfiguration extends Record<string, string | null> {
   prefix_count: string | null
   max_seq_len: string | null
   max_num_seqs: string | null
+  max_num_batched_tokens: string | null
+  pp: string | null
+  dp: string | null
+  ep: string | null
+  cp: string | null
+  moe_tp_size: string | null
+  moe_ep_size: string | null
+  moe_num_experts: string | null
+  moe_top_k: string | null
+  enable_expert_parallel: string | null
+  runtime_args: string | null
+  env_vars: string | null
+  guidellm_version: string | null
+  vllm_rocm_use_aiter: string | null
+  vllm_rocm_use_aiter_moe: string | null
+  vllm_rocm_use_aiter_moe_situv2: string | null
   gpu_memory_utilization: string | null
   chunked_prefill_enabled: string | null
   spec_decoding: string | null

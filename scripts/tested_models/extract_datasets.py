@@ -9,6 +9,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import requests
 import urllib3
 from dataset_common import dataframe_sha256, fetch_rows, normalize_rows, write_parquet
@@ -50,6 +51,8 @@ def extract(
         accelerator = pair["accelerator"]
         rows = fetch_rows(session, api_url, model_id, accelerator, verify=not insecure)
         frame = normalize_rows(rows, model_id, accelerator)
+        if "turn_index" not in frame:
+            frame["turn_index"] = pd.Series(pd.NA, index=frame.index, dtype="Int64")
         output_path = output_dir / f"{pair['id']}.parquet"
         write_parquet(frame, output_path)
         manifest_pairs.append(

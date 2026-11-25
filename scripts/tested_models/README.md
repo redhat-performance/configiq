@@ -35,8 +35,31 @@ connection details.
 The generated parquet files are local build inputs and are git-ignored. The
 extractor writes only classification-relevant identity, workload, serving
 configuration, precision, prefix, reliability, throughput, and latency
-columns. Run IDs, UUIDs, MLflow IDs, timestamps, raw runtime arguments, and
-other administrative fields are dropped before parquet is written.
+columns. The S3 importer retains whole-run summaries and per-turn detail rows,
+removes identical source records, and selects the newest run when the published
+workload and serving setup match. Published configuration fields, concurrency,
+and `turn_index` distinguish rows. Compare and classifier training consume
+summary rows only. Where private source variants have the same published
+settings and concurrency, only the newest run is kept. These fields do not
+establish equality of unrecorded effective vLLM settings. Two explicit ROCm
+AITER switches and the SiTUv2 MoE mode are also extracted into separate columns.
+The `runtime_args` and `env_vars` columns are searchable JSON strings containing
+recorded settings with reviewed scalar values. Settings with unreviewed or unsafe
+values, such as paths or credentials, and unrelated environment variables are
+omitted. These columns are part of configuration identity. They do not capture
+defaults that the source did not record. Run IDs, UUIDs, MLflow IDs, timestamps,
+raw argument and environment values, and other administrative fields are dropped
+before parquet is written. The recorded `guidellm_version` is retained so
+benchmark rows show which workload generator version produced them.
+Additional serving fields (`pp`, `dp`, `tp_prefill`, `tp_decode`,
+`moe_tp_size`, `moe_ep_size`, and `enable_expert_parallel`) are retained only
+when explicitly recorded in source columns or runtime arguments; missing
+values remain null.
+The publisher rejects missing concurrency or `turn_index` and duplicate
+combinations of published configuration fields, concurrency, and turn index.
+A row reduction in any published pair
+requires an explicit `--allow-row-reduction` after review; the scheduled
+workflow does not set that flag.
 
 `legacy_mvp.py` is retained temporarily as a migration reference from the
 former `configiq-tested-models` repository. It must not be used to publish
