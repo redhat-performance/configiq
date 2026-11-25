@@ -33,7 +33,7 @@ PATHS=(
 destination="${AISIMULATORS_LLM_D_VENDOR_DIR:-$(cd "$(dirname "$0")/.." && pwd)/vendor/llm-d}"
 target="${destination}/${REVISION}"
 
-if [ -f "${target}/guides/recipes/modelserver/components/graceful-shutdown/kustomization.yaml" ]; then
+if [ -f "${target}/.complete" ]; then
   printf 'llm-d %s is already vendored at %s\n' "${REVISION}" "${target}"
   exit 0
 fi
@@ -45,7 +45,11 @@ git -C "${work}" init --quiet
 git -C "${work}" remote add origin "${REPO}"
 git -C "${work}" fetch --quiet --depth 1 origin "${REVISION}"
 
+# A tree without the marker may be a half-extracted earlier attempt, so replace
+# it rather than extracting on top of stale files.
+rm -rf "${target}"
 mkdir -p "${target}"
 git -C "${work}" archive FETCH_HEAD -- "${PATHS[@]}" | tar -x -C "${target}"
+: > "${target}/.complete"
 
 printf 'vendored llm-d %s into %s\n' "${REVISION}" "${target}"

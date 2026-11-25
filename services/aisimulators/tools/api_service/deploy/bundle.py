@@ -205,7 +205,7 @@ def _layout(engine: EngineSection, target: DeployTarget) -> str:
             "| `patch-vllm.yaml` | The evaluated limits for the aggregated model server. |"
             if engine.mode == "agg"
             else "| `patch-prefill.yaml`, `patch-decode.yaml` | The evaluated limits for each pool. |",
-            "| `llm-d/` | The pinned llm-d v1.0.0 subtrees the overlay references, verbatim. |",
+            "| `llm-d/` | The pinned llm-d v1.0.0 subtrees the overlay and the router values reference, verbatim. |",
             "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |",
         ]
         return "\n".join(rows)
@@ -251,6 +251,13 @@ the cluster does not already provide them.
 3. `./verify.sh` — waits for the rollout and queries the served model.
 """
         endpoint = "kubectl -n {namespace} get svc -o wide"
+    if target.kind == "llm-d":
+        uninstall = (
+            f"helm uninstall {name} -n {request.namespace}\n"
+            f"kubectl delete -n {request.namespace} -k ."
+        )
+    else:
+        uninstall = f"kubectl delete -n {request.namespace} -f k8s_deploy.yaml"
     return f"""# {name}
 
 {deploy}
@@ -287,7 +294,7 @@ The scripts read `NAMESPACE` (default `{request.namespace}`), `KUBECTL`, and
 ## Uninstall
 
 ```bash
-kubectl delete -n {request.namespace} -k .
+{uninstall}
 ```
 
 ## Limitations
@@ -410,11 +417,14 @@ if ! "$KUBECTL" get crd disaggregatedsets.disaggregatedset.x-k8s.io >/dev/null 2
   exit 1
 fi
 """
+        values_files = "\n".join(
+            f'  -f "{reference}" \\'
+            for reference in install_file_references(target, engine)
+        )
         install = f""""$HELM" upgrade --install "{_name(engine, request.name_prefix)}" \\
   "{ROUTER_CHART}" \\
   --version "{ROUTER_CHART_VERSION}" \\
-  -f "llm-d/{_router_base_values()}" \\
-  -f "llm-d/{_router_values(engine)}" \\
+{values_files}
   --namespace "$NAMESPACE"
 "$KUBECTL" apply -n "$NAMESPACE" -k .
 """
@@ -437,7 +447,6 @@ for arg in "$@"; do
 done
 
 cd "$(dirname "$0")"
-./preflight.sh
 
 "$KUBECTL" create namespace "$NAMESPACE" --dry-run=client -o yaml | "$KUBECTL" apply -f -
 if [ -n "${{HF_TOKEN:-}}" ]; then
@@ -447,6 +456,7 @@ if [ -n "${{HF_TOKEN:-}}" ]; then
 fi
 
 {prerequisites}
+./preflight.sh
 {install}
 echo "Applied. Run ./verify.sh once the pods are running."
 """
@@ -507,6 +517,17 @@ def _router_base_values() -> str:
 
 def _router_values(engine: EngineSection) -> str:
     return LLM_D_ROUTER_VALUES_BY_MODE[engine.mode]
+
+
+def install_file_references(target: DeployTarget, engine: EngineSection) -> tuple[str, ...]:
+    """Bundle-relative files ``install.sh`` passes to Helm with ``-f``.
+
+    The render gate copies exactly these from the pinned tree and asserts they
+    are in the bundle, so the installer never reads a path that was not shipped.
+    """
+    if target.kind != "llm-d":
+        return ()
+    return (f"llm-d/{_router_base_values()}", f"llm-d/{_router_values(engine)}")
 
 
 def assemble(

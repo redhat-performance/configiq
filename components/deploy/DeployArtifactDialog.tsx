@@ -140,6 +140,29 @@ export function DeployArtifactDialog({
   // answer must not overwrite a newer dialog state.
   React.useEffect(() => () => inFlight.current?.abort(), []);
 
+  const resetArtifact = React.useCallback(() => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+    setRendering(false);
+    setArtifact(null);
+    setRenderError(null);
+    setDownloadError(null);
+  }, []);
+
+  // A different result behind the same dialog must not inherit the previous
+  // render: its checks describe limits that are no longer shown.
+  const evaluationId = JSON.stringify({
+    engine,
+    system,
+    isl,
+    osl,
+    concurrency: concurrency ?? null,
+    modelConfigData: modelConfigData ?? null,
+  });
+  React.useEffect(() => {
+    resetArtifact();
+  }, [evaluationId, resetArtifact]);
+
   React.useEffect(() => {
     if (!isOpen) {
       targetsRequest.current?.abort();
@@ -172,12 +195,6 @@ export function DeployArtifactDialog({
   }, [isOpen]);
 
   const selectedTarget = targets?.find(target => target.id === targetId) ?? null;
-
-  const resetArtifact = () => {
-    setArtifact(null);
-    setRenderError(null);
-    setDownloadError(null);
-  };
 
   const requestInput = (): DeployRequestInput | null => {
     if (engine == null || targetId === '') return null;

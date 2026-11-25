@@ -2551,6 +2551,74 @@ class TestCapacityConfig:
         assert config.power_w is None
 
 
+class TestCapacityOptionEngine:
+    """The probe runs one worker; the option's replica count is what deploys."""
+
+    def _engine(self, mode: str = "agg"):
+        role = {
+            "replicas": {"value": 1, "source": "evaluated"},
+            "tensor_parallel_size": {"value": 2, "source": "evaluated"},
+            "pipeline_parallel_size": {"value": 1, "source": "evaluated"},
+            "data_parallel_size": {"value": 1, "source": "evaluated"},
+            "context_parallel_size": {"value": 1, "source": "evaluated"},
+            "decode_context_parallel_size": {"value": 1, "source": "evaluated"},
+            "moe_tensor_parallel_size": {"value": 1, "source": "evaluated"},
+            "moe_expert_parallel_size": {"value": 1, "source": "evaluated"},
+            "max_model_len": {"value": 4096, "source": "evaluated"},
+            "max_num_seqs": {"value": 64, "source": "evaluated"},
+            "max_num_batched_tokens": {"value": 8192, "source": "evaluated"},
+            "block_size": {"value": 64, "source": "evaluated"},
+            "gpu_memory_utilization": {"value": 0.9, "source": "evaluated"},
+            "enable_prefix_caching": {"value": True, "source": "evaluated"},
+            "enable_chunked_prefill": {"value": None, "source": "not-modeled"},
+            "kv_cache_dtype": {"value": None, "source": "backend-default"},
+            "quantization": {"value": None, "source": "backend-default"},
+        }
+        engine = {
+            "model": "Qwen/Qwen3-32B",
+            "backend": "vllm",
+            "backend_version": "0.24.0",
+            "mode": mode,
+        }
+        if mode == "agg":
+            engine["agg"] = dict(role)
+        else:
+            engine["prefill"] = dict(role)
+            engine["decode"] = dict(role)
+        return app_module.EngineSection.model_validate(engine)
+
+    def test_an_aggregate_option_reports_its_own_replicas(self):
+        engine = self._engine("agg")
+        candidate = app_module._CapacityCandidate(
+            shape=_capacity_shape(tp=2, dp=1, per_rank_tokens=100_000),
+            replicas=3,
+            context_tokens=1000,
+        )
+
+        merged = app_module._engine_with_option_replicas(engine, candidate)
+
+        assert merged.agg.replicas.value == 3
+        assert merged.agg.replicas.source == "evaluated"
+        assert merged.agg.max_num_seqs.value == 64
+        assert engine.agg.replicas.value == 1
+
+    def test_a_disaggregated_option_reports_each_pool_replicas(self):
+        engine = self._engine("disagg")
+        candidate = app_module._DisaggCapacityCandidate(
+            prefill=app_module._CapacityCandidate(
+                shape=_capacity_shape(tp=1), replicas=1, context_tokens=1000
+            ),
+            decode=app_module._CapacityCandidate(
+                shape=_capacity_shape(tp=2), replicas=4, context_tokens=1000
+            ),
+        )
+
+        merged = app_module._engine_with_option_replicas(engine, candidate)
+
+        assert merged.prefill.replicas.value == 1
+        assert merged.decode.replicas.value == 4
+
+
 class TestCapacityOptionSelection:
     def _aggregate(self, shapes, *, target=100, context=1000, lower=1, upper=16):
         return app_module._capacity_aggregate_candidates(

@@ -256,4 +256,32 @@ describe('DeployArtifactButton', () => {
     expect(document.body.textContent).toContain('Some targets are unavailable here');
     expect(document.body.textContent).toContain('the pinned source tree is not installed');
   });
+
+  it('aborts and clears a render when the dialog is pointed at a different result', async () => {
+    let resolveRender: (value: DeployArtifact) => void = () => {};
+    vi.mocked(renderDeployArtifact).mockReturnValue(
+      new Promise<DeployArtifact>(resolve => {
+        resolveRender = resolve;
+      }),
+    );
+    await renderButton();
+    await openDialog();
+
+    await act(async () => buttonNamed('Render artifact').click());
+    expect(buttonNamed('Render artifact').disabled).toBe(true);
+
+    const nextEngine = engine();
+    if (nextEngine.agg == null) throw new Error('expected aggregated limits');
+    nextEngine.agg.max_num_seqs = { value: 8, source: 'evaluated' };
+    await renderButton({ engine: nextEngine });
+
+    // The late answer belongs to the previous result and must not restore it.
+    await act(async () => {
+      resolveRender(artifact());
+    });
+    await act(async () => {});
+
+    expect(document.body.textContent).not.toContain('Render gate passed for llm-d');
+    expect(buttonNamed('Render artifact').disabled).toBe(false);
+  });
 });

@@ -3607,6 +3607,37 @@ def _capacity_disagg_config(
     )
 
 
+def _engine_with_option_replicas(
+    engine: EngineSection,
+    candidate: _CapacityCandidate | _DisaggCapacityCandidate,
+) -> EngineSection:
+    """The probe's limits, with the replica counts the capacity option selected.
+
+    The performance probe simulates one worker, so the engine section it
+    returns reports the probe's replica count, not the option's. Capacity chose
+    how many workers hold the target concurrency, and that is what a deployment
+    renders.
+    """
+
+    def with_replicas(role: EngineRole | None, replicas: int) -> EngineRole | None:
+        if role is None:
+            return None
+        return role.model_copy(
+            update={"replicas": EngineField(value=replicas, source="evaluated")}
+        )
+
+    if isinstance(candidate, _DisaggCapacityCandidate):
+        return engine.model_copy(
+            update={
+                "prefill": with_replicas(engine.prefill, candidate.prefill.replicas),
+                "decode": with_replicas(engine.decode, candidate.decode.replicas),
+            }
+        )
+    return engine.model_copy(
+        update={"agg": with_replicas(engine.agg, candidate.replicas)}
+    )
+
+
 def _capacity_option_config(
     req: RecommendRequest,
     *,
@@ -3634,10 +3665,11 @@ def _capacity_option_config(
     if prediction is not None:
         config.warnings.extend(str(w) for w in getattr(prediction, "warnings", []) or [])
         # The prediction carries its compiled spec only when the caller asked
-        # for engine limits; when it does, they belong to this option.
+        # for engine limits; when it does, they belong to this option. The probe
+        # ran one worker, so replace its replica count with the option's.
         engine = _prediction_engine(prediction, model=req.model_path)
         if engine is not None:
-            config.engine = engine
+            config.engine = _engine_with_option_replicas(engine, candidate)
     if req.inclusive_tpot:
         config.tpot = _inclusive_tpot(config.ttft, config.tpot, req.osl)
     return config

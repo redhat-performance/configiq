@@ -161,6 +161,58 @@ class TestDeployValidation:
         assert "agg.max_num_seqs" in detail
         assert "Re-run the prediction" in detail
 
+    @pytest.mark.parametrize(
+        ("field_name", "value"),
+        [
+            ("enable_chunked_prefill", True),
+            ("kv_cache_dtype", "fp8"),
+            ("quantization", "fp8"),
+        ],
+    )
+    def test_a_limit_the_generator_cannot_render_is_refused(self, field_name, value):
+        engine = _engine("agg", "0.24.0")
+        engine["agg"][field_name] = _field(value, "evaluated")
+
+        response = client.post("/deploy", json=_body("dynamo-dgd", engine))
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert field_name in detail
+        assert "cannot render" in detail
+
+    def test_backend_defaults_and_not_modeled_limits_still_render(self):
+        response = client.post("/deploy", json=DGD_AGG)
+
+        assert response.status_code == 200, response.text
+        assert DGD_AGG["engine"]["agg"]["kv_cache_dtype"]["source"] == "backend-default"
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            {"namespace": "a$(id)"},
+            {"name_prefix": 'x";reboot'},
+            {"image": "img;rm -rf /"},
+        ],
+    )
+    def test_a_script_unsafe_input_is_rejected(self, field):
+        response = client.post("/deploy", json=_body("dynamo-dgd", _engine("agg", "0.24.0"), **field))
+
+        assert response.status_code == 422
+
+    def test_dns_and_image_shaped_inputs_still_render(self):
+        response = client.post(
+            "/deploy",
+            json=_body(
+                "dynamo-dgd",
+                _engine("agg", "0.24.0"),
+                namespace="team-a",
+                name_prefix="abc",
+                image="nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0",
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+
     def test_a_different_engine_release_is_refused_with_the_way_out(self):
         response = client.post("/deploy", json=_body("llm-d", _engine("agg", "0.24.0")))
 
@@ -268,6 +320,17 @@ class TestDynamoDgdArtifact:
         assert "accelerator(s)" in readme
         assert "DynamoGraphDeployment" in readme
 
+    def test_install_creates_the_namespace_before_preflight(self):
+        install = _files(client.post("/deploy", json=DGD_AGG).json())["install.sh"]
+
+        assert install.index("create namespace") < install.index("./preflight.sh")
+
+    def test_the_uninstall_command_matches_the_single_manifest(self):
+        readme = _files(client.post("/deploy", json=DGD_AGG).json())["README.md"]
+
+        assert "kubectl delete -n configiq -f k8s_deploy.yaml" in readme
+        assert "-k ." not in readme
+
 
 @requires_kustomize
 class TestLlmdArtifact:
@@ -308,13 +371,63 @@ class TestLlmdArtifact:
         assert "DisaggregatedSet" in kinds["resources"]["detail"]
 
     def test_the_bundle_carries_the_router_values_it_installs(self):
-        files = _files(client.post("/deploy", json=_body("llm-d", _engine("disagg", "0.31.0"))).json())
+        payload = client.post("/deploy", json=_body("llm-d", _engine("disagg", "0.31.0"))).json()
+        files = _files(payload)
 
         install = files["install.sh"]
         assert catalog.LLM_D_ROUTER_VALUES_BY_MODE["disagg"] in install
         assert catalog.LLM_D_ROUTER_BASE_VALUES in install
         assert catalog.ROUTER_CHART_VERSION in install
         assert "llm-d-hf-token" in files["preflight.sh"]
+        for reference in (
+            f"llm-d/{catalog.LLM_D_ROUTER_BASE_VALUES}",
+            f"llm-d/{catalog.LLM_D_ROUTER_VALUES_BY_MODE['disagg']}",
+        ):
+            assert reference in files
+        checks = {check["id"]: check for check in payload["checks"]}
+        assert checks["install-references"]["status"] == "passed"
+
+    def test_an_aggregated_bundle_carries_its_router_values(self):
+        payload = client.post("/deploy", json=_body("llm-d", _engine("agg", "0.31.0"))).json()
+        files = _files(payload)
+
+        assert f"llm-d/{catalog.LLM_D_ROUTER_VALUES_BY_MODE['agg']}" in files
+        assert f"llm-d/{catalog.LLM_D_ROUTER_BASE_VALUES}" in files
+
+    def test_install_runs_preflight_after_prerequisites(self):
+        install = _files(client.post("/deploy", json=_body("llm-d", _engine("agg", "0.31.0"))).json())[
+            "install.sh"
+        ]
+
+        assert install.index("Applying Inference Extension") < install.index("./preflight.sh")
+
+
+class TestSuppliedModelConfig:
+    def test_a_supplied_config_avoids_resolving_the_model_id(self):
+        config = {
+            "architectures": ["Qwen3ForCausalLM"],
+            "model_type": "qwen3",
+            "hidden_size": 5120,
+            "num_hidden_layers": 64,
+            "num_attention_heads": 40,
+            "num_key_value_heads": 8,
+            "intermediate_size": 25600,
+            "vocab_size": 151936,
+            "max_position_embeddings": 40960,
+        }
+        engine = _engine("agg", "0.24.0", model="configiq/not-resolvable-model")
+
+        response = client.post(
+            "/deploy",
+            json=_body("dynamo-dgd", engine, model_config_data=config),
+        )
+
+        assert response.status_code == 200, response.text
+        documents = [
+            doc for doc in yaml.safe_load_all(_files(response.json())["k8s_deploy.yaml"]) if doc
+        ]
+        args = documents[0]["spec"]["services"]["VllmWorker"]["extraPodSpec"]["mainContainer"]["args"]
+        assert args[args.index("--model") + 1] == "configiq/not-resolvable-model"
 
 
 class TestEngineLowering:
@@ -360,6 +473,70 @@ class TestEngineLowering:
                 ),
                 target,
             )
+
+
+class TestEngineLimitGate:
+    def _role_and_args(self):
+        role = _section(_engine("agg", "0.24.0")).agg
+        args = ["--model", "Qwen/Qwen3-32B"]
+        for flag, field_name in render_module._LIMIT_FLAGS:
+            args.extend([flag, str(getattr(role, field_name).value)])
+        if role.enable_prefix_caching.value is False:
+            args.append("--no-enable-prefix-caching")
+        return role, args
+
+    def _failures(self, role, args):
+        failures, _ = render_module._assert_engine_limits(
+            [("agg", role.replicas.value, [{"name": "modelserver", "args": args}])],
+            _section(_engine("agg", "0.24.0")),
+        )
+        return failures
+
+    def test_every_rendered_limit_is_asserted(self):
+        role, args = self._role_and_args()
+
+        failures, assertions = render_module._assert_engine_limits(
+            [("agg", role.replicas.value, [{"name": "modelserver", "args": args}])],
+            _section(_engine("agg", "0.24.0")),
+        )
+
+        assert failures == []
+        assert assertions == len(render_module._LIMIT_FLAGS) + len(
+            render_module._NEGATED_FLAGS
+        ) + 1
+
+    @pytest.mark.parametrize("flag", ["--block-size", "--gpu-memory-utilization"])
+    def test_a_tampered_value_fails(self, flag):
+        role, args = self._role_and_args()
+        args[args.index(flag) + 1] = "999"
+
+        assert any(flag in failure for failure in self._failures(role, args))
+
+    def test_prefix_caching_presence_is_asserted(self):
+        role, args = self._role_and_args()
+        args.remove("--no-enable-prefix-caching")
+
+        assert any(
+            "--no-enable-prefix-caching" in failure for failure in self._failures(role, args)
+        )
+
+
+class TestKustomizeCommand:
+    def test_an_override_binary_gets_the_build_subcommand(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_KUSTOMIZE_BIN", "/opt/kustomize")
+        monkeypatch.setattr(
+            catalog.shutil,
+            "which",
+            lambda name: "/opt/kustomize" if name == "/opt/kustomize" else None,
+        )
+
+        assert catalog.kustomize_command() == ["/opt/kustomize", "build"]
+
+    def test_a_missing_override_binary_is_unavailable(self, monkeypatch):
+        monkeypatch.setenv("AISIMULATORS_KUSTOMIZE_BIN", "/opt/absent")
+        monkeypatch.setattr(catalog.shutil, "which", lambda name: None)
+
+        assert catalog.kustomize_command() is None
 
 
 class TestVendorPins:

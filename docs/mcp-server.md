@@ -174,12 +174,16 @@ API does. Ask the API directly if you need the fabric list.
 ```json
 {
   "target": "llm-d",
-  "engine": { "model": "Qwen/Qwen3-32B", "backend": "vllm", "mode": "agg", "agg": {} },
   "system": "h200_sxm",
   "isl": 4000,
-  "osl": 1000
+  "osl": 1000,
+  "engine": "<the engine section the prediction returned>"
 }
 ```
+
+`engine` is the object `include=engine` returned, verbatim and complete: a
+section that omits a limit, or states one the target cannot render, is refused
+rather than filled in.
 
 `target`, `engine`, `system`, `isl`, and `osl` are required. The workload is not
 defaulted because the artifact states the request lengths the evaluated run used,

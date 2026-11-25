@@ -1413,9 +1413,9 @@ components:
           type: string
           description: Simulator that produced this candidate.
         engine:
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/EngineSection'
-          nullable: true
+            - type: 'null'
           description: |
             The engine limits this candidate was evaluated with, when the kept
             prediction config compiles under the running SDK. Null otherwise,
@@ -1568,9 +1568,9 @@ components:
           description: Decode worker parallelism and serving config (disaggregated results only).
           $ref: '#/components/schemas/WorkerConfig'
         engine:
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/EngineSection'
-          nullable: true
+            - type: 'null'
           description: |
             The engine limits this config was evaluated with (present when
             include=engine). `POST /deploy` renders from exactly this section.
@@ -2119,9 +2119,9 @@ components:
           description: Per-component memory breakdown (present when include=memory).
           $ref: '#/components/schemas/MemoryBreakdown'
         engine:
-          allOf:
+          oneOf:
             - $ref: '#/components/schemas/EngineSection'
-          nullable: true
+            - type: 'null'
           description: |
             The engine limits this prediction evaluated (present when
             include=engine). Null for a result that carries no compiled spec,
@@ -2505,7 +2505,7 @@ components:
         kind:
           type: string
           description: Renderer family the target uses.
-          enum: [llm-d, dynamo]
+          enum: [llm-d, dynamo-dgd]
         simulator:
           type: string
           description: Simulator whose evaluated limits this target renders.

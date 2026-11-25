@@ -53,7 +53,13 @@ _LIMIT_FLAGS = (
     ("--max-num-batched-tokens", "max_num_batched_tokens"),
     ("--tensor-parallel-size", "tensor_parallel_size"),
     ("--pipeline-parallel-size", "pipeline_parallel_size"),
+    ("--block-size", "block_size"),
+    ("--gpu-memory-utilization", "gpu_memory_utilization"),
 )
+
+#: Boolean limits the backend renders as a negation: the flag is present when
+#: the evaluated value is False, and absent when it is True.
+_NEGATED_FLAGS = (("--no-enable-prefix-caching", "enable_prefix_caching"),)
 
 
 class DeployRenderError(ValueError):
@@ -117,6 +123,11 @@ def _flag(args: list[Any], name: str) -> str | None:
     return None
 
 
+def _has_flag(args: list[Any], name: str) -> bool:
+    """Whether a valueless ``--name`` appears in the argv."""
+    return any(str(token) == name for token in args)
+
+
 #: Tokens only an inference engine's argv carries. A frontend (``--http-port``)
 #: and the routing sidecar (``--kv-connector``) carry neither.
 _ENGINE_TOKENS = ("--model", "--tensor-parallel-size", "--max-model-len")
@@ -162,9 +173,10 @@ def _match_role(
 def _assert_engine_limits(
     roles: list[tuple[str, int | None, list[dict[str, Any]]]],
     engine: EngineSection,
-) -> list[str]:
+) -> tuple[list[str], int]:
     """Every evaluated limit that changes behaviour must appear in the argv."""
     failures: list[str] = []
+    assertions = 0
     for role_name, expected in engine_lowering.roles_for_mode(engine).items():
         actual = _match_role(roles, role_name)
         if actual is None:
@@ -179,14 +191,27 @@ def _assert_engine_limits(
             value = getattr(expected, field_name).value
             if value is None:
                 continue
+            assertions += 1
             rendered = _flag(args, flag)
             if rendered != str(value):
                 failures.append(f"{role_name}: {flag} is {rendered!r}, evaluated {value!r}")
-        if expected.replicas.value is not None and actual[1] != expected.replicas.value:
-            failures.append(
-                f"{role_name}: replicas is {actual[1]!r}, evaluated {expected.replicas.value!r}"
-            )
-    return failures
+        for flag, field_name in _NEGATED_FLAGS:
+            value = getattr(expected, field_name).value
+            if value is None:
+                continue
+            assertions += 1
+            present = _has_flag(args, flag)
+            if present != (value is False):
+                failures.append(
+                    f"{role_name}: {flag} presence is {present!r}, evaluated {value!r}"
+                )
+        if expected.replicas.value is not None:
+            assertions += 1
+            if actual[1] != expected.replicas.value:
+                failures.append(
+                    f"{role_name}: replicas is {actual[1]!r}, evaluated {expected.replicas.value!r}"
+                )
+    return failures, assertions
 
 
 def _assert_images(
@@ -367,6 +392,27 @@ def _post_process_kustomization(contents: str, namespace: str, mode: str) -> str
     return yaml.safe_dump(kustomization, sort_keys=False)
 
 
+def _model_facts(model_path: str) -> Any | None:
+    """Facts the supplied config states, so generation never fetches the model.
+
+    The caller may supply a ``config.json`` for a model this deployment cannot
+    resolve. Building the generator's facts from that file keeps the Hugging
+    Face id as ``--model`` while avoiding a network lookup that would fail.
+    """
+    try:
+        from aisimulate.generator.request import ModelFacts
+        from aisimulate.sdk.models import check_is_moe
+        from aisimulate.sdk.utils import get_model_config_from_model_path
+
+        info = get_model_config_from_model_path(model_path)
+        return ModelFacts(
+            is_moe=bool(check_is_moe(model_path, model_info=info)),
+            architecture=info.get("architecture"),
+        )
+    except Exception:  # fall back to resolving the model id
+        return None
+
+
 def _generator_files(request: DeployRequest, target: DeployTarget, model_path: str) -> dict[str, str]:
     """Render the model-server artifacts for one evaluated engine section."""
     from aisimulate.generator.api import generate_from_request
@@ -399,7 +445,9 @@ def _generator_files(request: DeployRequest, target: DeployTarget, model_path: s
         ),
         deployment_target=str(target.pins["deployment_target"]),
         generator_overrides=overrides,
-        model_facts=None,
+        # Only derive facts when the context supplied a local config; otherwise
+        # let the generator resolve the model id as it did for the evaluation.
+        model_facts=_model_facts(model_path) if model_path != engine.model else None,
     )
     if request.served_model_name:
         generator_request = replace(
@@ -522,11 +570,25 @@ def render(
     image = _resolved_image(request, target, generated)
 
     files = dict(generated)
+    references: tuple[str, ...] = ()
     if is_kustomize:
-        files.update(vendored_closure(str(llm_d_vendor_dir()), engine.mode))
+        vendor_root = llm_d_vendor_dir()
+        files.update(vendored_closure(str(vendor_root), engine.mode))
         files["kustomization.yaml"] = _post_process_kustomization(
             files["kustomization.yaml"], request.namespace, engine.mode
         )
+        # install.sh passes the router values to Helm with -f; the bundle must
+        # carry exactly those files so the installer never reads a missing path.
+        references = bundle.install_file_references(target, engine)
+        for reference in references:
+            source = vendor_root / reference.removeprefix("llm-d/")
+            try:
+                files[reference] = source.read_text()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise DeployRenderError(
+                    f"install.sh references {reference!r}, which could not be read "
+                    f"from the pinned tree: {exc}"
+                ) from exc
 
     checks: list[DeployCheck] = []
     with tempfile.TemporaryDirectory(prefix="configiq-deploy-") as directory:
@@ -578,13 +640,13 @@ def render(
         )
     )
 
+    limit_failures, limit_assertions = _assert_engine_limits(roles, engine)
     checks.append(
         _check(
             "engine-limits",
-            _assert_engine_limits(roles, engine),
+            limit_failures,
             "the rendered argv and replica counts carry the evaluated limits",
-            assertions=len(engine_lowering.REQUIRED_ROLE_FIELDS)
-            * len(engine_lowering.roles_for_mode(engine)),
+            assertions=limit_assertions,
         )
     )
 
@@ -609,6 +671,20 @@ def render(
             assertions=1,
         )
     )
+
+    if references:
+        checks.append(
+            _check(
+                "install-references",
+                [
+                    f"{reference} is not in the bundle"
+                    for reference in references
+                    if reference not in files
+                ],
+                "install.sh reads only files the bundle carries",
+                assertions=len(references),
+            )
+        )
 
     failed = [check for check in checks if check.status == "failed"]
     if failed:

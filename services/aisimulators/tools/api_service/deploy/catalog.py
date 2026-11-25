@@ -94,7 +94,9 @@ def kustomize_command() -> list[str] | None:
     """
     override = os.environ.get("AISIMULATORS_KUSTOMIZE_BIN", "").strip()
     if override:
-        return [override] if shutil.which(override) else None
+        # The variable names the kustomize binary; `build` is the subcommand the
+        # gate needs. `kubectl` keeps its own subcommand below.
+        return [override, "build"] if shutil.which(override) else None
     if shutil.which("kustomize"):
         return ["kustomize", "build"]
     if shutil.which("kubectl"):

@@ -38,6 +38,16 @@ REQUIRED_ROLE_FIELDS: tuple[str, ...] = (
     "enable_prefix_caching",
 )
 
+#: Limits this contract reports but the pinned generators do not render into a
+#: model server's argv. A value the run evaluated cannot be reproduced by a
+#: deployment, so a target that would have to is refused rather than silently
+#: letting the backend derive its own.
+UNRENDERED_ROLE_FIELDS: tuple[str, ...] = (
+    "enable_chunked_prefill",
+    "kv_cache_dtype",
+    "quantization",
+)
+
 _TOPOLOGY_KEYS = {
     "tensor_parallel_size": "tp",
     "pipeline_parallel_size": "pp",
@@ -109,6 +119,20 @@ def validate(engine: EngineSection, target: DeployTarget, *, allow_version_misma
             + ", ".join(missing)
             + ". Re-run the prediction with a simulator that evaluates these limits "
             "(AISim reports all of them) before deploying."
+        )
+    unrenderable = [
+        f"{role_name}.{name}={getattr(role, name).value!r}"
+        for role_name, role in roles_for_mode(engine).items()
+        for name in UNRENDERED_ROLE_FIELDS
+        if getattr(role, name).source == "evaluated"
+    ]
+    if unrenderable:
+        raise DeployUnsupportedRequest(
+            "the evaluated run states " + ", ".join(unrenderable) + ", which target "
+            f"{target.id!r} cannot render: its pinned generator emits only the limits it "
+            "models, so the deployed server would apply its own defaults instead. Re-run "
+            "the prediction without those overrides, or predict with the precision the "
+            "checkpoint declares."
         )
     if (
         engine.backend_version is not None

@@ -117,7 +117,10 @@ curl -X POST https://aisimulators.configiq.dev/memory \
 service already evaluated. It does not size anything: pass the `engine` section
 a prediction or recommendation returned with `include=engine`, the workload it
 was measured against (`isl`, `osl`, optionally `concurrency`), and the catalog
-`system`. The artifact reproduces those limits or the request fails.
+`system`. The artifact reproduces those limits or the request fails. A limit the
+pinned generator cannot render — such as an explicit KV-cache dtype or
+quantization mode — is refused rather than silently replaced by a backend
+default.
 
 ```bash
 curl -X POST https://aisimulators.configiq.dev/deploy \

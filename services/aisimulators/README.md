@@ -208,6 +208,7 @@ directory and checked before the response is written:
 | `engine-limits` | Every evaluated limit and replica count appears in the rendered argv. |
 | `images` | The model-server image is the pinned one, and a P/D layout also pins the routing sidecar. |
 | `placeholders` | No upstream `REPLACE_*` placeholder survives. |
+| `install-references` | Every file `install.sh` passes to Helm with `-f` is in the bundle (Kustomize targets only). |
 
 A failed check is a 500 naming the check, not a bundle that breaks on apply.
 
@@ -218,6 +219,11 @@ The `engine` section must be reproducible by the target. A target refuses with
 
 - a limit it must render is `not-modeled` (re-run the prediction, or choose a
   target that models it);
+- the evaluated run states a limit the pinned generator does not render into the
+  model server's argv (`enable_chunked_prefill`, `kv_cache_dtype`, or
+  `quantization` when the source is `evaluated`), so deploying it would apply a
+  backend default the prediction did not use. Re-run the prediction without that
+  override;
 - its pinned image runs a different engine release than the evaluated one. Set
   `allow_engine_version_mismatch: true` (and `image` when overriding the image)
   to accept the difference: it is recorded in `PROVENANCE.md` and printed by

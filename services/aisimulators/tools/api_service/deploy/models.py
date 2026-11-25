@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 
 from ..engine_models import EngineSection
 
+#: RFC 1123 label: what Kubernetes accepts for a namespace, and what is safe to
+#: interpolate unquoted into the generated shell scripts.
+_DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+#: An image reference — registry path, tag, or digest — with no shell
+#: metacharacters, so it cannot break out of the quoted script arguments.
+_IMAGE_REFERENCE = r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$"
+
 
 class DeployRequest(BaseModel):
     """One deployment, rendered from limits the simulator already evaluated.
@@ -49,10 +56,13 @@ class DeployRequest(BaseModel):
         description="Output tokens per request the evaluation used.",
     )
     concurrency: int | None = Field(default=None, ge=1, description="Serving concurrency the run targeted.")
-    namespace: str = Field(default="configiq", min_length=1, max_length=63)
-    name_prefix: str | None = Field(default=None, max_length=40)
+    namespace: str = Field(
+        default="configiq", min_length=1, max_length=63, pattern=_DNS_LABEL
+    )
+    name_prefix: str | None = Field(default=None, max_length=40, pattern=_DNS_LABEL)
     image: str | None = Field(
         default=None,
+        pattern=_IMAGE_REFERENCE,
         description="Model-server image override. Defaults to the target's pinned image.",
     )
     allow_engine_version_mismatch: bool = Field(
