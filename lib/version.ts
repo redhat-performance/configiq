@@ -4,7 +4,6 @@
 export const VERSION = {
   number: process.env.NEXT_PUBLIC_GIT_VERSION || '0.2.0',
   gitCommit: process.env.NEXT_PUBLIC_GIT_COMMIT || 'dev',
-  environment: process.env.NEXT_PUBLIC_VERCEL_ENV || process.env.NODE_ENV || 'development'
 } as const
 
 export function getVersionString(): string {

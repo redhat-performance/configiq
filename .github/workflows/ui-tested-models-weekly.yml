@@ -1,0 +1,89 @@
+name: Tested-model UI regression on dev (weekly full)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 6'
+      timezone: 'America/New_York'
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Resolve deployed dev build
+    if: github.repository == 'redhat-performance/configiq'
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Read deployed build
+        id: build
+        env:
+          PLAYWRIGHT_BASE_URL: https://configiq.dev
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: node scripts/check-deployed-version.mjs
+
+  tested-models:
+    name: Test dev UI and AISimulators (full, shard ${{ matrix.shard }}/12)
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    env:
+      PLAYWRIGHT_BASE_URL: https://configiq.dev
+      PLAYWRIGHT_MATRIX_ROTATION: ${{ github.run_number }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ needs.preflight.outputs.commit }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify the deployment still serves the preflight build
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+          REQUIRE_MATCH: '1'
+        run: node scripts/check-deployed-version.mjs
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test Predict, KV cache, and Recommend sizing
+        run: npm run test:e2e:scheduled:full -- --shard=${{ matrix.shard }}/12
+
+      # Runs even when a case fails, so a deployment that moved during the shard
+      # is reported as the cause rather than the assertions it invalidated.
+      - name: Confirm the deployment still serves the tested build
+        if: always()
+        env:
+          EXPECTED_COMMIT: ${{ needs.preflight.outputs.commit }}
+          REQUIRE_MATCH: '1'
+        run: node scripts/check-deployed-version.mjs
+
+      - name: Upload UI test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-model-ui-dev-full-${{ github.run_id }}-${{ matrix.shard }}
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
