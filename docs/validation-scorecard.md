@@ -248,6 +248,15 @@ Both artifact files are uploaded in one commit, so a reader never sees a summary
 paired with the previous snapshot's points. A channel is reported current only
 when both files match what the run produced.
 
+A snapshot that did not load every measured source is not published. The sweep
+records each leg it could not load in `incomplete` with a reason, and the page
+names that source as unavailable — but one channel is all a reader sees, so an
+absent source would otherwise look like a dataset nobody measured: the coverage
+map loses its source split and the provenance badge quietly disappears. The
+publish script refuses such an artifact (and refuses to promote a channel that
+holds one), leaving the previous snapshot in place until a complete sweep
+succeeds.
+
 Promotion is a copy, not a rebuild:
 
 ```bash
