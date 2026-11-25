@@ -94,8 +94,10 @@ stays visible: a wide gap between MdAPE and MAPE means those extremes, not the
 typical run, drive the mean. The metric and statistic selectors change the
 chart and tables too, so what is ranked is what is charted.
 
-The error chart keeps every configuration with a prediction, worst first, and
-scrolls inside its tile rather than capping the list. The table behind the flip
+The error chart keeps every configuration with a prediction, best first, and
+scrolls inside its tile rather than capping the list. The closest agreement
+reads at the top so the models and GPUs worth choosing come first; the worst
+sits at the bottom, still reachable by scrolling. The table behind the flip
 lists the same cells for exact reading.
 
 ## Coverage
