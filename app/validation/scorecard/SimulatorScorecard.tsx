@@ -370,11 +370,13 @@ export default function SimulatorScorecard() {
           </p>
         </div>
         <div className={styles.headingAside}>
+          {/* Sources first, actions under them: the same order Benchmark
+              comparison uses, so the two validation pages read alike. */}
+          {summary && <SourceBadges summary={summary} />}
           <div className={styles.headingActions}>
             <CopyLinkButton getUrl={() => shared.build()} />
             <TourButton />
           </div>
-          {summary && <SourceBadges summary={summary} />}
         </div>
       </div>
 

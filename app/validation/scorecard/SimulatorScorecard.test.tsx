@@ -382,6 +382,18 @@ describe('Simulator scorecard page', () => {
     expect(container.textContent).toContain('1024/128');
   });
 
+  it('puts the measured sources above the page actions', async () => {
+    // Benchmark comparison stacks provenance first and the copy and tour
+    // controls under it; the two validation pages must read the same way.
+    await mount(published());
+    const badges = container.querySelector('[data-tour="sources"]');
+    const copy = Array.from(container.querySelectorAll('button'))
+      .find(candidate => candidate.textContent?.includes('Copy link'));
+    expect(badges).not.toBeNull();
+    expect(copy).toBeDefined();
+    expect(badges!.compareDocumentPosition(copy!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('names both measured sources and drops the gateway and release chrome', async () => {
     await mount(published());
     expect(container.textContent).toContain('Benchmark data from Red Hat');
