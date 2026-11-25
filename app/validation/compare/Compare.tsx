@@ -958,8 +958,7 @@ export default function BenchmarkComparisonPage() {
     <PageSection className={styles.page}>
       <div className={styles.heading}>
         <div>
-          <p className={styles.eyebrow}>Validation</p>
-          <h1>Benchmark comparison</h1>
+          <h1 className={styles.pageTitle}>Benchmark comparison</h1>
           <p className={styles.intro}>
             Compare benchmark observations with simulator predictions.
           </p>

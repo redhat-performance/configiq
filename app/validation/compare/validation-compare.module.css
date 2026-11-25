@@ -19,18 +19,11 @@
 
 .heading { margin-bottom: 24px; }
 
-.eyebrow {
-  color: var(--gc-text-2);
-  font: 500 12px var(--gc-font-mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  margin: 0 0 6px;
-}
-
-.heading h1 {
+.pageTitle {
   color: var(--gc-text);
-  font: 500 26px var(--gc-font-display);
-  margin: 0 0 8px;
+  font: 700 30px var(--gc-font-display);
+  letter-spacing: -0.01em;
+  margin: 8px 0 4px;
 }
 
 .intro,

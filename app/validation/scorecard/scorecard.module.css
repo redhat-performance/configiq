@@ -15,21 +15,12 @@
   margin-bottom: 20px;
 }
 
-.eyebrow {
-  margin: 0 0 4px;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-2);
-}
-
-.heading h1 {
-  margin: 0 0 6px;
-  font-size: 26px;
-  font-weight: 500;
-  line-height: 1.2;
+.pageTitle {
+  margin: 8px 0 4px;
+  font-family: var(--display);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .intro {
