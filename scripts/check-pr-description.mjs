@@ -21,8 +21,28 @@ export const TEMPLATE_PATH = resolve(
   'pull_request_template.md',
 )
 
-/** HTML comments are guidance for the author, never content. */
-const COMMENT = /<!--[\s\S]*?-->/g
+/**
+ * HTML comments are guidance for the author, never content.
+ *
+ * A single regular-expression replace is not enough: overlapping or repeated
+ * comment openers can survive it, so the check would read text the author
+ * meant to hide. Scan instead, dropping each comment from its `<!--` through
+ * the next `-->`, and drop an unterminated opener to the end of the document.
+ */
+export function stripComments(markdown) {
+  let result = ''
+  let index = 0
+  while (index < markdown.length) {
+    const start = markdown.indexOf('<!--', index)
+    if (start === -1) return result + markdown.slice(index)
+    result += markdown.slice(index, start)
+    const end = markdown.indexOf('-->', start + 4)
+    if (end === -1) return result
+    index = end + 3
+  }
+  return result
+}
+
 const FENCE = /^\s*```/
 const HEADING = /^##\s+(.+?)\s*$/
 const ITEM_START = /^-\s+\[([ xX])\]\s+(.*)$/
@@ -99,7 +119,7 @@ export function itemKey(text) {
  */
 export function checkDescription(body, template) {
   const problems = []
-  const parsed = sections((body ?? '').replace(COMMENT, ''))
+  const parsed = sections(stripComments(body ?? ''))
 
   const changed = parsed.get('What changed')
   if (changed === undefined) {
@@ -115,7 +135,7 @@ export function checkDescription(body, template) {
   }
 
   const ticked = checklist(checks)
-  const templateChecks = sections(template.replace(COMMENT, '')).get('Checks') ?? ''
+  const templateChecks = sections(stripComments(template)).get('Checks') ?? ''
   for (const item of checklist(templateChecks)) {
     const key = itemKey(item.text)
     const match = ticked.find(candidate => candidate.text.includes(key))

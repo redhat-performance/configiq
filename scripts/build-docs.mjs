@@ -13,6 +13,7 @@
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkGfm from 'remark-gfm';
@@ -77,14 +78,25 @@ function rewriteLinks(tree, section, fileToSlug, errors) {
   });
 }
 
-function decodeEntities(value) {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+const HTML_ENTITIES = new Map([
+  ['&amp;', '&'],
+  ['&lt;', '<'],
+  ['&gt;', '>'],
+  ['&quot;', '"'],
+  ['&#39;', "'"],
+  ['&nbsp;', ' '],
+]);
+
+/**
+ * Decode the entities `rehype-stringify` emits in a single pass. Decoding
+ * `&amp;` first and then the others would unescape the same text twice: an
+ * authored `&amp;lt;` would come out as `<` instead of the literal `&lt;`.
+ */
+export function decodeEntities(value) {
+  return value.replace(
+    /&(?:amp|lt|gt|quot|#39|nbsp);/g,
+    (entity) => HTML_ENTITIES.get(entity) ?? entity,
+  );
 }
 
 function htmlToText(html) {
@@ -301,7 +313,9 @@ ${sections.map((section, position) => `  '${section.slug}': doc${position},`).jo
   );
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

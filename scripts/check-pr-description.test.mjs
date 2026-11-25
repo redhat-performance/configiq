@@ -6,6 +6,7 @@ import {
   checklist,
   itemKey,
   sections,
+  stripComments,
 } from './check-pr-description.mjs'
 
 const template = readFileSync(TEMPLATE_PATH, 'utf8')
@@ -171,6 +172,19 @@ describe('pull request description check', () => {
     expect(checkDescription(body, template)).toContain(
       'add a `## What changed` section with a one or two sentence summary',
     )
+  })
+
+  it('drops an unterminated comment instead of leaving its opener behind', () => {
+    // A regex replace removes `<!-- ... -->` pairs but leaves a stray `<!--`
+    // when the author never closed the comment. The scanner drops the rest,
+    // so no opener survives to hide content from a later reader.
+    expect(stripComments('keep<!-- hidden')).toBe('keep')
+    expect(stripComments('keep<!-- hidden')).not.toContain('<!--')
+  })
+
+  it('removes overlapping comment markers in one pass', () => {
+    expect(stripComments('before<!-- hidden -->after')).toBe('beforeafter')
+    expect(stripComments('a<!-- <!-- hidden -->b-->c')).toBe('ab-->c')
   })
 
   it('reads CRLF descriptions', () => {
