@@ -130,20 +130,30 @@ export function DeployArtifactDialog({
   const [downloading, setDownloading] = React.useState(false);
   const [downloadError, setDownloadError] = React.useState<string | null>(null);
   const inFlight = React.useRef<AbortController | null>(null);
+  const downloadRequest = React.useRef<AbortController | null>(null);
   const targetsRequest = React.useRef<AbortController | null>(null);
   // The catalog is fetched once per mount and kept for later opens. Reading it
   // through a ref keeps the fetch effect keyed to `isOpen` alone; depending on
   // the state it sets would abort its own request on the first re-render.
   const targetsRef = React.useRef<DeployTargetInfo[] | null>(null);
 
-  // Cancel an unfinished render when the dialog closes or unmounts; a late
-  // answer must not overwrite a newer dialog state.
-  React.useEffect(() => () => inFlight.current?.abort(), []);
+  // Cancel unfinished work when the dialog closes or unmounts; a late answer
+  // must not overwrite a newer dialog state.
+  React.useEffect(
+    () => () => {
+      inFlight.current?.abort();
+      downloadRequest.current?.abort();
+    },
+    [],
+  );
 
   const resetArtifact = React.useCallback(() => {
     inFlight.current?.abort();
     inFlight.current = null;
+    downloadRequest.current?.abort();
+    downloadRequest.current = null;
     setRendering(false);
+    setDownloading(false);
     setArtifact(null);
     setRenderError(null);
     setDownloadError(null);
@@ -236,14 +246,18 @@ export function DeployArtifactDialog({
   const handleDownload = async () => {
     const input = requestInput();
     if (input == null) return;
+    downloadRequest.current?.abort();
+    const controller = new AbortController();
+    downloadRequest.current = controller;
     setDownloading(true);
     setDownloadError(null);
     try {
-      saveDeployDownload(await downloadDeployArtifact(input));
+      const download = await downloadDeployArtifact(input, controller.signal);
+      if (!controller.signal.aborted) saveDeployDownload(download);
     } catch (err: unknown) {
-      setDownloadError(errorText(err));
+      if (!controller.signal.aborted) setDownloadError(errorText(err));
     } finally {
-      setDownloading(false);
+      if (!controller.signal.aborted) setDownloading(false);
     }
   };
 

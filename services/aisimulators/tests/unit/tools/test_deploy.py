@@ -213,7 +213,12 @@ class TestDeployValidation:
 
         assert response.status_code == 200, response.text
 
-    def test_a_different_engine_release_is_refused_with_the_way_out(self):
+    def test_a_different_engine_release_is_refused_with_the_way_out(self, monkeypatch, tmp_path):
+        # This test only exercises validation, so make the target available even
+        # where the vendored tree or kustomize is absent.
+        monkeypatch.setattr(catalog, "llm_d_vendor_dir", lambda: tmp_path)
+        monkeypatch.setattr(catalog, "kustomize_command", lambda: ["kustomize", "build"])
+
         response = client.post("/deploy", json=_body("llm-d", _engine("agg", "0.24.0")))
 
         # Refused before the render gate, so it does not depend on the vendor tree.
@@ -400,6 +405,14 @@ class TestLlmdArtifact:
         ]
 
         assert install.index("Applying Inference Extension") < install.index("./preflight.sh")
+
+    def test_preflight_requires_only_the_crds_the_release_ships(self):
+        preflight = _files(client.post("/deploy", json=_body("llm-d", _engine("agg", "0.31.0"))).json())[
+            "preflight.sh"
+        ]
+
+        assert "inferencepools.inference.networking.k8s.io" in preflight
+        assert "inferenceservices.inference.networking.x-k8s.io" not in preflight
 
 
 class TestSuppliedModelConfig:

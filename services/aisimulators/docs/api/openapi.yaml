@@ -2568,7 +2568,7 @@ components:
       properties:
         id:
           type: string
-          enum: [kustomize-build, resources, engine-limits, images, placeholders]
+          enum: [kustomize-build, resources, engine-limits, images, placeholders, install-references]
         status:
           type: string
           enum: [passed, skipped, failed]

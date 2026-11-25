@@ -284,4 +284,32 @@ describe('DeployArtifactButton', () => {
     expect(document.body.textContent).not.toContain('Render gate passed for llm-d');
     expect(buttonNamed('Render artifact').disabled).toBe(false);
   });
+
+  it('does not save a download for a result that was replaced', async () => {
+    vi.mocked(renderDeployArtifact).mockResolvedValue(artifact());
+    let resolveDownload: (value: { blob: Blob; fileName: string }) => void = () => {};
+    vi.mocked(downloadDeployArtifact).mockReturnValue(
+      new Promise(resolve => {
+        resolveDownload = resolve;
+      }),
+    );
+    await renderButton();
+    await openDialog();
+    await act(async () => buttonNamed('Render artifact').click());
+
+    await act(async () => buttonNamed('Download .zip').click());
+
+    const nextEngine = engine();
+    if (nextEngine.agg == null) throw new Error('expected aggregated limits');
+    nextEngine.agg.max_num_seqs = { value: 8, source: 'evaluated' };
+    await renderButton({ engine: nextEngine });
+
+    await act(async () => {
+      resolveDownload({ blob: new Blob(['PK']), fileName: 'a.zip' });
+    });
+    await act(async () => {});
+
+    expect(saveDeployDownload).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('The archive could not be downloaded');
+  });
 });
