@@ -27,7 +27,11 @@
   white-space: nowrap;
 }
 
-.button,
+/* `.stack .button`, not `.button`: PatternFly's `.pf-v6-c-button` sets
+   `position: relative` at the same specificity, and the base stylesheet loads
+   after this module in a production build. Without the extra class the enabled
+   control leaves the overlay and becomes a second in-flow grid row. */
+.stack .button,
 .disabled {
   position: absolute;
   inset: 0;
