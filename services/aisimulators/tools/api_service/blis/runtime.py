@@ -11,12 +11,14 @@ from .manifest import BlisManifestError
 
 #: The BLIS release this build is pinned to. The image sets BLIS_VERSION from the
 #: Containerfile's build arg; the literal is the value a source checkout gets, so
-#: the reported release never silently drifts from the pin.
-DEFAULT_BLIS_RELEASE = "0.19.0"
-#: The upstream commit the pinned BLIS release tag was built from. The release
-#: binary embeds no revision, so the image sets BLIS_COMMIT alongside
-#: BLIS_VERSION; the literal mirrors the tag a source checkout gets.
-DEFAULT_BLIS_COMMIT = "e7597a8c9510f876653d7d87bd8baf195c37c5c7"
+#: the reported release never silently drifts from the pin. Until a release
+#: carries the commands the adapter reads, the image builds a pinned commit and
+#: this is the pseudo-version `blis version` prints for it.
+DEFAULT_BLIS_RELEASE = "0.19.2-0.20261127005804-694802f59d85"
+#: The commit the pinned BLIS build was built from. The binary embeds no revision
+#: in the version string, so the image sets BLIS_COMMIT alongside BLIS_VERSION;
+#: the literal mirrors the commit a source checkout gets.
+DEFAULT_BLIS_COMMIT = "694802f59d852c3f1c4dfdac5dd2bd0249618642"
 
 
 @dataclass(frozen=True)
@@ -33,7 +35,12 @@ class BlisRuntime:
 
 
 def blis_release() -> str:
-    """Return the BLIS release this image was built from."""
+    """Return the BLIS version this image was built from.
+
+    For a release, that is the tag without its `v`. For the pinned commit build
+    it is the Go pseudo-version `blis version` prints, because no release tag
+    contains that commit yet.
+    """
     release = os.environ.get("BLIS_VERSION", "").strip()
     return release or DEFAULT_BLIS_RELEASE
 

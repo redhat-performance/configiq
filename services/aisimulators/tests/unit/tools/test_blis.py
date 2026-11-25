@@ -477,7 +477,7 @@ def test_disagg_documents_reject_missing_fabric():
 #: The document `blis version --json` prints for the pinned build: the build's
 #: identity plus one record per engine kind it runs.
 VERSION_DOCUMENT = {
-    "inference_sim": "0.19.1-0.20261126224925-c3a405954b35",
+    "inference_sim": "0.19.2-0.20261127005804-694802f59d85",
     "substrate": "4f9c2a0e1b",
     "engines": [
         {

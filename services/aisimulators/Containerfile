@@ -9,34 +9,74 @@
 #
 #   * the aisimulate SDK, installed from the single published wheel pinned in
 #     pyproject.toml (bump it there to move to a newer SDK), and
-#   * BLIS, taken from the upstream release image pinned below. BLIS is CPU-only
-#     and fetches nothing at run time. A request's scenario is generated per call,
-#     so no scenario directory is bundled.
+#   * BLIS, built from source at the commit pinned below. BLIS is CPU-only and
+#     fetches nothing at run time. A request's scenario is generated per call, so
+#     no scenario directory is bundled.
 #
-# BLIS publishes a multi-arch image (linux/amd64, linux/arm64) from the same
-# `Dockerfile` the release tag builds. Pulling that image instead of rebuilding
-# from source keeps the binary exactly the artifact upstream tested, and removes
-# the Go toolchain from this build. Pin the digest, not just the tag, so the
-# reported release cannot drift.
+# BLIS normally comes from its published release image, and this stage returns to
+# one (`ghcr.io/inference-sim/blis:vX.Y.Z@sha256:...`) once a release carries the
+# commands this service reads. Until then it builds the binary from the pushed
+# head of the companion branch, so the image carries the artifact the API contract
+# in this tree describes rather than one that predates it. See
+# services/aisimulators/README.md for the commands and their releases.
 #
 # BLIS v0.19 embeds its catalog and registry in the binary and refuses the
 # external clones earlier releases read. The catalog is still copied out of the
-# pinned source commit because the API enumerates models, chips, and fabrics from
-# it; BLIS itself never reads that copy. See services/aisimulators/README.md.
+# same commit because the API enumerates models, chips, and fabrics from it; BLIS
+# itself never reads that copy. See services/aisimulators/README.md.
 
-# --- BLIS release image ----------------------------------------------------------
-# ghcr.io/inference-sim/blis:v0.19.0, multi-arch index digest.
-ARG BLIS_IMAGE=ghcr.io/inference-sim/blis:v0.19.0@sha256:6c6915118e15d60eb0d6ebb62f41a3b6c3e1a980c095ee5bc9872024543cc51b
-FROM ${BLIS_IMAGE} AS blis_release
+# --- BLIS build -------------------------------------------------------------------
+# TEMPORARY: built from inference-sim's deploy/api branch at the commit pinned
+# below (upstream main plus the three companion changes this service needs),
+# tagged deploy-api-20261127-694802f5 in natoscott/inference-sim so a rewrite of
+# the branch cannot orphan it:
+#   https://github.com/inference-sim/inference-sim/pull/2693  (blis version --json)
+#   https://github.com/inference-sim/inference-sim/pull/2694  (pool memory in the Result)
+#   https://github.com/inference-sim/inference-sim/pull/2695  (blis catalog list)
+# Pin the commit, not the branch name, so the image cannot drift. Replace this
+# stage with the release image once those land in a tagged release.
+ARG BLIS_REPOSITORY=https://github.com/natoscott/inference-sim.git
+ARG BLIS_COMMIT=694802f59d852c3f1c4dfdac5dd2bd0249618642
+# The highest release the pinned commit descends from. The toolchain derives a
+# commit's pseudo-version by describing it against the nearest tag, so the fetch
+# has to reach back to that tag: a depth-1 checkout carries none, and `blis
+# version` would report v0.0.0-... instead of the version this image states.
+# It has to be the *highest* such tag: naming an older release does not merely
+# lose precision, it claims a pre-release of a release the build already
+# contains, so the reported version sorts below code that is newer than it.
+ARG BLIS_BASE_TAG=v0.19.1
+ARG BLIS_FETCH_DEPTH=25
+# The Go version is inferred-sim's own: it is the `go` directive this commit
+# states, and a build with another toolchain is not the artifact the pin names.
+ARG BLIS_GO_VERSION=1.27.2
+FROM golang:${BLIS_GO_VERSION}-alpine AS blis_build
+ARG BLIS_REPOSITORY
+ARG BLIS_COMMIT
+ARG BLIS_BASE_TAG
+ARG BLIS_FETCH_DEPTH
+# Buildx injects these per platform in a multi-arch build.
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN apk add --no-cache git \
+    && git init /src \
+    && git -C /src remote add origin "${BLIS_REPOSITORY}" \
+    && git -C /src fetch --depth "${BLIS_FETCH_DEPTH}" origin \
+        "${BLIS_COMMIT}" "+refs/tags/${BLIS_BASE_TAG}:refs/tags/${BLIS_BASE_TAG}" \
+    && git -C /src checkout --quiet --detach FETCH_HEAD
+WORKDIR /src
+# CGO_ENABLED=0 makes the binary static, as the release image's is, so it runs in
+# this image without the Go toolchain or a libc it was not built against.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -trimpath -ldflags="-s -w" -o /opt/blis/blis .
 
 # --- BLIS catalog facts ----------------------------------------------------------
 # The catalog the pinned BLIS build embeds: model graphs, chips, fabrics, and
-# workload presets, at the release commit. The API lists it; a run reads the
+# workload presets, at the same commit. The API lists it; a run reads the
 # binary's own copy.
 FROM alpine/git:2.47.2 AS blis_catalog
-ARG BLIS_CATALOG_COMMIT=e7597a8c9510f876653d7d87bd8baf195c37c5c7
+ARG BLIS_CATALOG_COMMIT=694802f59d852c3f1c4dfdac5dd2bd0249618642
 RUN git init /src \
-    && git -C /src remote add origin https://github.com/inference-sim/inference-sim.git \
+    && git -C /src remote add origin https://github.com/natoscott/inference-sim.git \
     && git -C /src fetch --depth 1 origin "${BLIS_CATALOG_COMMIT}" \
     && git -C /src checkout --quiet --detach FETCH_HEAD \
     && mkdir -p /opt/blis \
@@ -67,29 +107,19 @@ RUN apk add --no-cache curl tar \
 
 FROM python:3.12-slim
 
-# The BLIS release reported by GET /simulators, GET /backends, and in every
-# BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
-ARG BLIS_VERSION=0.19.0
-# The upstream commit the BLIS release tag was built from, reported alongside
-# BLIS_VERSION. The release binary embeds no revision. Leave this empty for the
-# default BLIS_VERSION: runtime.py resolves the default release's commit. When
-# bumping to another release, pass its commit or the API reports no revision.
+# The BLIS version reported by GET /simulators, GET /backends, and in every BLIS
+# prediction's provenance: the Go pseudo-version `blis version` prints for the
+# pinned commit, because no release tag contains it, with the `v` dropped as a
+# release image's tag is. Keep in step with BLIS_COMMIT above.
+ARG BLIS_VERSION=0.19.2-0.20261127005804-694802f59d85
+# The commit the binary was built from, reported alongside BLIS_VERSION. The
+# binary embeds no revision in that string, so the image states it; leave this
+# empty for the default BLIS_VERSION and runtime.py resolves the pinned commit.
 ARG BLIS_COMMIT=""
 
-# BLIS_IMAGE is declared before the first FROM so it can choose the release
-# stage. Redeclare it here to compare that image's tag with the reported
-# release: the footer must never name a different version than the binary.
-ARG BLIS_IMAGE
 # The catalog pin is an ARG of its own stage; redeclare it so a replay record
-# can name it alongside the image it was run in.
-ARG BLIS_CATALOG_COMMIT=e7597a8c9510f876653d7d87bd8baf195c37c5c7
-RUN image_ref="${BLIS_IMAGE%%@*}" \
-    && image_tag="${image_ref##*:}" \
-    && image_version="${image_tag#v}" \
-    && if [ "$image_version" != "$BLIS_VERSION" ]; then \
-         echo "BLIS_VERSION=${BLIS_VERSION} does not match BLIS_IMAGE tag ${image_tag}" >&2; \
-         exit 1; \
-       fi
+# can name the data the binary embeds alongside the build it ran in.
+ARG BLIS_CATALOG_COMMIT=694802f59d852c3f1c4dfdac5dd2bd0249618642
 
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
 # name it shares. Set on package creation; add here so future publishes resolve
@@ -98,10 +128,9 @@ LABEL org.opencontainers.image.source=https://github.com/redhat-performance/conf
 
 WORKDIR /app
 
-# The release image puts the static binary at /usr/local/bin/blis and runs as
-# its own non-root user; copy the binary into this image's layout instead of
-# inheriting that user.
-COPY --from=blis_release /usr/local/bin/blis /usr/local/bin/blis
+# The build stage leaves the static binary at /opt/blis/blis; copy it into this
+# image's layout, which runs as its own non-root user.
+COPY --from=blis_build /opt/blis/blis /usr/local/bin/blis
 COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
 COPY --from=llm_d /opt/llm-d /opt/llm-d
 COPY --from=kustomize /usr/local/bin/kustomize /usr/local/bin/kustomize
@@ -109,7 +138,7 @@ COPY --from=kustomize /usr/local/bin/kustomize /usr/local/bin/kustomize
 # The catalog directory is read only by the API's catalog endpoints. BLIS reads
 # its embedded catalog and registry, so there is no registry path to configure.
 #
-# The image digest and the catalog commit are reported as part of a replay
+# The build commit and the catalog commit are reported as part of a replay
 # record, so a recorded command names the exact build and data it was run
 # against. They are identity, not configuration: nothing reads them to decide
 # behaviour.
@@ -118,7 +147,6 @@ ENV PYTHONUNBUFFERED=1 \
     BLIS_VERSION=${BLIS_VERSION} \
     BLIS_COMMIT=${BLIS_COMMIT} \
     BLIS_CATALOG=/opt/blis/catalog \
-    BLIS_IMAGE=${BLIS_IMAGE} \
     BLIS_CATALOG_COMMIT=${BLIS_CATALOG_COMMIT} \
     AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d \
     PATH=/opt/venv/bin:${PATH}
@@ -143,11 +171,18 @@ RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
-# Expose the aisimulate CLI at a stable system path and fail the build early if
-# either simulator binary cannot answer `--help`.
+# Expose the aisimulate CLI at a stable system path, and fail the build early if
+# either simulator binary cannot answer `--help` or if BLIS does not report the
+# version this image states for it. The version is provenance, so the build
+# proves it rather than restating it: `blis version` derives the pseudo-version
+# from the pinned checkout, and the `+<revision>` suffix it appends is the
+# commit BLIS_COMMIT names.
 RUN ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
     && /usr/local/bin/aisimulate --help >/dev/null \
-    && /usr/local/bin/blis --help >/dev/null
+    && /usr/local/bin/blis --help >/dev/null \
+    && test "$(/usr/local/bin/blis version --json \
+        | /opt/venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["inference_sim"].removeprefix("v").split("+")[0])')" \
+        = "${BLIS_VERSION}"
 
 # Thin REST wrapper. CMD imports it as api_service.app:app.
 COPY aisimulators/tools/api_service /app/api_service
