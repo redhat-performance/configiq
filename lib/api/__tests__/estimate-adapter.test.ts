@@ -714,15 +714,17 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result.performance?.tpot_ms).toBe(20)
     // request_latency_ms = ttft + tpot * osl = 100 + 20 * 128 = 2660
     expect(result.performance?.request_latency_ms).toBe(2660)
-    // No aggregate rate was reported, so the fallback is one request's rate
-    // multiplied by the timed concurrency: ((128 * 1000) / 2660) * 32.
-    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(1539.85, 1)
+    // No aggregate rate was reported, so the fallback is one request's rate.
+    // The request omitted `requests_per_load_unit`, which makes `/predict`
+    // simulate a single request regardless of the batch width.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(48.12, 1)
     expect(result.warnings.some(warning => warning.includes('Throughput was not reported'))).toBe(true)
-    // concurrency is the submitted batch the simulator timed
+    expect(result.warnings.some(warning => warning.includes('at 1 simulated request'))).toBe(true)
+    // concurrency is the submitted batch the prediction is compared at
     expect(result.performance?.concurrency).toBe(32)
   })
 
-  it('derives throughput at the submitted concurrency, not a wider serving cap', async () => {
+  it('derives throughput from the requests the simulator ran, not the batch width', async () => {
     const mockFetch = mockFetchOk({
       ...VALID_RESPONSE,
       serving_config: { ...VALID_RESPONSE.serving_config, max_num_seqs: 64 },
@@ -731,10 +733,26 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
 
     const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, batch_size: 16 })
 
-    // ((128 * 1000) / 2660) * 16, matching the concurrency recorded with it.
-    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(769.92, 1)
+    // Omitting the request count still simulates one request, so the serving
+    // cap and the submitted batch do not inflate the derived rate.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(48.12, 1)
     expect(result.performance?.concurrency).toBe(16)
-    expect(result.warnings.some(warning => warning.includes('at 16 concurrent sequences'))).toBe(true)
+    expect(result.warnings.some(warning => warning.includes('at 1 simulated request'))).toBe(true)
+  })
+
+  it('scales a derived throughput by the simulated request count', async () => {
+    const mockFetch = mockFetchOk(VALID_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      batch_size: 16,
+      requests_per_load_unit: 4,
+    })
+
+    // max(1, round(16 × 4)) = 64 simulated requests.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(3079.7, 1)
+    expect(result.warnings.some(warning => warning.includes('at 64 simulated requests'))).toBe(true)
   })
 
   it('treats an omitted TTFT or TPOT as missing timing', async () => {

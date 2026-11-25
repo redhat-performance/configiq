@@ -351,8 +351,9 @@ Each pair has a canonical graph at `/tested-models/<pair-id>` with `#coverage`,
 links redirect to the canonical route. The pair page is also a shared view: its
 link selects the measured workload on the chart (`isl`, `osl`, `turns`, `tp`)
 and may carry a prediction snapshot (`pred*` fields: workload, concurrency,
-tensor-parallel width, replica count, predicted throughput, verdict,
-confidence, backend, and serving mode). A prediction-generated link leaves the
+tensor-parallel width, replica count, pipeline-parallel width, predicted
+throughput, verdict, confidence, backend, and serving mode). A
+prediction-generated link leaves the
 chart workload unset, so the destination picks an exact measured match when one
 exists and its own default otherwise; it never opens an empty chart for a
 predicted workload that was not measured. The snapshot is a description, not a
@@ -360,7 +361,9 @@ request: opening the link
 plots the prediction and never re-runs a simulator, and the page labels it as
 coming from the shared prediction. A multi-replica cluster total is not
 compared as a percentage against one measured deployment; the page reports the
-replica basis instead. New fields are additive, so `LINK_VERSION`
+replica basis instead. A prediction that spans more than one pipeline stage is
+not given a percentage gap either, because the measurements do not record a
+pipeline size. New fields are additive, so `LINK_VERSION`
 stays `1`. The sizing pages link problematic-input feedback to the exact
 model/system pair:
 

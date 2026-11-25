@@ -73,6 +73,7 @@ def main() -> int:
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {"seed": args.seed, "pairs": {}}
+    failed = False
     label_rules = json.loads((args.labeled_dir / "label-rules.json").read_text())
     split_summary_path = args.labeled_dir.parent / "splits" / "split-summary.json"
     split_summary = json.loads(split_summary_path.read_text()) if split_summary_path.exists() else {"pairs": {}}
@@ -81,16 +82,34 @@ def main() -> int:
         paths = {split: args.labeled_dir / f"{pair}.{split}.parquet" for split in ("train", "validation", "test")}
         version_support = split_summary["pairs"].get(pair, {}).get("versions", {})
         if not all(path.exists() for path in paths.values()):
-            _remove_model_artifacts(pair, args.output_dir)
-            report["pairs"][pair] = {
-                "status": "skipped_no_aggregate_rows",
-                "warnings": ["no_aggregate_labeled_rows"],
-                "split_counts": {
-                    split: {"rows": 0, "positive": 0, "negative": 0}
-                    for split in paths
-                },
-                "version_support": version_support,
-            }
+            # Only an intentional no-aggregate skip may remove a model bundle.
+            # Any other missing input is an incomplete run: keep the previous
+            # bundle and report the missing splits as an error.
+            if label_rules.get(pair, {}).get("status") == "skipped_no_aggregate_rows":
+                _remove_model_artifacts(pair, args.output_dir)
+                report["pairs"][pair] = {
+                    "status": "skipped_no_aggregate_rows",
+                    "warnings": ["no_aggregate_labeled_rows"],
+                    "split_counts": {
+                        split: {"rows": 0, "positive": 0, "negative": 0}
+                        for split in paths
+                    },
+                    "version_support": version_support,
+                }
+            else:
+                report["pairs"][pair] = {
+                    "status": "error_missing_labeled_rows",
+                    "warnings": ["missing_labeled_splits"],
+                    "missing_splits": [
+                        split for split, path in paths.items() if not path.exists()
+                    ],
+                    "split_counts": {
+                        split: {"rows": 0, "positive": 0, "negative": 0}
+                        for split in paths
+                    },
+                    "version_support": version_support,
+                }
+                failed = True
             continue
         frames = {split: pd.read_parquet(path) for split, path in paths.items()}
         target = "within_tested_region"
@@ -140,7 +159,7 @@ def main() -> int:
         report["pairs"][pair] = pair_report
     (args.output_dir / "training-report.json").write_text(json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0
+    return 1 if failed else 0
 
 
 def _fil_config(pair: str, feature_count: int) -> str:

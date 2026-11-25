@@ -77,6 +77,7 @@ function predictionSnapshotHref(
     predTp: tp,
     predThroughput: throughput,
     predReplicas: effective.replicas ?? undefined,
+    predPp: effective.pp_size || undefined,
     predStatus: prediction.status,
     predConfidence: prediction.confidence ?? undefined,
     predBackend: LINK_BACKENDS.has(effective.backend)

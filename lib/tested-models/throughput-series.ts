@@ -67,6 +67,8 @@ export interface PredictionSnapshot {
   throughput: number
   /** Replicas the throughput covers; null when the prediction did not say. */
   replicas: number | null
+  /** Pipeline stages the throughput covers; null when the prediction did not say. */
+  pp: number | null
   status: string | null
   confidence: number | null
   backend: string | null
@@ -97,6 +99,8 @@ export interface PredictionComparison {
   tpMeasured: boolean
   /** False when the prediction is a multi-replica cluster total. */
   replicaComparable: boolean
+  /** False when the prediction spans more than one pipeline stage. */
+  pipelineComparable: boolean
   curve: ThroughputCurve | null
   at: InterpolatedPoint | null
   deltaPct: number | null
@@ -334,13 +338,20 @@ export function comparePredictionToMeasured(
   series: SelectedSeries,
   prediction: PredictionSnapshot,
 ): PredictionComparison {
+  // A multi-replica recommendation is a cluster total while a curve point is
+  // one measured deployment. A multi-stage prediction is a different deployment
+  // shape again, and the measurements do not record a pipeline size. Neither
+  // may produce a percentage gap, even when the TP is missing.
+  const replicaComparable = prediction.replicas == null || prediction.replicas <= 1
+  const pipelineComparable = prediction.pp == null || prediction.pp <= 1
   const line = series.lines.find(candidate => candidate.tp === prediction.tp)
   const curve = line?.curve ?? null
   if (!curve) {
     return {
       workloadMeasured: series.lines.length > 0,
       tpMeasured: false,
-      replicaComparable: true,
+      replicaComparable,
+      pipelineComparable,
       curve: null,
       at: null,
       deltaPct: null,
@@ -363,11 +374,9 @@ export function comparePredictionToMeasured(
   const concurrencyLevels = curve.points.map(point => point.concurrency)
   const minConcurrency = Math.min(...concurrencyLevels)
   const maxConcurrency = Math.max(...concurrencyLevels)
-  // A multi-replica recommendation is a cluster total while a curve point is
-  // one measured deployment. A clamped point is not a measurement at the
-  // predicted concurrency either. Neither may produce a percentage gap.
-  const replicaComparable = prediction.replicas == null || prediction.replicas <= 1
-  const deltaPct = replicaComparable && at && at.clamped == null && at.measured > 0
+  // A clamped point is not a measurement at the predicted concurrency, so it
+  // cannot produce a percentage gap either.
+  const deltaPct = replicaComparable && pipelineComparable && at && at.clamped == null && at.measured > 0
     ? ((prediction.throughput - at.measured) / at.measured) * 100
     : null
 
@@ -434,6 +443,15 @@ export function comparePredictionToMeasured(
     })
   }
 
+  if (!pipelineComparable) {
+    checks.push({
+      id: 'pipeline',
+      label: 'Pipeline basis',
+      ok: false,
+      detail: `The prediction spans ${formatNumber(prediction.pp ?? 0)} pipeline stages, while the measurements do not record a pipeline size. The rates are not on the same basis, so no percentage gap is reported.`,
+    })
+  }
+
   if (prediction.servingMode === 'disagg') {
     checks.push({
       id: 'serving-mode',
@@ -457,6 +475,7 @@ export function comparePredictionToMeasured(
     workloadMeasured: true,
     tpMeasured: true,
     replicaComparable,
+    pipelineComparable,
     curve,
     at,
     deltaPct,

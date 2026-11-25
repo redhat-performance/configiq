@@ -129,6 +129,44 @@ def test_training_skips_a_pair_without_labeled_files_and_removes_a_stale_model(t
     assert not any(path.exists() for path in stale)
 
 
+def test_training_treats_unexpected_missing_labeled_files_as_an_error(tmp_path, monkeypatch) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair}]}))
+    labeled_dir = tmp_path / "labeled"
+    labeled_dir.mkdir()
+    (labeled_dir / "label-rules.json").write_text(json.dumps({pair: {}}))
+    frame = pd.DataFrame([{"within_tested_region": 1}])
+    frame.to_parquet(labeled_dir / f"{pair}.train.parquet", index=False)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    stale = [model_dir / f"{pair}{suffix}" for suffix in (".json", ".metadata.json", ".config.pbtxt")]
+    for path in stale:
+        path.write_text("stale")
+
+    monkeypatch.setattr(train_classifiers, "read_manifest", lambda _: [pd.DataFrame({"pair_id": [pair]})])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_classifiers.py",
+            "--manifest",
+            str(manifest),
+            "--labeled-dir",
+            str(labeled_dir),
+            "--output-dir",
+            str(model_dir),
+        ],
+    )
+
+    assert train_classifiers.main() == 1
+    report = json.loads((model_dir / "training-report.json").read_text())
+    assert report["pairs"][pair]["status"] == "error_missing_labeled_rows"
+    assert report["pairs"][pair]["missing_splits"] == ["validation", "test"]
+    # An incomplete run is not a skip: the previous bundle stays in place.
+    assert all(path.exists() for path in stale)
+
+
 def test_training_reports_single_class_train_data_without_fitting(tmp_path, monkeypatch) -> None:
     pair = "model__h200"
     manifest = tmp_path / "manifest.json"

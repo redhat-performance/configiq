@@ -328,6 +328,8 @@ describe('TestedModelPair throughput chart', () => {
       .find(element => element.textContent === '—')
     expect(difference).toBeDefined()
     expect(text).not.toContain('Prediction is')
+    // Switching to the workload already on screen cannot reveal the overlay.
+    expect(text).not.toContain('to plot this prediction')
   })
 
   it('ignores a focused TP that the displayed workload does not measure', async () => {

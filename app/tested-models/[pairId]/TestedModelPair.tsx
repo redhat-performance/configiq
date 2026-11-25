@@ -120,6 +120,7 @@ function snapshotFromDraft(draft: PredictionDraft): PredictionSnapshot | null {
     tp: tp as number,
     throughput: throughput as number,
     replicas: draft.replicas ?? null,
+    pp: draft.pp ?? null,
     status: draft.status ?? null,
     confidence: draft.confidence ?? null,
     backend: draft.backend ?? null,
@@ -258,6 +259,7 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
       tp: values.predTp,
       throughput: values.predThroughput,
       replicas: values.predReplicas,
+      pp: values.predPp,
       status: values.predStatus,
       confidence: values.predConfidence,
       backend: values.predBackend,
@@ -278,6 +280,7 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
       predTp: { read: () => predictionDraft.tp, write: value => setPredictionDraft(draft => ({ ...draft, tp: value })) },
       predThroughput: { read: () => predictionDraft.throughput, write: value => setPredictionDraft(draft => ({ ...draft, throughput: value })) },
       predReplicas: { read: () => predictionDraft.replicas ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, replicas: value })) },
+      predPp: { read: () => predictionDraft.pp ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, pp: value })) },
       predStatus: { read: () => (predictionDraft.status ?? undefined) as TestedModelLinkValues['predStatus'], write: value => setPredictionDraft(draft => ({ ...draft, status: value })) },
       predConfidence: { read: () => predictionDraft.confidence ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, confidence: value })) },
       predBackend: { read: () => (predictionDraft.backend ?? undefined) as TestedModelLinkValues['predBackend'], write: value => setPredictionDraft(draft => ({ ...draft, backend: value })) },
@@ -314,7 +317,9 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
   const gpuSpecs = gpuSystemSpecs(pair.systemId, catalogGpus)
   const modelChips = modelFacetChips(pair.modelId, modelSpecs.get(pair.modelId))
 
-  const predictionWorkloadNote = predictionWorkload && workload && !overlayVisible ? (
+  const predictionWorkloadNote = predictionWorkload && workload
+    && !isSameWorkload(workload, predictionWorkload)
+    && comparison?.replicaComparable !== false ? (
     <p className={styles.panelNote}>
       The chart is showing {workloadLabel(workload)}.{' '}
       <button

@@ -121,6 +121,7 @@ describe('TestedPerformanceFeedback measured-envelope link', () => {
     expect(url.searchParams.get('predTp')).toBe('4')
     expect(url.searchParams.get('predThroughput')).toBe('1234.5')
     expect(url.searchParams.get('predReplicas')).toBe('1')
+    expect(url.searchParams.get('predPp')).toBe('1')
     expect(url.searchParams.get('predStatus')).toBe('within_validated_range')
     expect(url.searchParams.get('predConfidence')).toBe('0.87')
     expect(url.searchParams.get('predBackend')).toBe('vllm')

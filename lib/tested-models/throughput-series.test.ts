@@ -47,6 +47,7 @@ const prediction: PredictionSnapshot = {
   tp: 1,
   throughput: 1300,
   replicas: 1,
+  pp: 1,
   status: 'within_validated_range',
   confidence: 0.9,
   backend: 'vllm',
@@ -290,6 +291,39 @@ describe('comparePredictionToMeasured', () => {
     expect(comparison.replicaComparable).toBe(false)
     expect(comparison.deltaPct).toBeNull()
     expect(comparison.checks.find(check => check.id === 'replicas')?.ok).toBe(false)
+    expect(comparison.checks.some(check => check.id === 'delta')).toBe(false)
+  })
+
+  it('keeps the replica guard when the predicted TP was not measured', () => {
+    const series = selectSeries(
+      [curve({ tp: 1, points: [point(1, 100), point(40, 900)] })],
+      { isl: 1000, osl: 1000, turns: 1 },
+    )
+
+    const comparison = comparePredictionToMeasured(series, {
+      ...prediction,
+      tp: 3,
+      replicas: 2,
+    })
+
+    expect(comparison.tpMeasured).toBe(false)
+    expect(comparison.replicaComparable).toBe(false)
+    expect(comparison.deltaPct).toBeNull()
+  })
+
+  it('refuses a percentage gap for a multi-stage prediction', () => {
+    const series = selectSeries(
+      [curve({ tp: 1, points: [point(1, 100), point(40, 900)] })],
+      { isl: 1000, osl: 1000, turns: 1 },
+    )
+
+    const comparison = comparePredictionToMeasured(series, { ...prediction, pp: 2 })
+
+    expect(comparison.pipelineComparable).toBe(false)
+    expect(comparison.deltaPct).toBeNull()
+    const pipeline = comparison.checks.find(check => check.id === 'pipeline')
+    expect(pipeline?.ok).toBe(false)
+    expect(pipeline?.detail).toContain('2 pipeline stages')
     expect(comparison.checks.some(check => check.id === 'delta')).toBe(false)
   })
 

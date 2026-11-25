@@ -57,6 +57,9 @@ export const testedModelLink = defineLink('/tested-models/[pairId]', {
   // How many replicas the rate covers. A cluster total and one benchmark
   // deployment are not comparable, so the receiving page needs the count.
   predReplicas: positiveInt(1_000_000),
+  // Pipeline stages the rate covers. The measurements do not record one, so a
+  // multi-stage prediction cannot claim a like-for-like percentage gap.
+  predPp: positiveInt(1_024),
   predStatus: z.enum(CLASSIFIER_STATUSES),
   predConfidence: z.coerce.number().min(0).max(1),
   predBackend: z.enum(INFERENCE_BACKENDS),

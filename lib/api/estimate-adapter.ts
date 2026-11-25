@@ -333,25 +333,30 @@ export async function fetchEstimateAsInferenceResult(
       ? data.request_latency
       : ttft + tpot * input.osl
     : 0
-  // The submitted batch size is the load the simulator timed; `max_num_seqs`
-  // is a serving cap that can be wider. Deriving a rate at the cap would pair a
-  // throughput with a concurrency the request never used, and the saved
-  // comparison and prediction snapshot record the submitted value.
+  // The submitted batch size is the concurrency the reader asked about;
+  // `max_num_seqs` is a serving cap that can be wider, and the prediction
+  // snapshot records the submitted value.
   const submittedConcurrency = Math.max(0, Math.floor(input.batch_size))
+  // `/predict` simulates `requests_per_load_unit` requests per concurrency slot
+  // and exactly one request in total when the field is omitted. That count, not
+  // the batch width, is what a per-request rate can be scaled by.
+  const simulatedRequests = input.requests_per_load_unit != null
+    ? Math.max(1, Math.round(input.batch_size * input.requests_per_load_unit))
+    : 1
   // `tokens_per_second` is the benchmark-level rate. When a simulator omits it,
   // the only remaining figure is one request's output rate, so multiply by the
-  // timed concurrency: presenting a per-request rate as aggregate throughput
-  // would understate the server by the batch width.
+  // requests it actually ran: presenting a per-request rate as aggregate
+  // throughput would understate the server by the simulated width.
   const reportedThroughput = typeof data.tokens_per_second === 'number' && Number.isFinite(data.tokens_per_second)
     ? data.tokens_per_second
     : null
   const perRequestThroughput = hasTiming && input.osl > 0 && requestLatency > 0
     ? (input.osl * 1000) / requestLatency
     : 0
-  const throughput = reportedThroughput ?? perRequestThroughput * submittedConcurrency
+  const throughput = reportedThroughput ?? perRequestThroughput * simulatedRequests
   if (reportedThroughput == null && throughput > 0) {
     warnings.push(
-      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${submittedConcurrency} concurrent sequences. Treat it as an estimate, not a measured aggregate.`,
+      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${simulatedRequests} simulated request${simulatedRequests === 1 ? '' : 's'}. Treat it as an estimate, not a measured aggregate.`,
     )
   }
 
