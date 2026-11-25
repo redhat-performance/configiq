@@ -701,7 +701,7 @@ export default function Sizing() {
         model_id: params.model_path,
         system_id: params.system,
         backend: params.backend ?? inferenceBackend,
-        backend_version: params.backend_version ?? null,
+        backend_version: params.backend_version ?? result.engineVersion ?? null,
         isl: params.isl,
         osl: params.osl,
         max_seq_len: params.max_seq_len ?? null,
@@ -1723,7 +1723,7 @@ export default function Sizing() {
         modelId={params?.model_path ?? model}
         systemId={params?.system ?? gpuSystem}
         predictionInput={classifierInput}
-        predictionThroughput={result?.throughput.tokensPerSecond ?? null}
+        predictionThroughput={result?.capacity?.performanceAvailable === false ? null : (result?.throughput.tokensPerSecond ?? null)}
         headerRight={result ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto' }}>
             <SimulatorBadge simulator={result.simulator} />

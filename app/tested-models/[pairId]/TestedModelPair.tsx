@@ -119,6 +119,7 @@ function snapshotFromDraft(draft: PredictionDraft): PredictionSnapshot | null {
     concurrency: concurrency as number,
     tp: tp as number,
     throughput: throughput as number,
+    replicas: draft.replicas ?? null,
     status: draft.status ?? null,
     confidence: draft.confidence ?? null,
     backend: draft.backend ?? null,
@@ -142,7 +143,7 @@ function outsideExplanation(
   const at = comparison.at
   if (!at) return ''
   if (at.clamped === 'above') {
-    return `Your concurrency is above the highest measured level, so this curve cannot show the queueing that caps throughput there. Query or lower the concurrency, or treat the top measured point as an upper bound.`
+    return `Your concurrency (${prediction.concurrency.toLocaleString()}) is above the highest measured level (${at.above.concurrency.toLocaleString()}), so throughput at your concurrency was not measured. Treat the top measured point as a reference, not an upper bound: throughput can keep rising past it.`
   }
   if (at.clamped === 'below') {
     return 'Your concurrency is below the lowest measured level, so the curve has no measured point that small. The lowest measured point is a conservative reference.'
@@ -156,6 +157,9 @@ function outsideExplanation(
       ? 'The simulator predicts more throughput than the benchmark observed at this concurrency. The measurement is the safer figure: the serving stack, scheduling, and measurement conditions all sit between the model and the hardware limit.'
       : 'The simulator predicts less throughput than the benchmark observed at this concurrency. Check the model configuration and backend version before sizing against the lower number.'
   }
+  if (comparison.deltaPct == null) {
+    return 'No percentage comparison is available: the measured throughput at this concurrency is zero, or the rates are not on the same basis.'
+  }
   return 'The prediction agrees with the measured curve within the usual tolerance for this pair.'
 }
 
@@ -163,7 +167,7 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
   const { gpuOptions: catalogGpus, modelSpecs } = useCatalog()
   const [dashboard, setDashboard] = React.useState<Dashboard | null>(null)
   const [loading, setLoading] = React.useState(true)
-  const [unavailable, setUnavailable] = React.useState(false)
+  const [unavailable, setUnavailable] = React.useState<'missing' | 'unsupported' | null>(null)
   const [mounted, setMounted] = React.useState(false)
   const [chartRef, chartWidth] = useElementWidth<HTMLDivElement>()
 
@@ -176,13 +180,14 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
   React.useEffect(() => {
     fetch(`/api/tested-models/dashboard/${encodeURIComponent(pair.id)}`, { cache: 'no-store' })
       .then(response => {
+        if (response.status === 409) throw new Error('unsupported')
         if (!response.ok) throw new Error('unavailable')
         return response.json() as Promise<Dashboard>
       })
       .then(setDashboard)
-      .catch(() => {
+      .catch((error: unknown) => {
         setDashboard(null)
-        setUnavailable(true)
+        setUnavailable(error instanceof Error && error.message === 'unsupported' ? 'unsupported' : 'missing')
       })
       .finally(() => setLoading(false))
   }, [pair.id])
@@ -214,7 +219,8 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
     [comparisonSeries, prediction],
   )
   const overlayVisible = Boolean(
-    prediction && predictionWorkload && workload && isSameWorkload(workload, predictionWorkload),
+    prediction && predictionWorkload && workload && isSameWorkload(workload, predictionWorkload)
+      && comparison?.replicaComparable !== false,
   )
 
   const writeWorkload = React.useCallback((patch: Partial<Workload>) => {
@@ -228,26 +234,6 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
     })
   }, [workload])
 
-  const shared = useSharedView(testedModelLink, {
-    fields: defineAccessors(testedModelLink, {
-      isl: { read: () => workload?.isl, write: value => writeWorkload({ isl: value }) },
-      osl: { read: () => workload?.osl, write: value => writeWorkload({ osl: value }) },
-      turns: { read: () => workload?.turns, write: value => writeWorkload({ turns: value }) },
-      tp: { read: () => focusedTp ?? undefined, write: value => setFocusedTp(value) },
-      predIsl: { read: () => predictionDraft.isl, write: value => setPredictionDraft(draft => ({ ...draft, isl: value })) },
-      predOsl: { read: () => predictionDraft.osl, write: value => setPredictionDraft(draft => ({ ...draft, osl: value })) },
-      predConcurrency: { read: () => predictionDraft.concurrency, write: value => setPredictionDraft(draft => ({ ...draft, concurrency: value })) },
-      predTp: { read: () => predictionDraft.tp, write: value => setPredictionDraft(draft => ({ ...draft, tp: value })) },
-      predThroughput: { read: () => predictionDraft.throughput, write: value => setPredictionDraft(draft => ({ ...draft, throughput: value })) },
-      predStatus: { read: () => (predictionDraft.status ?? undefined) as TestedModelLinkValues['predStatus'], write: value => setPredictionDraft(draft => ({ ...draft, status: value })) },
-      predConfidence: { read: () => predictionDraft.confidence ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, confidence: value })) },
-      predBackend: { read: () => (predictionDraft.backend ?? undefined) as TestedModelLinkValues['predBackend'], write: value => setPredictionDraft(draft => ({ ...draft, backend: value })) },
-      predBackendVersion: { read: () => predictionDraft.backendVersion ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, backendVersion: value })) },
-      predServingMode: { read: () => (predictionDraft.servingMode ?? undefined) as TestedModelLinkValues['predServingMode'], write: value => setPredictionDraft(draft => ({ ...draft, servingMode: value })) },
-    }),
-    ready: mounted && !loading,
-  })
-
   const lineData = series.lines.map((line, index) => ({
     tp: line.tp,
     curve: line.curve,
@@ -258,6 +244,49 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
       name: `TP ${line.tp}`,
     })),
   }))
+  // A focus on a TP the new workload does not measure must not dim every line.
+  const effectiveFocusedTp = lineData.some(line => line.tp === focusedTp) ? focusedTp : null
+
+  // A shared prediction is one snapshot. Applying a link replaces the draft
+  // with only the prediction fields that link carries, so a field it omits
+  // cannot retain a value from a prediction previously open on this page.
+  const replacePrediction = React.useCallback((values: TestedModelLinkValues) => {
+    setPredictionDraft({
+      isl: values.predIsl,
+      osl: values.predOsl,
+      concurrency: values.predConcurrency,
+      tp: values.predTp,
+      throughput: values.predThroughput,
+      replicas: values.predReplicas,
+      status: values.predStatus,
+      confidence: values.predConfidence,
+      backend: values.predBackend,
+      backendVersion: values.predBackendVersion,
+      servingMode: values.predServingMode,
+    })
+  }, [])
+
+  const shared = useSharedView(testedModelLink, {
+    fields: defineAccessors(testedModelLink, {
+      isl: { read: () => workload?.isl, write: value => writeWorkload({ isl: value }) },
+      osl: { read: () => workload?.osl, write: value => writeWorkload({ osl: value }) },
+      turns: { read: () => workload?.turns, write: value => writeWorkload({ turns: value }) },
+      tp: { read: () => effectiveFocusedTp ?? undefined, write: value => setFocusedTp(value) },
+      predIsl: { read: () => predictionDraft.isl, write: value => setPredictionDraft(draft => ({ ...draft, isl: value })) },
+      predOsl: { read: () => predictionDraft.osl, write: value => setPredictionDraft(draft => ({ ...draft, osl: value })) },
+      predConcurrency: { read: () => predictionDraft.concurrency, write: value => setPredictionDraft(draft => ({ ...draft, concurrency: value })) },
+      predTp: { read: () => predictionDraft.tp, write: value => setPredictionDraft(draft => ({ ...draft, tp: value })) },
+      predThroughput: { read: () => predictionDraft.throughput, write: value => setPredictionDraft(draft => ({ ...draft, throughput: value })) },
+      predReplicas: { read: () => predictionDraft.replicas ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, replicas: value })) },
+      predStatus: { read: () => (predictionDraft.status ?? undefined) as TestedModelLinkValues['predStatus'], write: value => setPredictionDraft(draft => ({ ...draft, status: value })) },
+      predConfidence: { read: () => predictionDraft.confidence ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, confidence: value })) },
+      predBackend: { read: () => (predictionDraft.backend ?? undefined) as TestedModelLinkValues['predBackend'], write: value => setPredictionDraft(draft => ({ ...draft, backend: value })) },
+      predBackendVersion: { read: () => predictionDraft.backendVersion ?? undefined, write: value => setPredictionDraft(draft => ({ ...draft, backendVersion: value })) },
+      predServingMode: { read: () => (predictionDraft.servingMode ?? undefined) as TestedModelLinkValues['predServingMode'], write: value => setPredictionDraft(draft => ({ ...draft, servingMode: value })) },
+    }),
+    ready: mounted && !loading,
+    onApplied: replacePrediction,
+  })
 
   const measuredPoints = series.lines.flatMap(line => line.curve.points)
   const measuredX = measuredPoints.map(point => point.concurrency)
@@ -378,7 +407,9 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
       {loading && <Spinner aria-label="Loading pair coverage" />}
       {unavailable && (
         <div className={styles.notice} role="status">
-          Dashboard data is unavailable for this pair. Coverage metadata from the registry is shown below.
+          {unavailable === 'unsupported'
+            ? 'Dashboard data uses a schema this build does not support. Rebuild the tested-model bundle so the reader and payloads agree.'
+            : 'Dashboard data is unavailable for this pair. Coverage metadata from the registry is shown below.'}
         </div>
       )}
 
@@ -533,8 +564,8 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
                   style={{
                     data: {
                       stroke: line.color,
-                      strokeWidth: focusedTp == null ? 2.5 : focusedTp === line.tp ? 4 : 1.5,
-                      opacity: focusedTp == null || focusedTp === line.tp ? 1 : 0.45,
+                      strokeWidth: effectiveFocusedTp == null ? 2.5 : effectiveFocusedTp === line.tp ? 4 : 1.5,
+                      opacity: effectiveFocusedTp == null || effectiveFocusedTp === line.tp ? 1 : 0.45,
                     },
                   }}
                 />
@@ -572,8 +603,8 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
               <button
                 type="button"
                 key={line.tp}
-                className={`${styles.legendItem} ${focusedTp === line.tp ? styles.legendItemActive : ''}`}
-                aria-pressed={focusedTp === line.tp}
+                className={`${styles.legendItem} ${effectiveFocusedTp === line.tp ? styles.legendItemActive : ''}`}
+                aria-pressed={effectiveFocusedTp === line.tp}
                 onClick={() => setFocusedTp(current => current === line.tp ? null : line.tp)}
               >
                 <span className={styles.legendSwatch} style={{ background: line.color }} aria-hidden />
@@ -661,7 +692,6 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
               </ul>
 
               <p className={styles.panelNote}>{outsideExplanation(comparison, prediction)}</p>
-              {predictionWorkloadNote}
             </>
           ) : (
             <>
@@ -675,6 +705,7 @@ export function TestedModelPair({ pair, gate, dataset = null }: TestedModelPairP
               </Alert>
             </>
           )}
+          {predictionWorkloadNote}
         </section>
       )}
 

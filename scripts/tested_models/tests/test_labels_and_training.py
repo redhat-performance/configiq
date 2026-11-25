@@ -55,6 +55,80 @@ def test_labels_reject_a_split_without_aggregate_measurements() -> None:
         label_data.label_pair(frame, frame, frame)
 
 
+def test_labeling_skips_a_pair_without_aggregate_rows_and_removes_stale_files(tmp_path, monkeypatch) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair}]}))
+    split_dir = tmp_path / "splits"
+    split_dir.mkdir()
+    frame = pd.DataFrame([{
+        "model_id": "model", "accelerator": "H200", "tp": 1,
+        "isl": 1000, "osl": 1000, "turns": 5, "concurrency": 10,
+        "measured rps": None, "output_tok/sec": 10.0,
+    }])
+    for split in ("train", "validation", "test"):
+        frame.to_parquet(split_dir / f"{pair}.{split}.parquet", index=False)
+    output_dir = tmp_path / "labeled"
+    output_dir.mkdir()
+    stale = output_dir / f"{pair}.train.parquet"
+    frame.to_parquet(stale, index=False)
+
+    monkeypatch.setattr(label_data, "read_manifest", lambda _: [pd.DataFrame({"pair_id": [pair]})])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "label_data.py",
+            "--manifest",
+            str(manifest),
+            "--split-dir",
+            str(split_dir),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert label_data.main() == 0
+    rules = json.loads((output_dir / "label-rules.json").read_text())
+    assert rules[pair]["status"] == "skipped_no_aggregate_rows"
+    # A previous run must not leave a frame that training would still consume.
+    assert not stale.exists()
+
+
+def test_training_skips_a_pair_without_labeled_files_and_removes_a_stale_model(tmp_path, monkeypatch) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair}]}))
+    labeled_dir = tmp_path / "labeled"
+    labeled_dir.mkdir()
+    (labeled_dir / "label-rules.json").write_text(json.dumps({pair: {"status": "skipped_no_aggregate_rows"}}))
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    stale = [model_dir / f"{pair}{suffix}" for suffix in (".json", ".metadata.json", ".config.pbtxt")]
+    for path in stale:
+        path.write_text("stale")
+
+    monkeypatch.setattr(train_classifiers, "read_manifest", lambda _: [pd.DataFrame({"pair_id": [pair]})])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train_classifiers.py",
+            "--manifest",
+            str(manifest),
+            "--labeled-dir",
+            str(labeled_dir),
+            "--output-dir",
+            str(model_dir),
+        ],
+    )
+
+    assert train_classifiers.main() == 0
+    report = json.loads((model_dir / "training-report.json").read_text())
+    assert report["pairs"][pair]["status"] == "skipped_no_aggregate_rows"
+    assert not any(path.exists() for path in stale)
+
+
 def test_training_reports_single_class_train_data_without_fitting(tmp_path, monkeypatch) -> None:
     pair = "model__h200"
     manifest = tmp_path / "manifest.json"

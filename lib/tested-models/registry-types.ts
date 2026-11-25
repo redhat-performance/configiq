@@ -51,6 +51,7 @@ export interface RegistryPair {
   status: RegistryPairStatus
   /** Null only for legacy v1 pairs, which carried no coverage summary. */
   coverage: RegistryCoverage | null
+  /** Null when no dashboard payload exists (legacy pair or no aggregate rows). */
   dashboardPath: string | null
   gate: RegistryGateResult
   diagnostics?: RegistryDiagnostics

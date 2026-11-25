@@ -87,11 +87,16 @@ units into one median.
 A curve is one fixed workload (`isl`, `osl`, `turns`), one `tp`, and one run
 configuration identified by `sweepId`. The sweep id hashes the configuration
 fields (backend and version, parallelism, quantisation, memory and sequencing
-knobs) but not the workload, TP, concurrency, or measured outcomes, so two
-points on a curve were produced by the same run configuration. Each point
+knobs, including the token budget `max_num_batched_tokens`) but not the
+workload, TP, concurrency, or measured outcomes, so two points on a curve were
+produced by the same run configuration. Each point
 records the median `throughput`, its `throughputMin` / `throughputMax` spread,
 the number of `observations`, and the median `latency`. `kneePoints` include
 `turns` for the same reason.
+
+The dashboard route rejects a payload whose `schemaVersion` is not `2` with
+`409`, so an artifact set from a different release is reported as an
+unsupported schema rather than rendered as an empty chart.
 
 The classifier's `version` feature is a backend-scoped major.minor family, not
 a raw label. Training rows (`vLLM-0.24.0`) and runtime catalog versions
@@ -314,12 +319,20 @@ measurements are excluded from classifier inputs to avoid leakage. So is
 configuration being classified.
 
 `split-summary.json` records, per version family, the rows and configuration
-groups that landed in each split. A family that only appears in one split
+groups that landed in each split. Envelope labels are fitted on train and only
+evaluated on validation and test, so if every aggregate configuration group
+lands in a held-out split the script moves the smallest aggregate group into
+train and records it as `aggregate_train` (`present`,
+`moved_from_validation`, `moved_from_test`, or `no_aggregate_rows`). A pair
+with no aggregate rows at all is skipped with that reason instead of stopping
+the run. A family that only appears in one split
 cannot be both learned and evaluated: the classifier is either blind to it at
 inference or cannot score it on held-out data. The training report copies that
 support into `version_support`, and records `selection_basis`
 (`validation` or `train_fallback`) plus an explicit `validation_single_class` /
-`test_single_class` warning when a split lacks both label classes. Those data
+`test_single_class` warning when a split lacks both label classes. An empty
+held-out split reports unavailable metrics instead of aborting the remaining
+pairs. Those data
 shape caveats are published as `diagnostics.warnings` for both validated and
 measured pairs, while `diagnostics.reasons` stays a direct mirror of the
 quality gate so a caveat is never mistaken for a gate failure.
@@ -338,10 +351,16 @@ Each pair has a canonical graph at `/tested-models/<pair-id>` with `#coverage`,
 links redirect to the canonical route. The pair page is also a shared view: its
 link selects the measured workload on the chart (`isl`, `osl`, `turns`, `tp`)
 and may carry a prediction snapshot (`pred*` fields: workload, concurrency,
-tensor-parallel width, predicted throughput, verdict, confidence, backend, and
-serving mode). The snapshot is a description, not a request: opening the link
+tensor-parallel width, replica count, predicted throughput, verdict,
+confidence, backend, and serving mode). A prediction-generated link leaves the
+chart workload unset, so the destination picks an exact measured match when one
+exists and its own default otherwise; it never opens an empty chart for a
+predicted workload that was not measured. The snapshot is a description, not a
+request: opening the link
 plots the prediction and never re-runs a simulator, and the page labels it as
-coming from the shared prediction. New fields are additive, so `LINK_VERSION`
+coming from the shared prediction. A multi-replica cluster total is not
+compared as a percentage against one measured deployment; the page reports the
+replica basis instead. New fields are additive, so `LINK_VERSION`
 stays `1`. The sizing pages link problematic-input feedback to the exact
 model/system pair:
 

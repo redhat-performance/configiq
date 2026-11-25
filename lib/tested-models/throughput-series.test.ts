@@ -46,6 +46,7 @@ const prediction: PredictionSnapshot = {
   concurrency: 20,
   tp: 1,
   throughput: 1300,
+  replicas: 1,
   status: 'within_validated_range',
   confidence: 0.9,
   backend: 'vllm',
@@ -276,5 +277,49 @@ describe('comparePredictionToMeasured', () => {
     const comparison = comparePredictionToMeasured(series, { ...prediction, servingMode: 'disagg' })
 
     expect(comparison.checks.find(check => check.id === 'serving-mode')?.ok).toBe(false)
+  })
+
+  it('refuses a percentage gap between a cluster total and one deployment', () => {
+    const series = selectSeries(
+      [curve({ tp: 1, points: [point(1, 100), point(40, 900)] })],
+      { isl: 1000, osl: 1000, turns: 1 },
+    )
+
+    const comparison = comparePredictionToMeasured(series, { ...prediction, replicas: 4 })
+
+    expect(comparison.replicaComparable).toBe(false)
+    expect(comparison.deltaPct).toBeNull()
+    expect(comparison.checks.find(check => check.id === 'replicas')?.ok).toBe(false)
+    expect(comparison.checks.some(check => check.id === 'delta')).toBe(false)
+  })
+
+  it('treats an unresolved backend version as unmeasured', () => {
+    const series = selectSeries(
+      [curve({ tp: 1, points: [point(1, 100), point(40, 900)] })],
+      { isl: 1000, osl: 1000, turns: 1 },
+    )
+
+    const comparison = comparePredictionToMeasured(series, {
+      ...prediction,
+      backend: null,
+      backendVersion: null,
+    })
+
+    const version = comparison.checks.find(check => check.id === 'version')
+    expect(version?.ok).toBe(false)
+    expect(version?.detail).toContain('does not name a resolvable backend version')
+  })
+
+  it('does not report a gap at a concurrency the curve did not measure', () => {
+    const series = selectSeries(
+      [curve({ tp: 1, points: [point(1, 100), point(40, 900)] })],
+      { isl: 1000, osl: 1000, turns: 1 },
+    )
+
+    const comparison = comparePredictionToMeasured(series, { ...prediction, concurrency: 200 })
+
+    expect(comparison.at?.clamped).toBe('above')
+    expect(comparison.deltaPct).toBeNull()
+    expect(comparison.checks.some(check => check.id === 'delta')).toBe(false)
   })
 })

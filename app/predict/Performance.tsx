@@ -969,7 +969,7 @@ export default function Performance() {
             model_id: estimateInput.model_path,
             system_id: estimateInput.system,
             backend: estimateInput.backend ?? inferenceBackend,
-            backend_version: estimateInput.backend_version ?? null,
+            backend_version: result.engine_version ?? estimateInput.backend_version ?? null,
             isl: estimateInput.isl,
             osl: estimateInput.osl,
             max_seq_len: estimateInput.max_seq_len ?? null,

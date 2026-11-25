@@ -373,6 +373,26 @@ def test_dashboard_keeps_measurements_when_no_classifier_was_trained(tmp_path) -
     assert payload["records"] == 3
 
 
+def test_dashboard_removes_a_stale_payload_for_a_pair_without_labeled_rows(tmp_path) -> None:
+    pair = "model__h200"
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"pairs": [{"id": pair, "model_id": "model", "accelerator": "H200"}]}))
+    labeled_dir = tmp_path / "labeled"
+    model_dir = tmp_path / "models"
+    labeled_dir.mkdir()
+    model_dir.mkdir()
+    (model_dir / f"{pair}.metadata.json").write_text(json.dumps({"status": "skipped_no_aggregate_rows"}))
+    output_dir = tmp_path / "dashboard"
+    output_dir.mkdir()
+    stale = output_dir / f"{pair}.json"
+    stale.write_text(json.dumps({"schemaVersion": 2, "throughputCurves": []}))
+
+    # The pair has no labeled frame this run, so the older payload must not
+    # survive alongside the freshly skipped pairs.
+    assert build_dashboard.build_dashboard(manifest, labeled_dir, model_dir, output_dir) == 0
+    assert not stale.exists()
+
+
 def test_dashboard_curves_separate_workloads_sweeps_and_turn_counts(tmp_path) -> None:
     pair = "model__h200"
     manifest = tmp_path / "manifest.json"
@@ -391,6 +411,8 @@ def test_dashboard_curves_separate_workloads_sweeps_and_turn_counts(tmp_path) ->
         {**base, "concurrency": 20.0, "output_tok/sec": 1800.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
         # Same workload and TP, different run configuration: a second sweep.
         {**base, "concurrency": 10.0, "output_tok/sec": 1200.0, "backend_version": "vLLM-0.31.0", "chunked_prefill_enabled": True, "measurement_kind": "aggregate"},
+        # Same everything but a different token budget: a distinct sweep.
+        {**base, "concurrency": 10.0, "output_tok/sec": 1100.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "max_num_batched_tokens": 8192.0, "measurement_kind": "aggregate"},
         # Same workload and sweep, different TP: its own line.
         {**base, "tp": 2.0, "concurrency": 10.0, "output_tok/sec": 2000.0, "backend_version": "vLLM-0.24.0", "chunked_prefill_enabled": False, "measurement_kind": "aggregate"},
         # A multi-turn aggregate run is a different workload.
@@ -415,7 +437,7 @@ def test_dashboard_curves_separate_workloads_sweeps_and_turn_counts(tmp_path) ->
     )
 
     single_turn = [curve for curve in curves if curve["turns"] == 1 and curve["tp"] == 1]
-    assert len(single_turn) == 2
+    assert len(single_turn) == 3
     assert {tuple(curve["backendVersions"]) for curve in single_turn} == {
         ("vLLM-0.24.0",),
         ("vLLM-0.31.0",),

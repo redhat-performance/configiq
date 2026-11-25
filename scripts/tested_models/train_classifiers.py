@@ -25,6 +25,22 @@ UNCERTAIN_THRESHOLD = 0.50
 
 
 def _metrics(model: XGBClassifier, matrix: pd.DataFrame, labels: pd.Series) -> dict[str, Any]:
+    # A held-out split can be empty once per-turn windows are excluded. That
+    # split cannot support a metric; report it as unavailable instead of letting
+    # scikit-learn raise and stop the rest of the run.
+    if len(labels) == 0:
+        return {
+            "rows": 0,
+            "classes": 0,
+            "positive": 0,
+            "negative": 0,
+            "accuracy": None,
+            "balanced_accuracy": None,
+            "f1": None,
+            "precision": None,
+            "recall": None,
+            "roc_auc": None,
+        }
     probabilities = model.predict_proba(matrix)[:, 1]
     predictions = (probabilities >= WITHIN_THRESHOLD).astype(int)
     accuracy = float(accuracy_score(labels, predictions))
@@ -32,6 +48,12 @@ def _metrics(model: XGBClassifier, matrix: pd.DataFrame, labels: pd.Series) -> d
     result: dict[str, Any] = {"rows": len(labels), "classes": int(labels.nunique()), "positive": int(labels.sum()), "negative": int((labels == 0).sum()), "accuracy": accuracy, "balanced_accuracy": balanced_accuracy, "f1": float(f1_score(labels, predictions, zero_division=0)), "precision": float(precision_score(labels, predictions, zero_division=0)), "recall": float(recall_score(labels, predictions, zero_division=0))}
     result["roc_auc"] = float(roc_auc_score(labels, probabilities)) if labels.nunique() == 2 else None
     return result
+
+
+def _remove_model_artifacts(pair: str, output_dir: Path) -> None:
+    """Delete a stale bundle so a skipped pair cannot keep an older model."""
+    for suffix in (".json", ".metadata.json", ".config.pbtxt"):
+        (output_dir / f"{pair}{suffix}").unlink(missing_ok=True)
 
 
 def _candidates() -> list[dict[str, Any]]:
@@ -56,15 +78,30 @@ def main() -> int:
     split_summary = json.loads(split_summary_path.read_text()) if split_summary_path.exists() else {"pairs": {}}
     for source in read_manifest(args.manifest):
         pair = str(source["pair_id"].iloc[0])
-        frames = {split: pd.read_parquet(args.labeled_dir / f"{pair}.{split}.parquet") for split in ("train", "validation", "test")}
+        paths = {split: args.labeled_dir / f"{pair}.{split}.parquet" for split in ("train", "validation", "test")}
+        version_support = split_summary["pairs"].get(pair, {}).get("versions", {})
+        if not all(path.exists() for path in paths.values()):
+            _remove_model_artifacts(pair, args.output_dir)
+            report["pairs"][pair] = {
+                "status": "skipped_no_aggregate_rows",
+                "warnings": ["no_aggregate_labeled_rows"],
+                "split_counts": {
+                    split: {"rows": 0, "positive": 0, "negative": 0}
+                    for split in paths
+                },
+                "version_support": version_support,
+            }
+            continue
+        frames = {split: pd.read_parquet(path) for split, path in paths.items()}
         target = "within_tested_region"
         y_train, y_validation, y_test = (frames[split][target].astype(int) for split in ("train", "validation", "test"))
         pair_report: dict[str, Any] = {
             "split_counts": {split: {"rows": len(frame), "positive": int(frame[target].sum()), "negative": int((frame[target] == 0).sum())} for split, frame in frames.items()},
-            "version_support": split_summary["pairs"].get(pair, {}).get("versions", {}),
+            "version_support": version_support,
         }
         pair_report["warnings"] = []
         if split_summary["pairs"].get(pair, {}).get("status") == "insufficient_groups":
+            _remove_model_artifacts(pair, args.output_dir)
             pair_report["status"] = "skipped_insufficient_groups"
             pair_report["warnings"].append("too_few_configuration_groups_for_holdout_splits")
             report["pairs"][pair] = pair_report
@@ -76,6 +113,7 @@ def main() -> int:
         if test_single_class:
             pair_report["warnings"].append("test_single_class")
         if y_train.nunique() < 2:
+            _remove_model_artifacts(pair, args.output_dir)
             pair_report["status"] = "skipped_single_class_train"
             report["pairs"][pair] = pair_report
             continue

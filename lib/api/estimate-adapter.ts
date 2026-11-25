@@ -308,7 +308,10 @@ export async function fetchEstimateAsInferenceResult(
 
   const ttft = data.ttft ?? 0
   const tpot = data.tpot ?? 0
-  const hasTiming = Number.isFinite(ttft) && Number.isFinite(tpot)
+  // An explicit zero is a valid timing value, but an omitted field is not:
+  // deriving a rate from a missing TPOT would invent a per-request throughput.
+  const hasTiming = typeof data.ttft === 'number' && Number.isFinite(ttft)
+    && typeof data.tpot === 'number' && Number.isFinite(tpot)
 
   const warnings: string[] = memoryAvailable
     ? []
@@ -330,10 +333,14 @@ export async function fetchEstimateAsInferenceResult(
       ? data.request_latency
       : ttft + tpot * input.osl
     : 0
-  const concurrency = Math.max(0, Math.floor(maxNumSeqs))
+  // The submitted batch size is the load the simulator timed; `max_num_seqs`
+  // is a serving cap that can be wider. Deriving a rate at the cap would pair a
+  // throughput with a concurrency the request never used, and the saved
+  // comparison and prediction snapshot record the submitted value.
+  const submittedConcurrency = Math.max(0, Math.floor(input.batch_size))
   // `tokens_per_second` is the benchmark-level rate. When a simulator omits it,
   // the only remaining figure is one request's output rate, so multiply by the
-  // resolved concurrency: presenting a per-request rate as aggregate throughput
+  // timed concurrency: presenting a per-request rate as aggregate throughput
   // would understate the server by the batch width.
   const reportedThroughput = typeof data.tokens_per_second === 'number' && Number.isFinite(data.tokens_per_second)
     ? data.tokens_per_second
@@ -341,10 +348,10 @@ export async function fetchEstimateAsInferenceResult(
   const perRequestThroughput = hasTiming && input.osl > 0 && requestLatency > 0
     ? (input.osl * 1000) / requestLatency
     : 0
-  const throughput = reportedThroughput ?? perRequestThroughput * concurrency
+  const throughput = reportedThroughput ?? perRequestThroughput * submittedConcurrency
   if (reportedThroughput == null && throughput > 0) {
     warnings.push(
-      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${concurrency} concurrent sequences. Treat it as an estimate, not a measured aggregate.`,
+      `Throughput was not reported; it was derived from a ${input.osl}-token request at ${submittedConcurrency} concurrent sequences. Treat it as an estimate, not a measured aggregate.`,
     )
   }
 
@@ -400,7 +407,7 @@ export async function fetchEstimateAsInferenceResult(
         && Number.isFinite(data.tokens_per_second_per_user)
         ? data.tokens_per_second_per_user
         : null,
-      concurrency: Math.max(0, concurrency),
+      concurrency: submittedConcurrency,
     },
     bottleneck_analysis: deriveBottleneck(ttft, tpot),
     diagnostics: {

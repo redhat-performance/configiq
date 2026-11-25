@@ -65,6 +65,8 @@ export interface PredictionSnapshot {
   concurrency: number
   tp: number
   throughput: number
+  /** Replicas the throughput covers; null when the prediction did not say. */
+  replicas: number | null
   status: string | null
   confidence: number | null
   backend: string | null
@@ -93,6 +95,8 @@ export interface RangeCheck {
 export interface PredictionComparison {
   workloadMeasured: boolean
   tpMeasured: boolean
+  /** False when the prediction is a multi-replica cluster total. */
+  replicaComparable: boolean
   curve: ThroughputCurve | null
   at: InterpolatedPoint | null
   deltaPct: number | null
@@ -336,6 +340,7 @@ export function comparePredictionToMeasured(
     return {
       workloadMeasured: series.lines.length > 0,
       tpMeasured: false,
+      replicaComparable: true,
       curve: null,
       at: null,
       deltaPct: null,
@@ -358,7 +363,11 @@ export function comparePredictionToMeasured(
   const concurrencyLevels = curve.points.map(point => point.concurrency)
   const minConcurrency = Math.min(...concurrencyLevels)
   const maxConcurrency = Math.max(...concurrencyLevels)
-  const deltaPct = at && at.measured > 0
+  // A multi-replica recommendation is a cluster total while a curve point is
+  // one measured deployment. A clamped point is not a measurement at the
+  // predicted concurrency either. Neither may produce a percentage gap.
+  const replicaComparable = prediction.replicas == null || prediction.replicas <= 1
+  const deltaPct = replicaComparable && at && at.clamped == null && at.measured > 0
     ? ((prediction.throughput - at.measured) / at.measured) * 100
     : null
 
@@ -368,7 +377,8 @@ export function comparePredictionToMeasured(
   const measuredFamilies = new Set(
     curve.backendVersions.map(version => normalizeBackendVersion(curve.backend, version)),
   )
-  const versionMeasured = measuredFamilies.has(predictedFamily)
+  const versionResolved = predictedFamily !== 'unknown'
+  const versionMeasured = versionResolved && measuredFamilies.has(predictedFamily)
   const tokenBudget = (prediction.isl + prediction.osl) * Math.max(prediction.concurrency, 1)
   const measuredTokenBudgets = curve.points.map(
     point => (prediction.isl + prediction.osl) * Math.max(point.concurrency, 1),
@@ -403,7 +413,9 @@ export function comparePredictionToMeasured(
       ok: versionMeasured,
       detail: versionMeasured
         ? `${predictedFamily} was measured for this pair.`
-        : `${predictedFamily} is not among the measured families (${[...measuredFamilies].join(', ')}).`,
+        : versionResolved
+          ? `${predictedFamily} is not among the measured families (${[...measuredFamilies].join(', ')}).`
+          : `The prediction does not name a resolvable backend version; measured families are ${[...measuredFamilies].join(', ')}.`,
     },
     {
       id: 'throughput',
@@ -412,6 +424,15 @@ export function comparePredictionToMeasured(
       detail: `${formatNumber(prediction.throughput)} tok/s against an observed maximum of ${formatNumber(observedMax)} tok/s.`,
     },
   ]
+
+  if (!replicaComparable) {
+    checks.push({
+      id: 'replicas',
+      label: 'Replica basis',
+      ok: false,
+      detail: `The prediction is a cluster total across ${formatNumber(prediction.replicas ?? 0)} replicas, while each measured point is one benchmark deployment. The rates are not on the same basis, so no percentage gap is reported.`,
+    })
+  }
 
   if (prediction.servingMode === 'disagg') {
     checks.push({
@@ -435,6 +456,7 @@ export function comparePredictionToMeasured(
   return {
     workloadMeasured: true,
     tpMeasured: true,
+    replicaComparable,
     curve,
     at,
     deltaPct,

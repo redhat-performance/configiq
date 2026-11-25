@@ -715,11 +715,38 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     // request_latency_ms = ttft + tpot * osl = 100 + 20 * 128 = 2660
     expect(result.performance?.request_latency_ms).toBe(2660)
     // No aggregate rate was reported, so the fallback is one request's rate
-    // multiplied by the resolved concurrency: ((128 * 1000) / 2660) * 32.
+    // multiplied by the timed concurrency: ((128 * 1000) / 2660) * 32.
     expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(1539.85, 1)
     expect(result.warnings.some(warning => warning.includes('Throughput was not reported'))).toBe(true)
-    // concurrency = floor(max_num_seqs) = floor(32) from serving_config
+    // concurrency is the submitted batch the simulator timed
     expect(result.performance?.concurrency).toBe(32)
+  })
+
+  it('derives throughput at the submitted concurrency, not a wider serving cap', async () => {
+    const mockFetch = mockFetchOk({
+      ...VALID_RESPONSE,
+      serving_config: { ...VALID_RESPONSE.serving_config, max_num_seqs: 64 },
+    })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, batch_size: 16 })
+
+    // ((128 * 1000) / 2660) * 16, matching the concurrency recorded with it.
+    expect(result.performance?.throughput_tokens_per_sec).toBeCloseTo(769.92, 1)
+    expect(result.performance?.concurrency).toBe(16)
+    expect(result.warnings.some(warning => warning.includes('at 16 concurrent sequences'))).toBe(true)
+  })
+
+  it('treats an omitted TTFT or TPOT as missing timing', async () => {
+    const withoutTtft: Record<string, unknown> = { ...VALID_RESPONSE }
+    delete withoutTtft.ttft
+    const mockFetch = mockFetchOk(withoutTtft)
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.performance?.throughput_tokens_per_sec).toBe(0)
+    expect(result.warnings.some(warning => warning.includes('performance prediction unavailable'))).toBe(true)
   })
 
   it('keeps aggregate and per-user throughput distinct', async () => {

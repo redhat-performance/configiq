@@ -54,6 +54,9 @@ export const testedModelLink = defineLink('/tested-models/[pairId]', {
   predConcurrency: positiveInt(1_000_000),
   predTp: positiveInt(1_024),
   predThroughput: positiveNumber(1_000_000_000),
+  // How many replicas the rate covers. A cluster total and one benchmark
+  // deployment are not comparable, so the receiving page needs the count.
+  predReplicas: positiveInt(1_000_000),
   predStatus: z.enum(CLASSIFIER_STATUSES),
   predConfidence: z.coerce.number().min(0).max(1),
   predBackend: z.enum(INFERENCE_BACKENDS),

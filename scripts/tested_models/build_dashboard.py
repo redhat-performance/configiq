@@ -34,6 +34,7 @@ _SWEEP_COLUMNS = (
     "kv_quantization",
     "gpu_memory_utilization",
     "max_num_seqs",
+    "max_num_batched_tokens",
     "max_seq_len",
     "chunked_prefill_enabled",
     "spec_decoding",
@@ -213,6 +214,10 @@ def build_dashboard(manifest_path: Path, labeled_dir: Path, model_dir: Path, out
         pair_id = pair["id"]
         frame = _labeled_frame(pair_id, labeled_dir)
         if frame is None:
+            # The pair has no aggregate labeled rows, so this run cannot
+            # describe it. Remove a payload left by an earlier run instead of
+            # publishing a dashboard that no current labels support.
+            (output_dir / f"{pair_id}.json").unlink(missing_ok=True)
             continue
         # Defense in depth: a labeled frame produced before the measurement-family
         # split may still carry per-turn windows.

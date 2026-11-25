@@ -157,7 +157,11 @@ def build_registry(
         coverage = coverage_for(pair_id, labeled_dir, int(source.get("records", 0)))
         gate = evaluate_gate(report_entry, coverage)
         dashboard_path = dashboard_dir / f"{pair_id}.json"
-        if not dashboard_path.is_file():
+        dashboard_available = dashboard_path.is_file()
+        # A pair with no aggregate rows has no labeled frame, so no dashboard
+        # is produced. It stays in the registry as measured-only rather than
+        # aborting the build; any other missing dashboard is a real error.
+        if not dashboard_available and report_entry.get("status") != "skipped_no_aggregate_rows":
             raise FileNotFoundError(dashboard_path)
 
         warnings = report_entry.get("warnings") or []
@@ -177,7 +181,7 @@ def build_registry(
             "systemId": system_id(source["accelerator"]),
             "status": VALIDATED if gate["passed"] else MEASURED_NO_ENVELOPE,
             "coverage": coverage,
-            "dashboardPath": f"dashboard/{pair_id}.json",
+            "dashboardPath": f"dashboard/{pair_id}.json" if dashboard_available else None,
             "gate": gate,
         }
 

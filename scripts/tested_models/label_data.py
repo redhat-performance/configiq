@@ -122,7 +122,21 @@ def main() -> int:
     for source in read_manifest(args.manifest):
         pair = str(source["pair_id"].iloc[0])
         parts = {split: pd.read_parquet(args.split_dir / f"{pair}.{split}.parquet") for split in ("train", "validation", "test")}
-        labeled, pair_rules = label_pair(**parts)
+        try:
+            labeled, pair_rules = label_pair(**parts)
+        except ValueError as error:
+            # A pair whose aggregate rows all landed in a held-out split cannot
+            # fit an envelope. Record it and keep the rest of the run alive;
+            # downstream stages treat a missing labeled file as skipped.
+            if "no aggregate measurements" not in str(error):
+                raise
+            rules[pair] = {"status": "skipped_no_aggregate_rows", "reason": str(error)}
+            # A previous run may have labeled this pair. Leaving those files
+            # behind would let training fit an envelope the current split no
+            # longer supports.
+            for split in ("train", "validation", "test"):
+                (args.output_dir / f"{pair}.{split}.parquet").unlink(missing_ok=True)
+            continue
         rules[pair] = pair_rules
         for split, frame in labeled.items():
             frame.to_parquet(args.output_dir / f"{pair}.{split}.parquet", index=False)

@@ -36,11 +36,13 @@ vi.mock('@patternfly/react-charts/victory', () => ({
     style,
   }: {
     data: Array<{ x: number; y: number; name?: string }>
-    style?: { data?: { stroke?: string } }
+    style?: { data?: { stroke?: string; opacity?: number; strokeWidth?: number } }
   }) => (
     <div
       data-testid="chart-line"
       data-stroke={style?.data?.stroke}
+      data-opacity={String(style?.data?.opacity ?? '')}
+      data-stroke-width={String(style?.data?.strokeWidth ?? '')}
       data-points={JSON.stringify(data.map(datum => [datum.x, datum.y]))}
     />
   ),
@@ -226,6 +228,13 @@ function scatter(): Array<[number, number, string]> | null {
   return element ? JSON.parse(element.getAttribute('data-points') ?? '[]') as Array<[number, number, string]> : null
 }
 
+function lineStyles(): Array<{ opacity: string; strokeWidth: string }> {
+  return [...host.querySelectorAll<HTMLElement>('[data-testid="chart-line"]')].map(element => ({
+    opacity: element.getAttribute('data-opacity') ?? '',
+    strokeWidth: element.getAttribute('data-stroke-width') ?? '',
+  }))
+}
+
 describe('TestedModelPair throughput chart', () => {
   it('draws one line per tensor-parallel width for the default workload', async () => {
     await mount()
@@ -286,5 +295,61 @@ describe('TestedModelPair throughput chart', () => {
     expect(scatter()).toEqual([[10, 1200, 'Your prediction']])
     expect(lines()).toHaveLength(2)
     expect(host.textContent).toContain('+33.3%')
+  })
+
+  it('reports an unreadable dashboard schema instead of an empty chart', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 409, json: async () => ({}) })))
+    navigation.search = ''
+    window.history.replaceState({}, '', `/tested-models/${pair.id}`)
+
+    await act(async () => {
+      root.render(<TestedModelPair pair={pair} gate={gate} dataset={null} />)
+    })
+    await waitFor(
+      () => (host.textContent ?? '').includes('schema this build does not support'),
+      'unsupported schema notice',
+    )
+
+    expect(host.querySelector('[data-testid="chart-line"]')).toBeNull()
+    expect(host.textContent).toContain('Rebuild the tested-model bundle')
+  })
+
+  it('does not compare a multi-replica cluster total with one deployment', async () => {
+    const search = `${predictionSearch}&predReplicas=2`
+    await mount(search)
+
+    expect(scatter()).toBeNull()
+    const text = host.textContent ?? ''
+    expect(text).toContain('Replica basis')
+    expect(text).toContain('cluster total across 2 replicas')
+    // The difference is not reported across incomparable bases.
+    expect(text).toContain('Prediction versus measured')
+    const difference = [...host.querySelectorAll<HTMLElement>('strong')]
+      .find(element => element.textContent === '—')
+    expect(difference).toBeDefined()
+    expect(text).not.toContain('Prediction is')
+  })
+
+  it('ignores a focused TP that the displayed workload does not measure', async () => {
+    await mount('v=1&isl=8000&osl=1000&turns=5&tp=3')
+
+    // The multi-turn workload measured only TP 1, so no line is dimmed.
+    expect(lineStyles()).toEqual([{ opacity: '1', strokeWidth: '2.5' }])
+  })
+
+  it('offers the prediction workload even when its TP was not measured', async () => {
+    const search = predictionSearch
+      .replace('predTp=1', 'predTp=3')
+      .replace('isl=1000', 'isl=8000')
+      .replace('turns=1', 'turns=5')
+    await mount(search)
+
+    const text = host.textContent ?? ''
+    expect(text).toContain('The chart is showing ISL 8,000 · OSL 1,000 · 5-turn.')
+    expect(text).toContain('No comparable measured line')
+    expect(
+      [...host.querySelectorAll<HTMLButtonElement>('button')]
+        .some(button => button.textContent?.startsWith('Show ISL 1,000 · OSL 1,000 · single-turn')),
+    ).toBe(true)
   })
 })

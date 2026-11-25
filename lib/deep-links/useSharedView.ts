@@ -23,6 +23,15 @@ export interface SharedViewOptions<F extends LinkFieldMap, B extends keyof F> {
   absent?: LinkValues<F>;
   /** Values this page always sends but does not own as state (provenance). */
   provenance?: Partial<LinkValues<F>>;
+  /**
+   * The concrete path built links should target.
+   *
+   * Dynamic routes (`/tested-models/[pairId]`) cannot be shared through the
+   * descriptor's template. Defaults to the current location, resolved when a
+   * link is built rather than when the hook runs, so a client-side navigation
+   * to another pair does not keep the previous path.
+   */
+  path?: string | (() => string);
   /** Runs after a link's values are applied: mark a retained result stale, etc. */
   onApplied?: (values: LinkValues<F>) => void;
 }
@@ -58,6 +67,8 @@ export function useSharedView<F extends LinkFieldMap, B extends keyof F>(
   applied.current = onApplied;
   const absent = React.useRef(options.absent);
   absent.current = options.absent;
+  const targetPath = React.useRef(options.path);
+  targetPath.current = options.path;
 
   const state = useDeepLink(link, ready, (values) => {
     const fill = absent.current;
@@ -79,7 +90,12 @@ export function useSharedView<F extends LinkFieldMap, B extends keyof F>(
     (overrides?: Partial<LinkValues<F>>) => {
       const exported = collectLinkValues<F>(fields.current, provenance);
       const values = overrides ? { ...exported, ...overrides } : exported;
-      return link.build(defaults ? link.omitDefaults(values, defaults) : values);
+      const explicit = typeof targetPath.current === 'function'
+        ? targetPath.current()
+        : targetPath.current;
+      const target = explicit
+        ?? (typeof window === 'undefined' ? undefined : window.location.pathname);
+      return link.build(defaults ? link.omitDefaults(values, defaults) : values, target);
     },
     [link, defaults, provenance],
   );

@@ -46,6 +46,7 @@ async function mount(overrides?: TestValues) {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, '', '/');
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -80,5 +81,32 @@ describe('useSharedView build overrides', () => {
 
     const url = new URL(link(), 'http://localhost');
     expect(url.searchParams.has('backendVersion')).toBe(false);
+  })
+
+  it('uses the concrete location for a dynamic route instead of its template', async () => {
+    window.history.replaceState({}, '', '/tested-models/model__h200');
+    await mount();
+
+    expect(new URL(link(), 'http://localhost').pathname).toBe('/tested-models/model__h200');
+  })
+
+  it('accepts an explicit path for a page that builds another route', async () => {
+    function PathHarness() {
+      const fields = React.useRef(defineAccessors(testLink, {
+        model: { read: () => 'org/model', write: () => {} },
+        backend: { read: () => 'vllm' as const, write: () => {} },
+        backendVersion: { read: () => '0.9.0', write: () => {} },
+        simulator: { read: () => 'aisimulate', write: () => {} },
+      })).current;
+      const shared = useSharedView(testLink, { fields, ready: true, path: '/test/other' });
+      return <output data-testid="link">{shared.build()}</output>;
+    }
+
+    await act(async () => {
+      root.render(<PathHarness />);
+      await Promise.resolve();
+    });
+
+    expect(new URL(link(), 'http://localhost').pathname).toBe('/test/other');
   })
 })

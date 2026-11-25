@@ -265,13 +265,14 @@ describe('golden links', () => {
       predConcurrency: 32,
       predTp: 2,
       predThroughput: 1234.5,
+      predReplicas: 1,
       predStatus: 'within_validated_range',
       predConfidence: 0.87,
       predBackend: 'vllm',
       predBackendVersion: '0.24.0',
       predServingMode: 'agg',
     }, '/tested-models/google_gemma_4_31b_it__h200')).toMatchInlineSnapshot(
-      `"/tested-models/google_gemma_4_31b_it__h200?v=1&isl=1000&osl=1000&turns=1&tp=2&predIsl=1000&predOsl=1000&predConcurrency=32&predTp=2&predThroughput=1234.5&predStatus=within_validated_range&predConfidence=0.87&predBackend=vllm&predBackendVersion=0.24.0&predServingMode=agg"`,
+      `"/tested-models/google_gemma_4_31b_it__h200?v=1&isl=1000&osl=1000&turns=1&tp=2&predIsl=1000&predOsl=1000&predConcurrency=32&predTp=2&predThroughput=1234.5&predReplicas=1&predStatus=within_validated_range&predConfidence=0.87&predBackend=vllm&predBackendVersion=0.24.0&predServingMode=agg"`,
     );
   });
 });

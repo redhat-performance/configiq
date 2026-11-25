@@ -81,6 +81,70 @@ def test_split_summary_records_per_version_family_support(tmp_path, monkeypatch)
     for family in support.values():
         assert set(family) == {"train", "validation", "test"}
         assert sum(frame["rows"] for frame in family.values()) == 10
+    # Aggregate rows exist, so train must be able to fit an envelope.
+    assert summary["pairs"]["model__h200"]["aggregate_train"] == "present"
+
+
+def _measurement_frame() -> pd.DataFrame:
+    """Three configuration groups: two aggregate, one per-turn only."""
+    frame = pd.DataFrame([
+        {"model_id": "model", "accelerator": "H200", "tp": 1, "concurrency": 4, "measured rps": 1.0, "output_tok/sec": 100.0},
+        {"model_id": "model", "accelerator": "H200", "tp": 1, "concurrency": 4, "turns": 5, "output_tok/sec": 10.0},
+        {"model_id": "model", "accelerator": "H200", "tp": 1, "concurrency": 8, "measured rps": 2.0, "output_tok/sec": 200.0},
+    ])
+    frame["configuration_group"] = ["aggregate-test", "per-turn", "aggregate-validation"]
+    return frame
+
+
+def test_split_moves_an_aggregate_group_into_train_when_all_are_held_out() -> None:
+    frame = _measurement_frame()
+    groups = ["aggregate-test", "per-turn", "aggregate-validation"]
+    assignments = {
+        "aggregate-test": "test",
+        "per-turn": "validation",
+        "aggregate-validation": "validation",
+    }
+
+    moved, status = split_dataset._ensure_aggregate_training_group(frame, assignments, groups)
+
+    # Validation is preferred, and the per-turn group keeps it populated.
+    assert status == "moved_from_validation"
+    assert moved["aggregate-validation"] == "train"
+    assert moved["per-turn"] == "validation"
+    assert moved["aggregate-test"] == "test"
+
+
+def test_split_leaves_assignments_alone_when_train_already_has_an_aggregate_group() -> None:
+    frame = _measurement_frame()
+    groups = ["aggregate-test", "per-turn", "aggregate-validation"]
+    assignments = {
+        "aggregate-test": "train",
+        "per-turn": "validation",
+        "aggregate-validation": "test",
+    }
+
+    moved, status = split_dataset._ensure_aggregate_training_group(frame, assignments, groups)
+
+    assert status == "present"
+    assert moved == assignments
+
+
+def test_split_reports_when_a_pair_has_only_per_turn_rows() -> None:
+    frame = _measurement_frame()
+    groups = ["aggregate-test", "per-turn", "aggregate-validation"]
+    assignments = {
+        "aggregate-test": "train",
+        "per-turn": "validation",
+        "aggregate-validation": "test",
+    }
+    per_turn = frame.copy()
+    per_turn["turns"] = 5
+    per_turn = per_turn.drop(columns=["measured rps"])
+
+    moved, status = split_dataset._ensure_aggregate_training_group(per_turn, assignments, groups)
+
+    assert status == "no_aggregate_rows"
+    assert moved == assignments
 
 
 def test_feature_matrix_fits_medians_and_categories_from_train_only() -> None:

@@ -66,15 +66,17 @@ function predictionSnapshotHref(
   if (effective.concurrency < 1) return null
   const tp = effective.tp_size || 1
   const snapshot = buildValidated(testedModelLink, {
-    isl: effective.isl,
-    osl: effective.osl,
-    turns: 1,
+    // The workload selection stays unset: the destination picks the
+    // prediction's measured workload when one exists and its own default
+    // otherwise. Naming the prediction's unmeasured ISL/OSL here would open an
+    // empty chart.
     tp,
     predIsl: effective.isl,
     predOsl: effective.osl,
     predConcurrency: effective.concurrency,
     predTp: tp,
     predThroughput: throughput,
+    predReplicas: effective.replicas ?? undefined,
     predStatus: prediction.status,
     predConfidence: prediction.confidence ?? undefined,
     predBackend: LINK_BACKENDS.has(effective.backend)
@@ -83,8 +85,8 @@ function predictionSnapshotHref(
     predBackendVersion: effective.backend_version ?? undefined,
     predServingMode: effective.serving_mode,
   })
-  // The overlay needs all five point coordinates. If the contract rejected any
-  // of them, showing no overlay is better than plotting a partial snapshot.
+  // The overlay needs the point coordinates. If the contract rejected any of
+  // them, showing no overlay is better than plotting a partial snapshot.
   const required = [
     snapshot.values.predIsl,
     snapshot.values.predOsl,
