@@ -337,7 +337,7 @@ function CountUp({ target, dec = 0 }: { target: number; dec?: number }) {
 }
 
 // Particle animation hook
-function useParticles(ref: React.RefObject<HTMLCanvasElement>, breakdown: CalcResult['breakdown']) {
+function useParticles(ref: React.RefObject<HTMLCanvasElement | null>, breakdown: CalcResult['breakdown']) {
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
@@ -416,7 +416,7 @@ function LayerViz({
 }: {
   breakdown: CalcResult['breakdown']
   stackOrder: string[]
-  canvasRef: React.RefObject<HTMLCanvasElement>
+  canvasRef: React.RefObject<HTMLCanvasElement | null>
 }) {
   const sorted = useMemo(
     () => stackOrder.map(id => breakdown.find(b => b.id === id)).filter(Boolean) as typeof breakdown,

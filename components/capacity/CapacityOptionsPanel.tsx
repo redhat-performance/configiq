@@ -121,7 +121,7 @@ function topologyLabel(result: RecommendResult, capacityMode: 'agg' | 'disagg'):
   return `${rec.replicasNeeded}× ${agg}`;
 }
 
-function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
+function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = React.useRef<HTMLDivElement>(null);
   const [width, setWidth] = React.useState(640);
   React.useEffect(() => {
