@@ -85,19 +85,11 @@ def _role_table(engine: EngineSection) -> str:
         if role is None:
             continue
         rows.append(
-            "| {name} | {replicas} | {tp} | {pp} | {dp} | {moe_tp}/{moe_ep} | {context} | {seqs} | {batched} | {memory} |".format(
-                name=name,
-                replicas=role.replicas.value,
-                tp=role.tensor_parallel_size.value,
-                pp=role.pipeline_parallel_size.value,
-                dp=role.data_parallel_size.value,
-                moe_tp=role.moe_tensor_parallel_size.value,
-                moe_ep=role.moe_expert_parallel_size.value,
-                context=role.max_model_len.value,
-                seqs=role.max_num_seqs.value,
-                batched=role.max_num_batched_tokens.value,
-                memory=role.gpu_memory_utilization.value,
-            )
+            f"| {name} | {role.replicas.value} | {role.tensor_parallel_size.value} | "
+            f"{role.pipeline_parallel_size.value} | {role.data_parallel_size.value} | "
+            f"{role.moe_tensor_parallel_size.value}/{role.moe_expert_parallel_size.value} | "
+            f"{role.max_model_len.value} | {role.max_num_seqs.value} | "
+            f"{role.max_num_batched_tokens.value} | {role.gpu_memory_utilization.value} |"
         )
     return "\n".join(rows)
 
@@ -217,13 +209,11 @@ def _layout(engine: EngineSection, target: DeployTarget) -> str:
             "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |",
         ]
         return "\n".join(rows)
-    return "\n".join(
-        [
-            "| Path | Purpose |",
-            "| --- | --- |",
-            "| `k8s_deploy.yaml` | The `DynamoGraphDeployment` for the evaluated topology. |",
-            "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |",
-        ]
+    return (
+        "| Path | Purpose |\n"
+        "| --- | --- |\n"
+        "| `k8s_deploy.yaml` | The `DynamoGraphDeployment` for the evaluated topology. |\n"
+        "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |"
     )
 
 
@@ -558,4 +548,4 @@ def as_files(files: dict[str, str]) -> list[DeployFile]:
     ]
 
 
-__all__ = ["assemble", "as_files"]
+__all__ = ["as_files", "assemble"]
