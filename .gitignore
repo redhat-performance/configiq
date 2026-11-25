@@ -55,3 +55,6 @@ test-results/
 
 # Local-only dev scratch (container runner, logs)
 .local-dev/
+
+# Local scorecard build output and prediction cache
+artifacts/

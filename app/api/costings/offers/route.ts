@@ -3,7 +3,7 @@ import { recordErrorCode } from '@/lib/otel-metrics'
 
 /** Additive proxy: no browser credentials, no legacy systems-response changes. */
 export async function GET() {
-  const base = process.env.AICOSTINGS_GATEWAY_URL || 'https://aicostings.dev'
+  const base = process.env.AICOSTINGS_GATEWAY_URL || 'https://aicostings.configiq.dev'
   const timeout = Number.parseInt(process.env.AICOSTINGS_TIMEOUT_SECONDS || '', 10) || 30
   try {
     const response = await fetch(`${base}/offers`, {

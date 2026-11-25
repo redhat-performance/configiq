@@ -2,6 +2,8 @@
 // AISimulators REST API. Values are copied from the aisimulate SDK record; the
 // browser must not synthesize topology or performance data.
 
+import type { DebugRecord } from '../debug/types'
+
 export type CandidateStatus =
   | 'feasible'
   | 'infeasible'
@@ -116,6 +118,11 @@ export type FrontierState =
       candidates: Candidate[]
       views: CandidateViews | null
       sweep: FrontierSweep | null
+      /**
+       * Commands and input files the sweep recorded, including one invocation
+       * per evaluated candidate. Null when the service returned none.
+       */
+      replay: DebugRecord | null
     }
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; message: string }

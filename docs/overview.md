@@ -35,6 +35,8 @@ AISimulators and aicostings services without exposing service URLs to the browse
 - [Tested-model validation](tested-models.md): measured pairs and classifiers
 - [Pareto validation](pareto-validation.md): predictions checked against
   measured data
+- [Simulator scorecard](validation-scorecard.md): prediction agreement scored
+  across every measured model and GPU
 - [MCP server](mcp-server.md): connect Claude and other MCP clients to ConfigIQ
 - [REST API](api.md): endpoint reference and examples
 - [Contributing](contributing-guide.md): run the app and prepare a change

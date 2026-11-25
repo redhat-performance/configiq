@@ -5,10 +5,18 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
   type KvCacheLinkValues,
   type RecommendLinkValues,
+  type ScorecardLinkValues,
 } from './pages';
+import {
+  SCORECARD_METRICS,
+  SCORECARD_RELEASE_MATCH,
+  SCORECARD_SOURCE_FILTERS,
+  SCORECARD_STATISTICS,
+} from '@/lib/scorecard/types';
 
 function query(url: string): string {
   return url.slice(url.indexOf('?'));
@@ -90,16 +98,25 @@ describe('page link contracts', () => {
   it('carries provenance on pages that offer a simulator choice', () => {
     const built = hybridSavingsLink.build({
       model: 'Qwen/Qwen3-32B',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: '0.9.0',
     });
     const params = new URLSearchParams(query(built));
 
     expect(params.get('v')).toBe('1');
-    expect(params.get('simulator')).toBe('aisimulate');
+    expect(params.get('simulator')).toBe('aisim');
     expect(params.get('backend')).toBe('vllm');
     expect(params.get('backendVersion')).toBe('0.9.0');
+  });
+
+  it('reads a simulator id from before the rename as the current one', () => {
+    const parsed = recommendLink.parse(
+      '?v=1&model=Qwen%2FQwen3-32B&simulator=aisimulate&backend=vllm',
+    )
+
+    expect(parsed.values.simulator).toBe('aisim');
+    expect(parsed.warnings).toEqual([]);
   });
 
   it('never puts a simulator in a KV cache link', () => {
@@ -220,5 +237,98 @@ describe('page link contracts', () => {
       expect(Object.keys(link.fields)).not.toContain('result');
       expect(Object.keys(link.fields)).not.toContain('gpus');
     }
+  });
+});
+
+describe('scorecard link', () => {
+  it('reads every value each selector can produce', () => {
+    for (const metric of SCORECARD_METRICS) {
+      expect(scorecardLink.parse(`?metric=${metric}`).values).toEqual({ metric });
+    }
+    for (const statistic of SCORECARD_STATISTICS) {
+      expect(scorecardLink.parse(`?statistic=${statistic}`).values).toEqual({ statistic });
+    }
+    for (const releaseMatch of SCORECARD_RELEASE_MATCH) {
+      expect(scorecardLink.parse(`?releaseMatch=${releaseMatch}`).values).toEqual({ releaseMatch });
+    }
+    for (const source of SCORECARD_SOURCE_FILTERS) {
+      expect(scorecardLink.parse(`?source=${source}`).values).toEqual({ source });
+    }
+  });
+
+  it('trims the free-text filters a reader typed', () => {
+    expect(
+      scorecardLink.parse('?model=%20openai%2Fgpt-oss-120b%20&gpu=%20H200%20&workload=%208192%2F1024%20').values,
+    ).toEqual({
+      model: 'openai/gpt-oss-120b',
+      gpu: 'H200',
+      workload: '8192/1024',
+    });
+  });
+
+  it('drops a filter longer than its field, keeping the rest', () => {
+    const parsed = scorecardLink.parse(
+      `?model=${'m'.repeat(201)}&gpu=${'g'.repeat(65)}&workload=${'w'.repeat(65)}&pair=aisim%7Cblis`,
+    );
+
+    expect(parsed.values).toEqual({ pair: 'aisim|blis' });
+    expect(parsed.warnings).toEqual([
+      'Ignored "model": the value was not valid.',
+      'Ignored "gpu": the value was not valid.',
+      'Ignored "workload": the value was not valid.',
+    ]);
+  });
+
+  it('reports an invalid selector value and applies the others', () => {
+    const parsed = scorecardLink.parse('?metric=latency&statistic=mdape&source=mine');
+
+    expect(parsed.values).toEqual({ statistic: 'mdape' });
+    expect(parsed.warnings).toEqual([
+      'Ignored "metric": the value was not valid.',
+      'Ignored "source": the value was not valid.',
+    ]);
+  });
+
+  it('refuses a format version this build cannot read', () => {
+    const parsed = scorecardLink.parse('?v=2&metric=ttft');
+
+    expect(parsed.values).toEqual({});
+    expect(parsed.unsupportedVersion).toBe(true);
+    expect(parsed.warnings).toEqual([
+      'This link uses an unsupported format version "2"; its settings were not applied.',
+    ]);
+  });
+
+  it('round-trips a fully narrowed view, including the comparison pair', () => {
+    const values: ScorecardLinkValues = {
+      metric: 'ttft',
+      statistic: 'p90',
+      releaseMatch: 'matched',
+      source: 'inferencex',
+      model: 'openai/gpt-oss-120b',
+      gpu: 'H200',
+      workload: '8192/1024',
+      pair: 'aisim|blis',
+    };
+
+    const built = scorecardLink.build(values);
+
+    expect(new URLSearchParams(query(built)).get('pair')).toBe('aisim|blis');
+    expect(scorecardLink.parse(query(built))).toEqual({ values, warnings: [] });
+  });
+
+  it('omits the page defaults so a shared link names only what changed', () => {
+    expect(
+      scorecardLink.omitDefaults(
+        {
+          metric: 'tpot',
+          statistic: 'mdape',
+          releaseMatch: 'any',
+          source: 'all',
+          gpu: 'H200',
+        },
+        { metric: 'tpot', statistic: 'mdape', releaseMatch: 'any', source: 'all' },
+      ),
+    ).toEqual({ gpu: 'H200' });
   });
 });

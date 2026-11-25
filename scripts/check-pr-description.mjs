@@ -21,9 +21,100 @@ export const TEMPLATE_PATH = resolve(
   'pull_request_template.md',
 )
 
-/** HTML comments are guidance for the author, never content. */
-const COMMENT = /<!--[\s\S]*?-->/g
-const FENCE = /^\s*```/
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
+
+/** The opening run of a fenced code block, or null for any other line. */
+function fenceRun(line) {
+  const match = FENCE.exec(line)
+  if (match === null) return null
+  const character = match[1][0]
+  const rest = match[2]
+  // A backtick fence's info string may not contain a backtick, so a line like
+  // ```code``` is an inline code span, not an opener that hides what follows.
+  if (character === '`' && rest.includes('`')) return null
+  return { character, length: match[1].length, rest }
+}
+
+/**
+ * Whether `line` closes `fence`, following CommonMark: the same marker
+ * character, at least as many of them, and nothing but whitespace after. A
+ * shorter inner fence therefore cannot close a longer outer one.
+ */
+function closesFence(line, fence) {
+  const run = fenceRun(line)
+  return (
+    run !== null &&
+    run.character === fence.character &&
+    run.length >= fence.length &&
+    run.rest.trim() === ''
+  )
+}
+
+/**
+ * HTML comments are guidance for the author, never content.
+ *
+ * A single regular-expression replace is not enough: overlapping or repeated
+ * comment openers can survive it, so the check would read text the author
+ * meant to hide. Scan line by line instead, dropping each comment from its
+ * `<!--` through the next `-->`, and drop an unterminated opener to the end of
+ * the document.
+ *
+ * Fenced code blocks are the exception: `sections` already ignores them, so a
+ * literal opener in an example must survive. Stripping it would also swallow
+ * the closing fence and every section after it.
+ *
+ * A line break inside a comment is removed with the comment, joining the text
+ * on either side, while a line break outside one is preserved. That keeps a
+ * commented checklist item attached to its indented continuation.
+ */
+export function stripComments(markdown) {
+  const kept = []
+  let current = ''
+  let fence = null
+  let inComment = false
+
+  for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+    if (fence !== null) {
+      kept.push(line)
+      if (closesFence(line, fence)) fence = null
+      continue
+    }
+
+    let rest = line
+    while (rest !== '') {
+      if (inComment) {
+        const end = rest.indexOf('-->')
+        if (end === -1) {
+          rest = ''
+          break
+        }
+        rest = rest.slice(end + 3)
+        inComment = false
+        continue
+      }
+      const start = rest.indexOf('<!--')
+      if (start === -1) {
+        current += rest
+        break
+      }
+      current += rest.slice(0, start)
+      rest = rest.slice(start + 4)
+      inComment = true
+    }
+
+    if (inComment) continue
+
+    kept.push(current)
+    const opener = fenceRun(current)
+    current = ''
+    if (opener !== null) fence = opener
+  }
+
+  // Text before an opener that is never closed is still outside the comment.
+  if (current !== '') kept.push(current)
+  return kept.join('\n')
+}
+
 const HEADING = /^##\s+(.+?)\s*$/
 const ITEM_START = /^-\s+\[([ xX])\]\s+(.*)$/
 
@@ -40,13 +131,17 @@ const ITEM_START = /^-\s+\[([ xX])\]\s+(.*)$/
 export function sections(markdown) {
   const found = new Map()
   let current = null
-  let fenced = false
+  let fence = null
   for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (FENCE.test(line)) {
-      fenced = !fenced
+    if (fence !== null) {
+      if (closesFence(line, fence)) fence = null
       continue
     }
-    if (fenced) continue
+    const opener = fenceRun(line)
+    if (opener !== null) {
+      fence = opener
+      continue
+    }
     const heading = line.match(HEADING)
     if (heading) {
       current = found.has(heading[1]) ? null : heading[1]
@@ -65,13 +160,17 @@ export function sections(markdown) {
 export function checklist(markdown) {
   const items = []
   let current = null
-  let fenced = false
+  let fence = null
   for (const raw of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (FENCE.test(raw)) {
-      fenced = !fenced
+    if (fence !== null) {
+      if (closesFence(raw, fence)) fence = null
       continue
     }
-    if (fenced) continue
+    const opener = fenceRun(raw)
+    if (opener !== null) {
+      fence = opener
+      continue
+    }
     const start = raw.match(ITEM_START)
     if (start) {
       current = { ticked: start[1] !== ' ', text: start[2].trim() }
@@ -99,7 +198,7 @@ export function itemKey(text) {
  */
 export function checkDescription(body, template) {
   const problems = []
-  const parsed = sections((body ?? '').replace(COMMENT, ''))
+  const parsed = sections(stripComments(body ?? ''))
 
   const changed = parsed.get('What changed')
   if (changed === undefined) {
@@ -115,7 +214,7 @@ export function checkDescription(body, template) {
   }
 
   const ticked = checklist(checks)
-  const templateChecks = sections(template.replace(COMMENT, '')).get('Checks') ?? ''
+  const templateChecks = sections(stripComments(template)).get('Checks') ?? ''
   for (const item of checklist(templateChecks)) {
     const key = itemKey(item.text)
     const match = ticked.find(candidate => candidate.text.includes(key))

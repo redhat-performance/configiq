@@ -28,8 +28,14 @@ export interface SharedViewOptions<F extends LinkFieldMap, B extends keyof F> {
 }
 
 export interface SharedView<F extends LinkFieldMap> extends DeepLinkState<F> {
-  /** The canonical link for the view as it stands. */
-  build: () => string;
+  /**
+   * The canonical link for the view as it stands.
+   *
+   * `overrides` replaces the exported value of named fields. A result snapshot
+   * uses it to describe the run that produced it when settings the link reads
+   * as provenance moved after that run.
+   */
+  build: (overrides?: Partial<LinkValues<F>>) => string;
 }
 
 /**
@@ -70,8 +76,9 @@ export function useSharedView<F extends LinkFieldMap, B extends keyof F>(
   });
 
   const build = React.useCallback(
-    () => {
-      const values = collectLinkValues<F>(fields.current, provenance);
+    (overrides?: Partial<LinkValues<F>>) => {
+      const exported = collectLinkValues<F>(fields.current, provenance);
+      const values = overrides ? { ...exported, ...overrides } : exported;
       return link.build(defaults ? link.omitDefaults(values, defaults) : values);
     },
     [link, defaults, provenance],

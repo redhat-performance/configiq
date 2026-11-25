@@ -57,7 +57,7 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     backendOptions: [],
     networkOptions: ['ib-400g'],
     simulators: [
-      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+      { id: 'aisim', label: 'AISim', version: null, default: true },
       { id: 'blis', label: 'BLIS', version: BLIS_FIXTURE_VERSION, default: false },
     ],
     simulatorSupport: {
@@ -196,7 +196,7 @@ const writeText = vi.fn(async (_url: string) => undefined);
 
 const makeSettings = (
   costingsEnabled: boolean,
-  simulator: 'aisimulate' | 'blis' = 'aisimulate',
+  simulator: 'aisim' | 'blis' = 'aisim',
 ): ReturnType<typeof useSettings> => ({
   hydrated: true,
   defaultModel: 'settings/default-model',
@@ -220,7 +220,7 @@ const makeSettings = (
   applyViewForSession: vi.fn(),
 });
 const estimateResult: InferenceConfigResult = {
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   memory_available: true,
   memory_analysis: {
     weight_gb: 14,
@@ -634,13 +634,13 @@ describe('performance page disagg link fields', () => {
     vi.mocked(useSettings).mockReturnValue(blisSettings);
 
     const { gpu } = await mountAt(
-      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+      `?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&simulator=aisim&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
     );
     // BLIS's catalog has no h100, so the page settles on the system it offers.
     expect(gpu?.value).toBe('h200_sxm');
 
     const useShared = Array.from(container.querySelectorAll('button')).find(button =>
-      // The banner uses the display label, which shortens AISimulate.
+      // The banner uses the display label, which shortens AISim.
       /Use AISim for this view/.test(button.textContent ?? ''),
     );
     expect(useShared).toBeDefined();
@@ -649,14 +649,14 @@ describe('performance page disagg link fields', () => {
       useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(blisSettings.applyViewForSession).toHaveBeenCalledWith({
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: BLIS_FIXTURE_VERSION,
     });
 
     // Accepting widens the catalog. The linked system must come back rather
     // than staying on the fallback the previous simulator forced.
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
     await act(async () => {
       root.render(<Performance />);
       await Promise.resolve();
@@ -674,7 +674,7 @@ describe('performance page disagg link fields', () => {
 
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm&maxNumSeqs=64' +
-      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+      `&simulator=aisim&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
     );
 
     const useShared = Array.from(container.querySelectorAll('button')).find(button =>
@@ -685,7 +685,7 @@ describe('performance page disagg link fields', () => {
       useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
     await act(async () => {
       root.render(<Performance />);
       await Promise.resolve();
@@ -712,7 +712,7 @@ describe('performance page disagg link fields', () => {
 
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm' +
-      `&simulator=aisimulate&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
+      `&simulator=aisim&backend=vllm&backendVersion=${BLIS_FIXTURE_VERSION}`,
     );
 
     // A result gives the manual override a context limit to start from.
@@ -757,7 +757,7 @@ describe('performance page disagg link fields', () => {
       useShared?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
     await act(async () => {
       root.render(<Performance />);
       await Promise.resolve();
@@ -825,7 +825,7 @@ describe('performance page remembered model', () => {
 
 describe('performance page link provenance', () => {
   it('offers a shared simulator instead of switching to it silently', async () => {
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
     const settings = vi.mocked(useSettings)();
 
     await mountAt(
@@ -854,7 +854,7 @@ describe('performance page link provenance', () => {
   });
 
   it('applies a second shared link without remounting the page', async () => {
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
 
     await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h100_sxm');
     const second = await mountAt('?v=1&model=settings%2Fdefault-model&system=h200_sxm');
@@ -864,10 +864,10 @@ describe('performance page link provenance', () => {
   });
 
   it('applies backend and version silently when the simulator matches', async () => {
-    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisimulate'));
+    vi.mocked(useSettings).mockReturnValue(makeSettings(false, 'aisim'));
     const settings = vi.mocked(useSettings)();
 
-    await mountAt('?v=1&system=h100_sxm&simulator=aisimulate&backend=sglang&backendVersion=0.4.0');
+    await mountAt('?v=1&system=h100_sxm&simulator=aisim&backend=sglang&backendVersion=0.4.0');
 
     expect(settings.applyViewForSession).toHaveBeenCalledWith({
       backend: 'sglang',

@@ -143,10 +143,10 @@ describe('callKvCacheCalc', () => {
       ...EXTERNAL_RESPONSE,
       debug: {
         endpoint: '/memory',
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         execution: 'in_process',
         created_at: 1730000000,
-        versions: { aisimulate: '0.14.0' },
+        versions: { aisim: '0.14.0' },
         selection: null,
         notes: [],
         invocations: [{

@@ -15,12 +15,15 @@ vi.mock('next/navigation', () => ({
 
 const startSizing = vi.hoisted(() => vi.fn());
 const startPareto = vi.hoisted(() => vi.fn());
-const recommendState = vi.hoisted(() => ({ isLoading: false }));
+const recommendState = vi.hoisted(() => ({
+  isLoading: false,
+  runMode: null as null | 'sizing' | 'pareto',
+}));
 
 vi.mock('@/contexts/RecommendContext', () => ({
   useRecommend: () => ({
     params: null,
-    runMode: null,
+    runMode: recommendState.runMode,
     isLoading: recommendState.isLoading,
     result: null,
     error: null,
@@ -38,11 +41,11 @@ vi.mock('@/contexts/RecommendContext', () => ({
 }));
 
 const settings = vi.hoisted(() => ({
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   applyViewForSession: vi.fn((view: { simulator?: string }) => {
     // Model the production replacement: an override without a simulator falls
     // back to the saved profile.
-    settings.simulator = view.simulator ?? 'aisimulate';
+    settings.simulator = view.simulator ?? 'aisim';
   }),
 }));
 
@@ -65,14 +68,14 @@ vi.mock('@/contexts/SettingsContext', () => ({
 }));
 
 const versionSupport = vi.hoisted(() => ({
-  aisimulate: {} as Record<string, { disaggregated: boolean }>,
+  aisim: {} as Record<string, { disaggregated: boolean }>,
   blis: {} as Record<string, { disaggregated: boolean }>,
 }));
 
 // A simulator's fabric capability is catalog data, so the fixture keeps it in
 // one place: the default shape claims no fabric, and the fabric-specific tests
 // opt into the capability they exercise.
-const aisimulateFabric = vi.hoisted(() => ({
+const aisimFabric = vi.hoisted(() => ({
   required: false,
   networks: [] as string[],
   defaultNetwork: null as string | null,
@@ -96,10 +99,10 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     disaggregationRequiresFabric: true,
     capacityOptions: { disaggregated: capacityCapability.disaggregated },
   };
-  const aisimulateBackend = {
+  const aisimBackend = {
     ...backend,
-    disaggregationRequiresFabric: aisimulateFabric.required,
-    versionSupport: versionSupport.aisimulate,
+    disaggregationRequiresFabric: aisimFabric.required,
+    versionSupport: versionSupport.aisim,
   };
   const blisBackend = { ...backend, versionSupport: versionSupport.blis };
   const catalog = {
@@ -110,24 +113,24 @@ vi.mock('@/lib/hooks/useCatalog', () => {
     ],
     modelSpecs: new Map(),
     networkOptions: ['ib-400g'],
-    backendOptions: [aisimulateBackend],
+    backendOptions: [aisimBackend],
     simulators: [
-      { id: 'aisimulate', label: 'AISimulate', version: null, default: true },
+      { id: 'aisim', label: 'AISim', version: null, default: true },
       { id: 'blis', label: 'BLIS', version: 'test-blis', default: false },
     ],
     simulatorSupport: {
-      aisimulate: {
-        id: 'aisimulate',
-        label: 'AISimulate',
+      aisim: {
+        id: 'aisim',
+        label: 'AISim',
         version: null,
         recommendSearch: 'single',
         modelsExhaustive: true,
         modelSpecs: new Map(),
-        networks: aisimulateFabric.networks,
-        defaultNetwork: aisimulateFabric.defaultNetwork,
+        networks: aisimFabric.networks,
+        defaultNetwork: aisimFabric.defaultNetwork,
         models: ['Qwen/Qwen2.5-7B-Instruct'],
         systems: ['h200_sxm'],
-        backends: [aisimulateBackend],
+        backends: [aisimBackend],
         objectives: ['min_gpus', 'throughput_demand', 'concurrency_capacity', 'pareto'],
       },
       // The second catalog prices the linked system that the default one does
@@ -218,6 +221,18 @@ vi.mock('@/components/help/CopyLinkButton', () => ({
 }));
 vi.mock('@/components/help/TourButton', () => ({ TourButton: () => null }));
 
+// The page decides whether a result can be saved; the control's own rendering
+// and storage behaviour are tested with the component.
+const saveControl = vi.hoisted(() => ({
+  disabledReason: null as string | null,
+}));
+vi.mock('@/components/comparison/SaveToComparisonButton', () => ({
+  SaveToComparisonButton: (props: { disabledReason: string | null }) => {
+    saveControl.disabledReason = props.disabledReason;
+    return null;
+  },
+}));
+
 const { default: Sizing } = await import('./Sizing');
 
 let root: ReturnType<typeof createRoot>;
@@ -228,15 +243,17 @@ beforeEach(() => {
     .IS_REACT_ACT_ENVIRONMENT = true;
   startSizing.mockClear();
   startPareto.mockClear();
-  for (const support of [versionSupport.aisimulate, versionSupport.blis]) {
+  for (const support of [versionSupport.aisim, versionSupport.blis]) {
     for (const version of Object.keys(support)) delete support[version];
   }
   recommendState.isLoading = false;
-  aisimulateFabric.required = false;
-  aisimulateFabric.networks = [];
-  aisimulateFabric.defaultNetwork = null;
+  recommendState.runMode = null;
+  saveControl.disabledReason = null;
+  aisimFabric.required = false;
+  aisimFabric.networks = [];
+  aisimFabric.defaultNetwork = null;
   capacityCapability.disaggregated = false;
-  settings.simulator = 'aisimulate';
+  settings.simulator = 'aisim';
   settings.applyViewForSession.mockClear();
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
@@ -360,6 +377,28 @@ async function acceptSharedSimulator() {
 }
 
 describe('recommend sizing shared views', () => {
+  it('asks for a result before offering to save one', async () => {
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('Run a calculation first');
+  })
+
+  it('does not offer to save a running calculation', async () => {
+    recommendState.isLoading = true;
+
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('A calculation is running');
+  })
+
+  it('does not save a Pareto sweep as a single result', async () => {
+    recommendState.runMode = 'pareto';
+
+    await mountAt('');
+
+    expect(saveControl.disabledReason).toContain('Pareto sweep is not a single result');
+  })
+
   it('forwards the per-pool context limits a legacy link carries', async () => {
     // A link written before the serving mode existed names pool lengths only.
     // The page keeps the pre-mode search, so those lengths apply to a
@@ -525,7 +564,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('clears a pinned mode the form cannot submit', async () => {
-    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.aisim['0.9.0'] = { disaggregated: false };
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
       '&servingMode=disagg',
@@ -630,7 +669,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('keeps a linked disaggregated mode aggregated until the accepted simulator can model it', async () => {
-    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.aisim['0.9.0'] = { disaggregated: false };
     versionSupport.blis['0.9.0'] = { disaggregated: true };
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
@@ -652,7 +691,7 @@ describe('recommend sizing shared views', () => {
   });
 
   it('stays aggregated when the accepted simulator cannot model prefill/decode', async () => {
-    versionSupport.aisimulate['0.9.0'] = { disaggregated: false };
+    versionSupport.aisim['0.9.0'] = { disaggregated: false };
     versionSupport.blis['0.9.0'] = { disaggregated: false };
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
@@ -728,7 +767,7 @@ describe('recommend sizing shared views', () => {
   it('adopts the shared backend and version when the simulator already matches', async () => {
     await mountAt(
       '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&goal=latency' +
-      '&simulator=aisimulate&backend=vllm&backendVersion=0.9.0',
+      '&simulator=aisim&backend=vllm&backendVersion=0.9.0',
     );
 
     expect(settings.applyViewForSession).toHaveBeenCalledWith({

@@ -14,7 +14,7 @@ function makeCandidate(overrides: Partial<Candidate> = {}): Candidate {
     objectives: { throughput_per_user: 20, throughput_per_gpu: 40 },
     transfer_delay_modeled: false,
     provenance_sources: [],
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     ...overrides,
   }
 }

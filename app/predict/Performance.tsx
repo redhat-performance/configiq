@@ -34,7 +34,6 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
-import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
@@ -64,6 +63,8 @@ import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { buildPredictEntry } from '@/lib/comparison/predict-entry';
 
 /**
  * The link's own starting points. A field left at one of these is omitted from
@@ -471,6 +472,10 @@ export default function Performance() {
   // to aggregated rather than letting the request fail.
   React.useEffect(() => {
     if (servingMode === 'disagg' && !disaggSupported) {
+      // Discard a disagg calculation still in flight: its completion must not
+      // be stored against the aggregated mode.
+      calcGenRef.current += 1;
+      setIsCalculating(false);
       setServingMode('agg');
       setTestResult(null); setTestClassifierInput(null);
     }
@@ -1178,6 +1183,41 @@ export default function Performance() {
     null;
   const realMonthlyCostForDisplay = realMonthlyCost ?? 0;
 
+  // A saved comparison is a result snapshot, so it is only offered while the
+  // displayed result still matches the inputs that produced it.
+  const comparisonDisabledReason = isCalculating
+    ? 'A calculation is running; save when it finishes.'
+    : testResult == null
+      ? 'Run a calculation first; there is no result to save.'
+      : inputsDirty
+        ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
+        : null;
+
+  const buildComparisonEntry = () => {
+    if (testResult == null || isCalculating || inputsDirty) return null;
+    return buildPredictEntry({
+      link: shared.build(),
+      model,
+      system: gpu,
+      systemLabel: currentCatalogGpu?.label ?? gpu,
+      backend: inferenceBackend || null,
+      backendVersion: backendVersion || null,
+      workload: {
+        isl: testISL,
+        osl: testOSL,
+        concurrency: testConcurrentUsers,
+        // The request and the page use the model's effective precision, which
+        // a quantization config can override.
+        weightPrecision: actualWeightPrecision,
+        kvPrecision: testKVCachePrecision,
+      },
+      gpus: realGpuCount,
+      cloudRatePerHour: gpuPricePerHour,
+      hardwareCostUsd: catalogGpuForPricing?.hardware_cost_usd ?? null,
+      result: testResult,
+    });
+  };
+
   const gpus = useCountUp(realGpuCount);
   const weight = useCountUp(realWeightGB);
   const kv = useCountUp(realKVPerReqMB);
@@ -1491,6 +1531,8 @@ export default function Performance() {
         if (servingPolicyOverride) {
            setServingPolicyOverride(false);
            setServingManualContextLimit(null);
+           // Back to the computed limit, which this result may not have used.
+           markInputsDirty();
         } else {
           setServingPolicyOverride(true);
            if (testResult) {
@@ -1509,7 +1551,7 @@ export default function Performance() {
           term: 'maxModelLen',
           readonly: !servingPolicyOverride,
           type: servingPolicyOverride ? 'number' as const : undefined,
-          onChange: servingPolicyOverride ? (val: string) => setServingManualContextLimit(parseInt(val) || 1) : undefined,
+          onChange: servingPolicyOverride ? (val: string) => { setServingManualContextLimit(parseInt(val) || 1); markInputsDirty(); } : undefined,
         },
         {
           label: 'Prefix caching',
@@ -1532,6 +1574,8 @@ export default function Performance() {
            setVllmOverride(false);
            setVllmManualMaxNumSeqs(null);
            setVllmManualChunkedPrefill(null);
+           // Back to the computed engine settings, which this result may not have used.
+           markInputsDirty();
         } else {
           // Enable manual override - initialize with current computed values
            setVllmOverride(true);
@@ -1556,7 +1600,7 @@ export default function Performance() {
           term: 'maxNumSeqs',
           readonly: !vllmOverride,
           type: vllmOverride ? 'number' as const : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualMaxNumSeqs(parseInt(val) || 1) : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualMaxNumSeqs(parseInt(val) || 1); markInputsDirty(); } : undefined
         },
         {
           label: 'enable_chunked_prefill',
@@ -1569,7 +1613,7 @@ export default function Performance() {
           readonly: !vllmOverride,
           type: vllmOverride ? 'select' as const : undefined,
           options: vllmOverride ? ['Yes', 'No'] : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualChunkedPrefill(val === 'Yes') : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualChunkedPrefill(val === 'Yes'); markInputsDirty(); } : undefined
         },
       ],
     },
@@ -1586,6 +1630,10 @@ export default function Performance() {
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <SaveToComparisonButton
+              buildEntry={buildComparisonEntry}
+              disabledReason={comparisonDisabledReason}
+            />
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
@@ -1626,14 +1674,14 @@ export default function Performance() {
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? support.label : 'the selected simulator'}</strong> could not be read,
             so it cannot predict performance. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? support.label : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}
@@ -2518,7 +2566,16 @@ export default function Performance() {
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
                             aria-pressed={servingMode === 'agg'}
-                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
+                            onClick={() => {
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
+                              setServingMode('agg');
+                              setTestResult(null);
+                              setTestClassifierInput(null);
+                              setInputsDirty(false);
+                            }}
                           >
                             Aggregated
                           </Button>
@@ -2530,6 +2587,10 @@ export default function Performance() {
                             isDisabled={!disaggSupported}
                             onClick={() => {
                               if (!disaggSupported) return;
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
                               setServingMode('disagg');
                               setTestResult(null);
                               setTestClassifierInput(null);

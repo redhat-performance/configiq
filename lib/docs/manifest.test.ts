@@ -76,6 +76,32 @@ describe('docs manifest', () => {
     expect(pkg.scripts?.['docs:check']).not.toBe(pkg.scripts?.['docs:build']);
   });
 
+  it('does not publish dataset access notes or credentials', () => {
+    // The rendered docs describe what the data is and how the page reads it.
+    // Deployment credentials and dataset access policy belong in .env.example
+    // and the workflows, not in a public guide.
+    const forbidden = [
+      'inferencex_hf_token',
+      'trusted publisher',
+      'private dataset',
+      'private hugging face',
+      'private inferencex',
+      'server-side read token',
+      'read token',
+      'write token',
+      'source credentials',
+      'hf token',
+      'hf login',
+    ];
+
+    for (const section of DOCS_SECTIONS) {
+      const content = readFileSync(path.join(ROOT, section.file), 'utf8').toLowerCase();
+      for (const phrase of forbidden) {
+        expect(content, `${section.file} mentions ${phrase}`).not.toContain(phrase);
+      }
+    }
+  });
+
   it('does not ship a Markdown parser to the browser', () => {
     // Docs are rendered to HTML at build time. A runtime markdown package here
     // means someone reintroduced client-side parsing.

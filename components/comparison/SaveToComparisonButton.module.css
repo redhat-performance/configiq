@@ -1,0 +1,72 @@
+/* Save-for-comparison control in a result page header. */
+
+.root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Every label state is laid out in the same grid cell so the widest state sets
+   the control's size. Only the hidden copies are in flow: the visible control
+   is overlaid on the box they define, so its own label or icon can never grow
+   or shrink that box when the state changes. */
+.stack {
+  position: relative;
+  display: inline-grid;
+  align-items: center;
+}
+
+.ghost {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.ghost > * {
+  white-space: nowrap;
+}
+
+/* `.stack .button`, not `.button`: PatternFly's `.pf-v6-c-button` sets
+   `position: relative` at the same specificity, and the base stylesheet loads
+   after this module in a production build. Without the extra class the enabled
+   control leaves the overlay and becomes a second in-flow grid row. */
+.stack .button,
+.disabled {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+
+/* Makes the tooltip's focus target match the button it explains. */
+.disabled {
+  display: flex;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.disabled:focus-visible {
+  outline: 2px solid var(--gc-link, #0066cc);
+  outline-offset: 2px;
+}
+
+/* PatternFly's disabled link is lighter than the legibility floor; keep the
+   label readable and let the tooltip explain why it is unavailable. */
+.button:disabled {
+  color: var(--gc-text-3, #54585c);
+  --pf-v6-c-button--disabled__icon--Color: var(--gc-text-3, #54585c);
+  opacity: 1;
+}
+
+/* Announcements reach assistive technology without occupying header space. */
+.status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

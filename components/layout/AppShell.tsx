@@ -32,11 +32,12 @@ import {
   CogIcon,
   DatabaseIcon,
   ChartLineIcon,
+  ListIcon,
+  ClipboardCheckIcon,
 } from "@patternfly/react-icons";
 import { getVersionString, getShortCommit } from "@/lib/version";
 import { useSettings } from "@/contexts/SettingsContext";
 import { useCatalog } from "@/lib/hooks/useCatalog";
-import { simulatorDisplayLabel } from "@/lib/simulator-labels";
 import { PageTourProvider } from "@/components/help/PageTourProvider";
 import { HelpMenu } from "@/components/help/HelpMenu";
 
@@ -211,6 +212,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div style={groupLabelStyle}>VALIDATION</div>
 
             <NavItemWithIcon
+              icon={ClipboardCheckIcon}
+              label="Simulator scorecard"
+              href="/validation/scorecard"
+              isActive={pathname === "/validation/scorecard"}
+            />
+
+            <NavItemWithIcon
               icon={ChartLineIcon}
               label="Benchmark comparison"
               href="/validation/compare"
@@ -241,6 +249,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </>
             )}
+
+            <div style={groupLabelStyle}>STORAGE</div>
+
+            <NavItemWithIcon
+              icon={ListIcon}
+              label="Saved results"
+              href="/compare"
+              isActive={pathname === "/compare"}
+            />
 
             <div style={groupLabelStyle}>SYSTEM</div>
 
@@ -283,7 +300,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>ConfigIQ {getVersionString()} · {getShortCommit()}</div>
           {simulators.map(simulator => (
             <div key={simulator.id} style={{ fontSize: '10px', marginTop: '2px' }}>
-              {simulatorDisplayLabel(simulator.id, simulator.label)} {simulator.version ?? 'version unavailable'}
+              {simulator.label} {simulator.version ?? 'version unavailable'}
               {simulator.revision ? ` · ${simulator.revision.slice(0, 7)}` : ''}
             </div>
           ))}

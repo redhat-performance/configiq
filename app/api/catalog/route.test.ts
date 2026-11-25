@@ -9,9 +9,9 @@ afterEach(() => {
 // Deliberately non-release strings: the route must forward whatever the
 // service's /simulators reports, not know or pin a simulator version. Using
 // plausible SemVer here made the fixtures look like real release pins.
-const AISIMULATE_FIXTURE_VERSION = 'test-aisimulate-version'
+const AISIM_FIXTURE_VERSION = 'test-aisim-version'
 const BLIS_FIXTURE_VERSION = 'test-blis-version'
-const AISIMULATE_FIXTURE_REVISION = 'test-aisimulate-revision'
+const AISIM_FIXTURE_REVISION = 'test-aisim-revision'
 const BLIS_FIXTURE_REVISION = 'test-blis-revision'
 
 /**
@@ -36,24 +36,24 @@ describe('GET /api/catalog', () => {
     const responses: Record<string, unknown> = {
       '/simulators': {
         simulators: [
-          { id: 'aisimulate', label: 'AISimulate', description: 'Analytical sizing.', default: true, version: AISIMULATE_FIXTURE_VERSION, revision: AISIMULATE_FIXTURE_REVISION },
+          { id: 'aisim', label: 'AISim', description: 'Analytical sizing.', default: true, version: AISIM_FIXTURE_VERSION, revision: AISIM_FIXTURE_REVISION },
           { id: 'blis', label: 'BLIS', description: 'Discrete-event simulation.', default: false, version: BLIS_FIXTURE_VERSION, revision: BLIS_FIXTURE_REVISION },
         ],
-        default_simulator: 'aisimulate',
+        default_simulator: 'aisim',
       },
-      '/backends?simulator=aisimulate': {
-        simulator: 'aisimulate',
+      '/backends?simulator=aisim': {
+        simulator: 'aisim',
         recommend_search: 'windowed',
         objectives: ['min_gpus', 'throughput_demand', 'pareto', 'concurrency_capacity'],
         backends: [{ id: 'vllm' }, { id: 'sglang' }, { id: 'tensorrt-llm' }],
       },
-      '/models?simulator=aisimulate&include=specs': {
-        simulator: 'aisimulate',
+      '/models?simulator=aisim&include=specs': {
+        simulator: 'aisim',
         model_catalog_complete: false,
         models: [{ id: 'Qwen/Qwen3-8B' }],
       },
-      '/systems?simulator=aisimulate&include=specs': {
-        simulator: 'aisimulate',
+      '/systems?simulator=aisim&include=specs': {
+        simulator: 'aisim',
         systems: [{
           id: 'h200_sxm',
           name: 'NVIDIA H200 SXM',
@@ -66,7 +66,7 @@ describe('GET /api/catalog', () => {
           gpus_per_node: 8,
         }],
       },
-      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+      '/networks?simulator=aisim': { simulator: 'aisim', networks: [] },
       '/backends?simulator=blis': {
         simulator: 'blis',
         recommend_search: 'single',
@@ -120,17 +120,17 @@ describe('GET /api/catalog', () => {
       default: simulator.default,
       available: simulator.available,
     }))).toEqual([
-      { id: 'aisimulate', default: true, available: true },
+      { id: 'aisim', default: true, available: true },
       { id: 'blis', default: false, available: true },
     ])
     // Capability facts are taken from each simulator's own envelope, never
     // inferred from its ID.
     expect(body.simulators[0]).toMatchObject({
-      id: 'aisimulate',
-      label: 'AISimulate',
+      id: 'aisim',
+      label: 'AISim',
       description: 'Analytical sizing.',
-      version: AISIMULATE_FIXTURE_VERSION,
-      revision: AISIMULATE_FIXTURE_REVISION,
+      version: AISIM_FIXTURE_VERSION,
+      revision: AISIM_FIXTURE_REVISION,
       recommendSearch: 'windowed',
       modelsExhaustive: false,
       systems: [{ id: 'h200_sxm' }],
@@ -162,7 +162,7 @@ describe('GET /api/catalog', () => {
       memory_bytes: 151_397_597_184,
     })
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://aisimulators.dev/systems?simulator=aisimulate&include=specs',
+      'https://aisimulators.dev/systems?simulator=aisim&include=specs',
       expect.any(Object),
     )
     expect(fetchMock).toHaveBeenCalledTimes(9)
@@ -173,23 +173,23 @@ describe('GET /api/catalog', () => {
     const responses: Record<string, unknown> = {
       '/simulators': {
         simulators: [{
-          id: 'aisimulate',
-          label: 'AISimulate',
+          id: 'aisim',
+          label: 'AISim',
           default: true,
-          version: AISIMULATE_FIXTURE_VERSION,
-          revision: AISIMULATE_FIXTURE_REVISION,
+          version: AISIM_FIXTURE_VERSION,
+          revision: AISIM_FIXTURE_REVISION,
         }],
       },
-      '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
-      '/models?simulator=aisimulate&include=specs': {
-        simulator: 'aisimulate',
+      '/backends?simulator=aisim': { simulator: 'aisim', backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisim&include=specs': {
+        simulator: 'aisim',
         models: [{ id: 'Qwen/Qwen3-8B' }],
       },
-      '/systems?simulator=aisimulate&include=specs': {
-        simulator: 'aisimulate',
+      '/systems?simulator=aisim&include=specs': {
+        simulator: 'aisim',
         systems: [{ id: 'h200_sxm' }],
       },
-      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+      '/networks?simulator=aisim': { simulator: 'aisim', networks: [] },
     }
     // The gateway intermittently answers 503 while this proxy reads several
     // capability endpoints at once. One failed attempt must not make the whole
@@ -198,7 +198,7 @@ describe('GET /api/catalog', () => {
     const fetchMock = vi.fn((url: string) => {
       const parsed = new URL(url)
       const key = parsed.pathname + parsed.search
-      if (key === '/backends?simulator=aisimulate') {
+      if (key === '/backends?simulator=aisim') {
         backendsAttempts += 1
         if (backendsAttempts === 1) return Promise.resolve(new Response('unavailable', { status: 503 }))
       }
@@ -213,7 +213,7 @@ describe('GET /api/catalog', () => {
     const body = await response.json()
     expect(backendsAttempts).toBe(2)
     expect(body.simulators[0]).toMatchObject({
-      id: 'aisimulate',
+      id: 'aisim',
       available: true,
       backends: [{ id: 'vllm' }],
     })
@@ -228,7 +228,7 @@ describe('GET /api/catalog', () => {
       const parsed = new URL(url)
       if (parsed.pathname === '/simulators') {
         return Promise.resolve(Response.json({
-          simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true }],
+          simulators: [{ id: 'aisim', label: 'AISim', default: true }],
         }))
       }
       if (parsed.pathname === '/backends') {
@@ -236,7 +236,7 @@ describe('GET /api/catalog', () => {
         return Promise.resolve(failure)
       }
       return Promise.resolve(Response.json({
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         models: [{ id: 'Qwen/Qwen3-8B' }],
         systems: [{ id: 'h200_sxm' }],
         networks: [],
@@ -257,15 +257,15 @@ describe('GET /api/catalog', () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     stubGateway({
       '/simulators': {
-        simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true, version: '   ', revision: '   ' }],
+        simulators: [{ id: 'aisim', label: 'AISim', default: true, version: '   ', revision: '   ' }],
       },
-      '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
-      '/models?simulator=aisimulate&include=specs': {
-        simulator: 'aisimulate',
+      '/backends?simulator=aisim': { simulator: 'aisim', backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisim&include=specs': {
+        simulator: 'aisim',
         models: [{ id: 'Qwen/Qwen3-8B' }],
       },
-      '/systems?simulator=aisimulate&include=specs': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
-      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+      '/systems?simulator=aisim&include=specs': { simulator: 'aisim', systems: [{ id: 'h200_sxm' }] },
+      '/networks?simulator=aisim': { simulator: 'aisim', networks: [] },
     })
 
     const response = await GET(new Request('https://configiq.dev/api/catalog'))
@@ -274,8 +274,8 @@ describe('GET /api/catalog', () => {
     const body = await response.json()
     expect(body.simulators).toHaveLength(1)
     expect(body.simulators[0]).toMatchObject({
-      id: 'aisimulate',
-      label: 'AISimulate',
+      id: 'aisim',
+      label: 'AISim',
       version: null,
       revision: null,
       default: true,
@@ -288,16 +288,16 @@ describe('GET /api/catalog', () => {
     stubGateway({
       '/simulators': {
         simulators: [
-          { id: 'aisimulate', label: 'AISimulate', default: true, version: null },
+          { id: 'aisim', label: 'AISim', default: true, version: null },
           { id: 'blis', label: 'BLIS', default: false, version: null },
         ],
       },
-      '/backends?simulator=aisimulate': { simulator: 'aisimulate', backends: [{ id: 'vllm' }] },
-      '/models?simulator=aisimulate&include=specs': { simulator: 'aisimulate', models: ['Qwen/Qwen3-8B'] },
-      '/systems?simulator=aisimulate&include=specs': { simulator: 'aisimulate', systems: [{ id: 'h200_sxm' }] },
-      '/networks?simulator=aisimulate': { simulator: 'aisimulate', networks: [] },
+      '/backends?simulator=aisim': { simulator: 'aisim', backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisim&include=specs': { simulator: 'aisim', models: ['Qwen/Qwen3-8B'] },
+      '/systems?simulator=aisim&include=specs': { simulator: 'aisim', systems: [{ id: 'h200_sxm' }] },
+      '/networks?simulator=aisim': { simulator: 'aisim', networks: [] },
       // An older build ignores `?simulator=blis` and answers with the default
-      // AISimulate data at HTTP 200 without echoing the requested simulator.
+      // AISim data at HTTP 200 without echoing the requested simulator.
       '/backends?simulator=blis': { backends: [{ id: 'vllm' }] },
       '/models?simulator=blis&include=specs': { models: ['Qwen/Qwen3-8B'] },
       '/systems?simulator=blis&include=specs': { systems: [{ id: 'h200_sxm' }] },
@@ -313,7 +313,7 @@ describe('GET /api/catalog', () => {
       id: simulator.id,
       available: simulator.available,
     }))).toEqual([
-      { id: 'aisimulate', available: true },
+      { id: 'aisim', available: true },
       { id: 'blis', available: false },
     ])
     expect(body.simulators[1]).toMatchObject({
@@ -331,13 +331,13 @@ describe('GET /api/catalog', () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
     stubGateway({
       '/simulators': {
-        simulators: [{ id: 'aisimulate', label: 'AISimulate', default: true, version: null }],
+        simulators: [{ id: 'aisim', label: 'AISim', default: true, version: null }],
       },
       // Missing the echo, so this simulator's support is unreadable.
-      '/backends?simulator=aisimulate': { backends: [{ id: 'vllm' }] },
-      '/models?simulator=aisimulate&include=specs': { models: ['Qwen/Qwen3-8B'] },
-      '/systems?simulator=aisimulate&include=specs': { systems: [{ id: 'h200_sxm' }] },
-      '/networks?simulator=aisimulate': { networks: [] },
+      '/backends?simulator=aisim': { backends: [{ id: 'vllm' }] },
+      '/models?simulator=aisim&include=specs': { models: ['Qwen/Qwen3-8B'] },
+      '/systems?simulator=aisim&include=specs': { systems: [{ id: 'h200_sxm' }] },
+      '/networks?simulator=aisim': { networks: [] },
     })
 
     const response = await GET(new Request('https://configiq.dev/api/catalog'))
@@ -380,13 +380,13 @@ describe('GET /api/catalog', () => {
       models: ['Qwen/Qwen3-8B'],
       backends: [{ id: 'vllm' }],
       networks: ['ib-400g'],
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', version: AISIMULATE_FIXTURE_VERSION, default: true }],
-      defaultSimulator: 'aisimulate',
+      simulators: [{ id: 'aisim', label: 'AISim', version: AISIM_FIXTURE_VERSION, default: true }],
+      defaultSimulator: 'aisim',
       simulatorSupport: {
-        aisimulate: {
-          id: 'aisimulate',
-          label: 'AISimulate',
-          version: AISIMULATE_FIXTURE_VERSION,
+        aisim: {
+          id: 'aisim',
+          label: 'AISim',
+          version: AISIM_FIXTURE_VERSION,
           recommendSearch: 'windowed',
           modelsExhaustive: false,
           backends: [{ id: 'vllm' }],
@@ -415,10 +415,10 @@ describe('GET /api/catalog', () => {
     expect(body).not.toHaveProperty('defaultSimulator')
     expect(body).not.toHaveProperty('simulatorSupport')
     expect(body.simulators).toEqual([{
-      id: 'aisimulate',
-      label: 'AISimulate',
+      id: 'aisim',
+      label: 'AISim',
       description: null,
-      version: AISIMULATE_FIXTURE_VERSION,
+      version: AISIM_FIXTURE_VERSION,
       revision: null,
       default: true,
       available: true,

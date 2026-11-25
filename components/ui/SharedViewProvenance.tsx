@@ -3,7 +3,6 @@
 import * as React from 'react';
 import { Button } from '@patternfly/react-core';
 import Link from 'next/link';
-import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 
 export interface SharedViewProvenanceProps {
   /** Simulator that produced the numbers in the shared view. */
@@ -30,7 +29,7 @@ export function SharedViewProvenance({
   onUseShared,
 }: SharedViewProvenanceProps) {
   const label = (id: string) =>
-    simulatorDisplayLabel(id, simulators.find(entry => entry.id === id)?.label ?? id);
+    simulators.find(entry => entry.id === id)?.label ?? id;
 
   return (
     <div

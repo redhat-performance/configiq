@@ -80,7 +80,7 @@ const SIZING_PARAMS = {
   sla_mode: 'enforce' as const,
   ttft: 1000,
   target_concurrency: 8,
-  simulator: 'aisimulate' as const,
+  simulator: 'aisim' as const,
 }
 
 describe('RecommendContext request construction', () => {
@@ -120,7 +120,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         fabric: 'roce-200g',
       })
       await Promise.resolve()
@@ -128,7 +128,7 @@ describe('RecommendContext request construction', () => {
 
     const fetchMock = vi.mocked(fetch)
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
-    expect(body.simulator).toBe('aisimulate')
+    expect(body.simulator).toBe('aisim')
     expect(body).toHaveProperty('fabric', 'roce-200g')
   })
 
@@ -144,7 +144,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'enforce',
         ttft: 1000,
         target_concurrency: 8,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -165,7 +165,7 @@ describe('RecommendContext request construction', () => {
         osl: 128,
         sla_mode: 'none',
         target_request_rate: 12.5,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -193,7 +193,7 @@ describe('RecommendContext request construction', () => {
         sla_mode: 'none',
         objective: 'concurrency_capacity',
         target_concurrency: 64,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       })
       await Promise.resolve()
     })
@@ -213,7 +213,7 @@ describe('RecommendContext request construction', () => {
 describe('RecommendContext action modes', () => {
   const completed = (gpusNeeded = 4) => ({
     status: 'completed',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     mode: 'agg',
     recommendation: {
       gpusNeeded,
@@ -279,14 +279,14 @@ describe('RecommendContext action modes', () => {
     // The sizing half asks the same workload for its recommended config; the
     // sweep asks for the frontier. Both are kept on one run.
     const sizingBody = JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string)
-    expect(sizingBody).toMatchObject({ objective: 'min_gpus', simulator: 'aisimulate' })
+    expect(sizingBody).toMatchObject({ objective: 'min_gpus', simulator: 'aisim' })
     expect(sizingBody).not.toHaveProperty('mode')
 
     const frontier = vi.mocked(fetchFrontier)
     expect(frontier).toHaveBeenCalledTimes(1)
     expect(frontier.mock.calls[0][0]).toMatchObject({
       objective: 'pareto',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
 
     expect(latest.runMode).toBe('pareto')
@@ -309,7 +309,7 @@ describe('RecommendContext action modes', () => {
         objectives: { throughput_per_user: 22, throughput_per_gpu: 200 },
         transfer_delay_modeled: false,
         provenance_sources: ['sdk'],
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       }],
       views: { pareto_front: ['candidate-000001'], top_n: ['candidate-000001'] },
       sweep: null,
@@ -328,6 +328,44 @@ describe('RecommendContext action modes', () => {
     expect(latest.frontier.candidates[0].recommended).toBe(true)
   })
 
+  it('keeps the sweep replay record with the frontier it describes', async () => {
+    const debug = {
+      endpoint: '/recommend',
+      simulator: 'aisimulate',
+      execution: 'in_process',
+      created_at: 1_730_000_000,
+      versions: {},
+      selection: null,
+      notes: [],
+      invocations: [{
+        id: 'candidate-1',
+        label: 'Candidate c1',
+        command: 'aisimulate predict -c c1.yaml',
+        execution: 'in_process',
+        group: null,
+        candidate_id: 'candidate-000001',
+        notes: [],
+        files: [],
+      }],
+      script: null,
+    }
+    vi.mocked(fetchFrontier).mockResolvedValueOnce({
+      candidates: [],
+      views: null,
+      sweep: null,
+      debug,
+    })
+    await render()
+
+    await act(async () => {
+      startPareto(SIZING_PARAMS)
+      await flush()
+    })
+
+    if (latest.frontier.status !== 'ready') throw new Error('expected a ready frontier')
+    expect(latest.frontier.replay).toEqual(debug)
+  })
+
   it('sends one Pareto sweep request with no GPU-window bounds', async () => {
     await render()
 
@@ -340,7 +378,7 @@ describe('RecommendContext action modes', () => {
     expect(frontier).toHaveBeenCalledTimes(1)
     const [request] = frontier.mock.calls[0]
     expect(request).toMatchObject({
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       objective: 'pareto',
       sla_mode: 'enforce',
       ttft: 1000,
@@ -376,7 +414,7 @@ describe('RecommendContext action modes', () => {
     expect(request).not.toHaveProperty('request_latency')
   })
 
-  it('keeps the caller-selected simulator instead of substituting AISimulate', async () => {
+  it('keeps the caller-selected simulator instead of substituting AISim', async () => {
     await render()
 
     await act(async () => {

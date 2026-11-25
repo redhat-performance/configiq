@@ -176,14 +176,13 @@ removing pairs is intentional. It also rejects distinct model/accelerator labels
 that normalize to the same Parquet pair ID before writing either file. The
 publisher checks upstream version and backend fields again before upload.
 
-Hugging Face publishing uses a Trusted Publisher on the dataset repository,
-restricted to `redhat-performance/configiq`, branch `main`, and workflow
-`publish-performance-data.yml`. No persistent Hugging Face token is stored in
-GitHub. The AWS read-only role must trust the repository's OIDC subject for
-`main`. If `TESTED_DATASET_REPO` points at another dataset repository, configure
-an equivalent Trusted Publisher there; the workflow derives `HF_OIDC_RESOURCE`
-from that same variable so publishing and dispatched builds target one
-repository.
+Hugging Face publishing runs from `redhat-performance/configiq` on `main` using
+the workflow's repository-scoped configuration. No long-lived Hugging Face
+credential is stored in GitHub. The AWS read-only role must trust the
+repository's OIDC subject for `main`. If `TESTED_DATASET_REPO` points at another
+dataset repository, configure an equivalent publishing identity there; the
+workflow derives `HF_OIDC_RESOURCE` from that same variable so publishing and
+dispatched builds target one repository.
 
 The earlier API extraction path remains available from an approved data
 environment:
@@ -203,26 +202,22 @@ new Hugging Face commit SHA, so no revision variable needs updating. To rebuild
 a specific published revision, dispatch `tested-models.yml` with its `revision`
 input. If the data is published to a repository other than the default one
 above, set the `TESTED_DATASET_REPO` repository variable as well. Do not commit
-the dataset or its source credentials.
+the dataset or its source configuration.
 
-### Refresh the private InferenceX comparison dataset
+### Refresh the InferenceX comparison dataset
 
 The same Monday 00:00 `America/New_York` workflow has an independent
 `refresh-inferencex` job. It collects published InferenceX single-turn 8k/1k
 measurements for models in `public/config.json`'s `approvedModels` list and
 updates `redhat-performance/configiq-inferencex-comparison` only when the
-measurements change. The publisher refuses to upload if that dataset is public.
-The InferenceX job does not use the S3 role.
+measurements change. The InferenceX job does not use the S3 role.
 
 Scheduled InferenceX publishing requires the repository variable
 `INFERENCEX_PUBLISH_ENABLED=true`. On a manual run from `main`, select the
-separate `publish_inferencex` input to refresh the private dataset. When it is
-the only publish input selected, the S3 job is skipped. The InferenceX job
-uses a write-enabled Hugging Face Trusted Publisher restricted to
-`redhat-performance/configiq`, `refs/heads/main`, and
-`.github/workflows/publish-performance-data.yml`; it does not store a long-lived
-write token in GitHub. The deployed comparison app uses its separate
-server-side read token to load the private dataset.
+separate `publish_inferencex` input to refresh the snapshot. When it is the only
+publish input selected, the S3 job is skipped. The job publishes only from
+`main`. The deployed comparison app reads the snapshot through its server-side
+configuration.
 
 ### 2. Build and validate the bundle
 

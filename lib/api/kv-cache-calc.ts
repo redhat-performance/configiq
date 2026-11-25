@@ -24,7 +24,7 @@ export interface KvCacheCalcResult {
   /** Commands and input files that reproduce this estimate, when the API sent them. */
   debug?: DebugRecord | null
   metadata: {
-    simulator: 'aisimulate'
+    simulator: 'aisim'
     modelPath: string
     backend: string
     backendVersion: string | null
@@ -164,7 +164,7 @@ export async function callKvCacheCalc(
     },
     debug: parseDebugRecord(rawData.debug),
     metadata: {
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       modelPath: request.model_path,
       backend: request.backend,
       backendVersion: request.backend_version ?? null,

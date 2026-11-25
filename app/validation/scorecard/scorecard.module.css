@@ -1,0 +1,1183 @@
+/* Simulator scorecard
+   Follows docs/DESIGN_SYSTEM.md: Red Hat Display for headings and big numbers,
+   Red Hat Text for body copy, Red Hat Mono for values and uppercase labels.
+   Nothing here is smaller than 11.5px and no label is lighter than #3c3f42. */
+
+.page {
+  --scorecard-gap: 16px;
+}
+
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.pageTitle {
+  margin: 8px 0 4px;
+  font-family: var(--display);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.intro {
+  margin: 0;
+  max-width: 68ch;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.headingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Source provenance and the page actions form one cluster in the top-right
+   corner. The badges share a row, as they do on Benchmark comparison, and the
+   actions sit beneath them. The cluster keeps its width and the intro text
+   yields the remaining space, so the measured sources stay side by side. */
+.headingAside {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  margin-left: auto;
+}
+
+/* Two measured sources share the row. The cap sends a third badge — an
+   unavailable source, or a wider one — to a second row instead of letting the
+   cluster squeeze the intro. */
+.sourceBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 600px;
+}
+
+.sourceBadge {
+  display: grid;
+  gap: 3px;
+  max-width: 340px;
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.sourceBadge a {
+  color: var(--link);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.sourceBadge a:hover {
+  text-decoration: underline;
+}
+
+/* A measured source the sweep could not load. Dashed rather than filled so it
+   reads as missing data, not as another dataset the page compared. */
+.sourceBadgeUnavailable {
+  border-style: dashed;
+  border-color: var(--warn);
+}
+
+.sourceBadge strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sourceDetail {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notice {
+  margin-bottom: 16px;
+}
+
+.warningList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+}
+
+.loadingCopy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 24px;
+  padding: 16px 18px;
+  margin-bottom: 24px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.controlLabel {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.filterGroup {
+  flex: 0 0 280px;
+  width: 280px;
+  max-width: 100%;
+  /* The GPU control grows a helper line once a part is chosen; keep the three
+     facet labels on one line instead of letting flex-end push two of them
+     down to meet the tallest control. */
+  align-self: flex-start;
+}
+
+/* Start the three row filters on their own line, under the view controls. */
+.controlBreak {
+  flex-basis: 100%;
+  height: 0;
+}
+
+/* Group heading for the row filters; the selects keep their own facet labels. */
+.filterRowLabel {
+  flex-basis: 100%;
+  margin-bottom: -6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.filterSelect {
+  width: 100%;
+  max-width: 100%;
+}
+
+.clearFilters {
+  align-self: flex-end;
+  margin-bottom: 4px;
+  white-space: nowrap;
+}
+
+/* ── Section headings ─────────────────────────────────────────────────── */
+
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  margin: 0 0 12px;
+}
+
+.sectionHead h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sectionNote {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ── Simulator tiles ──────────────────────────────────────────────────── */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--scorecard-gap);
+  margin-bottom: 28px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.tileHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tileHead h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.tileVersion {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.tileValueRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.tileValue {
+  font-family: var(--display);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.tileValueLabel {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.tileStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.tileStats div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tileStats dt {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.tileStats dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.tileFoot {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tileEmpty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* ── Coverage bar ─────────────────────────────────────────────────────── */
+
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.coverageTrack {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.coverageSegment {
+  display: block;
+  height: 100%;
+}
+
+.coverageLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.coverageLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.legendSwatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.legendCount {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* ── Agreement popover: one paragraph per idea, one line per bucket ───── */
+
+.popoverBody p {
+  margin: 0 0 8px;
+}
+
+.popoverBody p:last-of-type {
+  margin-bottom: 6px;
+}
+
+.popoverBuckets {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.popoverBuckets li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.popoverSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-top: 4px;
+}
+
+/* ── Flip card: chart front, table back ───────────────────────────────── */
+
+.flipCard {
+  position: relative;
+  min-height: 560px;
+  margin-bottom: 28px;
+  perspective: 1600px;
+  transform-style: preserve-3d;
+  transition: transform 420ms cubic-bezier(.2, .7, .2, 1);
+  cursor: pointer;
+  outline: none;
+}
+
+.flipCard:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.flipCard.flipped {
+  transform: rotateY(180deg);
+}
+
+.flipFace {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition: opacity 220ms ease;
+  overflow: hidden;
+}
+
+.flipFront {
+  opacity: 1;
+}
+
+.flipBack {
+  opacity: 0;
+  transform: rotateY(180deg);
+}
+
+.flipped .flipFront {
+  opacity: 0;
+}
+
+.flipped .flipBack {
+  opacity: 1;
+}
+
+.chartHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+
+.chartHead h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chartHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.chartUnit {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.chartLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.chartSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.chartSizer {
+  width: 100%;
+  /* The chart is an inline SVG: without this, its line box adds a few pixels
+     below the drawing and makes a correctly sized card show a scrollbar. */
+  line-height: 0;
+}
+
+.chartCanvas {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow: auto;
+}
+
+.chartFoot {
+  margin: 4px 0 0;
+  padding-right: 84px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.flipButton {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--link);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.flipButton:hover {
+  text-decoration: underline;
+}
+
+.backHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.backHead h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.tableWrapFill {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin-bottom: 24px;
+}
+
+/* ── Tables ───────────────────────────────────────────────────────────── */
+
+.tableWrap {
+  margin-bottom: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 620px;
+  background: var(--bg-card);
+}
+
+.table {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.tableCaption {
+  caption-side: top;
+  padding: 12px 16px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.scrollHint {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .scrollHint {
+    display: inline;
+  }
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--bg-secondary, #f5f5f5);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.table tbody td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-light, #e0e0e0);
+  color: var(--text);
+  vertical-align: top;
+}
+
+.table tbody tr:hover td {
+  background: var(--bg-secondary, #f5f5f5);
+}
+
+.numericCell {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * `.table thead th` sets text-align: left, which outranks `.numericCell` on its
+ * own. A numeric header has to sit over its values, so restate the alignment
+ * with enough specificity and let the numbers hug their content: the slack then
+ * lands in the text columns instead of opening a gap under each header.
+ */
+.table thead th.numericCell {
+  text-align: right;
+}
+
+.table th.numericCell,
+.table td.numericCell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+/* A workload is an input/output pair rather than a magnitude: keep the column
+   left-aligned under its header and align the digits. */
+.workloadCell {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.modelCell {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.mutedCell {
+  color: var(--text-2);
+}
+
+.emptyRows {
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* Head-to-head outcome: who was closer at each measured level. */
+.outcomeCell {
+  min-width: 150px;
+}
+
+.outcomeBar {
+  display: flex;
+  width: 130px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.outcomeSegment {
+  display: block;
+  height: 100%;
+}
+
+.outcomeAria {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ── Head to head: split bars with a configuration range ──────────────── */
+
+/*
+ * The head-to-head chart sizes itself from its content, so the front face has
+ * to sit in flow. The back stays an absolute overlay and scrolls inside the
+ * height the chart established.
+ */
+.flipCardAuto {
+  min-height: 0;
+  height: auto;
+}
+
+.flipCardAuto .flipFront {
+  position: relative;
+  inset: auto;
+  padding-bottom: 40px;
+}
+
+/*
+ * The error card: let the front face size the card from its chart, so a
+ * filtered view ends where its content ends instead of leaving a blank box.
+ * The face is capped inline at the same height the card used to reserve, and
+ * the chart canvas scrolls inside it once the list is taller than that.
+ */
+.flipCardFit {
+  min-height: 0;
+  height: auto;
+}
+
+.flipCardFit .flipFront {
+  position: relative;
+  inset: auto;
+  padding-bottom: 40px;
+}
+
+.h2hPanels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 16px 28px;
+  margin-top: 8px;
+}
+
+.h2hPanel {
+  min-width: 0;
+}
+
+.h2hPanelTitle {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.h2hList {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.h2hRow {
+  display: grid;
+  grid-template-columns: minmax(88px, 148px) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.h2hLabel {
+  min-width: 0;
+}
+
+.h2hName {
+  display: block;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.h2hThin {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.h2hBarArea {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.h2hTrack {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 56px;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-tertiary, #e0e0e0);
+}
+
+.h2hSegment {
+  flex: 0 0 auto;
+  height: 100%;
+}
+
+/*
+ * A bracket from the lowest to the highest configuration share. It is drawn
+ * over the split bar rather than beside it: the split is the mean, and the
+ * bracket says how much the configurations behind that mean disagree.
+ */
+.h2hCandle {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  height: 10px;
+  transform: translateY(-50%);
+  border-top: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  border-left: 2px solid var(--text);
+  box-sizing: border-box;
+  filter: drop-shadow(0 0 1px #ffffff) drop-shadow(0 0 1px #ffffff);
+  pointer-events: none;
+}
+
+.h2hValue {
+  width: 46px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.h2hCaption {
+  margin: 7px 0 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/*
+ * Ten columns do not fit a phone. Let the table keep its reading order and
+ * scroll sideways rather than squeezing the model name into one letter per
+ * line; the wrapper already scrolls in both directions.
+ */
+.h2hTable {
+  min-width: 1040px;
+}
+
+.h2hTable .modelCell {
+  min-width: 180px;
+}
+
+.candleSwatch {
+  width: 16px;
+  height: 10px;
+  flex-shrink: 0;
+  border-top: 2px solid var(--text);
+  border-right: 2px solid var(--text);
+  border-left: 2px solid var(--text);
+  box-sizing: border-box;
+}
+
+.sectionControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.sectionControl .controlLabel {
+  margin: 0;
+}
+
+.pairSelect {
+  width: 220px;
+}
+
+/* ── Coverage map ─────────────────────────────────────────────────────── */
+
+.coverageMap {
+  margin-bottom: 28px;
+}
+
+/*
+ * Two figures sit side by side when there is room. Each keeps its own legend
+ * and note, so a narrow view stacks them instead of merging two questions.
+ */
+.coverageFigures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--scorecard-gap);
+  margin-bottom: 8px;
+}
+
+.vennFigure {
+  margin: 0;
+  padding: 14px 16px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.vennTitle {
+  margin: 0 0 2px;
+  font-family: var(--display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/*
+ * The drawing uses a fixed viewBox and the dots are positioned as percentages
+ * of that same box. The component sets the aspect ratio from its viewBox
+ * constants; holding it is what keeps a dot on its region when the card is
+ * wider or narrower than the viewBox.
+ */
+.vennCanvas {
+  position: relative;
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+  line-height: 0;
+}
+
+.vennSvg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.vennDot {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid #ffffff;
+  border-radius: 50%;
+  background: var(--dot-color);
+  box-shadow: 0 0 0 1px rgba(21, 21, 21, 0.16);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+/* A larger invisible target than the mark, without letting neighbours merge. */
+.vennDot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+
+.vennDot:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.vennDotStatic {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.vennLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.vennLegend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vennSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.vennSharedSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--first) 0 50%, var(--second) 50% 100%);
+}
+
+.vennCount {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.vennNote {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+
+.coverageHover {
+  min-height: 20px;
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.coverageHoverName {
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.coverageTableSection {
+  margin-top: 2px;
+}
+
+/*
+ * A mark is a yes/no for one simulator or source. Colour repeats the legend
+ * so the table can be read without re-deriving which column is which.
+ */
+.markCell {
+  width: 1%;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.table thead th.markCell {
+  text-align: center;
+}
+
+.markOn,
+.markOff {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.markOn {
+  background: var(--mark-color, var(--success));
+}
+
+.markOff {
+  background: transparent;
+  border: 1px solid var(--border-strong, #b8bbbe);
+}
+
+/* The model name doubles as the control that applies the pair. */
+.pairButton {
+  appearance: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-family: var(--mono);
+  color: var(--link);
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pairButton:hover {
+  text-decoration-thickness: 2px;
+}
+
+.pairButton:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ── Method notes ─────────────────────────────────────────────────────── */
+
+.methodSection {
+  margin-bottom: 24px;
+  padding: 2px 18px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.method {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.method ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.method strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.methodLinks {
+  margin: 14px 0 0;
+  font-size: 13.5px;
+}
+
+.methodLinks a {
+  color: var(--link);
+}
+
+/* Below this width the source cluster and the intro cannot share a line
+   without squeezing the intro; stack them and keep the badges side by side. */
+@media (max-width: 1240px) {
+  .heading {
+    flex-direction: column;
+    gap: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  .tileStats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -245,7 +245,7 @@ white-space: nowrap;
 ### **Link**
 ```tsx
 <a href="#" style={{ color: "var(--link)" }} className="type-detail-small">
-  🔗 Add HF token
+  🔗 View dataset
 </a>
 ```
 

@@ -96,7 +96,7 @@ describe('proposeView', () => {
       system: 'nvidia-l40s',
       backend: 'vllm',
       backendVersion: '0.30.0',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     });
 
     const values = valuesOf(proposal!.link.href, recommendLink.parse);
@@ -106,7 +106,7 @@ describe('proposeView', () => {
       goal: 'latency',
       backend: 'vllm',
       backendVersion: '0.30.0',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     });
     // The answer may repeat "2 s", so both forms have to be quotable.
     expect(proposal!.evidence.join(' ')).toContain('2 s');
@@ -610,7 +610,7 @@ describe('proposeView', () => {
       question: 'How much KV cache memory for 8192 context?',
       model: 'meta-llama/Llama-3.1-8B-Instruct',
       system: 'nvidia-l40s',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
     });
 
@@ -621,7 +621,7 @@ describe('proposeView', () => {
       backend: 'vllm',
       maxNumTokens: 8192,
     });
-    // The KV cache calculator is AISimulate-only by contract.
+    // The KV cache calculator is AISim-only by contract.
     expect(values.simulator).toBeUndefined();
     expect(proposal!.link.href).not.toContain('simulator=');
   });

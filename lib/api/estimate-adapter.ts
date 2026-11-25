@@ -245,7 +245,7 @@ export async function fetchEstimateAsInferenceResult(
   const sc = data.serving_config
   const mb = data.memory_breakdown
   const simulator: string = actualSimulator
-  // The response names the engine release it actually used. AISimulate reports
+  // The response names the engine release it actually used. AISim reports
   // `backend_version`; BLIS reports it under provenance. Null means the
   // response did not say, and callers must not infer one.
   const provenance = data?.provenance && typeof data.provenance === 'object'

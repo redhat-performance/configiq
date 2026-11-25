@@ -75,7 +75,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 3. Streaming clients request `text/event-stream`; the route emits one
    `completed` event. The service owns the GPU search window for both
    simulators, so the browser never replays windows or forwards candidate
-   bounds. AISimulate resolves its fit floor and a wide first window
+   bounds. AISim resolves its fit floor and a wide first window
    server-side, refines below a feasible candidate and grows after a
    no-candidate window under one request-wide time budget; BLIS performs one
    bounded aggregate TP search, plus a bounded P/D grid when a fabric is
@@ -104,7 +104,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
    `/simulators` failed or returned no valid descriptors while its unscoped
    catalogue succeeded. The response shape alone does not prove the upstream
    predates `/simulators`. The network list supplies fabrics for BLIS P/D
-   predictions; AISimulate does not consume it. This same-origin response shape
+   predictions; AISim does not consume it. This same-origin response shape
    ships with the frontend that reads it. When one ConfigIQ instance uses
    another's `/api/catalog` as its gateway, upgrade the downstream reader
    first: the newer route accepts an older upstream's legacy lists, but an
@@ -144,8 +144,8 @@ GPU sizing formulas or call external service URLs directly from the browser.
    `versionFallback`; `mode=data` returns the aggregated benchmark rows for a
    resolved selection, plus `benchmarkVersion` / `inferencexVersion` reporting
    the normalized release each source's matched rows use.
-2. The route reads the public Red Hat Hugging Face Parquet files and a private
-   Hugging Face InferenceX snapshot with a server-side read token. It caches
+2. The route reads the public Red Hat Hugging Face Parquet files and the
+   InferenceX measured snapshot through server-side configuration. It caches
    both sources for five minutes and derives filter options from their union.
    Measured runtime configurations retain their source and serving settings; a
    selection returns only its own source's rows. If either dataset fails to
@@ -213,7 +213,7 @@ GPU sizing formulas or call external service URLs directly from the browser.
 | `/api/estimate` | POST | Compatibility alias for predict |
 | `/api/memory` | POST | AISimulators `/memory` |
 | `/api/catalog` | GET | Combined simulator list with each simulator's systems, models, backends, fabrics, and objectives |
-| `/api/validation/benchmark` | GET | Resolved benchmark filters, repairs, options, and source-specific aggregated measurements from Red Hat and private InferenceX datasets |
+| `/api/validation/benchmark` | GET | Resolved benchmark filters, repairs, options, and source-specific aggregated measurements from Red Hat and InferenceX measured datasets |
 | `/api/tested-models` | GET | Host-mounted tested-model registry (schema v1/v2, gate, statuses) |
 | `/api/tested-models/classify` | POST | Gate-aware envelope classification; no verdict for non-validated pairs or a backend the pair was not measured on |
 | `/api/tested-models/dashboard/[pairId]` | GET | Sanitized measured graph data for one model/system pair |

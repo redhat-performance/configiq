@@ -49,7 +49,7 @@ The sidebar footer shows:
   short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
 - **Every simulator**: label, version, and git commit, from `GET /simulators`,
   in that endpoint's order. Each simulator reports the commit of the artifact
-  this image runs: AISimulate's comes from the SDK wheel's direct-URL release
+  this image runs: AISim's comes from the SDK wheel's direct-URL release
   tag; BLIS's from the `BLIS_COMMIT` build arg. `revision` is null when the
   artifact does not report a commit, and the footer then shows the version
   only.
@@ -171,6 +171,12 @@ Deployment is handled by the `configiq-deploy` repo (rootless Podman + systemd
 quadlets + nginx on IBM Cloud VMs). The `.dev` hosts follow `:dev`; the `.io`
 hosts follow `:latest`. The Triton quadlet is pinned to an immutable GHCR
 digest, and the same image digest is used by the K2 prefetch script.
+
+Every image exposes `GET /api/version` with the version and git commit it was
+built from. The live e2e workflows read it and check out that commit before
+running, so the tests describe the deployed build rather than a branch head.
+After deploying a release, trigger the **Release sanity (configiq.io)**
+workflow; the daily and weekly full matrices run against `.dev` by design.
 
 To pull an image manually:
 

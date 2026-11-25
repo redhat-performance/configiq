@@ -10,6 +10,12 @@ import {
   ChartVoronoiContainer,
 } from '@patternfly/react-charts/victory'
 import type { BenchmarkPoint } from '@/lib/validation/benchmark-types'
+import {
+  PREDICTION_COLORS,
+  SIMULATOR_COLORS,
+  SIMULATOR_TEXT_COLORS,
+  predictionColor,
+} from '@/lib/ui/simulator-colors'
 import styles from './validation-compare.module.css'
 
 export interface EstimatePoint {
@@ -57,40 +63,28 @@ export const BENCHMARK_COLORS = {
   inferencex: '#ec7a08',
 } as const
 
-/** Brand colors for the simulators the catalog can return. */
-export const SIMULATOR_COLORS: Record<string, string> = {
-  // NVIDIA green
-  aisimulate: '#76b900',
-  // IBM blue
-  blis: '#0f62fe',
-}
-
-/** Stable line colors, used for simulators without a brand color. */
-export const PREDICTION_COLORS = ['#009596', '#5752d1', '#3e8635', '#a18f00'] as const
-
-/** A simulator's brand color, falling back to the shared palette by position. */
-export function predictionColor(simulator: string, index: number): string {
-  return SIMULATOR_COLORS[simulator] ?? PREDICTION_COLORS[index % PREDICTION_COLORS.length]
+// Simulator colors are shared with the scorecard so one simulator keeps one
+// color across pages. Re-exported because this module is the existing import
+// site for the comparison views.
+export {
+  PREDICTION_COLORS,
+  SIMULATOR_COLORS,
+  SIMULATOR_TEXT_COLORS,
+  predictionColor,
 }
 
 /**
  * Heading colors for the measured and predicted series.
  *
  * Headings sit on the striped table header (#e8e8e8). InferenceX orange
- * (#ec7a08), AISimulate green (#76b900), and BLIS blue (#0f62fe, 4.08:1) all
- * miss the 4.5:1 normal-text threshold there at 11.5px, so each series keeps
- * its hue in a darker shade that clears 4.5:1 on that background.
+ * (#ec7a08), AISim green (#76b900), and BLIS blue (#0f62fe, 4.08:1) all miss
+ * the 4.5:1 normal-text threshold there at 11.5px, so each series keeps its
+ * hue in a darker shade that clears 4.5:1 on that background.
  */
 export const BENCHMARK_TEXT_COLORS = {
   benchmark: '#c9190b',
   inferencex: '#9e4a00',
 } as const
-
-/** Simulator heading colors; simulators without an entry stay neutral. */
-export const SIMULATOR_TEXT_COLORS: Record<string, string> = {
-  aisimulate: '#4a6e00',
-  blis: '#0043ce',
-}
 
 function formatValue(value: number | null, digits: number): string {
   return value === null ? '—' : value.toLocaleString('en-US', { maximumFractionDigits: digits })

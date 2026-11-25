@@ -62,6 +62,7 @@ app/                    # Next.js App Router pages
     estimate/           # POST — compatibility alias for predict
     hf-config/          # GET — Hugging Face model config lookup
     health/             # GET — health check
+    version/            # GET — build version and commit for e2e preflight
     costings/           # Proxies for the aicostings pricing service
     metrics/             # GET — application metrics
 components/
@@ -84,13 +85,13 @@ services/               # Backend Python microservices (FastAPI), built as
   configiq-py/          # Shared Python library (import name: configiq):
                         # GPU systems catalog, OpenTelemetry + MCP wiring.
                         # Consumed by the services below as a uv path dependency.
-  aisimulators/        # FastAPI boundary for AISimulate and BLIS simulator APIs
+  aisimulators/        # FastAPI boundary for AISim and BLIS simulator APIs
   aicostings/           # GPU + LLM pricing API (scrapes providers into Valkey)
 ```
 
 The `services/` tree is Python (FastAPI + uv), separate from the Next.js
 frontend at the repo root. AISimulators wraps the aisimulate SDK for
-AISimulate calculations and runs the pinned BLIS runtime for BLIS calculations.
+AISim calculations and runs the pinned BLIS runtime for BLIS calculations.
 See each service's `README.md` for details.
 
 ## Critical rules
@@ -122,7 +123,7 @@ ConfigIQ can use more than one simulator. Keep simulator identity separate from
 the serving engine being modeled:
 
 - **`simulator`** identifies the implementation producing an estimate or
-  recommendation (currently AISimulate or BLIS).
+  recommendation (currently AISim or BLIS).
 - **`backend`** identifies the serving runtime being modeled (for example,
   vLLM, SGLang, or TensorRT-LLM). Do not use `backend` to mean simulator, and
   keep the public request field named `simulator`.
@@ -137,7 +138,7 @@ Keep API and UI contracts simulator-neutral wherever the concept is shared:
 - When a capability is available from only some simulators, say so explicitly
   in the API description and response. Include the actual `simulator` in
   results; do not make clients infer which implementation supplied optional
-  fields. For example, `/memory` is currently AISimulate-provided and
+  fields. For example, `/memory` is currently AISim-provided and
   `/networks` currently lists fabrics used by BLIS.
 - A requested simulator must either produce a result from that simulator or
   return an explicit unsupported/error response. Never silently substitute a
@@ -150,7 +151,7 @@ Keep API and UI contracts simulator-neutral wherever the concept is shared:
   named, shown in the UI, overrideable, and have documented null/omission
   semantics. Do not infer a P/D transfer bandwidth from a GPU's
   `inter_node_bw` unless the selected simulator's contract explicitly does so.
-  In particular, AISimulate omitting `engine.kv_transfer` means no modeled P/D
+  In particular, AISim omitting `engine.kv_transfer` means no modeled P/D
   transfer delay; it does not imply a RoCE or InfiniBand default.
 
 For UI and integration work:
@@ -199,7 +200,7 @@ Rules:
   service README/OpenAPI, not in frontend conditionals.
 - Keep that rule in comments and tests too. Do not write a note that names a
   simulator and states what it accepts, needs, or rejects (for example
-  `// AISimulate rejects fabric` or `// BLIS needs a fabric for P/D`): those
+  `// AISim rejects fabric` or `// BLIS needs a fabric for P/D`): those
   facts change between releases and belong in the service documentation.
   Describe the capability instead (`// the catalog reports whether P/D needs a
   fabric`), and mount the fixture that declares the capability rather than
@@ -210,16 +211,16 @@ Rules:
   service tests. Keep frontend tests focused on forwarding intent and rendering
   the response.
 
-Worked example: MoE/FFN width defaults. AISimulate validates
+Worked example: MoE/FFN width defaults. AISim validates
 `tp * attention_dp * cp == moe_tp * moe_ep` even for dense variants of
 MoE-capable families such as dense Gemma 4. The frontend used to derive
-`moe_ep_size=1, moe_tp_size=tp` for AISimulate but not BLIS, and had to
+`moe_ep_size=1, moe_tp_size=tp` for AISim but not BLIS, and had to
 special-case each disaggregated pool. That was simulator logic in the browser.
 The correct split is:
 
 - The adapter forwards `moe_tp_size` / `moe_ep_size` only when the user set
   them.
-- The AISimulators service resolves the omitted pair per worker for AISimulate,
+- The AISimulators service resolves the omitted pair per worker for AISim,
   including each disaggregated pool, and reports the resolved values
   (`moe_tp` / `moe_ep`, or `prefill_config` / `decode_config`).
 - The UI renders the values it was told, instead of reconstructing the default.

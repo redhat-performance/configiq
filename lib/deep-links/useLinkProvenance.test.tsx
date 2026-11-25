@@ -7,7 +7,7 @@ import type { LinkProvenanceValues } from './useLinkProvenance';
 
 const navigation = vi.hoisted(() => ({ search: '' }));
 const settings = vi.hoisted(() => ({
-  savedSimulator: 'aisimulate',
+  savedSimulator: 'aisim',
   savedBackend: 'vllm',
   savedVersion: '0.9.0',
   override: null as Record<string, string | undefined> | null,
@@ -122,7 +122,7 @@ describe('shared-view provenance', () => {
   });
 
   it('adopts the shared backend and version when the simulator matches', async () => {
-    await mount({ simulator: 'aisimulate', backend: 'sglang', backendVersion: '0.5.0' });
+    await mount({ simulator: 'aisim', backend: 'sglang', backendVersion: '0.5.0' });
 
     expect(settings.applyViewForSession).toHaveBeenCalledWith({
       backend: 'sglang',

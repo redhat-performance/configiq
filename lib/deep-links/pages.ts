@@ -16,6 +16,12 @@ import {
   text,
   type LinkValues,
 } from './common';
+import {
+  SCORECARD_METRICS,
+  SCORECARD_RELEASE_MATCH,
+  SCORECARD_SOURCE_FILTERS,
+  SCORECARD_STATISTICS,
+} from '@/lib/scorecard/types';
 
 /**
  * Deep-link contracts for the remaining pages.
@@ -147,8 +153,28 @@ export const validationCompareLink = withProvenance(defineLink('/validation/comp
   ...PROVENANCE_FIELDS,
 }));
 
+/**
+ * The simulator scorecard has no inputs of its own: it presents a published
+ * artifact, and every control it offers narrows that artifact. The link
+ * therefore carries only the view selections, never a request shape, and a
+ * recipient sees the same slice of the same snapshot their deployment holds.
+ */
+export const scorecardLink = defineLink('/validation/scorecard', {
+  metric: z.enum(SCORECARD_METRICS),
+  statistic: z.enum(SCORECARD_STATISTICS),
+  releaseMatch: z.enum(SCORECARD_RELEASE_MATCH),
+  source: z.enum(SCORECARD_SOURCE_FILTERS),
+  model: text(200),
+  gpu: text(64),
+  workload: text(64),
+  // The artifact decides which pairs exist, so this is an opaque key
+  // (`aisim|blis`), not a pair of ids the link has to interpret.
+  pair: text(MAX_ID_LENGTH),
+});
+
 export type RecommendLinkValues = LinkValues<typeof recommendLink.fields>;
 export type KvCacheLinkValues = LinkValues<typeof kvCacheLink.fields>;
 export type GpuExplorerLinkValues = LinkValues<typeof gpuExplorerLink.fields>;
 export type HybridSavingsLinkValues = LinkValues<typeof hybridSavingsLink.fields>;
 export type ValidationCompareLinkValues = LinkValues<typeof validationCompareLink.fields>;
+export type ScorecardLinkValues = LinkValues<typeof scorecardLink.fields>;

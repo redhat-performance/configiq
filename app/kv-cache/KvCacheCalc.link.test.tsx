@@ -14,7 +14,7 @@ const navigation = vi.hoisted(() => ({ search: '' }));
 // does, so a test can prove that opening a link does not rewrite the profile.
 const settingsStore = vi.hoisted(() => {
   interface State { simulator: string; inferenceBackend: string; backendVersion: string }
-  const saved: State = { simulator: 'aisimulate', inferenceBackend: 'vllm', backendVersion: '0.9.0' };
+  const saved: State = { simulator: 'aisim', inferenceBackend: 'vllm', backendVersion: '0.9.0' };
   let session: Partial<State> = {};
   // `useSyncExternalStore` compares snapshots by identity, so the effective
   // object is rebuilt only when the override changes.
@@ -172,7 +172,7 @@ beforeEach(() => {
         },
         gpuCapacity: { totalBytes: 4096 },
         metadata: {
-          simulator: 'aisimulate',
+          simulator: 'aisim',
           modelPath: 'Qwen/Qwen2.5-7B-Instruct',
           backend: 'vllm',
           backendVersion: '0.9.0',

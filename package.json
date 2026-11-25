@@ -17,13 +17,15 @@
     "test:e2e:live": "playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
     "test:e2e:smoke": "playwright test --config=playwright.smoke.config.ts",
     "test:e2e:smoke:report": "playwright show-report playwright-report/smoke",
-    "test:e2e:weekly": "PLAYWRIGHT_MATRIX_MODE=scheduled playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
-    "test:e2e:nightly": "PLAYWRIGHT_NIGHTLY_SAMPLE=1 PLAYWRIGHT_MATRIX_MODE=scheduled playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
-    "test:e2e:dev-full": "PLAYWRIGHT_NIGHTLY_SAMPLE=1 playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
+    "test:e2e:sanity": "playwright test e2e/release-sanity.spec.ts",
+    "test:e2e:scheduled:full": "PLAYWRIGHT_MATRIX_MODE=scheduled playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
+    "test:e2e:scheduled:sample": "PLAYWRIGHT_MATRIX_SAMPLE=1 PLAYWRIGHT_MATRIX_MODE=scheduled playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
+    "test:e2e:dev-full": "PLAYWRIGHT_MATRIX_SAMPLE=1 playwright test e2e/tested-models.spec.ts e2e/recommend-real.spec.ts",
     "type-check": "tsc --noEmit",
     "prepare": "husky",
     "docs:build": "node scripts/build-docs.mjs",
-    "docs:check": "node scripts/build-docs.mjs --check"
+    "docs:check": "node scripts/build-docs.mjs --check",
+    "scorecard:build": "tsx scripts/scorecard/build.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
@@ -39,8 +41,8 @@
     "@patternfly/react-icons": "^6.6.1",
     "hyparquet": "^1.31.3",
     "next": "^16.4.5",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "victory": "^37.3.6",
     "winston-transport": "^4.9.0",
     "zod": "^4.6.7"
@@ -48,9 +50,9 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.7",
     "@playwright/test": "^1.64.1",
-    "@types/node": "^20.12.0",
-    "@types/react": "^18.3.0",
-    "@types/react-dom": "^18.3.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.3",
     "happy-dom": "^21.0.4",
@@ -61,12 +63,13 @@
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
     "remark-rehype": "^11.1.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.4.0",
     "unified": "^11.0.5",
-    "vitest": "^4.1.12"
+    "vitest": "^5.1.1"
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": "^24.0.0 || >=26.0.0"
   },
   "overrides": {
     "glob": "^14.0.3",
@@ -77,7 +80,9 @@
     }
   },
   "allowScripts": {
+    "esbuild@0.28.2": true,
     "fsevents@2.3.3": true,
+    "protobufjs@7.6.6": true,
     "unrs-resolver@1.11.1": true
   }
 }

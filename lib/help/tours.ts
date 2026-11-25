@@ -306,6 +306,55 @@ export const HELP_TOURS: HelpTour[] = [
       },
     ],
   },
+  {
+    id: 'validation-scorecard',
+    route: '/validation/scorecard',
+    title: 'Simulator scorecard',
+    steps: [
+      {
+        target: '[data-tour="sources"]',
+        title: 'Both measured sources',
+        description:
+          'The scorecard scores every published cell from the Red Hat benchmark data and InferenceX, naming the revision each snapshot used.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="coverage"]',
+        title: 'Coverage map',
+        description:
+          'One dot per measured model + GPU pair. Select a scored dot to set the model and GPU filters, or open the table for the exact membership. The map follows the source and release choices below it and stays a whole-snapshot view.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="filters"]',
+        title: 'Narrow the comparison',
+        description:
+          'Choose TTFT or TPOT, the statistic, and whether to compare like-for-like engine releases. Model and GPU are searchable and list only the values this snapshot contains; workload narrows it to one shape. Source and release also choose the coverage map, while the row filters narrow the agreement numbers, the chart, and the table.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="agreement"]',
+        title: 'Agreement by simulator',
+        description:
+          'Each simulator gets a score for the runs this view selects. MdAPE is the headline, with MAPE, P90, and Bias beside it, plus a coverage bar counting every attempt.',
+        position: 'bottom',
+      },
+      {
+        target: '[data-tour="error"]',
+        title: 'Where the error sits',
+        description:
+          'The chart ranks every measured configuration, largest error first, and scrolls inside the tile. Click the tile for the same cells as a table.',
+        position: 'top',
+      },
+      {
+        target: '[data-tour="paired"]',
+        title: 'Head to head',
+        description:
+          'Only levels both simulators predicted. Each bar is the mean best share of a model or GPU across its configurations, and the bracket shows how far those configurations range.',
+        position: 'top',
+      },
+    ],
+  },
 ];
 
 /** Normalise a pathname for registry lookup: drop query, hash, trailing slash. */

@@ -137,9 +137,9 @@ def test_the_script_requires_the_runtime_paths_its_commands_use():
 def _recorder(**overrides) -> ReplayRecorder:
     values = {
         "endpoint": "/predict",
-        "simulator": "aisimulate",
+        "simulator": "aisim",
         "execution": "in_process",
-        "versions": {"aisimulate": "0.14.0"},
+        "versions": {"aisim": "0.14.0"},
         "model_path": "Qwen/Qwen3-32B",
     }
     values.update(overrides)
@@ -177,7 +177,7 @@ def test_duplicate_labels_get_distinct_ids():
 
 
 def test_build_reports_the_versions_it_was_run_with():
-    recorder = _recorder(versions={"aisimulate": "0.14.0", "blis": None})
+    recorder = _recorder(versions={"aisim": "0.14.0", "blis": None})
     recorder.prediction({"engine": {}}, label="Prediction")
 
     record = recorder.build()
@@ -185,7 +185,7 @@ def test_build_reports_the_versions_it_was_run_with():
     assert record is not None
     assert record.versions["blis"] is None
     # Only the non-null pins belong in the script header.
-    assert "aisimulate: 0.14.0" in record.script
+    assert "aisim: 0.14.0" in record.script
     assert "blis:" not in record.script
 
 
@@ -383,9 +383,9 @@ def test_predict_returns_the_record_inline_only_when_debug_was_requested(
     # The record travels in the response: with more than one worker process
     # there is no guarantee a later fetch reaches the worker that made it.
     assert debug["endpoint"] == "/predict"
-    assert debug["simulator"] == "aisimulate"
+    assert debug["simulator"] == "aisim"
     assert debug["execution"] == "in_process"
-    assert "aisimulate" in debug["versions"]
+    assert "aisim" in debug["versions"]
     assert [invocation["label"] for invocation in debug["invocations"]] == ["Prediction"]
     assert debug["invocations"][0]["files"][0]["path"].endswith(".yaml")
     assert debug["script"].startswith("#!/usr/bin/env bash")
@@ -422,7 +422,7 @@ def test_memory_returns_the_snippet_inline(client, monkeypatch):
 def test_a_record_reports_the_size_it_adds_to_a_response():
     record = ReplayRecord(
         endpoint="/predict",
-        simulator="aisimulate",
+        simulator="aisim",
         execution="in_process",
         created_at=1000.0,
         invocations=[

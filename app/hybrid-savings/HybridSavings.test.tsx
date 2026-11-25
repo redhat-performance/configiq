@@ -57,7 +57,7 @@ const models = ['first', 'second', 'third', 'fourth'].map((provider, index) => (
   context_window: null, updated_at: null,
 }))
 const sizing = {
-  status: 'completed', simulator: 'aisimulate', recommendation: { gpusPerReplica: 1, replicasNeeded: 1 },
+  status: 'completed', simulator: 'aisim', recommendation: { gpusPerReplica: 1, replicasNeeded: 1 },
   throughput: { tokensPerSecond: 1000 }, performance: { ttftLatencyMs: 100, tpotMs: 20 },
 } as RecommendResponse
 beforeEach(async () => {
@@ -80,12 +80,12 @@ beforeEach(async () => {
     gpuOptions: [{ systemId: 'l40s', label: 'NVIDIA L40S', tdpWatts: 350 } as GpuOption],
     modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
     modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
-    simulators: [{ id: 'aisimulate', label: 'AISimulate', description: null, version: null, revision: null, default: true }],
+    simulators: [{ id: 'aisim', label: 'AISim', description: null, version: null, revision: null, default: true }],
     isLoading: false, error: null,
   })
   vi.mocked(useSettings).mockReturnValue({
     hydrated: true, defaultModel: 'Qwen/Qwen3-8B', defaultSystem: 'l40s',
-    hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisimulate',
+    hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisim',
     costingsEnabled: true, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
     setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
@@ -317,7 +317,7 @@ describe('Hybrid page composition', () => {
     const catalog = vi.mocked(useCatalog)()
     vi.mocked(useCatalog).mockReturnValue({ ...catalog,
       simulators: [
-        { id: 'aisimulate', label: 'AISimulate', description: null, version: null, revision: null, default: true },
+        { id: 'aisim', label: 'AISim', description: null, version: null, revision: null, default: true },
         { id: 'blis', label: 'BLIS', description: null, version: BLIS_FIXTURE_VERSION, revision: null, default: false },
       ],
       simulatorSupport: { blis: {
@@ -336,7 +336,7 @@ describe('Hybrid page composition', () => {
     await render(); await click('Calculate')
     expect(JSON.parse(vi.mocked(fetch).mock.calls[0][1]!.body as string)).toMatchObject({ simulator: 'blis', backend_version: '0.11.0' })
     expect(host.querySelector('[aria-label="Cost comparison"]')!.textContent).toContain('BLIS')
-    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'aisimulate', backendVersion: '' })
+    vi.mocked(useSettings).mockReturnValue({ ...vi.mocked(useSettings)(), simulator: 'aisim', backendVersion: '' })
     await render()
     expect(host.textContent).toContain('Inputs changed')
     expect(host.querySelector('[aria-label="Cost comparison"]')).toBeNull()
@@ -703,7 +703,7 @@ describe('Hybrid page composition', () => {
       ],
       modelOptions: ['Qwen/Qwen3-8B', 'unpriced/model'],
       modelSpecs: new Map(), backendOptions: [], networkOptions: [], simulatorSupport: {}, objectives: [], timeoutSeconds: 180,
-      simulators: [{ id: 'aisimulate', label: 'AISimulate', description: null, version: null, revision: null, default: true }],
+      simulators: [{ id: 'aisim', label: 'AISim', description: null, version: null, revision: null, default: true }],
       isLoading: false, error: null,
     })
     vi.mocked(useInfrastructureOffers).mockReturnValue({

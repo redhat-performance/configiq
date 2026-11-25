@@ -6,6 +6,7 @@ import {
   checklist,
   itemKey,
   sections,
+  stripComments,
 } from './check-pr-description.mjs'
 
 const template = readFileSync(TEMPLATE_PATH, 'utf8')
@@ -171,6 +172,96 @@ describe('pull request description check', () => {
     expect(checkDescription(body, template)).toContain(
       'add a `## What changed` section with a one or two sentence summary',
     )
+  })
+
+  it('drops an unterminated comment instead of leaving its opener behind', () => {
+    // A regex replace removes `<!-- ... -->` pairs but leaves a stray `<!--`
+    // when the author never closed the comment. The scanner drops the rest,
+    // so no opener survives to hide content from a later reader.
+    expect(stripComments('keep<!-- hidden')).toBe('keep')
+    expect(stripComments('keep<!-- hidden')).not.toContain('<!--')
+  })
+
+  it('removes overlapping comment markers in one pass', () => {
+    expect(stripComments('before<!-- hidden -->after')).toBe('beforeafter')
+    expect(stripComments('a<!-- <!-- hidden -->b-->c')).toBe('ab-->c')
+  })
+
+  it('keeps a comment opener that an author put in a fenced example', () => {
+    // `sections` ignores fenced blocks, so the literal opener is harmless.
+    // Treating it as a real comment would swallow the closing fence and the
+    // checklist that follows.
+    const example = '```html\n<!--\n```\n\n'
+    const body = completed().replace('## Checks\n', `${example}## Checks\n`)
+
+    expect(stripComments(example)).toContain('<!--')
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('does not close a long fence on a shorter nested fence', () => {
+    // CommonMark closes a four-backtick fence only with four or more
+    // backticks. Reading the inner three-backtick example as a close would
+    // drop the unterminated comment and the real `## Checks` that follows.
+    const example = ['````markdown', '```html', '<!--', '```', '````', '', ''].join(
+      '\n',
+    )
+    const body = completed().replace('## Checks\n', `${example}## Checks\n`)
+
+    expect(stripComments(example)).toContain('<!--')
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('applies the same fence rule in sections and checklist', () => {
+    const nested = [
+      '````markdown',
+      '```html',
+      '<!--',
+      '```',
+      '````',
+      '',
+      '## Checks',
+      '',
+      '- [x] visible',
+    ].join('\n')
+
+    expect(sections(nested).get('Checks')).toContain('- [x] visible')
+    expect(checklist(sections(nested).get('Checks'))).toHaveLength(1)
+  })
+
+  it('does not treat an indented code block as a fence', () => {
+    // A fence may be indented at most three spaces; four is indented code.
+    // Reading it as a fence would hide the real Checks section.
+    const indented = '    ~~~\n    example\n\n'
+    const body = completed().replace('## Checks\n', `${indented}## Checks\n`)
+
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('does not treat an inline code span as a fence', () => {
+    // A backtick fence's info string cannot contain a backtick, so these are
+    // inline spans. Reading the first as an opener would never find a close.
+    const spans = '```first```\n\n```second```\n\n'
+    const body = completed().replace('## Checks\n', `${spans}## Checks\n`)
+
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('removes only the line breaks that fall inside a comment', () => {
+    expect(
+      stripComments('- [x] Shared views <!-- guidance\n-->\n      contract'),
+    ).toBe('- [x] Shared views \n      contract')
+    expect(stripComments('a<!-- b\nc -->d\ne')).toBe('ad\ne')
+  })
+
+  it('keeps a checklist continuation after a comment that wraps a line', () => {
+    // The comment used to leave a blank line, which detached the item from the
+    // continuation carrying the defineAccessors key.
+    const body = completed().replace(
+      '- [x] Shared views',
+      '- [x] Shared views <!-- guidance\n-->',
+    )
+
+    expect(checkDescription(body, template)).toEqual([])
   })
 
   it('reads CRLF descriptions', () => {

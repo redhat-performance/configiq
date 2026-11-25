@@ -15,7 +15,7 @@ const DEFAULT_TIMEOUT_SECONDS = 30
 export async function GET(req: NextRequest) {
   // Dev default mirrors app/api/gpus/route.ts so local dev works without the
   // gateway env set; production sets AICOSTINGS_GATEWAY_URL per host.
-  const baseUrl = process.env.AICOSTINGS_GATEWAY_URL || 'https://aicostings.dev'
+  const baseUrl = process.env.AICOSTINGS_GATEWAY_URL || 'https://aicostings.configiq.dev'
   const timeoutSeconds =
     parseInt(process.env.AICOSTINGS_TIMEOUT_SECONDS || '', 10) || DEFAULT_TIMEOUT_SECONDS
 

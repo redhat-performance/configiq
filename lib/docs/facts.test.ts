@@ -152,7 +152,9 @@ function documentedFiles(): string[] {
     'services/mcp-gateway/README.md',
     'services/aisimulators/docs/api/openapi.yaml',
     '.github/workflows/build.yml',
-    '.github/workflows/ui-tested-models.yml',
+    '.github/workflows/ui-tested-models-nightly.yml',
+    '.github/workflows/ui-tested-models-weekly.yml',
+    '.github/workflows/ui-release-sanity.yml',
     'playwright.config.ts',
   ];
 }
@@ -194,6 +196,27 @@ describe('documented hosts', () => {
     for (const example of examples) {
       expect(servers, `docs/api.md examples ${example}, which the contract does not list`)
         .toContain(example);
+    }
+  });
+
+  /**
+   * A route's fallback is the address a deployment without an explicit gateway
+   * setting actually calls, so it is as canonical as anything the docs publish.
+   */
+  it('falls back to a canonical costings host when the gateway is unset', () => {
+    const routes = [
+      'app/api/costings/health/route.ts',
+      'app/api/costings/models/route.ts',
+      'app/api/costings/offers/route.ts',
+      'app/api/costings/sources/route.ts',
+      'app/api/costings/systems/route.ts',
+    ];
+    for (const file of routes) {
+      const text = readFileSync(path.join(ROOT, file), 'utf8');
+      for (const host of RETIRED) {
+        expect(text, `${file} falls back to the retired host ${host}`).not.toContain(host);
+      }
+      expect(text, `${file} names no canonical costings host`).toContain(CANONICAL_COSTINGS[0]);
     }
   });
 });
