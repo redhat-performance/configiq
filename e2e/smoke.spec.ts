@@ -419,11 +419,11 @@ test('Saved and copy feedback keeps each control where it was', async ({ page, c
   for (const width of [768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 900 })
 
-    const save = page.getByRole('button', { name: /Save for comparison|Saved|Not saved/ })
+    const save = page.getByRole('button', { name: /Save result|Saved|Not saved/ })
     const copy = page.getByRole('button', { name: /Copy link|Copied|Copy failed/ })
     // Each width measures the idle-to-success transition. Wait out the previous
     // pass's feedback so this is not a success-to-success comparison.
-    await expect(save).toHaveText('Save for comparison', { timeout: 10_000 })
+    await expect(save).toHaveText('Save result', { timeout: 10_000 })
     await expect(copy).toHaveText('Copy link', { timeout: 10_000 })
 
     await expect(save).toBeVisible()

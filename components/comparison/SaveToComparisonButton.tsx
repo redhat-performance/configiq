@@ -13,7 +13,7 @@ import styles from './SaveToComparisonButton.module.css';
 
 const FEEDBACK_MS = 4000;
 
-const IDLE_LABEL = 'Save for comparison';
+const IDLE_LABEL = 'Save result';
 const SAVED_LABEL = 'Saved';
 const ERROR_LABEL = 'Not saved';
 
@@ -81,7 +81,7 @@ export function SaveToComparisonButton({ buildEntry, disabledReason }: SaveToCom
       onClick={handleClick}
       isDisabled={disabledReason != null}
       title={state.kind === 'error' ? state.message : undefined}
-      aria-label={disabledReason == null ? undefined : `Save for comparison unavailable. ${disabledReason}`}
+      aria-label={disabledReason == null ? undefined : `Save result unavailable. ${disabledReason}`}
     >
       {label}
     </Button>
