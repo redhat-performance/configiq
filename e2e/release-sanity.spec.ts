@@ -17,22 +17,36 @@ const sanityWorkload = DEFAULT_WORKLOAD
 // error here is a failed release check, not an accepted unsupported pairing.
 const requireSuccess: CaseOptions = { requireSuccess: true }
 
+type SanityTool = 'predict' | 'kv' | 'recommend'
+
 // Exceptions to that rule, one reviewable entry at a time. The case still runs
-// and still compares the UI with the API response; it just accepts the API's
-// error state instead of demanding a result, matching what the model matrices
-// do. Remove an entry once the deployment can serve the model, and the case
-// tightens automatically.
-const errorTolerant: Record<string, string> = {
+// and still compares the UI with the API response; it accepts that model's one
+// known failure instead of demanding a result. Any other error still fails the
+// run, so an outage cannot pass as a known gap. Remove an entry once the
+// deployment can serve the model, and the case tightens automatically.
+const knownUnavailable: Record<string, {
+  reason: string
+  failures: Record<SanityTool, NonNullable<CaseOptions['expectFailure']>>
+}> = {
   // Gated Hugging Face repository: the sizing service cannot download
-  // config.json without a Hub token, on every deployment.
-  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-block': 'gated model without Hub credentials',
+  // config.json without a Hub token, on every deployment. Predict and sizing
+  // report the credential failure; the memory endpoint reports the same model
+  // as having no performance data, so its code is the pin there.
+  'nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8-block': {
+    reason: 'gated model without Hub credentials',
+    failures: {
+      predict: { code: 'AUTH_REQUIRED', messageIncludes: 'HuggingFace returned HTTP error 401' },
+      kv: { code: 'AISIM_UNSUPPORTED' },
+      recommend: { code: 'AISIM_UNAVAILABLE', messageIncludes: 'HuggingFace returned HTTP error 401' },
+    },
+  },
 }
 
-function optionsFor(model: string, testInfo: TestInfo): CaseOptions {
-  const reason = errorTolerant[model]
-  if (!reason) return requireSuccess
-  testInfo.annotations.push({ type: 'known-unavailable', description: `${model}: ${reason}` })
-  return {}
+function optionsFor(model: string, tool: SanityTool, testInfo: TestInfo): CaseOptions {
+  const known = knownUnavailable[model]
+  if (!known) return requireSuccess
+  testInfo.annotations.push({ type: 'known-unavailable', description: `${model}: ${known.reason}` })
+  return { expectFailure: known.failures[tool] }
 }
 
 for (const model of appConfig.approvedModels) {
@@ -40,11 +54,11 @@ for (const model of appConfig.approvedModels) {
   const parallelism = modelParallelism[model] ?? 1
 
   test(`Predict performance / ${model} / ${sanityWorkload.label} / ${systemId} / ${baselineConcurrencyPreset.label} / sanity`, async ({ page }, testInfo) => {
-    await checkPredict(page, testInfo, model, sanityWorkload, systemId, baselineConcurrencyPreset, parallelism, optionsFor(model, testInfo))
+    await checkPredict(page, testInfo, model, sanityWorkload, systemId, baselineConcurrencyPreset, parallelism, optionsFor(model, 'predict', testInfo))
   })
 
   test(`KV cache / ${model} / ${sanityWorkload.label} / ${systemId} / ${baselineConcurrencyPreset.label} / sanity`, async ({ page }, testInfo) => {
-    await checkKvCache(page, testInfo, model, sanityWorkload, systemId, baselineConcurrencyPreset, parallelism, optionsFor(model, testInfo))
+    await checkKvCache(page, testInfo, model, sanityWorkload, systemId, baselineConcurrencyPreset, parallelism, optionsFor(model, 'kv', testInfo))
   })
 
   test(`Recommend sizing / ${model} / ${sanityWorkload.label} / ${systemId} / ${goalLabels.latency} / sanity`, async ({ page }, testInfo) => {
@@ -52,7 +66,7 @@ for (const model of appConfig.approvedModels) {
       action: 'sizing',
       goal: 'latency',
       concurrency: baselineConcurrencyPreset,
-    }, optionsFor(model, testInfo))
+    }, optionsFor(model, 'recommend', testInfo))
   })
 }
 

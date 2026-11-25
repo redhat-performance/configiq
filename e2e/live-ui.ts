@@ -35,7 +35,7 @@ export interface KvCacheResponse {
   status?: string
   kvCache?: { totalBytes?: number; perTokenBytes?: number }
   memoryBreakdown?: { weightsBytes?: number }
-  error?: { message?: string }
+  error?: { code?: string; message?: string }
 }
 
 export interface CompletedRecommendation {
@@ -73,6 +73,27 @@ export type RecommendScenario =
  */
 export interface CaseOptions {
   requireSuccess?: boolean
+  /**
+   * The one API failure a wholly unavailable model may produce.
+   *
+   * A sanity case that exempts a model from `requireSuccess` still insists the
+   * response is that model's known failure, so an unrelated outage cannot pass
+   * as a known gap. Matching a code alone is not enough where the endpoints
+   * report different codes; `messageIncludes` pins the credential failure.
+   */
+  expectFailure?: { code?: string; messageIncludes?: string }
+}
+
+function assertKnownFailure(options: CaseOptions, code: string | undefined, message: string | undefined): void {
+  const expected = options.expectFailure
+  if (!expected) return
+  const actual = `code=${code ?? 'none'} message=${message ?? 'none'}`
+  if (expected.code && code !== expected.code) {
+    throw new Error(`Expected the known ${expected.code} failure, got ${actual}`)
+  }
+  if (expected.messageIncludes && !(message ?? '').includes(expected.messageIncludes)) {
+    throw new Error(`Expected the known failure to mention "${expected.messageIncludes}", got ${actual}`)
+  }
 }
 
 export const goalLabels = { latency: 'Latency SLO', demand: 'Throughput demand', capacity: 'Concurrency capacity' } as const
@@ -212,16 +233,19 @@ export async function checkPredict(
 
   if (!response.ok() || result.status === 'failed') {
     const errorCode = result.error?.code ?? 'AISIM_NO_CONFIGURATION'
+    const errorMessage = result.error?.message ?? result.detail
     if (options.requireSuccess) {
-      const detail = result.error?.message ?? result.detail
-      throw new Error(`Predict did not complete for ${model} on ${systemId}: ${errorCode}${detail ? ` — ${detail}` : ''}`)
+      throw new Error(`Predict did not complete for ${model} on ${systemId}: ${errorCode}${errorMessage ? ` — ${errorMessage}` : ''}`)
     }
+    assertKnownFailure(options, errorCode, errorMessage)
     await expect(page.getByText(predictErrorTitle(errorCode), { exact: true })).toBeVisible()
     if (!['OOM', 'AUTH_REQUIRED', 'MODEL_NOT_FOUND', 'AISIM_TIMEOUT'].includes(errorCode)) {
-      const errorMessage = result.error?.message ?? result.detail ?? 'AISimulators prediction failed'
-      await expect(page.getByText(errorMessage, { exact: true })).toBeVisible()
+      await expect(page.getByText(errorMessage ?? 'AISimulators prediction failed', { exact: true })).toBeVisible()
     }
     return
+  }
+  if (options.requireSuccess && (typeof result.ttft !== 'number' || typeof result.tpot !== 'number')) {
+    throw new Error(`Predict returned no timing metrics for ${model} on ${systemId}`)
   }
 
   const ttft = result.ttft ?? 0
@@ -308,16 +332,23 @@ export async function checkKvCache(
   if (savedVersion) expect(body.backend_version).toBe(savedVersion)
   else expect(body).not.toHaveProperty('backend_version')
   if (!response.ok() || result.status !== 'completed') {
+    const detail = result.error?.message ?? (response.ok() ? 'the response reported no completion' : `HTTP ${response.status()}`)
     if (options.requireSuccess) {
-      const detail = result.error?.message ?? `HTTP ${response.status()}`
       throw new Error(`KV cache calculation did not complete for ${model} on ${systemId}: ${detail}`)
     }
+    assertKnownFailure(options, result.error?.code, result.error?.message)
     if (result.error?.message) {
       await expect(page.getByText(result.error.message, { exact: true })).toBeVisible()
     } else {
       await expect(page.getByRole('heading', { name: /Calculation failed/ })).toBeVisible()
     }
     return
+  }
+  if (options.requireSuccess) {
+    expect(
+      typeof result.kvCache?.totalBytes === 'number' || typeof result.kvCache?.perTokenBytes === 'number',
+      `KV cache calculation for ${model} on ${systemId} returned no cache metrics`,
+    ).toBe(true)
   }
   if (typeof result.kvCache?.totalBytes === 'number') {
     await expect(page.getByRole('button', { name: /^Available for KV cache \/ GPU / }).locator('[class*="tileValue"]')).toHaveText(formatBytes(result.kvCache.totalBytes))
@@ -479,8 +510,16 @@ export async function checkRecommend(
       if (options.requireSuccess) {
         throw new Error(`Pareto sweep failed for ${model} on ${systemId}: ${formatApiError(result, `HTTP ${response.status()}`)}`)
       }
+      const failureCode = typeof result === 'object' && result !== null
+        ? (result as { error?: { code?: unknown } }).error?.code
+        : undefined
+      assertKnownFailure(options, typeof failureCode === 'string' ? failureCode : undefined, formatApiError(result, ''))
       await expect(frontier.getByText(formatApiError(result, `Pareto sweep failed (${response.status()})`), { exact: true })).toBeVisible()
       return
+    }
+    const hasCandidates = typeof result === 'object' && result !== null && Array.isArray((result as { candidates?: unknown }).candidates)
+    if (options.requireSuccess && !hasCandidates) {
+      throw new Error(`Pareto sweep for ${model} on ${systemId} returned no candidate ledger`)
     }
     const parsed = parseFrontierBody(result)
     expect(parsed, 'The current API must return a parseable Pareto response').not.toBeNull()
@@ -514,6 +553,7 @@ export async function checkRecommend(
       const detail = result.error?.message
       throw new Error(`Recommend sizing did not complete for ${model} on ${systemId}: ${code}${detail ? ` — ${detail}` : ''}`)
     }
+    assertKnownFailure(options, result.error?.code, result.error?.message)
     await expect(page.getByText(recommendErrorTitle(result.error?.code), { exact: true })).toBeVisible()
     if (result.error?.message && ['AISIM_NO_CONFIGURATION', 'SIMULATOR_MISMATCH'].includes(result.error.code ?? '')) {
       await expect(page.locator('[class*="errorMsg"]')).toHaveText(result.error.message)
