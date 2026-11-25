@@ -198,6 +198,36 @@ describe('pull request description check', () => {
     expect(checkDescription(body, template)).toEqual([])
   })
 
+  it('does not close a long fence on a shorter nested fence', () => {
+    // CommonMark closes a four-backtick fence only with four or more
+    // backticks. Reading the inner three-backtick example as a close would
+    // drop the unterminated comment and the real `## Checks` that follows.
+    const example = ['````markdown', '```html', '<!--', '```', '````', '', ''].join(
+      '\n',
+    )
+    const body = completed().replace('## Checks\n', `${example}## Checks\n`)
+
+    expect(stripComments(example)).toContain('<!--')
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('applies the same fence rule in sections and checklist', () => {
+    const nested = [
+      '````markdown',
+      '```html',
+      '<!--',
+      '```',
+      '````',
+      '',
+      '## Checks',
+      '',
+      '- [x] visible',
+    ].join('\n')
+
+    expect(sections(nested).get('Checks')).toContain('- [x] visible')
+    expect(checklist(sections(nested).get('Checks'))).toHaveLength(1)
+  })
+
   it('reads CRLF descriptions', () => {
     expect(checkDescription(completed().replace(/\n/g, '\r\n'), template)).toEqual([])
   })

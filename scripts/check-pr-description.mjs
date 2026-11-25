@@ -21,7 +21,29 @@ export const TEMPLATE_PATH = resolve(
   'pull_request_template.md',
 )
 
-const FENCE = /^\s*```/
+const FENCE = /^\s*(`{3,}|~{3,})(.*)$/
+
+/** The opening run of a fenced code block, or null for any other line. */
+function fenceRun(line) {
+  const match = FENCE.exec(line)
+  if (match === null) return null
+  return { character: match[1][0], length: match[1].length, rest: match[2] }
+}
+
+/**
+ * Whether `line` closes `fence`, following CommonMark: the same marker
+ * character, at least as many of them, and nothing but whitespace after. A
+ * shorter inner fence therefore cannot close a longer outer one.
+ */
+function closesFence(line, fence) {
+  const run = fenceRun(line)
+  return (
+    run !== null &&
+    run.character === fence.character &&
+    run.length >= fence.length &&
+    run.rest.trim() === ''
+  )
+}
 
 /**
  * HTML comments are guidance for the author, never content.
@@ -38,13 +60,13 @@ const FENCE = /^\s*```/
  */
 export function stripComments(markdown) {
   const kept = []
-  let fenced = false
+  let fence = null
   let inComment = false
 
   for (const line of markdown.replace(/\r\n?/g, '\n').split('\n')) {
-    if (fenced) {
+    if (fence !== null) {
       kept.push(line)
-      if (FENCE.test(line)) fenced = false
+      if (closesFence(line, fence)) fence = null
       continue
     }
 
@@ -71,7 +93,10 @@ export function stripComments(markdown) {
       inComment = true
     }
 
-    if (!inComment && FENCE.test(output)) fenced = true
+    if (!inComment) {
+      const opener = fenceRun(output)
+      if (opener !== null) fence = opener
+    }
     kept.push(output)
   }
 
@@ -94,13 +119,17 @@ const ITEM_START = /^-\s+\[([ xX])\]\s+(.*)$/
 export function sections(markdown) {
   const found = new Map()
   let current = null
-  let fenced = false
+  let fence = null
   for (const line of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (FENCE.test(line)) {
-      fenced = !fenced
+    if (fence !== null) {
+      if (closesFence(line, fence)) fence = null
       continue
     }
-    if (fenced) continue
+    const opener = fenceRun(line)
+    if (opener !== null) {
+      fence = opener
+      continue
+    }
     const heading = line.match(HEADING)
     if (heading) {
       current = found.has(heading[1]) ? null : heading[1]
@@ -119,13 +148,17 @@ export function sections(markdown) {
 export function checklist(markdown) {
   const items = []
   let current = null
-  let fenced = false
+  let fence = null
   for (const raw of markdown.replace(/\r\n/g, '\n').split('\n')) {
-    if (FENCE.test(raw)) {
-      fenced = !fenced
+    if (fence !== null) {
+      if (closesFence(raw, fence)) fence = null
       continue
     }
-    if (fenced) continue
+    const opener = fenceRun(raw)
+    if (opener !== null) {
+      fence = opener
+      continue
+    }
     const start = raw.match(ITEM_START)
     if (start) {
       current = { ticked: start[1] !== ' ', text: start[2].trim() }
