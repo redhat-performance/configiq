@@ -215,7 +215,7 @@ function ReplayControl({ candidate, invocation, copied, failed, onCopy }: Replay
   );
 }
 
-function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
+function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = React.useRef<HTMLDivElement>(null);
   const [width, setWidth] = React.useState(640);
   React.useEffect(() => {
