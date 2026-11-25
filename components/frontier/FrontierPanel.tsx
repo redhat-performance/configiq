@@ -164,14 +164,14 @@ function ReplayControl({ candidate, invocation, copied, failed, onCopy }: Replay
   const name = candidateName(candidate);
   if (invocation == null) {
     const reason = candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
-      ? 'This row is projected from the sizing response, so the sweep has no command to replay.'
-      : 'The sweep did not report a replay command for this candidate.';
+      ? 'This row is projected from the sizing response, so the sweep has no command to save for later comparison or export.'
+      : 'The sweep did not report a command to save for this candidate.';
     return (
       <Tooltip content={reason}>
         <span
           className={styles.replayUnavailable}
           tabIndex={0}
-          aria-label={`Replay unavailable for ${name}. ${reason}`}
+          aria-label={`Save unavailable for ${name}. ${reason}`}
         >
           <Button variant="plain" size="sm" isDisabled aria-hidden="true" icon={<CopyIcon />} />
         </span>
@@ -182,21 +182,21 @@ function ReplayControl({ candidate, invocation, copied, failed, onCopy }: Replay
   // A matched row keeps the sweep's command but shows the sizing response's
   // figures, so the control must not present that command as reproducing them.
   const sweepOnly = isSizingProjection(candidate);
-  const noun = sweepOnly ? 'Sweep command' : 'Replay command';
+  const noun = sweepOnly ? 'Sweep command' : 'Command';
   const hint = copied
     ? 'Copied'
     : failed
       ? 'Copy failed — select the button to try again'
       : sweepOnly
-        ? 'Copies the sweep command that evaluated this deployment; the figures shown come from the sizing response.'
-        : 'Copy replay command and its input files';
+        ? 'Copies the sweep command that evaluated this deployment, so you can save it for later comparisons or export. The figures shown come from the sizing response.'
+        : 'Copy this configuration\'s command and input files so you can save them for later comparisons or export.';
   const label = copied
     ? `${noun} copied for ${name}`
     : failed
       ? `${noun} copy failed for ${name}`
       : sweepOnly
         ? `Copy sweep command for ${name}`
-        : `Copy replay command for ${name}`;
+        : `Copy command for ${name}`;
 
   return (
     <Tooltip content={hint}>
@@ -485,7 +485,7 @@ function CandidateTable({
             <th scope="col" className={styles.numeric}>TTFT</th>
             <th scope="col" className={styles.numeric}>TPOT</th>
             <th scope="col">Topology</th>
-            {hasReplay && <th scope="col">Replay</th>}
+            {hasReplay && <th scope="col">Save</th>}
           </tr>
         </thead>
         <tbody>
@@ -559,8 +559,8 @@ function CandidateTable({
         {copyState == null
           ? ''
           : copyState.ok
-            ? `Replay command for ${copyState.name} copied with its input files.`
-            : `Could not copy the replay command for ${copyState.name}.`}
+            ? `Command for ${copyState.name} copied with its input files.`
+            : `Could not copy the command for ${copyState.name}.`}
       </span>
     </div>
   );

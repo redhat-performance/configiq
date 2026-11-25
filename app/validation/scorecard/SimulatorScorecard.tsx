@@ -412,8 +412,7 @@ export default function SimulatorScorecard() {
     <PageSection className={styles.page}>
       <div className={styles.heading}>
         <div>
-          <p className={styles.eyebrow}>Validation</p>
-          <h1>Simulator scorecard</h1>
+          <h1 className={styles.pageTitle}>Simulator scorecard</h1>
           <p className={styles.intro}>
             How closely each simulator&apos;s prediction agrees with a measurement of the
             same run, across every benchmarked model and GPU. A lower number means the

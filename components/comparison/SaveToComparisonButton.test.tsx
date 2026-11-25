@@ -81,7 +81,7 @@ afterEach(async () => {
 describe('SaveToComparisonButton', () => {
   it('saves the snapshot built on the click and confirms it', async () => {
     await render(entry, null);
-    expect(button().textContent).toContain('Save for comparison');
+    expect(button().textContent).toContain('Save result');
 
     await act(async () => button().click());
 
@@ -100,7 +100,7 @@ describe('SaveToComparisonButton', () => {
     const ghosts = Array.from(host.querySelectorAll('[aria-hidden="true"]'))
       .map(ghost => ghost.textContent);
     expect(ghosts).toEqual(expect.arrayContaining([
-      'Save for comparison',
+      'Save result',
       'Saved',
       'Not saved',
     ]));

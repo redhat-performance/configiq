@@ -249,6 +249,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </>
             )}
+
+            <div style={groupLabelStyle}>STORAGE</div>
+
             <NavItemWithIcon
               icon={ListIcon}
               label="Saved results"
