@@ -807,8 +807,80 @@ describe('fetchEstimateAsInferenceResult - response handling', () => {
     expect(result.performance?.throughput_tokens_per_sec).toBe(0) // Can't divide by zero
   })
 
-  it('returns debug info when captureDebug is true', async () => {
-    const mockFetch = mockFetchOk(VALID_RESPONSE)
+  it('does not split a headline memory figure into weights it cannot see', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...VALID_RESPONSE,
+      memory_breakdown: null,
+      memory: 72,
+    }))
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    // A total with no breakdown says nothing about weights, so it is reported
+    // as unavailable rather than half of the total.
+    expect(result.memory_available).toBe(true)
+    expect(result.memory_analysis.weight_gb).toBe(0)
+    expect(result.memory_analysis.kv_cache_used_gb).toBe(0)
+    expect(result.memory_analysis.kv_cache_budget_gb).toBeNull()
+  })
+
+  it('reports the KV size the simulator stated as the budget, not one derived from device memory', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(VALID_RESPONSE))
+
+    const result = await fetchEstimateAsInferenceResult({ ...VALID_INPUT, vram_gb: 141 })
+
+    expect(result.memory_analysis.kv_cache_used_gb).toBeCloseTo(4_000_000_000 / 1_073_741_824)
+    expect(result.memory_analysis.kv_cache_budget_gb).toBeCloseTo(4_000_000_000 / 1_073_741_824)
+  })
+
+  it('takes the usable figure from the budget the simulator sized the pool against', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...VALID_RESPONSE,
+      simulator: 'blis',
+      serving_config: {
+        tensor_parallel_size: 2,
+        max_num_seqs: 32,
+        gpu_memory_utilization: null,
+      },
+      memory_pools: [{
+        role: 'colocated',
+        budget_bytes: 80 * 1_073_741_824,
+      }],
+    }))
+
+    const result = await fetchEstimateAsInferenceResult({
+      ...VALID_INPUT,
+      simulator: 'blis',
+      gpu_memory_utilization: undefined,
+      tp_size: 2,
+      vram_gb: 141,
+    })
+
+    // The pool's own budget needs no fraction or device size from the client,
+    // and it is what the pool's memory was sized against.
+    expect(result.memory_analysis.usable_hbm_per_gpu).toBeCloseTo(80)
+    // The simulator reports these per GPU; dividing again would understate them.
+    expect(result.memory_analysis.weight_gb_per_gpu).toBeCloseTo(16_000_000_000 / 1_073_741_824)
+  })
+
+  it('leaves a setting the run did not state null instead of inventing a default', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...VALID_RESPONSE,
+      serving_config: {
+        tensor_parallel_size: 1,
+        max_model_len: 2176,
+        max_num_seqs: 32,
+        gpu_memory_utilization: 0.9,
+      },
+    }))
+
+    const result = await fetchEstimateAsInferenceResult(VALID_INPUT)
+
+    expect(result.vllm_config.max_num_batched_tokens).toBeNull()
+    expect(result.vllm_config.quantization).toBeNull()
+  })
+
+  it('returns debug info when captureDebug is true', async () => {    const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
 
     const result = await fetchEstimateAsInferenceResult(VALID_INPUT, true)

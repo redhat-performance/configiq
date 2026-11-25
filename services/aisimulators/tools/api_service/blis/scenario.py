@@ -185,13 +185,17 @@ def _vllm_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
         # The block takes vLLM's own setting names, nested as vLLM nests them;
         # a top-level `cudagraph_mode` is refused with the nested name.
         "compilation_config": {"cudagraph_mode": "PIECEWISE"},
-        "gpu_memory_utilization": pool.gpu_memory_utilization if pool.gpu_memory_utilization is not None else 0.92,
     }
+    # Only settings the request actually asked for are stated; the rest stay at
+    # the engine's own defaults, which the build applies.
+    if pool.gpu_memory_utilization is not None:
+        engine["gpu_memory_utilization"] = pool.gpu_memory_utilization
     if weight_quant:
         engine["quantization"] = weight_quant
     if cache_dtype:
         engine["cache_dtype"] = cache_dtype
-    engine["enable_prefix_caching"] = pool.prefix_caching if pool.prefix_caching is not None else True
+    if pool.prefix_caching is not None:
+        engine["enable_prefix_caching"] = pool.prefix_caching
     return engine
 
 
@@ -249,11 +253,6 @@ def _vllm_colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict
         "max_num_seqs": request.max_num_seqs or request.concurrency,
         "max_model_len": max_model_len,
         "compilation_config": {"cudagraph_mode": "PIECEWISE"},
-        "gpu_memory_utilization": (
-            request.gpu_memory_utilization
-            if request.gpu_memory_utilization is not None
-            else 0.92
-        ),
     }
     quantization = normalize_weight_quantization(request.weight_quantization)
     cache_dtype = _optional_quantization(request.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
@@ -261,9 +260,12 @@ def _vllm_colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict
         engine["quantization"] = quantization
     if cache_dtype:
         engine["cache_dtype"] = cache_dtype
-    # vLLM's schema default is prefix caching enabled. State it explicitly so
-    # the emitted Scenario and normalized response agree on the applied setting.
-    engine["enable_prefix_caching"] = request.prefix_caching if request.prefix_caching is not None else True
+    # Only settings the request actually asked for are stated; the engine's own
+    # defaults apply to the rest and the build reports back what it resolved.
+    if request.gpu_memory_utilization is not None:
+        engine["gpu_memory_utilization"] = request.gpu_memory_utilization
+    if request.prefix_caching is not None:
+        engine["enable_prefix_caching"] = request.prefix_caching
     return engine
 
 

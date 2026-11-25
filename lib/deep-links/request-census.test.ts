@@ -96,6 +96,7 @@ function maximalKvRequest(): KvCacheCalcRequest {
   return {
     model_path: 'Qwen/Qwen3-235B-A22B',
     system: 'h200_sxm',
+    simulator: 'blis',
     backend: 'vllm',
     backend_version: '0.31.0',
     max_num_tokens: 32768,
@@ -197,11 +198,13 @@ const kvCacheCensus: RequestCensus = {
   request: {
     model_path: { from: ['model'] },
     system: { from: ['system'] },
+    simulator: { from: ['simulator'] },
     backend: { from: ['backend'] },
     backend_version: { from: ['backendVersion'] },
     max_num_tokens: { from: ['maxNumTokens'] },
     max_batch_size: { from: ['maxBatchSize'] },
     memory_fraction_kind: { from: ['memFractionKind'] },
+    // A fraction the view does not state is left for the simulator to resolve.
     memory_fraction_value: { from: ['memFractionValue'] },
     // One request per pool: the aggregated view sends the plain width, the
     // disaggregated view sends each pool's own.

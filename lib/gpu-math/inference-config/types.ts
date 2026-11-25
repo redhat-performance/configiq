@@ -58,12 +58,21 @@ export interface VLLMConfig {
   max_model_len: number | null
   max_model_len_policy?: string | null
   max_num_seqs: number
-  gpu_memory_utilization: number
-  max_num_batched_tokens: number
+  /**
+   * Null when the run did not state the memory fraction. The engine's own
+   * default applied, and a client must not present one as the run's choice.
+   */
+  gpu_memory_utilization: number | null
+  /**
+   * Null when the run did not state its batch-token ceiling. Do not present a
+   * derived cap as if the simulator chose it.
+   */
+  max_num_batched_tokens: number | null
   enable_chunked_prefill: boolean | null
   /** Null when the run did not state the setting; do not assume a default. */
   enable_prefix_caching: boolean | null
-  quantization: string
+  /** Null when the run did not state the setting; do not assume a default. */
+  quantization: string | null
 }
 
 export interface BottleneckAnalysis {

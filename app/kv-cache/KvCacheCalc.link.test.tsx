@@ -85,6 +85,13 @@ vi.mock('@/contexts/SettingsContext', async () => {
   };
 });
 
+/**
+ * Whether the catalog states a memory fraction. A simulator can leave the
+ * fraction to its engine, in which case the page shows no number and omits the
+ * field from the request.
+ */
+const catalogState = vi.hoisted(() => ({ memoryFraction: 0.9 as number | null }));
+
 vi.mock('@/lib/hooks/useCatalog', () => ({
   useCatalog: () => ({
     modelOptions: ['Qwen/Qwen2.5-7B-Instruct'],
@@ -103,8 +110,30 @@ vi.mock('@/lib/hooks/useCatalog', () => ({
       },
     ],
     isLoading: false,
+    simulatorSupport: {
+      aisim: {
+        available: true,
+        models: ['Qwen/Qwen2.5-7B-Instruct'],
+        systems: ['h200_sxm'],
+        backends: [],
+        networks: [],
+        objectives: [],
+      },
+      blis: {
+        available: true,
+        models: ['Qwen/Qwen2.5-7B-Instruct'],
+        systems: ['h200_sxm'],
+        backends: [],
+        networks: ['ib-400g'],
+        objectives: [],
+      },
+    },
+    simulators: [
+      { id: 'aisim', label: 'AISim', version: '0.14.0' },
+      { id: 'blis', label: 'BLIS', version: '0.19.0' },
+    ],
   }),
-  systemMemoryFraction: () => 0.9,
+  systemMemoryFraction: () => catalogState.memoryFraction,
   hasDefaultMemoryFractionForVersion: () => true,
 }));
 
@@ -150,6 +179,7 @@ beforeEach(() => {
   // Each test starts from the saved profile, with no session override left by
   // the previous link.
   settingsStore.reset();
+  catalogState.memoryFraction = 0.9;
   memoryBodies = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === '/api/memory' && init?.body) {
@@ -171,6 +201,7 @@ beforeEach(() => {
           commOverheadBytes: 0,
         },
         gpuCapacity: { totalBytes: 4096 },
+        warnings: [],
         metadata: {
           simulator: 'aisim',
           modelPath: 'Qwen/Qwen2.5-7B-Instruct',
@@ -184,7 +215,7 @@ beforeEach(() => {
           moeTpSize: null,
           moeEpSize: null,
           memoryFractionKind: 'of_free',
-          memoryFractionValue: 1,
+          memoryFractionValue: null,
           source: 'test',
           durationMs: 1,
         },
@@ -330,8 +361,54 @@ describe('KV cache calculator shared views', () => {
     expect(link?.getAttribute('href')).toBe('/settings#inference-backend');
   });
 
-  it('selects the workload whose token total the link states', async () => {
-    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&maxNumTokens=16896');
+  it('sends the simulator selected in Settings', async () => {
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+    await calculate();
+
+    expect(memoryBodies).toHaveLength(1);
+    expect(memoryBodies[0].simulator).toBe('aisim');
+    // The numbers are labelled with the simulator that answered them.
+    expect(container.textContent).toContain('Sized by AISim 0.14.0');
+  });
+
+  it('offers a shared simulator without switching silently', async () => {
+    await mountAt(
+      '?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&simulator=blis',
+    );
+
+    // The recipient's settings name another simulator, so the page says which
+    // one produced the view and offers a view-local switch.
+    expect(container.textContent).toContain('This view was shared using');
+    expect(settingsStore.get().simulator).toBe('aisim');
+
+    const useShared = Array.from(container.querySelectorAll('button'))
+      .find(candidate => /Use BLIS for this view/.test(candidate.textContent ?? ''));
+    expect(useShared).toBeDefined();
+    await act(async () => {
+      useShared?.click();
+      await Promise.resolve();
+    });
+
+    await calculate();
+    expect(memoryBodies).toHaveLength(1);
+    expect(memoryBodies[0].simulator).toBe('blis');
+    // A shared view applies for this session only.
+    expect(settingsStore.saved().simulator).toBe('aisim');
+  });
+
+  it('leaves the fraction to the simulator when the catalog states none', async () => {
+    // No catalog figure and no link value: the control shows nothing, and the
+    // request omits the field rather than sending a number this view never
+    // displayed.
+    catalogState.memoryFraction = null;
+    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm');
+    await calculate();
+
+    expect(memoryBodies).toHaveLength(1);
+    expect(memoryBodies[0]).not.toHaveProperty('memory_fraction_value');
+  });
+
+  it('selects the workload whose token total the link states', async () => {    await mountAt('?v=1&model=Qwen%2FQwen2.5-7B-Instruct&system=h200_sxm&maxNumTokens=16896');
 
     const pressed = Array.from(container.querySelectorAll('button[aria-pressed="true"]'))
       .map(button => button.textContent);

@@ -223,26 +223,3 @@ export function withProvenance<F extends LinkFieldMap & Record<ProvenanceKey, z.
   // the object.
   return link as PageLink<F, PageFieldKeys<F>>;
 }
-
-/** The provenance fields a capability-only view carries without a simulator. */
-export type BackendProvenanceKey = 'backend' | 'backendVersion';
-
-/** The keys a page with backend provenance still binds itself. */
-export type BackendPageFieldKeys<F extends LinkFieldMap> = Exclude<keyof F, BackendProvenanceKey>;
-
-/**
- * Mark a link whose backend and version the page reads from settings.
- *
- * A view with no simulator choice — the KV cache calculator, for example —
- * still records the backend and version that produced it, but it has no
- * simulator to offer the reader. Its backend pair is applied for the
- * session by the same handling as the provenance trio, so it binds one fewer
- * set of accessors without claiming a simulator the page cannot switch to.
- */
-export function withBackendProvenance<
-  F extends LinkFieldMap & Record<BackendProvenanceKey, z.ZodTypeAny>,
->(
-  link: PageLink<F, keyof F>,
-): PageLink<F, BackendPageFieldKeys<F>> {
-  return link as PageLink<F, BackendPageFieldKeys<F>>;
-}

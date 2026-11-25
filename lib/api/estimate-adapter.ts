@@ -259,14 +259,32 @@ export async function fetchEstimateAsInferenceResult(
       : null
   const memoryAvailable = !!mb || typeof data.memory === 'number'
   const totalVramGb = input.vram_gb ?? null
-  const gmu = sc?.gpu_memory_utilization ?? input.gpu_memory_utilization ?? 0.9
-  const weightGb = memoryAvailable
-    ? mb ? mb.weights_bytes / GB : (data.memory ?? 0) * 0.5
-    : 0
-  const kvCacheGb = memoryAvailable && mb && typeof mb.kv_cache_bytes === 'number'
-    ? mb.kv_cache_bytes / GB
-    : 0
-  const usablePerGpu = totalVramGb != null ? totalVramGb * gmu : null
+  // The fraction the run states. Null means it did not state one, and a client
+  // must not present its own default as the simulator's choice.
+  const gmu = typeof sc?.gpu_memory_utilization === 'number'
+    ? sc.gpu_memory_utilization
+    : input.gpu_memory_utilization ?? null
+  const weightGb = memoryAvailable && mb ? mb.weights_bytes / GB : 0
+  // The KV figure is the simulator's own reported KV size, never a budget
+  // derived by subtracting weights from device memory here.
+  const reportedKvBytes = memoryAvailable && mb && typeof mb.kv_cache_bytes === 'number'
+    ? mb.kv_cache_bytes
+    : null
+  const kvCacheGb = reportedKvBytes != null ? reportedKvBytes / GB : 0
+  // The budget the simulator sized the pool against, when it reports one. That
+  // is a better "usable per GPU" figure than a fraction this client would have
+  // to assume, and it needs no multiplication by a device size.
+  const reportedPools: Record<string, unknown>[] = Array.isArray(data.memory_pools)
+    ? data.memory_pools.filter((entry: unknown): entry is Record<string, unknown> =>
+      typeof entry === 'object' && entry !== null)
+    : []
+  const reportedBudgetGb = (pool: Record<string, unknown> | undefined): number | null => {
+    const budget = pool?.budget_bytes
+    return typeof budget === 'number' && Number.isFinite(budget) && budget > 0 ? budget / GB : null
+  }
+  const aggPool = reportedPools.find(entry => entry.role === 'colocated') ?? reportedPools[0]
+  const usablePerGpu = reportedBudgetGb(aggPool)
+    ?? (totalVramGb != null && gmu != null ? totalVramGb * gmu : null)
   const maxNumSeqs = sc?.max_num_seqs ?? input.batch_size
   // Null is a real answer: the simulator resolved the context window by policy
   // (for example BLIS's `max_model_len: auto`) and names that policy instead of
@@ -280,12 +298,6 @@ export async function fetchEstimateAsInferenceResult(
   const maxModelLenPolicy = typeof sc?.max_model_len_policy === 'string'
     ? sc.max_model_len_policy
     : null
-  // Batch-token sizing still needs a concrete window; use the caller's chosen
-  // length when the API reports the window by policy.
-  const maxModelLenForBatch = maxModelLen ?? input.max_seq_len ?? input.isl + input.osl
-
-  // With pipeline parallel, weights are sharded across TP×PP GPUs
-  const shardCount = tp * pp
 
   // Disagg: fold the per-pool worker configs into EstimatePhase records.
   const buildPhase = (wc: Record<string, unknown> | null | undefined, fallback: EstimatePhaseInput): EstimatePhase => {
@@ -376,12 +388,16 @@ export async function fetchEstimateAsInferenceResult(
     moe_ep_size: isDisagg ? null : (data.moe_ep as number | null | undefined) ?? null,
     memory_analysis: {
       weight_gb: weightGb,
-      weight_gb_per_gpu: weightGb / shardCount,
+      // The simulator reports these per GPU, so they are already sharded; do
+      // not divide again by the parallelism it applied.
+      weight_gb_per_gpu: weightGb,
       total_vram_gb: totalVramGb,
       usable_hbm_per_gpu: usablePerGpu,
       tp_size: tp,
       replicas: 1,
-      kv_cache_budget_gb: usablePerGpu != null ? usablePerGpu - weightGb / shardCount : null,
+      // The KV size the simulator reported; the service reports no separate
+      // budget, so a client must not derive one from device memory.
+      kv_cache_budget_gb: kvCacheGb > 0 ? kvCacheGb : null,
       kv_cache_used_gb: kvCacheGb,
       max_sequences_from_memory: maxNumSeqs,
       kv_category: memoryAvailable ? simulator : 'unavailable',
@@ -393,7 +409,10 @@ export async function fetchEstimateAsInferenceResult(
       max_model_len_policy: maxModelLenPolicy,
       max_num_seqs: maxNumSeqs,
       gpu_memory_utilization: gmu,
-      max_num_batched_tokens: sc?.max_num_batched_tokens ?? Math.min(maxModelLenForBatch * maxNumSeqs, 32768),
+      // Null when the run did not state a batch-token ceiling.
+      max_num_batched_tokens: typeof sc?.max_num_batched_tokens === 'number'
+        ? sc.max_num_batched_tokens
+        : null,
       enable_chunked_prefill: typeof sc?.enable_chunked_prefill === 'boolean'
         ? sc.enable_chunked_prefill
         : input.enable_chunked_prefill ?? null,
@@ -402,7 +421,7 @@ export async function fetchEstimateAsInferenceResult(
       enable_prefix_caching: typeof sc?.enable_prefix_caching === 'boolean'
         ? sc.enable_prefix_caching
         : null,
-      quantization: sc?.quantization ?? 'auto',
+      quantization: typeof sc?.quantization === 'string' ? sc.quantization : null,
     },
     parallelism_strategy: {
       strategy: pp > 1 ? 'PP_ACROSS_NODES' : 'TP_ONLY',

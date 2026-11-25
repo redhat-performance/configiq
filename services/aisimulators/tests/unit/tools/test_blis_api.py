@@ -10,6 +10,8 @@ from tools.api_service import app as app_module
 from tools.api_service.app import app
 from tools.api_service.blis.catalog import BlisCatalog, CatalogChip, CatalogModel
 from tools.api_service.blis.engines import BlisEngine
+from tools.api_service.blis.errors import BlisUnsupportedRequest
+from tools.api_service.blis.memory import pool_memory_from_result
 
 client = TestClient(app)
 
@@ -67,6 +69,54 @@ def _catalog() -> BlisCatalog:
             "a100-sxm": CatalogChip(name="a100-sxm", memory_gib=80, compute_capability="8.0"),
         },
         fabrics=("ib-400g", "roce-200g"),
+    )
+
+
+#: One pool's memory as a run's Result reports it, with the figures verified
+#: against a real build. Every figure is per rank except `kv.aggregate_*`.
+MEMORY_POOL = {
+    "role": "colocated",
+    "engine": "vllm",
+    "device_bytes": 85_029_158_917,
+    "budget_bytes": 76_526_243_026,
+    "reserved_bytes": 0,
+    "fixed": {
+        "total": 17_656_971_264,
+        "weights": 16_059_990_016,
+        "activation_peak": 738_197_504,
+        "cuda_graph": 858_783_744,
+        "eplb_redundant": 0,
+        "comm_buffers": 0,
+        "non_torch": 0,
+        "engine_buffers": 0,
+    },
+    "allocatable_bytes": 58_869_271_762,
+    "kv": {
+        "block_tokens": 16,
+        "block_bytes": 2_097_152,
+        "per_token_bytes": 131_072,
+        "blocks_per_rank": 28_071,
+        "tokens_per_rank": 449_136,
+        "bytes_per_rank": 58_869_153_792,
+        "data_parallel": 1,
+        "aggregate_blocks": 28_071,
+        "aggregate_tokens": 449_136,
+        "aggregate_bytes": 58_869_153_792,
+    },
+}
+
+
+def _pool_memory(pool=None):
+    block = pool or MEMORY_POOL
+    result = {"reports": {"engine": {block["role"]: {"memory": block}}}}
+    return pool_memory_from_result(result)[0]
+
+
+def _memory_outcome(report=None, warnings=()):
+    return SimpleNamespace(
+        pool=_pool_memory(report),
+        provenance={"simulator": "blis", "engine_version": "0.31.0"},
+        warnings=list(warnings),
     )
 
 
@@ -155,9 +205,108 @@ def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_f
     assert body["serving_config"]["max_model_len"] is None
     assert body["serving_config"]["max_model_len_policy"] == "auto"
     assert body["memory_breakdown"] is None
-    assert "does not provide" in body["memory_unavailable_reason"]
+    assert "reported no pool memory" in body["memory_unavailable_reason"]
+    assert body["memory_pools"] == []
     run_blis.assert_called_once()
     run_aisimulate.assert_not_called()
+
+
+def test_blis_predict_reports_the_runs_own_pool_memory():
+    prediction = SimpleNamespace(
+        **_prediction().__dict__,
+        memory_pools=(_pool_memory(),),
+    )
+    with patch("tools.api_service.app._blis_estimate", return_value=prediction):
+        response = client.post("/predict?include=memory", json={**ESTIMATE_BODY, "simulator": "blis"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["memory_unavailable_reason"] is None
+    # The pool record is the simulator's own; the endpoint copies it rather
+    # than folding it into another shape.
+    pool = body["memory_pools"][0]
+    assert pool["role"] == "colocated"
+    assert pool["engine"] == "vllm"
+    assert pool["device_bytes"] == 85_029_158_917
+    assert pool["kv"]["bytes_per_rank"] == 58_869_153_792
+    # The legacy four buckets partition the kernel's fixed occupancy, so a
+    # client that draws them accounts for every byte BLIS named.
+    breakdown = body["memory_breakdown"]
+    assert breakdown == {
+        "weights_bytes": 16_059_990_016,
+        "activations_bytes": 738_197_504,
+        "runtime_overhead_bytes": 858_783_744,
+        "comm_overhead_bytes": 0,
+        "kv_cache_bytes": 58_869_153_792,
+    }
+    fixed = pool["fixed"]
+    assert (
+        breakdown["weights_bytes"]
+        + breakdown["activations_bytes"]
+        + breakdown["runtime_overhead_bytes"]
+        + breakdown["comm_overhead_bytes"]
+    ) == fixed["total"]
+    assert body["memory"] == pytest.approx(
+        (
+            breakdown["weights_bytes"]
+            + breakdown["activations_bytes"]
+            + breakdown["runtime_overhead_bytes"]
+            + breakdown["comm_overhead_bytes"]
+            + breakdown["kv_cache_bytes"]
+        ) / 1024 ** 3
+    )
+
+
+def test_blis_disagg_predict_puts_each_pools_memory_on_its_worker():
+    prefill_pool = _pool_memory({**MEMORY_POOL, "role": "prefill"})
+    decode_pool = _pool_memory({
+        **MEMORY_POOL,
+        "role": "decode",
+        "kv": {
+            **MEMORY_POOL["kv"],
+            "bytes_per_rank": 30_000_000_000,
+            "tokens_per_rank": 228_882,
+        },
+    })
+    prediction = SimpleNamespace(
+        **_prediction().__dict__,
+        prefill_config={"tp": 4, "pp": 1, "num_workers": 2, "batch_size": 8},
+        decode_config={"tp": 2, "pp": 1, "num_workers": 1, "batch_size": 8},
+        memory_pools=(prefill_pool, decode_pool),
+    )
+    with patch("tools.api_service.app.run_blis_estimate", return_value=prediction):
+        response = client.post("/predict?include=config,memory", json={
+            **ESTIMATE_BODY,
+            "simulator": "blis",
+            "mode": "disagg",
+            "fabric": "ib-400g",
+            "prefill_tp_size": 4,
+            "prefill_num_workers": 2,
+            "decode_tp_size": 2,
+            "decode_num_workers": 1,
+        })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["role"] for entry in body["memory_pools"]] == ["prefill", "decode"]
+    assert body["prefill_config"]["memory_pool"]["role"] == "prefill"
+    assert body["decode_config"]["memory_pool"]["role"] == "decode"
+    assert body["prefill_config"]["memory_breakdown"]["kv_cache_bytes"] == 58_869_153_792
+    assert body["decode_config"]["memory_breakdown"]["kv_cache_bytes"] == 30_000_000_000
+
+    def peak(worker: dict) -> float:
+        return sum(worker["memory_breakdown"][key] for key in (
+            "weights_bytes",
+            "activations_bytes",
+            "runtime_overhead_bytes",
+            "comm_overhead_bytes",
+            "kv_cache_bytes",
+        )) / 1024 ** 3
+
+    # Each worker states its own per-GPU peak, and the headline is the larger.
+    assert body["prefill_config"]["memory_gb"] == pytest.approx(peak(body["prefill_config"]))
+    assert body["decode_config"]["memory_gb"] == pytest.approx(peak(body["decode_config"]))
+    assert body["memory"] == pytest.approx(max(peak(body["prefill_config"]), peak(body["decode_config"])))
 
 
 def test_blis_predict_dispatches_disagg_with_fabric_and_returns_pool_configs():
@@ -840,7 +989,84 @@ def test_blis_catalog_endpoints_report_an_unavailable_catalog():
     assert networks.status_code == 503
 
 
-def test_memory_endpoint_refuses_a_simulator_without_the_memory_capability():
+def test_memory_endpoint_sizes_the_pool_with_the_blis_report():
+    with patch(
+        "tools.api_service.app.blis_memory",
+        return_value=_memory_outcome(warnings=["the supplied model_config was not applied"]),
+    ) as run_memory:
+        response = client.post("/memory", json={
+            **ESTIMATE_BODY,
+            "simulator": "blis",
+            "max_num_tokens": 8192,
+            "max_batch_size": 128,
+            "memory_fraction_value": 0.9,
+        })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["simulator"] == "blis"
+    # The single-pool aggregate maps the request's own settings onto the one
+    # pool the report sizes.
+    request = run_memory.call_args.args[0]
+    assert request.max_num_tokens == 8192
+    assert request.max_batch_size == 128
+    assert request.memory_fraction_kind == "of_total"
+    assert request.memory_fraction_value == 0.9
+    # The pool record is the build's own, and the per-GPU summary fields are
+    # the per-rank terms, matching how the KV page labels them.
+    pool = body["pools"][0]
+    assert pool["role"] == "colocated"
+    assert pool["kv"]["per_token_bytes"] == 131_072
+    assert body["total_gpu_capacity_bytes"] == pool["device_bytes"]
+    assert body["total_kv_size_bytes"] == pool["kv"]["bytes_per_rank"]
+    assert body["kv_size_per_token_bytes"] == pool["kv"]["per_token_bytes"]
+    assert body["total_kv_size_tokens"] == pool["kv"]["tokens_per_rank"]
+    breakdown = body["memory_breakdown"]
+    fixed = pool["fixed"]
+    assert (
+        breakdown["weights_bytes"]
+        + breakdown["activations_bytes"]
+        + breakdown["runtime_overhead_bytes"]
+        + breakdown["comm_overhead_bytes"]
+    ) == fixed["total"]
+    assert breakdown["kv_cache_bytes"] == pool["kv"]["bytes_per_rank"]
+    assert body["warnings"] == ["the supplied model_config was not applied"]
+
+
+def test_memory_endpoint_forwards_options_blis_cannot_represent():
+    with patch(
+        "tools.api_service.app.blis_memory",
+        return_value=_memory_outcome(),
+    ) as run_memory:
+        response = client.post("/memory", json={
+            **ESTIMATE_BODY,
+            "simulator": "blis",
+            "fmha_quant_mode": "fp8",
+        })
+
+    assert response.status_code == 200
+    assert run_memory.call_args.args[0].unsupported_options == ("fmha_quant_mode",)
+
+
+def test_memory_endpoint_surfaces_a_blis_refusal():
+    with patch(
+        "tools.api_service.app.blis_memory",
+        side_effect=BlisUnsupportedRequest(
+            "BLIS sizes its KV pool from a fraction of the device's total memory; "
+            "memory_fraction_kind='of_free' has no BLIS equivalent"
+        ),
+    ):
+        response = client.post("/memory", json={
+            **ESTIMATE_BODY,
+            "simulator": "blis",
+            "memory_fraction_kind": "of_free",
+        })
+
+    assert response.status_code == 422
+    assert "of_free" in response.json()["detail"]
+
+
+def test_memory_endpoint_serves_aisim_unchanged():
     raw = {
         "total_gpu_capacity_bytes": 80,
         "total_kv_size_bytes": 40,
@@ -850,13 +1076,11 @@ def test_memory_endpoint_refuses_a_simulator_without_the_memory_capability():
         "memory_breakdown": {},
     }
     with patch("tools.api_service.app.estimate_kv_cache", return_value=raw) as estimate_memory:
-        blis = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "blis"})
         aisim = client.post("/memory", json={**ESTIMATE_BODY, "simulator": "aisim"})
 
-    assert blis.status_code == 422
-    assert "does not provide a KV-cache memory breakdown" in blis.json()["detail"]
     assert aisim.status_code == 200
     assert aisim.json()["simulator"] == "aisim"
+    assert aisim.json()["pools"] == []
     estimate_memory.assert_called_once()
 
 

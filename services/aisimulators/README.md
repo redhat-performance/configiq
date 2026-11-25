@@ -113,9 +113,33 @@ or settings return an explicit client error. A BLIS failure is never retried
 through AISim, and an unknown `simulator` value is a 422 rather than a
 fall-through to another branch.
 
-`POST /memory` is an AISim capability. A request that names a simulator
-without a memory capability (currently BLIS) returns 422 instead of borrowing
-AISim's answer.
+`POST /memory` answers from the selected simulator. AISim uses its SDK memory
+model. BLIS reads the block its own run attaches to a Result, using the build's
+memory kernel, so the endpoint and a `/predict` run describe the same pool:
+
+- `max_num_tokens` becomes the pool's context window, `max_batch_size` the batch
+  it admits, and `memory_fraction_value` the fraction of device memory it may
+  use. Omit the fraction to let the simulator resolve its own default: AISim
+  applies 1.0, while BLIS keeps the engine's choice. The block is fixed when the
+  engine is constructed, so the service replays the smallest run that reports it
+  — one request at a constant rate — and no prompt length or larger request count
+  is needed or charges anything.
+- The pool record is returned verbatim under `pools`, and the per-GPU summary
+  fields are that record's per-rank terms (`total_gpu_capacity_bytes` is the
+  device, `total_kv_size_bytes` one rank's KV bytes, `kv_size_per_token_bytes` one
+  rank's bytes per token, `total_kv_size_tokens` one rank's token capacity).
+- The legacy four-bucket `memory_breakdown` is an exact partition of the record's
+  fixed occupancy: `weights` plus a redundant expert copy is weights, the peak
+  activation is activations, the CUDA graph plus non-torch and engine buffers are
+  runtime overhead, and communication buffers are their own term.
+- BLIS sizes from a fraction of device memory, so `memory_fraction_kind=of_free`
+  and the options it does not model (`fmha_quant_mode`, `comm_quant_mode`,
+  `tolerance_fraction`) return 422 rather than being mapped onto another setting.
+
+A request that names a simulator without a memory capability returns 422 instead
+of borrowing another simulator's answer. A simulator that reports no per-pool
+record answers with an empty `pools` list, and `warnings` carries anything the
+caller must know about the answer.
 
 ## Replay artifacts (`include=debug`)
 
@@ -137,6 +161,7 @@ What a command means:
 | Simulator | `execution` | Meaning |
 |---|---|---|
 | BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. The binary path is read from `BLIS_BINARY`, so the command does not name this image's layout. BLIS reads its embedded catalog, registry, and engine facts, so the command carries no external data path. |
+| BLIS (memory) | `subprocess` | The `blis run` process whose Result carries the pool's memory block, with the same generated scenario a prediction of that request would read. |
 | AISim | `in_process` | An equivalent CLI invocation, `aisimulate predict -c <file>` or `aisimulate recommend -c <file>`. The service calls the Python API directly, so the command repeats the same work rather than the same process. |
 | AISim (memory) | `in_process` | A Python snippet calling `estimate_kv_cache`. The memory model has no CLI verb. |
 
@@ -379,8 +404,21 @@ clients gate a sizing-goal selector on that list rather than on the simulator ID
 Simulator provenance includes the requested and resolved model, hardware,
 simulator version, and engine version. BLIS prices the catalog's own model
 configuration, so there is no cross-simulator config relation to report.
-BLIS predictions do not include KV-cache memory breakdowns; `/memory` refuses a
-simulator without that capability rather than substituting AISim.
+BLIS predictions carry the pool memory its own kernel sized for the run: with
+`include=memory`, `memory_pools` holds one record per pool and each
+disaggregated worker also gets its own record, its own four-bucket breakdown,
+and its own per-GPU peak. The headline `memory` figure is the larger per-GPU
+peak. A run whose build reports no pool memory says so in
+`memory_unavailable_reason` rather than substituting another simulator's
+answer. A `memory_breakdown` describes one GPU, not the cluster: weights are
+already sharded across the deployment's parallelism and KV is one rank's pool,
+so a client must not divide them again.
+
+A `gpu_memory_utilization` / `memory_fraction_value` the request omits is left
+out of the generated scenario, so the engine's own default applies. The response
+reports `serving_config.gpu_memory_utilization` as null when the run did not
+state one; a client shows the setting as unstated rather than substituting its
+own default.
 
 Both `/predict` and `/recommend` accept `prefix`, the shared prefix cached as a
 subset of `isl`; a value larger than `isl` or a supplied context limit is

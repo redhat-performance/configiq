@@ -19,6 +19,7 @@ import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
 import { GpuSystemInput } from '@/components/ui/GpuSystemInput'
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip'
 import { WarningPanel } from '@/components/ui/WarningPanel'
+import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance'
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel'
 import { exchangeRuns } from '@/lib/debug/types'
 import { CopyLinkButton } from '@/components/help/CopyLinkButton'
@@ -77,9 +78,22 @@ function invalidPhaseParallel(p: PhaseParallelInput): boolean {
 export default function KvCacheCalc() {
   // The backend and version are global settings, not page inputs: this view
   // estimates memory with whatever Settings resolves, and links it back there.
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, setDefaultSystem } = useSettings()
-  const { modelOptions: catalogModels, gpuOptions: catalogGpus, modelSpecs, backendOptions, isLoading: catalogLoading } = useCatalog()
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, setDefaultSystem } = useSettings()
+  const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog()
   const { validatedModelIds, isAvailable: testedModelsAvailable } = useTestedModels()
+  // A simulator may price only a subset of the catalog. Its override narrows
+  // the pickers; no override means the top-level catalog is its support. An
+  // unavailable simulator has an explicit empty support entry, so this page
+  // never falls back to another simulator's catalogue.
+  const support = simulatorSupport[simulator]
+  const simulatorUnavailable = support?.available === false
+  const catalogModels = support?.models ?? allCatalogModels
+  const catalogGpus = React.useMemo(
+    () => (support
+      ? allCatalogGpus.filter(option => support.systems.includes(option.systemId))
+      : allCatalogGpus),
+    [support, allCatalogGpus],
+  )
   const MODEL_OPTIONS = catalogModels
 
   const [model, setModel] = React.useState('')
@@ -88,6 +102,9 @@ export default function KvCacheCalc() {
   const modelTouched = React.useRef(false)
   const [system, setSystem] = React.useState('')
   const [gpuReady, setGpuReady] = React.useState(false)
+  // A shared simulator narrows the catalog, which can replace the linked
+  // system. Keep it to put back once that simulator offers it again.
+  const pendingLinkedSystem = React.useRef<string | null>(null)
 
   // Initialise the model from settings once context has loaded from localStorage.
   const fromSettings = React.useRef(false)
@@ -115,6 +132,17 @@ export default function KvCacheCalc() {
       setSystem(catalogGpus[0].systemId)
     }
   }, [gpuReady, system, catalogGpus])
+
+  // Accepting a shared simulator narrows the catalog, and the effect above
+  // replaces a system that simulator does not offer. Put the linked system back
+  // once it is selectable; declare this after the replacement so it wins.
+  React.useEffect(() => {
+    const pending = pendingLinkedSystem.current
+    if (!pending) return
+    if (!catalogGpus.some(option => option.systemId === pending)) return
+    pendingLinkedSystem.current = null
+    setSystem(pending)
+  }, [catalogGpus])
 
   const defaultMaxNumTokens = DEFAULT_WORKLOAD.isl + DEFAULT_WORKLOAD.osl
   const [maxNumTokens, setMaxNumTokens] = React.useState(defaultMaxNumTokens)
@@ -191,6 +219,23 @@ export default function KvCacheCalc() {
     setMaxBatchSize(p.concurrency); setMaxBatchSizeInput(String(p.concurrency))
     markInputsDirty()
   }
+
+  // The backend and fraction the catalog reports are read here because both
+  // the link's export side and the controls below need them.
+  const selectedBackend = backendOptions.find(option => option.id === inferenceBackend)
+  // Name the simulator that answered, with the catalog's label and release when
+  // this build knows them. The response is the source; the request is not.
+  const resultSimulatorLabel = (id: string) => {
+    const entry = simulators.find(candidate => candidate.id === id)
+    if (!entry) return id
+    return entry.version ? `${entry.label} ${entry.version}` : entry.label
+  }
+  // The fraction the catalog states for this system, or null when it states
+  // none. A simulator may leave the choice to its engine; then the control
+  // stays blank and the request omits the field rather than sending a number
+  // this view never showed.
+  const catalogMemoryFraction = systemMemoryFraction(selectedBackend, system)
+  const memFractionStated = memFractionValueUserEdited.current || catalogMemoryFraction != null
 
   // One row per link field this view owns: what it exports and what an incoming
   // link applies. The table is total over the fields the page binds, so a new
@@ -270,7 +315,8 @@ export default function KvCacheCalc() {
       },
     },
     memFractionValue: {
-      read: () => memFractionValue,
+      // Only a fraction this view shows and sends belongs in a link.
+      read: () => (memFractionStated ? memFractionValue : undefined),
       write: (value) => {
         // Mark the fraction as chosen so the backend default does not replace it.
         memFractionValueUserEdited.current = true
@@ -297,9 +343,10 @@ export default function KvCacheCalc() {
       decodeTp: 1,
       decodePp: 1,
     } satisfies KvCacheLinkValues,
-    // The page always sends the backend and version Settings resolves, so a
-    // link records them even though no control here edits them.
+    // The page always sends the simulator, backend, and version Settings
+    // resolves, so a link records them even though no control here edits them.
     provenance: {
+      simulator,
       backend: inferenceBackend,
       backendVersion: backendVersion || undefined,
     },
@@ -308,14 +355,24 @@ export default function KvCacheCalc() {
   })
   const linkWarnings = shared.warnings
 
-  // The backend pair is provenance, not page state: apply a shared view's
-  // backend and version to this session only, exactly as the other tools do,
+  // The simulator, backend, and version are provenance, not page state: apply
+  // a shared view's values to this session only, exactly as the other tools do,
   // so opening a link never rewrites saved settings. Declared after the shared
   // view so the parsed values it reads already exist.
-  useLinkProvenance(
+  const { sharedSimulator, acceptSharedSimulator } = useLinkProvenance(
     () => shared.parsed?.values ?? null,
     hydrated && gpuReady && !catalogLoading,
   )
+
+  const useSharedSimulator = () => {
+    // The catalog narrows to the shared simulator on the next render, which can
+    // replace a system that simulator does not offer. Keep the linked system to
+    // re-apply once it is selectable again, and mark any visible output stale
+    // because a different simulator will produce the next result.
+    pendingLinkedSystem.current = shared.parsed?.values?.system ?? null
+    markInputsDirty()
+    acceptSharedSimulator()
+  }
 
   // Use the selected backend's catalog defaults for the memory controls. The
   // fields remain editable after the backend default has been applied.
@@ -333,8 +390,10 @@ export default function KvCacheCalc() {
         setMemFractionValueInput(String(fraction))
       }
     } else if (!memFractionValueUserEdited.current) {
+      // No catalog figure: leave the control blank so it reads as the
+      // simulator's own default rather than a number this page invented.
       setMemFractionValue(1.0)
-      setMemFractionValueInput('1.0')
+      setMemFractionValueInput('')
     }
     if (!memFractionKindUserEdited.current) {
       setMemFractionKind(selectedBackend.memoryFractionKind)
@@ -344,17 +403,25 @@ export default function KvCacheCalc() {
   const invalidMaxBatchSize = maxBatchSizeInput === '' || parseInt(maxBatchSizeInput, 10) < 1;
   const invalidTpSize = tpSizeInput === '' || parseInt(tpSizeInput, 10) < 1;
   const invalidPpSize = ppSizeInput === '' || parseInt(ppSizeInput, 10) < 1;
-  const selectedBackend = backendOptions.find(option => option.id === inferenceBackend)
   const backendVersionLabel = backendVersion.trim()
     || (selectedBackend?.defaultVersion
       ? `simulator default (${selectedBackend.defaultVersion})`
       : 'simulator default')
+  // A pinned release whose system default is unknown needs a stated fraction,
+  // because the catalog cannot say the default still applies. A backend that
+  // reports no fraction at all has nothing to pin, so it needs no override.
   const needsExplicitMemFraction = Boolean(
+    catalogMemoryFraction != null &&
     backendVersion.trim() &&
     !memFractionValueUserEdited.current &&
     !hasDefaultMemoryFractionForVersion(selectedBackend, system, backendVersion),
   )
-  const invalidMemFractionValue = needsExplicitMemFraction || memFractionValueInput === '' || !Number.isFinite(Number(memFractionValueInput)) || Number(memFractionValueInput) < 0 || Number(memFractionValueInput) > 1;
+  const memFractionValueInvalidRange = memFractionValueInput === ''
+    || !Number.isFinite(Number(memFractionValueInput))
+    || Number(memFractionValueInput) < 0
+    || Number(memFractionValueInput) > 1;
+  const invalidMemFractionValue = needsExplicitMemFraction
+    || (memFractionStated && memFractionValueInvalidRange);
   const invalidParallelism = servingMode === 'disagg'
     ? invalidPhaseParallel(prefillPar) || invalidPhaseParallel(decodePar)
     : invalidTpSize || invalidPpSize;
@@ -419,8 +486,22 @@ export default function KvCacheCalc() {
   };
 
   const handleMemFractionValueChange = (raw: string) => {
+    const cleaned = raw.replace(/[^0-9.]/g, '')
+    if (cleaned === '') {
+      // Clearing the control returns to the simulator's own default: the
+      // catalog's figure when it states one, nothing when it does not.
+      memFractionValueUserEdited.current = false
+      if (catalogMemoryFraction != null) {
+        setMemFractionValue(catalogMemoryFraction)
+        setMemFractionValueInput(String(catalogMemoryFraction))
+      } else {
+        setMemFractionValue(1.0)
+        setMemFractionValueInput('')
+      }
+      markInputsDirty()
+      return
+    }
     memFractionValueUserEdited.current = true
-    const cleaned = raw.replace(/[^0-9.]/g, '');
     setMemFractionValueInput(cleaned);
     const n = Number(cleaned);
     if (Number.isFinite(n) && n >= 0 && n <= 1) setMemFractionValue(n);
@@ -446,6 +527,7 @@ export default function KvCacheCalc() {
     return buildKvCachePayload({
       model_path: model,
       system,
+      simulator,
       backend: inferenceBackend,
       backend_version: backendVersion.trim() || null,
       max_num_tokens: maxNumTokens,
@@ -455,7 +537,8 @@ export default function KvCacheCalc() {
       moe_tp_size: par.moeTp > 0 ? par.moeTp : null,
       moe_ep_size: par.moeEp > 0 ? par.moeEp : null,
       memory_fraction_kind: memFractionKind,
-      memory_fraction_value: memFractionValue,
+      // Omitted when the view shows no fraction: the simulator applies its own.
+      memory_fraction_value: memFractionStated ? memFractionValue : undefined,
       model_config: needsHfConfig(model, catalogModels) && hfConfig ? hfConfig : null,
     })
   }
@@ -536,7 +619,7 @@ export default function KvCacheCalc() {
               Calculate KV cache memory requirements for any model on supported GPU systems
             </p>
             <div className={styles.helperText}>
-              Memory estimates use AISim, independent of the global Simulator setting.
+              Memory estimates use the simulator, backend, and version selected in Settings.
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
@@ -547,6 +630,15 @@ export default function KvCacheCalc() {
       </div>
 
       {linkWarnings.length > 0 && <WarningPanel warnings={linkWarnings} />}
+
+      {sharedSimulator && (
+        <SharedViewProvenance
+          sharedSimulator={sharedSimulator}
+          currentSimulator={simulator}
+          simulators={simulators}
+          onUseShared={useSharedSimulator}
+        />
+      )}
 
       {/* Input card */}
       <div className={`${styles.card} ${styles.inputCard}`} data-tour="model">
@@ -570,11 +662,17 @@ export default function KvCacheCalc() {
           <Button
             variant="primary"
             onClick={handleCalculate}
-            isDisabled={loading || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
+            isDisabled={loading || simulatorUnavailable || !system || !model.trim() || invalidMaxNumTokens || invalidMaxBatchSize || invalidParallelism || invalidMemFractionValue}
           >
             {loading ? 'Calculating…' : 'Calculate'}
           </Button>
         </div>
+        {simulatorUnavailable && (
+          <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
+            The capabilities for <strong>{support ? support.label : 'the selected simulator'}</strong> could not be read,
+            so it cannot size a memory breakdown. Choose another simulator in Settings.
+          </div>
+        )}
       </div>
         {needsExplicitMemFraction && (
           <div className={styles.helperText} role="status" aria-live="polite">
@@ -650,7 +748,8 @@ export default function KvCacheCalc() {
                 <input
                   type="number"
                   id="kv-mem-val"
-                  value={memFractionValueInput}
+                  value={memFractionStated ? memFractionValueInput : ''}
+                  placeholder={memFractionStated ? undefined : 'simulator default'}
                   onChange={e => handleMemFractionValueChange(e.target.value)}
                   min={0}
                   max={1}
@@ -830,6 +929,9 @@ export default function KvCacheCalc() {
       {/* Results — one section per pool (agg = single unlabelled pool) */}
       {results.length > 0 && !loading && (
         <div data-tour="results">
+          <div className={styles.helperText} style={{ marginBottom: 8 }}>
+            Sized by {resultSimulatorLabel(results[0].result.metadata.simulator)}
+          </div>
           {results.map(({ label, result }) => {
             const currentGpu = catalogGpus.find(g => g.systemId === result.metadata.system)
             return (
@@ -868,6 +970,8 @@ function PhaseResults({ label, result, gpuLabel }: PhaseResult & { gpuLabel?: st
   return (
     <div className={styles.phaseBlock}>
       {label && <div className={styles.phaseTitle}>{label}</div>}
+
+      {result.warnings.length > 0 && <WarningPanel warnings={result.warnings} />}
 
       <div className={styles.tilesGrid}>
         <TileCard
