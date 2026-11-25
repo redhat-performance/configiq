@@ -64,6 +64,7 @@ import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { DeployArtifactButton } from '@/components/deploy/DeployArtifactButton';
 import { buildPredictEntry } from '@/lib/comparison/predict-entry';
 
 /**
@@ -201,7 +202,7 @@ interface AccordionSection {
 
 export default function Performance() {
   console.log('Performance component mounting');
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, deploymentEnabled, preferredCloudProvider, pricingSource, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { gpuOptions: allCatalogGpus, modelOptions: allCatalogModels, modelSpecs, backendOptions, networkOptions, simulatorSupport, simulators, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
 
@@ -1193,6 +1194,16 @@ export default function Performance() {
         ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
         : null;
 
+  // A deployment is rendered from the evaluated limits, so it is offered only
+  // while the displayed result still matches the inputs that produced it.
+  const deployDisabledReason = isCalculating
+    ? 'A calculation is running; render when it finishes.'
+    : testResult == null
+      ? 'Run a calculation first; there is no evaluated configuration to deploy.'
+      : inputsDirty
+        ? 'The inputs changed after this result; recalculate so the artifact matches them.'
+        : null;
+
   const buildComparisonEntry = () => {
     if (testResult == null || isCalculating || inputsDirty) return null;
     return buildPredictEntry({
@@ -1215,6 +1226,7 @@ export default function Performance() {
       cloudRatePerHour: gpuPricePerHour,
       hardwareCostUsd: catalogGpuForPricing?.hardware_cost_usd ?? null,
       result: testResult,
+      deploymentModelConfigData: needsHfConfig(model, catalogModels) ? (hfConfig as Record<string, unknown> | null) : null,
     });
   };
 
@@ -1634,6 +1646,17 @@ export default function Performance() {
               buildEntry={buildComparisonEntry}
               disabledReason={comparisonDisabledReason}
             />
+            {deploymentEnabled && (
+              <DeployArtifactButton
+                engine={testResult?.engine ?? null}
+                system={gpu}
+                isl={testISL}
+                osl={testOSL}
+                concurrency={testConcurrentUsers}
+                modelConfigData={needsHfConfig(model, catalogModels) ? (hfConfig as Record<string, unknown> | null) : null}
+                disabledReason={deployDisabledReason}
+              />
+            )}
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>

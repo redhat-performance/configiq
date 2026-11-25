@@ -87,8 +87,9 @@ beforeEach(async () => {
     hydrated: true, defaultModel: 'Qwen/Qwen3-8B', defaultSystem: 'l40s',
     hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisim',
     costingsEnabled: true, preferredCloudProvider: null, pricingSource: 'merged',
+    deploymentEnabled: false,
     setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(),
-    setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
+    setBackendVersion: vi.fn(), setCostingsEnabled: vi.fn(), setDeploymentEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(),
     setPricingSource: vi.fn(),
     applyViewForSession: vi.fn(),
   })

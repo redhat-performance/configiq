@@ -135,6 +135,8 @@ export interface RecommendEntryInput {
   cloudRatePerHour: number | null
   hardwareCostUsd: number | null
   result: RecommendResult
+  /** The model's config.json when the run supplied one. */
+  deploymentModelConfigData?: Record<string, unknown> | null
   /** Overrides for tests; the page uses the current time and a fresh id. */
   now?: Date
   id?: string
@@ -161,6 +163,7 @@ export function buildRecommendEntry({
   cloudRatePerHour,
   hardwareCostUsd,
   result,
+  deploymentModelConfigData = null,
   now = new Date(),
   id = newComparisonId(),
 }: RecommendEntryInput): ComparisonEntry {
@@ -214,5 +217,8 @@ export function buildRecommendEntry({
     },
     topology: topologyFor(result),
     figures,
+    deployment: result.engine
+      ? { engine: result.engine, modelConfigData: deploymentModelConfigData ?? null }
+      : null,
   }
 }

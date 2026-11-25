@@ -594,14 +594,14 @@ describe('fetchEstimateAsInferenceResult - request body construction', () => {
     ).toHaveProperty('requests_per_load_unit', 4)
   })
 
-  it('includes include=config,memory in query params', async () => {
+  it('asks for the serving config, memory, and engine limits', async () => {
     const mockFetch = mockFetchOk(VALID_RESPONSE)
     vi.stubGlobal('fetch', mockFetch)
 
     await fetchEstimateAsInferenceResult(VALID_INPUT)
 
     const url = mockFetch.mock.calls[0][0] as string
-    expect(url).toContain('include=config,memory')
+    expect(url).toContain('include=config,memory,engine')
   })
 })
 

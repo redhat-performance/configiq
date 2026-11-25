@@ -22,6 +22,8 @@ them; absent means unavailable, never zero.
 | GET | `/backends` | List supported serving backends and engine versions |
 | GET | `/networks` | List network fabrics reported by the serving simulator |
 | GET | `/simulators` | List simulators this deployment can run, and the default |
+| GET | `/deploy/targets` | List the deployment targets this service can render, with their pins |
+| POST | `/deploy` | Render a deployable Kubernetes bundle from an evaluated engine section |
 | GET | `/metrics` | Service metrics via content negotiation |
 
 Which tool to use for which ask is covered in
@@ -108,6 +110,36 @@ curl -X POST https://aisimulators.configiq.dev/memory \
     "system": "h100_sxm"
   }'
 ```
+
+## Deployment artifacts
+
+`POST /deploy` renders a pinned Kubernetes bundle from a configuration the
+service already evaluated. It does not size anything: pass the `engine` section
+a prediction or recommendation returned with `include=engine`, the workload it
+was measured against (`isl`, `osl`, optionally `concurrency`), and the catalog
+`system`. The artifact reproduces those limits or the request fails.
+
+```bash
+curl -X POST https://aisimulators.configiq.dev/deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "llm-d",
+    "system": "h200_sxm",
+    "isl": 2048,
+    "osl": 128,
+    "engine": { "...": "the include=engine section" }
+  }'
+```
+
+`GET /deploy/targets` reports each target's release pins and whether this
+deployment can render it. An unavailable target states why rather than
+disappearing. A successful render returns the files, the render-gate checks
+that verified them, and any accepted departure (such as a deliberate engine
+release mismatch). Add `?format=zip` for the same bundle as an archive with the
+scripts' executable bit preserved.
+
+The browser never assembles manifests and the UI toggle only hides the deploy
+action; the REST and MCP endpoints are always available.
 
 ## Run the service locally
 

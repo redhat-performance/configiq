@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
@@ -713,3 +714,77 @@ def test_memory_endpoint_refuses_a_simulator_without_the_memory_capability():
     assert aisim.status_code == 200
     assert aisim.json()["simulator"] == "aisim"
     estimate_memory.assert_called_once()
+
+
+def test_blis_predict_reports_the_limits_its_scenario_held():
+    with (
+        patch("tools.api_service.app._blis_estimate", return_value=_prediction()),
+        patch("tools.api_service.app._run_aisimulate_prediction") as run_aisimulate,
+    ):
+        response = client.post(
+            "/predict?include=engine", json={**ESTIMATE_BODY, "simulator": "blis"}
+        )
+
+    assert response.status_code == 200
+    engine = response.json()["engine"]
+    assert engine["mode"] == "agg"
+    assert engine["backend"] == "vllm"
+    assert engine["backend_version"] == "0.31.0"
+    assert engine["agg"]["tensor_parallel_size"] == {"value": 2, "source": "evaluated"}
+    assert engine["agg"]["max_num_seqs"]["value"] == 8
+    assert engine["agg"]["max_num_batched_tokens"]["value"] == 8192
+    assert engine["agg"]["gpu_memory_utilization"]["value"] == pytest.approx(0.92)
+    assert engine["agg"]["enable_prefix_caching"]["value"] is True
+    # BLIS reports a context-window policy, not a token count, and states no
+    # block size: those stay unmodeled instead of borrowing a backend default.
+    assert engine["agg"]["max_model_len"] == {"value": None, "source": "not-modeled"}
+    assert engine["agg"]["block_size"] == {"value": None, "source": "not-modeled"}
+    assert engine["agg"]["enable_chunked_prefill"]["source"] == "not-modeled"
+    run_aisimulate.assert_not_called()
+
+
+def test_blis_disagg_reports_each_pool_and_no_aggregate_role():
+    prediction = SimpleNamespace(
+        **_prediction().__dict__,
+        prefill_config={"tp": 4, "pp": 1, "num_workers": 2, "batch_size": 8},
+        decode_config={"tp": 2, "pp": 1, "num_workers": 1, "batch_size": 8},
+    )
+    with (
+        patch("tools.api_service.app.run_blis_estimate", return_value=prediction),
+        patch("tools.api_service.app._run_aisimulate_prediction") as run_aisimulate,
+    ):
+        response = client.post(
+            "/predict?include=engine",
+            json={
+                **ESTIMATE_BODY,
+                "simulator": "blis",
+                "mode": "disagg",
+                "fabric": "ib-400g",
+                "prefill_tp_size": 4,
+                "prefill_num_workers": 2,
+                "decode_tp_size": 2,
+                "decode_num_workers": 1,
+            },
+        )
+
+    assert response.status_code == 200
+    engine = response.json()["engine"]
+    assert engine["mode"] == "disagg"
+    assert engine["prefill"] is not None
+    assert engine["decode"] is not None
+    assert engine["prefill"]["tensor_parallel_size"]["value"] == 4
+    assert engine["prefill"]["replicas"]["value"] == 2
+    assert engine["prefill"]["max_num_seqs"]["value"] == 8
+    assert engine["decode"]["tensor_parallel_size"]["value"] == 2
+    assert engine["decode"]["replicas"]["value"] == 1
+    # A pool config holds no context window of its own.
+    assert engine["prefill"]["max_model_len"]["source"] == "not-modeled"
+    run_aisimulate.assert_not_called()
+
+
+def test_blis_predict_omits_engine_unless_asked():
+    with patch("tools.api_service.app._blis_estimate", return_value=_prediction()):
+        response = client.post("/predict", json={**ESTIMATE_BODY, "simulator": "blis"})
+
+    assert response.status_code == 200
+    assert response.json()["engine"] is None

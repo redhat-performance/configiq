@@ -1,7 +1,40 @@
 import { describe, expect, it } from 'vitest'
 
 import type { InferenceConfigResult } from '../gpu-math/inference-config/types'
+import type { EngineSection } from '../api/engine'
 import { buildPredictEntry } from './predict-entry'
+
+/** An evaluated engine section, as `include=engine` reports one. */
+function processedEngine(): EngineSection {
+  const evaluated = (value: boolean | number | string) => ({ value, source: 'evaluated' as const })
+  return {
+    model: 'meta-llama/Llama-3.1-70B',
+    backend: 'vllm',
+    backend_version: '0.14.0',
+    mode: 'agg',
+    agg: {
+      replicas: evaluated(1),
+      tensor_parallel_size: evaluated(8),
+      pipeline_parallel_size: evaluated(1),
+      data_parallel_size: evaluated(1),
+      context_parallel_size: evaluated(1),
+      decode_context_parallel_size: evaluated(1),
+      moe_tensor_parallel_size: evaluated(8),
+      moe_expert_parallel_size: evaluated(1),
+      max_model_len: evaluated(4096),
+      max_num_seqs: evaluated(32),
+      max_num_batched_tokens: evaluated(8192),
+      block_size: evaluated(64),
+      gpu_memory_utilization: evaluated(0.9),
+      enable_prefix_caching: { value: null, source: 'not-modeled' },
+      enable_chunked_prefill: evaluated(true),
+      kv_cache_dtype: evaluated('fp8'),
+      quantization: evaluated('fp8'),
+    },
+    prefill: null,
+    decode: null,
+  }
+}
 
 function result(overrides: Partial<InferenceConfigResult> = {}): InferenceConfigResult {
   return {
@@ -153,5 +186,30 @@ describe('buildPredictEntry', () => {
     const entry = buildPredictEntry({ ...base, result: result({ engine_version: null }) })
 
     expect(entry.engineVersion).toBeNull()
+  })
+
+  it('carries the evaluated limits so the snapshot can render an artifact later', () => {
+    const engine = processedEngine()
+    const modelConfigData = { hidden_size: 8192, num_hidden_layers: 80 }
+    const entry = buildPredictEntry({
+      ...base,
+      result: result({ engine }),
+      deploymentModelConfigData: modelConfigData,
+    })
+
+    expect(entry.deployment).toEqual({ engine, modelConfigData })
+  })
+
+  it('records an artifact-capable run without a model config as a null config', () => {
+    const engine = processedEngine()
+    const entry = buildPredictEntry({ ...base, result: result({ engine }) })
+
+    expect(entry.deployment).toEqual({ engine, modelConfigData: null })
+  })
+
+  it('records no deployment when the run reported no engine limits', () => {
+    const entry = buildPredictEntry({ ...base, result: result({ engine: null }) })
+
+    expect(entry.deployment).toBeNull()
   })
 })

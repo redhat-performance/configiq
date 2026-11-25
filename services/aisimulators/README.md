@@ -22,9 +22,13 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/backends` | Backend/engine versions and memory defaults (per `simulator`) |
 | GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
 | GET | `/simulators` | Simulator identity, label, description, version, and revision |
+| GET | `/deploy/targets` | Deployment targets, their pins, and whether this deployment can render them |
+| POST | `/deploy` | Deployable artifact rendered from an evaluated `engine` section |
 
 `/recommend`, `/predict`, and `/estimate` accept an `include` query parameter for
-optional sections (`config`, `memory`, `debug`); `/memory` accepts `debug`. See
+optional sections (`config`, `memory`, `engine`, `debug`); `/memory` accepts
+`debug`. See [Engine limits](#engine-limits-includeengine) for `engine`,
+[deployment artifacts](#deployment-artifacts-deploy) for `/deploy`, and
 [Replay artifacts](#replay-artifacts-includedebug) for `debug`.
 
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
@@ -44,11 +48,14 @@ docker run --rm -p 7860:7860 aisimulators
 curl http://localhost:7860/systems
 ```
 
-The image also exposes the simulator CLIs at stable paths:
+The image also exposes the simulator CLIs at stable paths, plus the inputs the
+deployment render gate needs:
 
 ```text
 /usr/local/bin/aisimulate
 /usr/local/bin/blis
+/usr/local/bin/kustomize        # 5.7.1, pinned release
+/opt/llm-d/<revision>/guides/   # pinned llm-d subtrees (AISIMULATORS_LLM_D_VENDOR_DIR)
 ```
 
 BLIS v0.15.0 is copied from the upstream multi-arch release image
@@ -136,6 +143,122 @@ that failed is dropped from it — the record describes the run that produced th
 answer, not the ones that did not. A GPU window the search skipped because the
 model did not fit is dropped the same way, so `run.sh` never stops before the
 window that answered.
+
+
+## Engine limits (`include=engine`)
+
+`POST /predict` and `POST /recommend` accept `include=engine`. Each answer then
+carries the exact engine limits it was evaluated with: parallelism, replica
+counts, `max_model_len`, `max_num_seqs`, `max_num_batched_tokens`, block size,
+memory utilization, prefix caching, quantization, and the role layout
+(`agg`, or `prefill` + `decode`).
+
+Every field is an `EngineField`: a value plus a `source` that says why it holds
+that value.
+
+| Source | Meaning |
+|---|---|
+| `evaluated` | The simulator resolved and used it. A deployment must render it. |
+| `requested` | The caller asked for it and it rides along to a role the simulator does not evaluate. |
+| `backend-default` | No side stated a value, so the backend's own default applies. |
+| `not-modeled` | The run states nothing. `value` is null; the field is not invented. |
+
+The values are read from the compiled replay spec, not reconstructed from the
+request: a limit the request leaves out (a block size, a scheduler ceiling) is
+reported as the simulator resolved it. A result that carries no compiled spec —
+an unavailable run, or a record the ledger did not keep a config for — reports
+`engine: null`, because a reconstructed default would describe a run that never
+happened. BLIS states what its scenario holds and marks the rest `not-modeled`
+(for example block size, or a context window it resolved by policy).
+
+This section is the sole input to `POST /deploy`, so the deployment is rendered
+from the same numbers the prediction reported.
+
+
+## Deployment artifacts (`/deploy`)
+
+`GET /deploy/targets` lists the targets this service can render; `POST /deploy`
+renders one. The request carries an `engine` section from `include=engine` and
+nothing else that changes sizing: the artifact is a deployment of the evaluated
+configuration, not a starting point for a new one.
+
+| Target | Layout | Renders |
+|---|---|---|
+| `dynamo-dgd` | NVIDIA Dynamo | One `DynamoGraphDeployment` (aggregated: `VllmWorker`; disaggregated: `VllmPrefillWorker` + `VllmDecodeWorker`) |
+| `llm-d` | llm-d well-lit path | A Kustomize overlay over the pinned llm-d v1.0.0 guide base: `Deployment` when aggregated, `DisaggregatedSet` when disaggregated, plus the pinned router Helm release |
+
+An llm-d bundle is self-contained: it carries the subtrees of llm-d v1.0.0
+(`378b42d18dabe0b9c4ced4e6f3670d93b52db08e`) that the overlay references,
+under `llm-d/` at their repository-relative paths, so the overlay's
+`../../../../../recipes/...` references resolve without a network fetch. The
+bundle-root `kustomization.yaml` is post-processed to set the install namespace,
+and, for a P/D layout, to replace the upstream base's moving `nightly` routing
+sidecar with the pinned
+`ghcr.io/llm-d/llm-d-router-disagg-sidecar:v1.0.0`.
+
+### The render gate
+
+Nothing is returned unverified. Every artifact is assembled in a scratch
+directory and checked before the response is written:
+
+| Check | What it proves |
+|---|---|
+| `kustomize-build` | A Kustomize target builds with the pinned tree, exactly as an installer would (skipped for a single-manifest target, whose assertions read the manifest directly). |
+| `resources` | The expected kinds rendered (`DynamoGraphDeployment`, `Deployment`, or `DisaggregatedSet`). |
+| `engine-limits` | Every evaluated limit and replica count appears in the rendered argv. |
+| `images` | The model-server image is the pinned one, and a P/D layout also pins the routing sidecar. |
+| `placeholders` | No upstream `REPLACE_*` placeholder survives. |
+
+A failed check is a 500 naming the check, not a bundle that breaks on apply.
+
+### Pins and refusals
+
+The `engine` section must be reproducible by the target. A target refuses with
+422 when:
+
+- a limit it must render is `not-modeled` (re-run the prediction, or choose a
+  target that models it);
+- its pinned image runs a different engine release than the evaluated one. Set
+  `allow_engine_version_mismatch: true` (and `image` when overriding the image)
+  to accept the difference: it is recorded in `PROVENANCE.md` and printed by
+  `preflight.sh`.
+- the generator refuses the evaluated topology (for example a token budget that
+  is not a multiple of 64).
+
+A target whose pinned inputs are absent from this deployment answers 503, and
+`GET /deploy/targets` reports `available: false` with the reason. Unknown target
+ids answer 404 with the list of ids.
+
+### Bundle contents
+
+`README.md`, `PROVENANCE.md` (every pin, the evaluated limits, the gate's
+checks, accepted warnings), `install.sh`, `preflight.sh`, and `verify.sh`, plus
+the manifests or overlay. `preflight.sh` is read-only and fails rather than
+installing into a cluster whose CRDs, GPUs, or Helm are missing; `verify.sh`
+waits for the rollout and queries `/v1/models`. `format=zip` returns the same
+files with executable modes preserved.
+
+The generator also produces benchmark artifacts (`k8s_bench.yaml`,
+`bench_run.sh`, `sflow.yaml`, `cli_args_*`, `run_0.sh`). They reproduce the
+measurement rather than deploy it, so they are left out and the artifact's
+warnings say so.
+
+### Running the render gate outside the container
+
+The gate needs kustomize (or `kubectl`) and the pinned llm-d tree. Fetch the tree
+once, then point the service at it:
+
+```bash
+export AISIMULATORS_LLM_D_VENDOR_DIR=/tmp/llm-d-vendor
+scripts/fetch-llm-d-vendor.sh          # vendors <dir>/378b42d1.../guides/...
+export AISIMULATORS_KUSTOMIZE_BIN=/usr/local/bin/kustomize   # optional
+```
+
+`AISIMULATORS_KUSTOMIZE_BIN` pins the binary when several are on `PATH`;
+otherwise the service prefers `kustomize` and falls back to `kubectl kustomize`.
+Without either, an llm-d render answers 503 rather than shipping unbuilt
+manifests. The image vendors the tree at `/opt/llm-d` and installs kustomize
+`5.7.1`; CI does the same before running the tests.
 
 
 ## AISim backend versions

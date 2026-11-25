@@ -21,6 +21,8 @@ tags:
     description: GPU recommendation, performance estimation, and memory estimation
   - name: catalog
     description: Supported models, GPU systems, and network fabrics
+  - name: deployment
+    description: Deployable artifacts rendered from an evaluated engine configuration
   - name: observability
     description: Service metrics
 
@@ -155,16 +157,19 @@ paths:
         detail sections:
         - `config` — serving configuration (vLLM/SGLang parameters)
         - `memory` — per-component memory breakdown
+        - `engine` — the exact engine limits this answer evaluated
         - `debug` — the commands and input files that reproduce the answer
 
-        Example: `POST /recommend?include=config,memory`
+        Example: `POST /recommend?include=config,memory,engine`
       parameters:
         - name: include
           in: query
           required: false
           description: |
             Comma-separated list of optional sections to include (config,
-            memory, debug). `debug` returns a `debug` record of the commands
+            memory, engine, debug). `engine` returns the limits the reported
+            answer was evaluated with, and is the input `POST /deploy` renders
+            an artifact from. `debug` returns a `debug` record of the commands
             and input files that reproduce the answer, inline in the response.
           schema:
             type: string
@@ -284,6 +289,7 @@ paths:
         detail sections:
         - `config` — serving configuration (vLLM/SGLang parameters)
         - `memory` — per-component memory breakdown
+        - `engine` — the exact engine limits this prediction evaluated
         - `debug` — the commands and input files that reproduce the answer
       parameters:
         - name: include
@@ -291,8 +297,11 @@ paths:
           required: false
           description: |
             Comma-separated list of optional sections to include (config,
-            memory, debug). `debug` returns a `debug` record of the commands
-            and input files that reproduce the answer, inline in the response.
+            memory, engine, debug). `engine` returns the limits the reported
+            prediction was evaluated with, and is the input `POST /deploy`
+            renders an artifact from. `debug` returns a `debug` record of the
+            commands and input files that reproduce the answer, inline in the
+            response.
           schema:
             type: string
             example: "config,memory"
@@ -574,6 +583,121 @@ paths:
                     description: Fabric used when a P/D request omits one; null when none is modeled.
         '503':
           description: The selected simulator's catalog is unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /deploy/targets:
+    get:
+      operationId: deployTargets
+      tags: [deployment]
+      summary: List the deployment targets this service can render
+      description: |
+        Reports each target with the inputs it pins and whether this deployment
+        can render it. A client disables a target from this answer instead of
+        discovering a gap after posting a render request. `available` is false
+        when the inputs the render gate needs — the pinned llm-d source tree,
+        or kustomize itself — are absent from this deployment, and
+        `unavailable_reason` says which.
+
+        A target is experimental: the endpoint contract is stable, but the
+        artifacts are versioned by `artifact_schema_version` and the pins move
+        with the upstream release they mirror.
+      responses:
+        '200':
+          description: Deployment targets and their pins
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployTargetsResponse'
+
+  /deploy:
+    post:
+      operationId: deploy
+      tags: [deployment]
+      summary: Render a deployable artifact from an evaluated engine configuration
+      description: |
+        Renders a pinned, render-checked deployment bundle for one target from
+        the `engine` section a prediction or recommendation returned with
+        `include=engine`. Nothing is sized here: the model server is started
+        with exactly the limits that answer was evaluated with.
+
+        The service does not return a starting point. Before responding it
+        assembles the bundle in a scratch directory and runs a render gate:
+
+        - for a Kustomize target, it builds the pinned overlay exactly as an
+          installer would, then asserts on the manifests it produced;
+        - for every target, it asserts that the rendered argv and replica
+          counts carry the evaluated limits, that the model-server (and, for a
+          P/D layout, the routing sidecar) images are pinned, and that no
+          upstream placeholder image survives.
+
+        A gate that fails is an error, not a bundle the caller discovers is
+        broken after applying it.
+
+        The bundle carries `README.md`, `PROVENANCE.md` (every pin, the
+        evaluated limits, and the gate's checks), `install.sh`, `preflight.sh`
+        (read-only: fails rather than installing into a cluster that cannot run
+        the artifact), and `verify.sh`.
+
+        A target that cannot reproduce a limit the engine section marks
+        `not-modeled`, or whose pinned image runs a different engine release
+        than the evaluated one, is refused with 422 unless
+        `allow_engine_version_mismatch` is set; a mismatch that is allowed is
+        recorded in `PROVENANCE.md` and printed by `preflight.sh`.
+      parameters:
+        - name: format
+          in: query
+          required: false
+          description: |
+            `json` returns the bundle as a file list. `zip` returns the same
+            files as an archive, preserving each file's mode so the bundled
+            scripts run after extraction.
+          schema:
+            type: string
+            enum: [json, zip]
+            default: json
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployRequest'
+      responses:
+        '200':
+          description: The rendered bundle, as a file list or a zip archive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployArtifact'
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Unknown target id. The detail names the available targets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            The engine section cannot be reproduced by this target (a
+            `not-modeled` limit it must render, an engine release it does not
+            pin), or the generator refused the evaluated topology.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: The render gate rejected the artifact.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The target's pinned inputs are absent from this deployment.
           content:
             application/json:
               schema:
@@ -1288,6 +1412,14 @@ components:
         simulator:
           type: string
           description: Simulator that produced this candidate.
+        engine:
+          allOf:
+            - $ref: '#/components/schemas/EngineSection'
+          nullable: true
+          description: |
+            The engine limits this candidate was evaluated with, when the kept
+            prediction config compiles under the running SDK. Null otherwise,
+            rather than a reconstructed default.
 
     CandidateViews:
       type: object
@@ -1435,6 +1567,13 @@ components:
           nullable: true
           description: Decode worker parallelism and serving config (disaggregated results only).
           $ref: '#/components/schemas/WorkerConfig'
+        engine:
+          allOf:
+            - $ref: '#/components/schemas/EngineSection'
+          nullable: true
+          description: |
+            The engine limits this config was evaluated with (present when
+            include=engine). `POST /deploy` renders from exactly this section.
 
     WorkerConfig:
       type: object
@@ -1537,6 +1676,123 @@ components:
         quantization:
           type: string
           description: Quantization mode (fp8, int8, auto, etc).
+
+    # ── Engine limits ──────────────────────────────────────────────────────
+
+    EngineField:
+      type: object
+      required: [value, source]
+      description: |
+        One engine limit, with the reason it holds that value. The `source`
+        tells a caller whether the number was evaluated, merely requested, a
+        backend default, or not modeled at all:
+
+        - `evaluated` — the simulator resolved and used this value; a
+          deployment must render it.
+        - `requested` — the caller asked for it, and it rides along to a role
+          the simulator does not evaluate (for example chunked prefill on a
+          decode pool).
+        - `backend-default` — no side stated a value, so the backend's own
+          default applies.
+        - `not-modeled` — the run states nothing here. `value` is null, and a
+          deployment target that needs the field must refuse rather than
+          invent one.
+      properties:
+        value:
+          nullable: true
+          description: The limit, or null when the run does not state one.
+          oneOf:
+            - type: number
+            - type: boolean
+            - type: string
+            - type: "null"
+        source:
+          type: string
+          enum: [evaluated, requested, backend-default, not-modeled]
+
+    EngineRole:
+      type: object
+      description: |
+        The engine limits for one serving role. Every field is an `EngineField`,
+        so an unmodeled limit is explicit rather than absent.
+      properties:
+        replicas:
+          $ref: '#/components/schemas/EngineField'
+        tensor_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        pipeline_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        data_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        context_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        decode_context_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        moe_tensor_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        moe_expert_parallel_size:
+          $ref: '#/components/schemas/EngineField'
+        max_model_len:
+          $ref: '#/components/schemas/EngineField'
+        max_num_seqs:
+          $ref: '#/components/schemas/EngineField'
+        max_num_batched_tokens:
+          $ref: '#/components/schemas/EngineField'
+        block_size:
+          $ref: '#/components/schemas/EngineField'
+        gpu_memory_utilization:
+          $ref: '#/components/schemas/EngineField'
+        enable_prefix_caching:
+          $ref: '#/components/schemas/EngineField'
+        enable_chunked_prefill:
+          $ref: '#/components/schemas/EngineField'
+        kv_cache_dtype:
+          $ref: '#/components/schemas/EngineField'
+        quantization:
+          $ref: '#/components/schemas/EngineField'
+
+    EngineSection:
+      type: object
+      required: [model, backend, mode]
+      description: |
+        The exact engine limits an answer was evaluated with, returned by
+        `include=engine`. It is the input `POST /deploy` renders an artifact
+        from, so nothing is re-derived between the prediction and the
+        deployment.
+
+        The section reports only what the selected simulator stated. A
+        simulator that does not model a field (for example a BLIS run that
+        reports no block size) marks it `not-modeled` rather than filling in a
+        backend default the reported numbers did not depend on.
+      properties:
+        model:
+          type: string
+          description: Model the run evaluated.
+        backend:
+          type: string
+          description: Serving runtime being modeled (vllm, sglang, trtllm).
+        backend_version:
+          type: string
+          nullable: true
+          description: Engine release the run used, when the simulator resolved one.
+        mode:
+          type: string
+          enum: [agg, disagg]
+          description: |
+            Serving layout. `agg` sets `agg`; `disagg` sets `prefill` and
+            `decode`. The roles the other mode names are absent.
+        agg:
+          allOf:
+            - $ref: '#/components/schemas/EngineRole'
+          nullable: true
+        prefill:
+          allOf:
+            - $ref: '#/components/schemas/EngineRole'
+          nullable: true
+        decode:
+          allOf:
+            - $ref: '#/components/schemas/EngineRole'
+          nullable: true
 
     # ── Estimate ───────────────────────────────────────────────────────────
 
@@ -1862,6 +2118,14 @@ components:
           nullable: true
           description: Per-component memory breakdown (present when include=memory).
           $ref: '#/components/schemas/MemoryBreakdown'
+        engine:
+          allOf:
+            - $ref: '#/components/schemas/EngineSection'
+          nullable: true
+          description: |
+            The engine limits this prediction evaluated (present when
+            include=engine). Null for a result that carries no compiled spec,
+            rather than a reconstructed default.
 
         debug:
           nullable: true
@@ -2145,6 +2409,201 @@ components:
           description: |
             `run.sh` for the record: every non-candidate invocation in execution
             order, pinned to the versions above.
+
+    # ── Deployment ─────────────────────────────────────────────────────────
+
+    DeployRequest:
+      type: object
+      required: [target, engine, system, isl, osl]
+      description: |
+        One deployment, rendered from limits the simulator already evaluated.
+        The request carries no sizing intent: pass the `engine` section a
+        prediction returned with `include=engine` and the service renders
+        exactly those values.
+      properties:
+        target:
+          type: string
+          description: Deployment target id from `GET /deploy/targets`.
+          example: llm-d
+        engine:
+          $ref: '#/components/schemas/EngineSection'
+        system:
+          type: string
+          description: Hardware SKU the evaluated run used.
+          example: h200_sxm
+        served_model_name:
+          type: string
+          nullable: true
+          description: Name the OpenAI-compatible endpoint serves. Defaults to the model path.
+        model_config_data:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: |
+            The model's `config.json`, for a model this deployment cannot
+            resolve on its own. The same value the prediction was given.
+        isl:
+          type: integer
+          minimum: 1
+          description: |
+            Input tokens per request the evaluation used. Required: the
+            generator states the workload in the artifact, so it cannot be
+            invented.
+        osl:
+          type: integer
+          minimum: 1
+          description: Output tokens per request the evaluation used.
+        concurrency:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Concurrency the run targeted, when it stated one.
+        namespace:
+          type: string
+          default: configiq
+          description: Namespace the artifact installs into. Defaults are written into the bundle.
+        name_prefix:
+          type: string
+          nullable: true
+          maxLength: 40
+          description: Resource-name prefix (default `configiq`).
+        image:
+          type: string
+          nullable: true
+          description: Model-server image override. Defaults to the target's pinned image.
+        allow_engine_version_mismatch:
+          type: boolean
+          default: false
+          description: |
+            Render even when the target's pinned image runs a different engine
+            release than the evaluated one. The mismatch is recorded in the
+            artifact provenance and checked by `preflight.sh`.
+
+    DeployTargetInfo:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - kind
+        - simulator
+        - modes
+        - backends
+        - engine_versions
+        - pins
+        - available
+        - artifact_schema_version
+        - experimental
+      properties:
+        id:
+          type: string
+          example: llm-d
+        name:
+          type: string
+        description:
+          type: string
+        kind:
+          type: string
+          description: Renderer family the target uses.
+          enum: [llm-d, dynamo]
+        simulator:
+          type: string
+          description: Simulator whose evaluated limits this target renders.
+        modes:
+          type: array
+          items:
+            type: string
+            enum: [agg, disagg]
+        backends:
+          type: array
+          items: { type: string }
+        engine_versions:
+          type: array
+          items: { type: string }
+          description: Engine releases the target's pinned image runs.
+        pins:
+          type: object
+          additionalProperties: { type: string }
+          description: Release pins the artifact records, verbatim.
+        available:
+          type: boolean
+          description: Whether this deployment carries the inputs the render gate needs.
+        unavailable_reason:
+          type: string
+          nullable: true
+        artifact_schema_version:
+          type: string
+          description: Version of the bundle layout and PROVENANCE format.
+        experimental:
+          type: boolean
+          description: The artifact contract may change with the upstream release it pins.
+
+    DeployTargetsResponse:
+      type: object
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployTargetInfo'
+
+    DeployFile:
+      type: object
+      required: [path, contents, mode]
+      properties:
+        path:
+          type: string
+          description: Path relative to the bundle root.
+        contents:
+          type: string
+          description: File contents, verbatim.
+        mode:
+          type: integer
+          description: POSIX mode; scripts are `0o755` so a zip extract keeps them runnable.
+
+    DeployCheck:
+      type: object
+      required: [id, status, detail]
+      description: One assertion the render gate ran against the assembled artifact.
+      properties:
+        id:
+          type: string
+          enum: [kustomize-build, resources, engine-limits, images, placeholders]
+        status:
+          type: string
+          enum: [passed, skipped, failed]
+        detail:
+          type: string
+
+    DeployArtifact:
+      type: object
+      required: [target, artifact_schema_version, engine, pins, checks, files]
+      properties:
+        target:
+          type: string
+        artifact_schema_version:
+          type: string
+        engine:
+          $ref: '#/components/schemas/EngineSection'
+        pins:
+          type: object
+          additionalProperties: { type: string }
+        checks:
+          type: array
+          description: The render gate's result. A failed check is a 500, never a 200.
+          items:
+            $ref: '#/components/schemas/DeployCheck'
+        warnings:
+          type: array
+          items: { type: string }
+          description: |
+            Accepted departures from the pins (an allowed engine-version
+            mismatch, generator outputs left out of the bundle). The same text
+            is written to `PROVENANCE.md`.
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployFile'
 
     BackendListResponse:
       type: object

@@ -197,6 +197,9 @@ class MockLedgerCandidate:
     status: str = "feasible"
     metrics: dict = field(default_factory=dict)
     provenance: MockLedgerProvenance = field(default_factory=MockLedgerProvenance)
+    #: The prediction config the record was measured with, when the ledger
+    #: keeps one; `include=engine` reads its limits.
+    prediction_config: dict | None = None
 
 
 @dataclass
@@ -4832,3 +4835,189 @@ class TestSimulatorRevision:
 
         monkeypatch.setenv("BLIS_COMMIT", "abc1234")
         assert app_module.blis_commit() == "abc1234"
+
+
+# ─── engine limits (include=engine) ──────────────────────────────────────────
+
+
+def _evaluated_prediction(request):
+    """A prediction that carries the spec it compiled, as a real run does.
+
+    ``_run_aisimulate_prediction`` attaches ``spec``/``spec_config`` only when
+    the caller asked for engine limits, so this double mirrors that and lets a
+    test tell the requested branch from the omitted one.
+    """
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    config = app_module._aisimulate_prediction_config(request)
+    result = app_module._PredictionResult({"ttft_ms": 471.378, "tpot_ms": 28.118})
+    result.spec = prediction_to_replay_spec(config)
+    result.spec_config = config
+    return result
+
+
+class TestEngineLimits:
+    def test_predict_reports_the_limits_the_run_compiled(self, monkeypatch):
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, include: (
+                _evaluated_prediction(req)
+                if "engine" in include
+                else make_mock_estimate_result()
+            ),
+        )
+
+        resp = client.post("/predict?include=engine", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        engine = resp.json()["engine"]
+        assert engine["mode"] == "agg"
+        assert engine["backend"] == "vllm"
+        # Read back from the compiled spec: TP from the request, the scheduler
+        # limits and block size from what the simulator resolved.
+        assert engine["agg"]["tensor_parallel_size"] == {"value": 2, "source": "evaluated"}
+        assert engine["agg"]["replicas"] == {"value": 1, "source": "evaluated"}
+        assert engine["agg"]["max_model_len"]["value"] == 5000
+        assert engine["agg"]["max_num_seqs"]["value"] == 128
+        assert engine["agg"]["max_num_batched_tokens"]["value"] == 8192
+        assert engine["agg"]["block_size"]["value"] == 64
+        assert engine["agg"]["enable_prefix_caching"]["value"] is True
+        assert engine["prefill"] is None
+        assert engine["decode"] is None
+
+    def test_predict_omits_the_section_unless_asked(self, monkeypatch):
+        monkeypatch.setattr(
+            app_module, "_run_aisimulate_prediction", lambda req, include: make_mock_estimate_result()
+        )
+
+        resp = client.post("/predict", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert resp.json()["engine"] is None
+
+    def test_a_stand_in_prediction_never_invents_limits(self, monkeypatch):
+        # No compiled spec means no evaluated limits: an unavailable run or a
+        # double must report nothing rather than a reconstructed default.
+        monkeypatch.setattr(
+            app_module, "_run_aisimulate_prediction", lambda req, include: make_mock_estimate_result()
+        )
+
+        resp = client.post("/predict?include=engine", json=VALID_ESTIMATE_BODY)
+
+        assert resp.status_code == 200
+        assert resp.json()["engine"] is None
+
+    def test_a_disaggregated_run_reports_both_pools(self, monkeypatch):
+        monkeypatch.setattr(
+            app_module,
+            "_run_aisimulate_prediction",
+            lambda req, include: (
+                _evaluated_prediction(req) if "engine" in include else make_mock_estimate_result()
+            ),
+        )
+        body = {
+            **VALID_ESTIMATE_BODY,
+            "mode": "disagg",
+            "prefill_tp_size": 1,
+            "prefill_num_workers": 2,
+            "decode_tp_size": 2,
+            "decode_num_workers": 3,
+        }
+
+        resp = client.post("/predict?include=engine", json=body)
+
+        assert resp.status_code == 200, resp.text
+        engine = resp.json()["engine"]
+        assert engine["mode"] == "disagg"
+        assert engine["agg"] is None
+        assert engine["prefill"]["tensor_parallel_size"]["value"] == 1
+        assert engine["prefill"]["replicas"]["value"] == 2
+        assert engine["decode"]["tensor_parallel_size"]["value"] == 2
+        assert engine["decode"]["replicas"]["value"] == 3
+
+
+class TestEngineFromConfig:
+    def test_a_saved_config_is_compiled_for_its_limits(self):
+        request = app_module.EstimateRequest(**{**VALID_ESTIMATE_BODY, "backend_version": "0.24.0"})
+        config = app_module._aisimulate_prediction_config(request)
+
+        engine = app_module._engine_section_from_config(
+            config.model_dump(), model=VALID_ESTIMATE_BODY["model_path"]
+        )
+
+        assert engine is not None
+        assert engine.mode == "agg"
+        assert engine.backend_version == "0.24.0"
+        assert engine.model == VALID_ESTIMATE_BODY["model_path"]
+        assert engine.agg.max_model_len.value == 5000
+
+    def test_a_config_the_sdk_cannot_compile_yields_no_section(self):
+        assert app_module._engine_section_from_config({"engine": "not-a-mapping"}, model="m") is None
+        assert app_module._engine_section_from_config({}, model="m") is None
+        assert app_module._engine_section_from_config(None, model="m") is None
+
+    def test_a_prediction_without_a_compiled_spec_reports_nothing(self):
+        assert app_module._prediction_engine(make_mock_estimate_result(), model="m") is None
+
+    def test_a_prediction_with_a_compiled_spec_reports_it(self):
+        request = app_module.EstimateRequest(**VALID_ESTIMATE_BODY)
+        prediction = _evaluated_prediction(request)
+
+        engine = app_module._prediction_engine(prediction, model=VALID_ESTIMATE_BODY["model_path"])
+
+        assert engine is not None
+        assert engine.agg.tensor_parallel_size.value == 2
+
+
+class TestRecordEngineLimits:
+    def _record(self, *, prediction_config):
+        return MockLedgerCandidate(
+            used_gpus=4,
+            metrics=_demand_metrics(12.0),
+            provenance=MockLedgerProvenance(
+                topology={
+                    "deployment_mode": "agg",
+                    "tp": 4,
+                    "pp": 1,
+                    "attention_dp": 1,
+                    "replicas": 1,
+                }
+            ),
+            prediction_config=prediction_config,
+        )
+
+    def test_include_engine_reads_the_limits_the_record_was_measured_with(self):
+        saved = app_module._aisimulate_prediction_config(
+            app_module.EstimateRequest(**VALID_ESTIMATE_BODY)
+        )
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        config = app_module._demand_config_from_record(
+            self._record(prediction_config=saved.model_dump()), request, include={"engine"}
+        )
+
+        assert config.engine is not None
+        assert config.engine.agg.tensor_parallel_size.value == 2
+        assert config.engine.agg.max_num_seqs.value == 128
+
+    def test_a_record_without_a_prediction_config_reports_no_engine(self):
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        config = app_module._demand_config_from_record(
+            self._record(prediction_config=None), request, include={"engine"}
+        )
+
+        assert config.engine is None
+
+    def test_the_section_is_absent_when_engine_was_not_requested(self):
+        saved = app_module._aisimulate_prediction_config(
+            app_module.EstimateRequest(**VALID_ESTIMATE_BODY)
+        )
+        request = app_module.RecommendRequest.model_validate(VALID_DEMAND_BODY)
+
+        config = app_module._demand_config_from_record(
+            self._record(prediction_config=saved.model_dump()), request, include=set()
+        )
+
+        assert config.engine is None

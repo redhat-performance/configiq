@@ -44,6 +44,7 @@ import { resolveSearchFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
 import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { DeployArtifactButton } from '@/components/deploy/DeployArtifactButton';
 import { buildRecommendEntry, sizingGoalFrom } from '@/lib/comparison/recommend-entry';
 import { TourButton } from '@/components/help/TourButton';
 import { FABRIC_NONE } from '@/lib/deep-links/common';
@@ -276,7 +277,7 @@ function friendlyErrorHint(code: string | null): string {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Sizing() {
-  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
+  const { hydrated, hfToken, defaultModel: settingsDefaultModel, defaultSystem: settingsDefaultSystem, inferenceBackend, backendVersion, simulator, costingsEnabled, deploymentEnabled, pricingSource, preferredCloudProvider, setDefaultSystem } = useSettings();
   const costings = useCostings(costingsEnabled, pricingSource);
   const { modelOptions: allCatalogModels, gpuOptions: allCatalogGpus, modelSpecs, networkOptions, simulatorSupport, simulators, objectives: catalogObjectives, timeoutSeconds: gatewayTimeout, isLoading: catalogLoading } = useCatalog();
   // A simulator may price only a subset of the catalog. Its override narrows
@@ -1101,6 +1102,20 @@ export default function Sizing() {
             ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
             : null;
 
+  // A deployment is rendered from the evaluated limits, so it is offered only
+  // while the displayed result still matches the request that produced it. A
+  // sweep's frontier is many results, so it is not rendered as one artifact.
+  const deployDisabledReason =
+    runMode === 'pareto'
+      ? 'A Pareto sweep is not a single result; run Calculate to render one.'
+      : isLoading
+        ? 'A calculation is running; render when it finishes.'
+        : result == null || params == null
+          ? 'Run a calculation first; there is no evaluated configuration to deploy.'
+          : inputsDirty
+            ? 'The inputs changed after this result; recalculate so the artifact matches them.'
+            : null;
+
   const buildComparisonEntry = () => {
     if (result == null || params == null || isLoading || inputsDirty || runMode === 'pareto') return null;
     const systemOption = selectableGpus.find(option => option.systemId === params.system);
@@ -1129,6 +1144,7 @@ export default function Sizing() {
       cloudRatePerHour: cloudRate?.rate ?? null,
       hardwareCostUsd: hardwareCost,
       result,
+      deploymentModelConfigData: params.model_config ?? null,
     });
   };
 
@@ -1148,6 +1164,17 @@ export default function Sizing() {
               buildEntry={buildComparisonEntry}
               disabledReason={comparisonDisabledReason}
             />
+            {deploymentEnabled && (
+              <DeployArtifactButton
+                engine={result?.engine ?? null}
+                system={params?.system ?? ''}
+                isl={params?.isl ?? 0}
+                osl={params?.osl ?? 0}
+                concurrency={params?.target_concurrency ?? null}
+                modelConfigData={params?.model_config ?? null}
+                disabledReason={deployDisabledReason}
+              />
+            )}
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>

@@ -14,6 +14,10 @@ def _transport(request: httpx.Request) -> httpx.Response:
     captured_requests.append(request)
     if request.url.path == "/recommend":
         return httpx.Response(200, json={"configs": [{"total_gpus_needed": 2}]})
+    if request.url.path == "/deploy/targets":
+        return httpx.Response(200, json={"targets": [{"id": "llm-d", "available": True}]})
+    if request.url.path == "/deploy":
+        return httpx.Response(200, json={"target": "llm-d", "files": [{"path": "README.md"}]})
     if request.url.path == "/models":
         return httpx.Response(200, json={"models": ["Qwen/Qwen3-32B"]})
     if request.url.path == "/pricing/models":
@@ -42,6 +46,8 @@ def test_health_is_not_an_mcp_tool():
         "pricing_sources",
         "pricing_models",
         "pricing_systems",
+        "deploy_targets",
+        "deploy",
     }
     assert "health" not in names
     assert "metrics" not in names
@@ -125,4 +131,48 @@ def test_mcp_http_lists_curated_tools():
         "pricing_sources",
         "pricing_models",
         "pricing_systems",
+        "deploy_targets",
+        "deploy",
     }
+
+
+def test_deploy_targets_is_forwarded_to_the_deployment_catalog():
+    app = create_app(transport=httpx.MockTransport(_transport))
+    captured_requests.clear()
+
+    with TestClient(app) as client:
+        response = client.get("/deploy/targets")
+
+    assert response.status_code == 200
+    assert response.json()["targets"][0]["id"] == "llm-d"
+    assert captured_requests[-1].url.path == "/deploy/targets"
+
+
+def test_deploy_forwards_the_engine_section_and_asks_for_json():
+    app = create_app(transport=httpx.MockTransport(_transport))
+    captured_requests.clear()
+    engine = {"model": "Qwen/Qwen3-32B", "backend": "vllm", "mode": "agg"}
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/deploy?format=zip",
+            json={
+                "target": "llm-d",
+                "engine": engine,
+                "system": "h200_sxm",
+                "isl": 4000,
+                "osl": 1000,
+                "namespace": "team-a",
+            },
+        )
+
+    assert response.status_code == 200
+    request = captured_requests[-1]
+    assert request.url.path == "/deploy"
+    # A tool result is JSON; the binary zip form is not exposed over MCP.
+    assert request.url.params["format"] == "json"
+    body = json.loads(request.content)
+    assert body["engine"] == engine
+    assert body["namespace"] == "team-a"
+    assert body["isl"] == 4000
+    assert "format" not in body

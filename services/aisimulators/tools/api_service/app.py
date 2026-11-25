@@ -11,6 +11,7 @@ See docs/api/openapi.yaml for the full spec.
 import argparse
 import concurrent.futures
 import hashlib
+import io
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 from collections import Counter, OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,7 +32,7 @@ from urllib.parse import unquote
 import pandas as pd
 import uvicorn
 from configiq.systems import load_device_names_from_perf_data, supported_systems
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 from pydantic import BaseModel, Field, model_validator
@@ -51,6 +53,22 @@ from .blis.service import RecommendInput as BlisRecommendInput
 from .blis.service import estimate as run_blis_estimate
 from .blis.service import recommend as run_blis_recommend
 from .blis.service import supported_model_ids, supported_system_ids
+from .deploy import (
+    TARGETS as DEPLOY_TARGETS,
+)
+from .deploy import (
+    DeployArtifact,
+    DeployRenderError,
+    DeployRequest,
+    DeployTarget,
+    DeployTargetInfo,
+    DeployTargetsResponse,
+    DeployUnsupportedRequest,
+)
+from .deploy import (
+    render_artifact as render_deploy_artifact,
+)
+from .engine_models import EngineField, EngineRole, EngineSection, EngineSource
 from .replay import ReplayRecorder, capture_into
 from .replay.capture import active_recorder
 
@@ -848,6 +866,7 @@ class RecommendConfig(BaseModel):
     # Optional detail sections (include=config / include=memory)
     serving_config: ServingConfig | None = None
     memory_breakdown: MemoryBreakdown | None = None
+    engine: EngineSection | None = None
     # Disagg detail (present for disagg results)
     prefill_config: WorkerConfig | None = None
     decode_config: WorkerConfig | None = None
@@ -963,6 +982,8 @@ class EstimateResponse(BaseModel):
     power_w: float | None = None
     serving_config: ServingConfig | None = None
     memory_breakdown: MemoryBreakdown | None = None
+    # The exact engine limits this estimate evaluated (`include=engine`).
+    engine: EngineSection | None = None
     # Serving mode + disagg detail (present when mode='disagg')
     mode: str = "agg"
     prefill_config: WorkerConfig | None = None
@@ -1033,6 +1054,10 @@ class _PredictionResult:
         self.provenance: dict[str, Any] | None = None
         self.serving_config: dict[str, Any] | None = None
         self.warnings: list[str] = []
+        # The compiled replay spec the run used. Present only when the caller
+        # asked for `include=engine`, which reads its resolved engine limits.
+        self.spec: Any | None = None
+        self.spec_config: Any | None = None
 
 
 class SystemDetail(BaseModel):
@@ -1943,7 +1968,9 @@ def _aisimulate_worker_config(raw: dict[str, Any], role: str, req: RecommendRequ
     )
 
 
-def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> RecommendConfig:
+def _aisimulate_candidate_config(
+    candidate: Any, req: RecommendRequest, *, include: set[str] | None = None
+) -> RecommendConfig:
     prediction = candidate.prediction_config or {}
     engine = prediction.get("engine") or {}
     workers = engine.get("workers") or {}
@@ -1988,10 +2015,17 @@ def _aisimulate_candidate_config(candidate: Any, req: RecommendRequest) -> Recom
     if mode == "disagg":
         config.prefill_config = _aisimulate_worker_config(prediction, "prefill", req)
         config.decode_config = _aisimulate_worker_config(prediction, "decode", req)
+    if include and "engine" in include:
+        # The candidate carries the config it was evaluated with. Compiling it
+        # is the same step the prediction path runs, so the limits below are the
+        # ones the reported metrics depend on.
+        config.engine = _engine_section_from_config(prediction, model=config.model or req.model_path)
     return config
 
 
-def _demand_config_from_record(record: Any, req: RecommendRequest) -> RecommendConfig:
+def _demand_config_from_record(
+    record: Any, req: RecommendRequest, *, include: set[str] | None = None
+) -> RecommendConfig:
     """Convert a demand winner from the SDK candidate ledger into a config.
 
     `result.selected_candidates` is ranked by the SDK's own objective, so the
@@ -2063,6 +2097,12 @@ def _demand_config_from_record(record: Any, req: RecommendRequest) -> RecommendC
             moe_ep=topology.get("decode_moe_ep"),
             num_workers=topology.get("decode_replicas"),
             backend_version=req.backend_version,
+        )
+    if include and "engine" in include:
+        # A demand winner is a ledger record, which keeps the prediction config
+        # it was measured with when the sweeper supports one.
+        config.engine = _engine_section_from_config(
+            record.prediction_config, model=req.model_path
         )
     return config
 
@@ -3356,6 +3396,7 @@ def _capacity_prediction(
     backend_version: str,
     candidate: _CapacityCandidate | _DisaggCapacityCandidate,
     target_concurrency: int,
+    include: set[str] | None = None,
 ) -> tuple[Any | None, str | None]:
     """Simulate one capacity option at the requested concurrency.
 
@@ -3423,7 +3464,9 @@ def _capacity_prediction(
             simulator="aisim",
         )
     try:
-        return _run_aisimulate_prediction(prediction_req, set()), None
+        return _run_aisimulate_prediction(
+            prediction_req, {"engine"} if include and "engine" in include else set()
+        ), None
     except Exception as error:  # capacity does not gate on timing data
         logger.warning(
             "Capacity performance simulation unavailable for %s on %s: %s",
@@ -3590,6 +3633,11 @@ def _capacity_option_config(
         )
     if prediction is not None:
         config.warnings.extend(str(w) for w in getattr(prediction, "warnings", []) or [])
+        # The prediction carries its compiled spec only when the caller asked
+        # for engine limits; when it does, they belong to this option.
+        engine = _prediction_engine(prediction, model=req.model_path)
+        if engine is not None:
+            config.engine = engine
     if req.inclusive_tpot:
         config.tpot = _inclusive_tpot(config.ttft, config.tpot, req.osl)
     return config
@@ -3741,6 +3789,7 @@ def _simulate_capacity_option_predictions(
     backend_version: str,
     candidates: list[_CapacityCandidate | _DisaggCapacityCandidate],
     target_concurrency: int,
+    include: set[str] | None = None,
 ) -> dict[int, tuple[Any | None, str | None]]:
     """Simulate options in priority order under one shared wall-clock budget.
 
@@ -3779,6 +3828,7 @@ def _simulate_capacity_option_predictions(
                         backend_version=backend_version,
                         candidate=candidates[index],
                         target_concurrency=target_concurrency,
+                        include=include,
                     )
                 except BaseException:
                     _CAPACITY_SIMULATION_SLOTS.release()
@@ -3923,6 +3973,7 @@ def _run_capacity_recommendation(
             backend_version=backend_version,
             candidates=[selected[index][1] for index in priority],
             target_concurrency=target_concurrency,
+            include=include,
         )
         predictions = {
             selected_index: priority_results[position]
@@ -4065,7 +4116,11 @@ def _run_aisimulate_prediction(req: EstimateRequest, include: set[str]):
                 capture_memory_diagnostics="memory" in include,
             ),
         )
-        return _PredictionResult(dict(report.metrics))
+        result = _PredictionResult(dict(report.metrics))
+        if "engine" in include:
+            result.spec = spec
+            result.spec_config = config
+        return result
 
 
 #: One cached fallback per request shape, so a blank-version request pays the
@@ -4322,6 +4377,249 @@ def _build_serving_config(
         memory_fraction_kind=_backend_memory_fraction_kind(backend),
         runtime_memory_field=_backend_runtime_memory_field(backend),
     )
+
+
+# ─── Engine limits (include=engine) ─────────────────────────────────────────
+
+#: Where each role's evaluated engine limits live on the compiled replay spec.
+_ENGINE_ROLE_ARGS = {
+    "agg": "agg_engine_args",
+    "prefill": "prefill_engine_args",
+    "decode": "decode_engine_args",
+}
+
+
+def _engine_field(value: Any, source: EngineSource = "evaluated") -> EngineField:
+    """An engine limit, marked unmodeled when there is no value to report."""
+    if value is None:
+        return EngineField(value=None, source="not-modeled")
+    return EngineField(value=value, source=source)
+
+
+def _engine_role_args(spec: Any, role: str) -> dict[str, Any]:
+    deployment = getattr(spec, "backend_deployment", None)
+    args = getattr(deployment, _ENGINE_ROLE_ARGS[role], None)
+    return args if isinstance(args, dict) else {}
+
+
+def _engine_timing_config(args: dict[str, Any]) -> dict[str, Any]:
+    timing = args.get("timing_model")
+    config = timing.get("config") if isinstance(timing, dict) else None
+    return config if isinstance(config, dict) else {}
+
+
+def _engine_pick(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _engine_role_aisim(
+    args: dict[str, Any],
+    config: Any,
+    role: str,
+    *,
+    backend: str,
+) -> EngineRole:
+    """Read one role's limits from the engine arguments the simulator ran.
+
+    The compiled spec is the only place these values are stated: the request
+    may leave a limit unset and the SDK then resolves its own default (block
+    size from the backend, scheduler limits from the engine model). Reading the
+    request instead would report a guess.
+    """
+    timing = _engine_timing_config(args)
+    memory_field = _backend_runtime_memory_field(backend)
+    chunked = config.engine.enable_chunked_prefill
+    if chunked is None:
+        # Neither the caller nor the simulator states it. The artifact omits
+        # the flag rather than claiming a backend default the run never used.
+        chunked_field = _engine_field(None)
+    elif role == "decode":
+        # The compiler only forwards this control to prefill and aggregated
+        # workers, so a decode value rides along without being evaluated.
+        chunked_field = _engine_field(chunked, "requested")
+    else:
+        chunked_field = _engine_field(chunked)
+    quant = config.engine.gemm_quant_mode
+    kvcache = config.engine.kvcache_quant_mode
+    worker = getattr(config.engine.workers, "aggregated" if role == "agg" else role, None)
+    replicas = worker.parallelism.replicas if worker is not None else 1
+    return EngineRole(
+        replicas=_engine_field(replicas),
+        tensor_parallel_size=_engine_field(
+            _engine_pick(timing.get("tp"), args.get("tensor_parallel_size"), args.get("aic_tp_size"), 1)
+        ),
+        pipeline_parallel_size=_engine_field(
+            _engine_pick(timing.get("pp"), args.get("pp"), args.get("aic_pp_size"), 1)
+        ),
+        data_parallel_size=_engine_field(
+            _engine_pick(timing.get("attention_dp"), args.get("dp_size"), args.get("aic_attention_dp_size"), 1)
+        ),
+        context_parallel_size=_engine_field(
+            _engine_pick(timing.get("cp_size"), args.get("aic_cp_size"), 1)
+        ),
+        decode_context_parallel_size=_engine_field(
+            _engine_pick(timing.get("dcp"), args.get("aic_dcp_size"), 1)
+        ),
+        moe_tensor_parallel_size=_engine_field(
+            _engine_pick(timing.get("moe_tp_size"), args.get("aic_moe_tp_size"), 1)
+        ),
+        moe_expert_parallel_size=_engine_field(
+            _engine_pick(timing.get("moe_ep_size"), args.get("aic_moe_ep_size"), 1)
+        ),
+        max_model_len=_engine_field(args.get("max_model_len")),
+        max_num_seqs=_engine_field(args.get("max_num_seqs")),
+        max_num_batched_tokens=_engine_field(args.get("max_num_batched_tokens")),
+        block_size=_engine_field(args.get("block_size")),
+        gpu_memory_utilization=_engine_field(args.get(memory_field)),
+        enable_prefix_caching=_engine_field(args.get("enable_prefix_caching")),
+        enable_chunked_prefill=chunked_field,
+        # "auto" is the value both the simulator and the backend apply when no
+        # dtype is requested; the artifact states it instead of omitting the
+        # limit, so the rendered command and the evaluated run agree.
+        kv_cache_dtype=_engine_field(kvcache, "evaluated" if kvcache else "backend-default"),
+        quantization=_engine_field(quant, "evaluated" if quant else "backend-default"),
+    )
+
+
+def _engine_section_aisim(spec: Any, config: Any, *, model: str) -> EngineSection:
+    """The engine limits an AISim run evaluated."""
+    engine = config.engine
+    roles = ("prefill", "decode") if engine.mode == "disaggregated" else ("agg",)
+    resolved_version = _engine_pick(
+        _engine_timing_config(_engine_role_args(spec, roles[0])).get("backend_version"),
+        engine.backend_version,
+    )
+    kwargs: dict[str, Any] = {}
+    for role in roles:
+        kwargs[role] = _engine_role_aisim(
+            _engine_role_args(spec, role), config, role, backend=_sdk_backend_id(engine.backend)
+        )
+    return EngineSection(
+        model=model,
+        backend=engine.backend,
+        backend_version=resolved_version,
+        mode="disagg" if engine.mode == "disaggregated" else "agg",
+        **kwargs,
+    )
+
+
+def _engine_section_blis(prediction: Any, *, model: str) -> EngineSection:
+    """The engine limits a BLIS run reported.
+
+    BLIS states the limits its scenario holds and nothing else. Fields it does
+    not report (block size, prefix-cache geometry) stay `not-modeled` rather
+    than being filled from a backend default, so a target that needs them
+    refuses instead of shipping a different configuration. A disaggregated
+    BLIS run states no aggregate serving config at all, only the two pools.
+    """
+    serving = getattr(prediction, "serving_config", None) or {}
+    prefill = getattr(prediction, "prefill_config", None)
+    decode = getattr(prediction, "decode_config", None)
+
+    def pool_role(worker: dict[str, Any]) -> EngineRole:
+        return EngineRole(
+            replicas=_engine_field(worker.get("num_workers")),
+            tensor_parallel_size=_engine_field(worker.get("tp")),
+            pipeline_parallel_size=_engine_field(worker.get("pp")),
+            data_parallel_size=_engine_field(worker.get("dp")),
+            context_parallel_size=_engine_field(worker.get("cp")),
+            decode_context_parallel_size=_engine_field(None),
+            moe_tensor_parallel_size=_engine_field(worker.get("moe_tp")),
+            moe_expert_parallel_size=_engine_field(worker.get("moe_ep")),
+            # A pool config carries no context window of its own; BLIS states
+            # one only through the aggregate serving config.
+            max_model_len=_engine_field(None),
+            max_num_seqs=_engine_field(worker.get("batch_size")),
+            max_num_batched_tokens=_engine_field(None),
+            block_size=_engine_field(None),
+            gpu_memory_utilization=_engine_field(None),
+            enable_prefix_caching=_engine_field(None),
+            enable_chunked_prefill=_engine_field(None),
+            kv_cache_dtype=_engine_field(None),
+            quantization=_engine_field(None),
+        )
+
+    def aggregate_role() -> EngineRole:
+        return EngineRole(
+            replicas=_engine_field(None),
+            tensor_parallel_size=_engine_field(serving.get("tensor_parallel_size")),
+            pipeline_parallel_size=_engine_field(None),
+            data_parallel_size=_engine_field(None),
+            context_parallel_size=_engine_field(None),
+            decode_context_parallel_size=_engine_field(None),
+            moe_tensor_parallel_size=_engine_field(None),
+            moe_expert_parallel_size=_engine_field(None),
+            max_model_len=_engine_field(
+                None if serving.get("max_model_len_policy") else serving.get("max_model_len")
+            ),
+            max_num_seqs=_engine_field(serving.get("max_num_seqs")),
+            max_num_batched_tokens=_engine_field(serving.get("max_num_batched_tokens")),
+            block_size=_engine_field(None),
+            gpu_memory_utilization=_engine_field(serving.get("gpu_memory_utilization")),
+            enable_prefix_caching=_engine_field(serving.get("enable_prefix_caching")),
+            enable_chunked_prefill=_engine_field(serving.get("enable_chunked_prefill")),
+            kv_cache_dtype=_engine_field(None),
+            quantization=_engine_field(serving.get("quantization")),
+        )
+
+    if prefill is not None or decode is not None:
+        return EngineSection(
+            model=model,
+            backend=serving.get("backend") or "vllm",
+            backend_version=serving.get("backend_version")
+            or (decode or prefill or {}).get("backend_version"),
+            mode="disagg",
+            prefill=pool_role(prefill or {}),
+            decode=pool_role(decode or {}),
+        )
+    return EngineSection(
+        model=model,
+        backend=serving.get("backend") or "vllm",
+        backend_version=serving.get("backend_version"),
+        mode="agg",
+        agg=aggregate_role(),
+    )
+
+
+def _engine_section_from_config(raw: dict[str, Any] | None, *, model: str) -> EngineSection | None:
+    """Compile one saved prediction config to read its evaluated limits.
+
+    Recommendation results carry the config they were evaluated with, not the
+    compiled spec, so the same compiler step the prediction path runs is applied
+    here. A config the current SDK cannot compile yields no engine section
+    rather than a reconstructed one.
+    """
+    if not raw:
+        return None
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config.cli import CorePredictionConfig
+
+    try:
+        config = CorePredictionConfig.model_validate(raw)
+        spec = prediction_to_replay_spec(config)
+    except Exception:
+        logger.warning("engine limits unavailable: the saved prediction config did not compile")
+        return None
+    return _engine_section_aisim(spec, config, model=model)
+
+
+def _prediction_engine(prediction: Any | None, *, model: str) -> EngineSection | None:
+    """The engine limits a prediction carried, when it evaluated any.
+
+    Only a real run sets both the compiled spec and the config it was compiled
+    from. A stand-in result (an unavailable simulation, or a test double) has
+    neither, and reporting invented limits would be worse than reporting none.
+    """
+    spec = getattr(prediction, "spec", None)
+    config = getattr(prediction, "spec_config", None)
+    if spec is None or config is None:
+        return None
+    if not isinstance(getattr(getattr(config, "engine", None), "backend", None), str):
+        return None
+    return _engine_section_aisim(spec, config, model=model)
 
 
 def _build_memory_breakdown(
@@ -4887,9 +5185,10 @@ def post_recommend(
         default=None,
         examples=["config,memory"],
         description=(
-            "Comma-separated extras: config, memory, debug. `debug` returns the "
-            "commands and input files that reproduce this answer, inline in the "
-            "response."
+            "Comma-separated extras: config, memory, engine, debug. `engine` "
+            "returns the exact engine limits this answer evaluated; `debug` "
+            "returns the commands and input files that reproduce this answer, "
+            "inline in the response."
         ),
     ),
 ):
@@ -5431,9 +5730,10 @@ def post_predict(
         default=None,
         examples=["config,memory"],
         description=(
-            "Comma-separated extras: config, memory, debug. `debug` returns the "
-            "commands and input files that reproduce this answer, inline in the "
-            "response."
+            "Comma-separated extras: config, memory, engine, debug. `engine` "
+            "returns the exact engine limits this answer evaluated; `debug` "
+            "returns the commands and input files that reproduce this answer, "
+            "inline in the response."
         ),
     ),
 ):
@@ -5552,8 +5852,15 @@ def post_predict(
             resp.decode_config = WorkerConfig.model_validate(prediction.decode_config)
         if "memory" in includes:
             resp.memory_unavailable_reason = "The selected simulator does not provide a KV-cache memory breakdown."
+        if "engine" in includes:
+            resp.engine = _engine_section_blis(prediction, model=req.model_path)
         resp.debug = _replay_record(recorder)
         return resp
+
+    if "engine" in includes:
+        # A prediction that carries no compiled spec (an unavailable run, or a
+        # test double) reports no limits rather than a reconstructed default.
+        resp.engine = _prediction_engine(prediction, model=req.model_path)
 
     if is_disagg:
         # (p)/(d)memory are per-GPU peaks; the single figure is the worst case.
@@ -5893,6 +6200,111 @@ def get_metrics(request: Request):
             detail="Metrics unavailable (install with: pip install '.[otel]')",
         )
     return observability.metrics_response(request.headers.get("accept", "text/plain"))
+
+
+# ─── Deployment artifacts ───────────────────────────────────────────────────
+
+def _deploy_target(target_id: str) -> DeployTarget:
+    """The requested target, or an explicit refusal that says what is available."""
+    target = DEPLOY_TARGETS.get(target_id)
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"unknown deployment target {target_id!r}; "
+                f"choose one of {', '.join(sorted(DEPLOY_TARGETS))}"
+            ),
+        )
+    reason = target.unavailable_reason()
+    if reason is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"deployment target {target_id!r} is unavailable in this deployment: {reason}",
+        )
+    return target
+
+
+@app.get("/deploy/targets")
+def get_deploy_targets():
+    """List the deployment targets this service can render, with their pins.
+
+    Availability is reported per target so a client can disable one instead of
+    discovering the gap after a render request. A target is unavailable when the
+    inputs its render gate needs (the pinned source tree, or kustomize itself)
+    are absent from this deployment.
+    """
+    return DeployTargetsResponse(
+        targets=[DeployTargetInfo(**target.as_dict()) for target in DEPLOY_TARGETS.values()]
+    )
+
+
+def _deploy_zip(artifact: DeployArtifact, target: DeployTarget) -> Response:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for item in artifact.files:
+            info = zipfile.ZipInfo(item.path)
+            # Preserve the executable bit so the bundled scripts run after an
+            # unzip without a chmod.
+            info.external_attr = (item.mode & 0xFFFF) << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, item.contents)
+    filename = f"configiq-{target.id}-{artifact.engine.mode}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/deploy", response_model=None)
+def post_deploy(
+    req: DeployRequest,
+    format: Literal["json", "zip"] = Query(
+        default="json",
+        description=(
+            "`json` returns the bundle as a file list; `zip` returns the same files "
+            "as an archive with executable modes preserved."
+        ),
+    ),
+):
+    """Render a deployable artifact from an already-evaluated engine section.
+
+    The service does not size anything here. The caller passes the `engine`
+    section a prediction or recommendation returned with `include=engine`, and
+    the artifact is rendered from exactly those limits. A target that cannot
+    reproduce a limit the run evaluated is refused rather than defaulted, so a
+    render either matches the measured configuration or fails explicitly.
+    """
+    target = _deploy_target(req.target)
+    try:
+        files, checks, warnings = render_deploy_artifact(req, target)
+    except DeployUnsupportedRequest as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except DeployRenderError as exc:
+        logger.exception("deploy render gate failed for target %s", target.id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"the render gate rejected the artifact for {target.id!r}: {exc}",
+        ) from exc
+    except Exception as exc:
+        # An evaluated candidate the generator refuses (an unaligned token
+        # budget, an unsupported topology) is the caller's to fix, not a crash.
+        if type(exc).__name__ in {"SweeperCandidateError", "GeneratorRequestError"}:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise
+
+    artifact = DeployArtifact(
+        target=target.id,
+        artifact_schema_version=target.as_dict()["artifact_schema_version"],
+        engine=req.engine,
+        pins=dict(target.pins),
+        checks=checks,
+        warnings=warnings,
+        files=files,
+    )
+    if format == "zip":
+        return _deploy_zip(artifact, target)
+    return artifact
 
 
 # ─── MCP ─────────────────────────────────────────────────────────────────────

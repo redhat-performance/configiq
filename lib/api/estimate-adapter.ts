@@ -9,6 +9,7 @@
  */
 
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
+import { parseEngineSection } from '@/lib/api/engine'
 
 const GB = 1_073_741_824
 
@@ -193,7 +194,7 @@ export async function fetchEstimateAsInferenceResult(
   const body = buildPredictRequestBody(input)
 
   const startTime = performance.now()
-  const res = await fetch('/api/predict?include=config,memory,debug', {
+  const res = await fetch('/api/predict?include=config,memory,engine,debug', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -367,6 +368,7 @@ export async function fetchEstimateAsInferenceResult(
   const result: InferenceConfigResult = {
     simulator,
     engine_version: reportedEngineVersion,
+    engine: parseEngineSection(data.engine),
     memory_available: memoryAvailable,
     mode: isDisagg ? 'disagg' : 'agg',
     disagg,

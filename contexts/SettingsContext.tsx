@@ -55,6 +55,7 @@ const STORAGE_KEYS = {
   // on every system. Dropping it clears those stale literal pins.
   backendVersion: 'settings_backend_version_v2',
   costingsEnabled: 'settings_costings_enabled',
+  deploymentEnabled: 'settings_deployment_enabled',
   preferredCloudProvider: 'settings_preferred_cloud_provider',
   pricingSource: 'settings_pricing_source',
 } as const;
@@ -113,6 +114,11 @@ interface SettingsState {
   simulator: Simulator;
   backendVersion: string;
   costingsEnabled: boolean;
+  /**
+   * Show the experimental deployment-artifact controls. The REST and MCP
+   * endpoints are always available; this toggle only gates the UI.
+   */
+  deploymentEnabled: boolean;
   preferredCloudProvider: string | null;
   pricingSource: PricingSource;
   setDefaultModel: (v: string) => void;
@@ -127,6 +133,7 @@ interface SettingsState {
    */
   applyViewForSession: (view: SessionViewOverride) => void;
   setCostingsEnabled: (v: boolean) => void;
+  setDeploymentEnabled: (v: boolean) => void;
   setPreferredCloudProvider: (v: string | null) => void;
   setPricingSource: (v: PricingSource) => void;
 }
@@ -140,6 +147,7 @@ const SettingsContext = React.createContext<SettingsState>({
   simulator: NO_SIMULATOR,
   backendVersion: '',
   costingsEnabled: false,
+  deploymentEnabled: false,
   preferredCloudProvider: null,
   pricingSource: 'merged',
   setDefaultModel: () => {},
@@ -150,6 +158,7 @@ const SettingsContext = React.createContext<SettingsState>({
   setBackendVersion: () => {},
   applyViewForSession: () => {},
   setCostingsEnabled: () => {},
+  setDeploymentEnabled: () => {},
   setPreferredCloudProvider: () => {},
   setPricingSource: () => {},
 });
@@ -172,6 +181,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const backendVersion = sessionOverride?.backendVersion ?? backendVersionState;
   const inferenceBackend = sessionOverride?.backend ?? inferenceBackendState;
   const [costingsEnabled, setCostingsEnabledState] = React.useState(false);
+  const [deploymentEnabled, setDeploymentEnabledState] = React.useState(false);
   const [preferredCloudProvider, setPreferredCloudProviderState] = React.useState<string | null>(null);
   const [pricingSource, setPricingSourceState] = React.useState<PricingSource>(DEFAULT_PRICING_SOURCE);
 
@@ -232,6 +242,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
       const savedCostings = localStorage.getItem(STORAGE_KEYS.costingsEnabled);
       setCostingsEnabledState(savedCostings === 'true');
+
+      const savedDeployment = localStorage.getItem(STORAGE_KEYS.deploymentEnabled);
+      setDeploymentEnabledState(savedDeployment === 'true');
 
       setPreferredCloudProviderState(localStorage.getItem(STORAGE_KEYS.preferredCloudProvider));
 
@@ -307,6 +320,11 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem(STORAGE_KEYS.costingsEnabled, String(v));
   }, []);
 
+  const setDeploymentEnabled = React.useCallback((v: boolean) => {
+    setDeploymentEnabledState(v);
+    localStorage.setItem(STORAGE_KEYS.deploymentEnabled, String(v));
+  }, []);
+
   const setPreferredCloudProvider = React.useCallback((v: string | null) => {
     setPreferredCloudProviderState(v);
     if (v) {
@@ -324,16 +342,16 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   const value = React.useMemo<SettingsState>(
     () => ({
       hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
-      costingsEnabled, preferredCloudProvider, pricingSource,
+      costingsEnabled, deploymentEnabled, preferredCloudProvider, pricingSource,
       setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
       applyViewForSession,
-      setCostingsEnabled, setPreferredCloudProvider, setPricingSource,
+      setCostingsEnabled, setDeploymentEnabled, setPreferredCloudProvider, setPricingSource,
     }),
     [hydrated, defaultModel, defaultSystem, hfToken, inferenceBackend, simulator, backendVersion,
-     costingsEnabled, preferredCloudProvider, pricingSource,
+     costingsEnabled, deploymentEnabled, preferredCloudProvider, pricingSource,
      setDefaultModel, setDefaultSystem, setHfToken, setInferenceBackend, setSimulator, setBackendVersion,
      applyViewForSession,
-     setCostingsEnabled, setPreferredCloudProvider, setPricingSource],
+     setCostingsEnabled, setDeploymentEnabled, setPreferredCloudProvider, setPricingSource],
   );
 
   return (

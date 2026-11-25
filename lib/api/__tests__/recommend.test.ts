@@ -662,7 +662,7 @@ describe('callRecommend', () => {
 
     await callRecommend(VALID_REQUEST)
 
-    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory,debug')
+    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory,engine,debug')
   })
 
   it('keeps the replay record the API returned beside the result', async () => {

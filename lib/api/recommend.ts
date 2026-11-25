@@ -1,4 +1,5 @@
 import type { RecommendRequest } from './schemas'
+import { parseEngineSection, type EngineSection } from './engine'
 import { gatewayTimeoutSeconds } from './timeout'
 import type { Candidate, CandidateViews, FrontierSweep } from '../types/pareto'
 import { isRecord, parseFrontierBody } from '../pareto/parse'
@@ -207,6 +208,12 @@ export interface RecommendResult {
    */
   engineVersion: string | null
   /**
+   * The exact engine limits the chosen configuration was evaluated with, when
+   * the API reported them. Null means the run stated none, so a deployment
+   * cannot be rendered from this result.
+   */
+  engine?: EngineSection | null
+  /**
    * Quantization the chosen configuration resolved, when it reported one.
    * Null names an unreported mode, not a default.
    */
@@ -396,7 +403,7 @@ export async function callRecommend(
     // optional include flag; the sizing result renders that value directly.
     // `debug` adds the commands and input files that reproduce the answer, so
     // the Debug panel can show them beside the request and response.
-    const recommendUrl = `${baseUrl}/recommend?include=memory,debug`
+    const recommendUrl = `${baseUrl}/recommend?include=memory,engine,debug`
     response = await fetch(recommendUrl, {
       method: 'POST',
       headers: {
@@ -800,6 +807,7 @@ function parseRecommendPayload(
     },
     memoryAvailable,
     engineVersion,
+    engine: parseEngineSection(best.engine),
     precision,
     metadata: {
       modelPath: request.model_path,

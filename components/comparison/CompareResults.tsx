@@ -17,6 +17,7 @@ import {
   Toolbar,
   ToolbarContent,
   ToolbarItem,
+  Tooltip,
 } from '@patternfly/react-core';
 import DownloadIcon from '@patternfly/react-icons/dist/esm/icons/download-icon';
 import FileExportIcon from '@patternfly/react-icons/dist/esm/icons/file-export-icon';
@@ -25,7 +26,10 @@ import TimesIcon from '@patternfly/react-icons/dist/esm/icons/times-icon';
 import TrashIcon from '@patternfly/react-icons/dist/esm/icons/trash-icon';
 import Link from 'next/link';
 
+import { DeployArtifactDialog } from '@/components/deploy/DeployArtifactDialog';
+import { useSettings } from '@/contexts/SettingsContext';
 import { comparisonCsv } from '@/lib/comparison/csv';
+import { comparisonDeployDisabledReason } from '@/lib/comparison/deployment';
 import {
   backfillComparisonCosts,
   mergeCostFigures,
@@ -131,9 +135,21 @@ interface EntryColumnProps {
   onBaseline: (id: string) => void;
   onDetails: (entry: ComparisonEntry) => void;
   onRemove: (entry: ComparisonEntry) => void;
+  /** Set when deployment artifacts are enabled; null hides the action. */
+  onDeploy: ((entry: ComparisonEntry) => void) | null;
+  /** Why the deploy action is unavailable for this entry, or null. */
+  deployDisabledReason: string | null;
 }
 
-function EntryColumn({ entry, isBaseline, onBaseline, onDetails, onRemove }: EntryColumnProps) {
+function EntryColumn({
+  entry,
+  isBaseline,
+  onBaseline,
+  onDetails,
+  onRemove,
+  onDeploy,
+  deployDisabledReason,
+}: EntryColumnProps) {
   return (
     <th scope="col" className={styles.entryCell}>
       <div className={styles.entryHead}>
@@ -157,6 +173,29 @@ function EntryColumn({ entry, isBaseline, onBaseline, onDetails, onRemove }: Ent
           <Button variant="link" size="sm" onClick={() => onDetails(entry)}>
             Details
           </Button>
+          {onDeploy != null && (deployDisabledReason == null ? (
+            <Button
+              variant="link"
+              size="sm"
+              onClick={() => onDeploy(entry)}
+              aria-label={`Render a deployment artifact for ${entry.name}`}
+            >
+              Deploy
+            </Button>
+          ) : (
+            <Tooltip content={deployDisabledReason}>
+              <span tabIndex={0}>
+                <Button
+                  variant="link"
+                  size="sm"
+                  isDisabled
+                  aria-label={`Deploy unavailable for ${entry.name}. ${deployDisabledReason}`}
+                >
+                  Deploy
+                </Button>
+              </span>
+            </Tooltip>
+          ))}
           <Button
             variant="plain"
             size="sm"
@@ -171,11 +210,13 @@ function EntryColumn({ entry, isBaseline, onBaseline, onDetails, onRemove }: Ent
 }
 
 export function CompareResults({ load = loadComparison, costSources = null }: CompareResultsProps) {
+  const { deploymentEnabled } = useSettings();
   const [document, setDocument] = React.useState<ComparisonDocument>(emptyComparisonDocument);
   const [loaded, setLoaded] = React.useState(false);
   const [baselineId, setBaselineId] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<Notice>(null);
   const [detailsId, setDetailsId] = React.useState<string | null>(null);
+  const [deployEntryId, setDeployEntryId] = React.useState<string | null>(null);
   const [confirmClear, setConfirmClear] = React.useState(false);
   const fileInput = React.useRef<HTMLInputElement>(null);
 
@@ -226,11 +267,13 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
   // The modal reads the same document as the table, so a figure completed
   // while it is open updates there too.
   const details = entries.find(entry => entry.id === detailsId) ?? null;
+  const deployEntry = entries.find(entry => entry.id === deployEntryId) ?? null;
 
   const replaceDocument = (next: ComparisonDocument) => {
     setDocument(next);
     if (!next.entries.some(entry => entry.id === baselineId)) setBaselineId(null);
     if (!next.entries.some(entry => entry.id === detailsId)) setDetailsId(null);
+    if (!next.entries.some(entry => entry.id === deployEntryId)) setDeployEntryId(null);
   };
 
   const handleExportCsv = () => {
@@ -409,6 +452,19 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
     </Modal>
   );
 
+  const deployModal = (
+    <DeployArtifactDialog
+      isOpen={deployEntry != null}
+      onClose={() => setDeployEntryId(null)}
+      engine={deployEntry?.deployment?.engine ?? null}
+      system={deployEntry?.system ?? ''}
+      isl={deployEntry?.workload.isl ?? 0}
+      osl={deployEntry?.workload.osl ?? 0}
+      concurrency={deployEntry?.workload.concurrency ?? null}
+      modelConfigData={deployEntry?.deployment?.modelConfigData ?? null}
+    />
+  );
+
   if (!loaded) {
     return (
       <div className={styles.page} aria-busy="true">
@@ -478,6 +534,8 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
                       onBaseline={setBaselineId}
                       onDetails={entry => setDetailsId(entry.id)}
                       onRemove={handleRemove}
+                      onDeploy={deploymentEnabled ? entry => setDeployEntryId(entry.id) : null}
+                      deployDisabledReason={comparisonDeployDisabledReason(entry)}
                     />
                   ))}
                 </tr>
@@ -528,6 +586,7 @@ export function CompareResults({ load = loadComparison, costSources = null }: Co
       )}
 
       {detailsModal}
+      {deployModal}
       {clearModal}
     </div>
   );

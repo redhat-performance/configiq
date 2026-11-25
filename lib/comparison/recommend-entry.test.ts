@@ -1,7 +1,40 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RecommendResult } from '../api/recommend'
+import type { EngineSection } from '../api/engine'
 import { buildRecommendEntry, sizingGoalFrom } from './recommend-entry'
+
+/** An evaluated engine section, as `include=engine` reports one. */
+function processedEngine(): EngineSection {
+  const evaluated = (value: boolean | number | string) => ({ value, source: 'evaluated' as const })
+  return {
+    model: 'meta-llama/Llama-3.1-70B',
+    backend: 'vllm',
+    backend_version: '0.9.2',
+    mode: 'agg',
+    agg: {
+      replicas: evaluated(1),
+      tensor_parallel_size: evaluated(4),
+      pipeline_parallel_size: evaluated(1),
+      data_parallel_size: evaluated(1),
+      context_parallel_size: evaluated(1),
+      decode_context_parallel_size: evaluated(1),
+      moe_tensor_parallel_size: evaluated(4),
+      moe_expert_parallel_size: evaluated(1),
+      max_model_len: evaluated(4096),
+      max_num_seqs: evaluated(64),
+      max_num_batched_tokens: evaluated(8192),
+      block_size: evaluated(64),
+      gpu_memory_utilization: evaluated(0.9),
+      enable_prefix_caching: { value: null, source: 'not-modeled' },
+      enable_chunked_prefill: evaluated(true),
+      kv_cache_dtype: evaluated('fp8_e5m2'),
+      quantization: evaluated('fp8'),
+    },
+    prefill: null,
+    decode: null,
+  }
+}
 
 function result(overrides: Partial<RecommendResult> = {}): RecommendResult {
   return {
@@ -201,6 +234,24 @@ describe('buildRecommendEntry', () => {
       prefill: { tp: 4, pp: 1, workers: 2 },
       decode: { tp: 8, pp: 1, workers: 4 },
     })
+  })
+
+  it('carries the evaluated limits so the snapshot can render an artifact later', () => {
+    const engine = processedEngine()
+    const modelConfigData = { hidden_size: 8192, num_hidden_layers: 80 }
+    const entry = buildRecommendEntry({
+      ...base,
+      result: result({ engine }),
+      deploymentModelConfigData: modelConfigData,
+    })
+
+    expect(entry.deployment).toEqual({ engine, modelConfigData })
+  })
+
+  it('records no deployment when the recommendation reported no engine limits', () => {
+    const entry = buildRecommendEntry({ ...base, result: result({ engine: null }) })
+
+    expect(entry.deployment).toBeNull()
   })
 
   it('says a precision was not reported rather than assuming a default', () => {

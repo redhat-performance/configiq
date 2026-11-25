@@ -48,6 +48,28 @@ RUN git init /opt/blis/registry \
     && git -C /opt/blis/registry checkout --quiet --detach FETCH_HEAD \
     && rm -rf /opt/blis/registry/.git
 
+# --- llm-d deployment target ------------------------------------------------------
+# The llm-d overlay the deployment service renders references files in the llm-d
+# repository by relative path, so the bundle has to carry them. Vendor exactly
+# the pinned revision through the same script CI uses, which keeps the path list
+# and the revision in one place instead of duplicating them here.
+FROM alpine/git:2.47.2 AS llm_d
+ARG LLM_D_REVISION=378b42d18dabe0b9c4ced4e6f3670d93b52db08e
+RUN apk add --no-cache bash
+COPY aisimulators/scripts/fetch-llm-d-vendor.sh /tmp/fetch-llm-d-vendor.sh
+RUN AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d bash /tmp/fetch-llm-d-vendor.sh "${LLM_D_REVISION}"
+
+# The deployment render gate builds the overlay before the service returns it,
+# so the image needs kustomize itself, not only the tree. Pin the release: the
+# gate's verdict must not depend on whichever kustomize a base image happens to
+# carry.
+FROM alpine:3.22 AS kustomize
+ARG KUSTOMIZE_VERSION=5.7.1
+RUN apk add --no-cache curl tar \
+    && curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+       | tar -xz -C /usr/local/bin kustomize \
+    && /usr/local/bin/kustomize version
+
 FROM python:3.12-slim
 
 # The BLIS release reported by GET /simulators, GET /backends, and in every
@@ -88,6 +110,8 @@ WORKDIR /app
 COPY --from=blis_release /usr/local/bin/blis /usr/local/bin/blis
 COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
 COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
+COPY --from=llm_d /opt/llm-d /opt/llm-d
+COPY --from=kustomize /usr/local/bin/kustomize /usr/local/bin/kustomize
 
 # BLIS reads the catalog from a flag the wrapper supplies and the registry has
 # no environment fallback, so both paths are explicit. There is no build-time
@@ -106,6 +130,7 @@ ENV PYTHONUNBUFFERED=1 \
     BLIS_IMAGE=${BLIS_IMAGE} \
     BLIS_CATALOG_COMMIT=${BLIS_CATALOG_COMMIT} \
     BLIS_REGISTRY_COMMIT=${BLIS_REGISTRY_COMMIT} \
+    AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d \
     PATH=/opt/venv/bin:${PATH}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

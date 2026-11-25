@@ -1,3 +1,5 @@
+import type { EngineSection } from '../api/engine'
+
 /**
  * The comparison set: result snapshots a reader chose to keep.
  *
@@ -79,6 +81,17 @@ export interface ComparisonFigures {
   selfHostedFiveYearUsd: number | null
 }
 
+/** The engine limits a saved run evaluated, so an artifact can be rendered later. */
+export interface ComparisonDeployment {
+  /** Exact limits the run was evaluated with. */
+  engine: EngineSection
+  /**
+   * The model's `config.json` when the run supplied one. An artifact rendered
+   * from this snapshot needs the same facts the prediction did.
+   */
+  modelConfigData: Record<string, unknown> | null
+}
+
 export interface ComparisonEntry {
   /** Stable local identifier. Not meaningful outside this browser. */
   id: string
@@ -103,6 +116,13 @@ export interface ComparisonEntry {
   workload: ComparisonWorkload
   topology: ComparisonTopology
   figures: ComparisonFigures
+  /**
+   * The evaluated limits this snapshot can render a deployment from.
+   *
+   * Optional because a snapshot saved before deployment artifacts existed has
+   * none; the comparison offers a deploy action only for entries that carry it.
+   */
+  deployment?: ComparisonDeployment | null
 }
 
 /** The versioned document stored under `gc-comparison-set`. */

@@ -30,6 +30,46 @@ const goalSchema = z.object({
   targetConcurrency: nullableNumber,
 })
 
+const engineFieldSchema = z.object({
+  value: z.union([z.boolean(), z.number().finite(), z.string(), z.null()]),
+  source: z.enum(['evaluated', 'requested', 'backend-default', 'not-modeled']),
+})
+
+const engineRoleSchema = z.object({
+  replicas: engineFieldSchema,
+  tensor_parallel_size: engineFieldSchema,
+  pipeline_parallel_size: engineFieldSchema,
+  data_parallel_size: engineFieldSchema,
+  context_parallel_size: engineFieldSchema,
+  decode_context_parallel_size: engineFieldSchema,
+  moe_tensor_parallel_size: engineFieldSchema,
+  moe_expert_parallel_size: engineFieldSchema,
+  max_model_len: engineFieldSchema,
+  max_num_seqs: engineFieldSchema,
+  max_num_batched_tokens: engineFieldSchema,
+  block_size: engineFieldSchema,
+  gpu_memory_utilization: engineFieldSchema,
+  enable_prefix_caching: engineFieldSchema,
+  enable_chunked_prefill: engineFieldSchema,
+  kv_cache_dtype: engineFieldSchema,
+  quantization: engineFieldSchema,
+})
+
+const engineSectionSchema = z.object({
+  model: z.string().min(1),
+  backend: z.string().min(1),
+  backend_version: z.string().nullable(),
+  mode: z.enum(['agg', 'disagg']),
+  agg: engineRoleSchema.nullable(),
+  prefill: engineRoleSchema.nullable(),
+  decode: engineRoleSchema.nullable(),
+})
+
+const deploymentSchema = z.object({
+  engine: engineSectionSchema,
+  modelConfigData: z.record(z.string(), z.unknown()).nullable(),
+})
+
 const entrySchema = z.object({
   id: z.string().min(1),
   savedAt: z.string().min(1),
@@ -75,6 +115,7 @@ const entrySchema = z.object({
     selfHostedMonthlyUsd: nullableNumber,
     selfHostedFiveYearUsd: nullableNumber,
   }),
+  deployment: deploymentSchema.nullable().optional(),
 })
 
 const documentSchema = z.object({

@@ -1,6 +1,7 @@
 // Inference Configuration Engine Types
 // All TypeScript interfaces for vLLM/llm-d configuration
 
+import type { EngineSection } from '@/lib/api/engine'
 import type { HFModelConfig } from '@/lib/huggingface/fetch-config'
 
 export interface InferenceRequest {
@@ -151,6 +152,12 @@ export interface InferenceConfigResult {
     prefill: EstimatePhase
     decode: EstimatePhase
   }
+  /**
+   * The exact engine limits the prediction evaluated, when the API reported
+   * them. Null means the run stated none; a deployment cannot be rendered from
+   * a reconstructed default.
+   */
+  engine?: EngineSection | null
   diagnostics: {
     nvidia_smi_watch: string
     dcgm_metrics: string[]

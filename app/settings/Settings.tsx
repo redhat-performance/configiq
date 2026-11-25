@@ -16,6 +16,7 @@ export function Settings() {
     inferenceBackend, setInferenceBackend, backendVersion, setBackendVersion,
     simulator, setSimulator,
     costingsEnabled, setCostingsEnabled,
+    deploymentEnabled, setDeploymentEnabled,
   } = useSettings();
   const { backendOptions, simulatorSupport, simulators, isLoading: catalogLoading } = useCatalog();
   const support = simulatorSupport[simulator];
@@ -52,6 +53,8 @@ export function Settings() {
   const [versionOpen, setVersionOpen] = React.useState(false);
   const [costingsSaved, setCostingsSaved] = React.useState(false);
   const [costingsOpen, setCostingsOpen] = React.useState(false);
+  const [deploymentSaved, setDeploymentSaved] = React.useState(false);
+  const [deploymentOpen, setDeploymentOpen] = React.useState(false);
   const [validatedOpen, setValidatedOpen] = React.useState(false);
 
   const saveModelAsDefault = (modelId: string) => {
@@ -359,6 +362,45 @@ export function Settings() {
                 <>
                 </>
               )}
+            </div>
+          )}
+        </div>
+        {/* ── Deployment artifacts ── */}
+        <div className={styles.section}>
+          <button
+            type="button"
+            className={`${styles.sectionHead} ${styles.sectionToggle}`}
+            onClick={() => setDeploymentOpen(o => !o)}
+            aria-expanded={deploymentOpen}
+            aria-controls="deployment-settings-panel"
+          >
+            <div>
+              <div className={styles.sectionTitle}>
+                Deployment artifacts
+                <span style={{ fontSize: '11px', fontWeight: 400, marginLeft: '8px', color: '#6a6e73' }}>
+                  {deploymentOpen ? '▲' : '▼'}
+                </span>
+              </div>
+              <div className={styles.sectionDesc}>
+                Experimental. Adds a deploy action to result pages that renders a pinned, render-checked Kubernetes bundle from the limits the simulation evaluated. The REST and MCP endpoints are available whether or not this is enabled.
+              </div>
+            </div>
+            {deploymentSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}
+          </button>
+          {deploymentOpen && (
+            <div className={styles.fieldWrap} id="deployment-settings-panel">
+              <div className={styles.toggle}>
+                <Switch
+                  id="settings-deployment-enabled"
+                  label={deploymentEnabled ? 'Enabled' : 'Disabled'}
+                  isChecked={deploymentEnabled}
+                  onChange={(_e, checked) => {
+                    setDeploymentEnabled(checked);
+                    setDeploymentSaved(true);
+                    setTimeout(() => setDeploymentSaved(false), 2000);
+                  }}
+                />
+              </div>
             </div>
           )}
         </div>

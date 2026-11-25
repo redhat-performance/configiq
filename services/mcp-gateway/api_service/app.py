@@ -71,6 +71,31 @@ class MemoryRequest(BaseModel):
     attention_dp_size: int = 1
 
 
+class DeployRequest(BaseModel):
+    """A deployment render request; unknown service fields are forwarded.
+
+    The workload is required rather than defaulted: the artifact states the
+    `isl`/`osl` the evaluated run used, so guessing them here would describe a
+    different run than the one that was measured.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    target: str = Field(description="Deployment target id from deploy_targets.")
+    engine: dict = Field(
+        description=(
+            "The `engine` section a prediction or recommendation returned with "
+            "`include=engine`; the artifact renders exactly those limits."
+        )
+    )
+    system: str = Field(description="GPU system identifier the evaluation used.")
+    isl: int = Field(description="Input tokens per request the evaluation used.")
+    osl: int = Field(description="Output tokens per request the evaluation used.")
+    namespace: str = "configiq"
+    image: str | None = None
+    allow_engine_version_mismatch: bool = False
+
+
 class GatewayClients:
     def __init__(self, client: httpx.AsyncClient, aisimulators_url: str, aicostings_url: str):
         self.client = client
@@ -118,6 +143,7 @@ def create_app(
         path: str,
         body: BaseModel | None = None,
         include_as_query: bool = False,
+        forced_params: dict[str, str] | None = None,
     ) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
         params = dict(request.query_params)
@@ -126,6 +152,8 @@ def create_app(
             include = payload.pop("include", None)
             if include is not None and "include" not in params:
                 params["include"] = include
+        if forced_params:
+            params.update(forced_params)
         response = await clients.client.request(
             request.method,
             f"{base_url}{path}",
@@ -181,6 +209,24 @@ def create_app(
     async def systems(request: Request, include: str | None = Query(default=None)) -> Response:
         clients: GatewayClients = request.app.state.gateway_clients
         return await proxy(request, base_url=clients.aisimulators_url, path="/systems")
+
+    @app.get("/deploy/targets", operation_id="deploy_targets", tags=["deployment"])
+    async def deploy_targets(request: Request) -> Response:
+        clients: GatewayClients = request.app.state.gateway_clients
+        return await proxy(request, base_url=clients.aisimulators_url, path="/deploy/targets")
+
+    @app.post("/deploy", operation_id="deploy", tags=["deployment"])
+    async def deploy(request: Request, body: DeployRequest) -> Response:
+        clients: GatewayClients = request.app.state.gateway_clients
+        # A tool result is JSON, so the gateway always asks for the file list.
+        # The binary zip form stays a REST-only convenience.
+        return await proxy(
+            request,
+            base_url=clients.aisimulators_url,
+            path="/deploy",
+            body=body,
+            forced_params={"format": "json"},
+        )
 
     @app.get("/pricing/sources", operation_id="pricing_sources", tags=["pricing"])
     async def pricing_sources(request: Request) -> Response:

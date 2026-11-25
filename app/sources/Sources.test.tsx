@@ -19,9 +19,9 @@ beforeEach(() => {
   localStorage.clear()
   vi.mocked(useSettings).mockReturnValue({
     hydrated: true, defaultModel: '', defaultSystem: '', hfToken: '', backendVersion: '', inferenceBackend: 'vllm', simulator: 'aisim',
-    costingsEnabled: false, preferredCloudProvider: null, pricingSource: 'merged',
+    costingsEnabled: false, deploymentEnabled: false, preferredCloudProvider: null, pricingSource: 'merged',
     setDefaultModel: vi.fn(), setDefaultSystem: vi.fn(), setHfToken: vi.fn(), setInferenceBackend: vi.fn(), setSimulator: vi.fn(), setBackendVersion: vi.fn(),
-    setCostingsEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(), setPricingSource: vi.fn(),
+    setCostingsEnabled: vi.fn(), setDeploymentEnabled: vi.fn(), setPreferredCloudProvider: vi.fn(), setPricingSource: vi.fn(),
     applyViewForSession: vi.fn(),
   })
   vi.mocked(useCostings).mockReturnValue({

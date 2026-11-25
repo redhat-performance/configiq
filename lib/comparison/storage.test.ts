@@ -21,6 +21,7 @@ import {
   type ComparisonDocument,
   type ComparisonEntry,
 } from './types'
+import type { EngineSection } from '../api/engine'
 
 function entry(overrides: Partial<ComparisonEntry> = {}): ComparisonEntry {
   return {
@@ -67,6 +68,38 @@ function entry(overrides: Partial<ComparisonEntry> = {}): ComparisonEntry {
 
 function document(entries: ComparisonEntry[]): ComparisonDocument {
   return { schemaVersion: COMPARISON_SCHEMA_VERSION, entries }
+}
+
+/** An evaluated engine section, as `include=engine` reports one. */
+function engine(): EngineSection {
+  const evaluated = (value: boolean | number | string) => ({ value, source: 'evaluated' as const })
+  return {
+    model: 'meta-llama/Llama-3.1-70B',
+    backend: 'vllm',
+    backend_version: '0.14.0',
+    mode: 'agg',
+    agg: {
+      replicas: evaluated(1),
+      tensor_parallel_size: evaluated(8),
+      pipeline_parallel_size: evaluated(1),
+      data_parallel_size: evaluated(1),
+      context_parallel_size: evaluated(1),
+      decode_context_parallel_size: evaluated(1),
+      moe_tensor_parallel_size: evaluated(8),
+      moe_expert_parallel_size: evaluated(1),
+      max_model_len: evaluated(4096),
+      max_num_seqs: evaluated(32),
+      max_num_batched_tokens: evaluated(8192),
+      block_size: evaluated(64),
+      gpu_memory_utilization: evaluated(0.9),
+      enable_prefix_caching: { value: null, source: 'not-modeled' },
+      enable_chunked_prefill: evaluated(true),
+      kv_cache_dtype: evaluated('fp16'),
+      quantization: evaluated('fp8'),
+    },
+    prefill: null,
+    decode: null,
+  }
 }
 
 function memoryStorage(): Storage {
@@ -120,6 +153,47 @@ describe('parseComparisonDocument', () => {
 
     expect(parsed.ok).toBe(true)
     if (parsed.ok) expect(parsed.document.entries[0].goal).toBeUndefined()
+  })
+
+  it('accepts a snapshot that carries evaluated engine limits', () => {
+    const parsed = parseComparisonDocument(document([entry({
+      deployment: {
+        engine: engine(),
+        modelConfigData: { hidden_size: 8192 },
+      },
+    })]))
+
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.document.entries[0].deployment?.engine.agg?.tensor_parallel_size)
+        .toEqual({ value: 8, source: 'evaluated' })
+      expect(parsed.document.entries[0].deployment?.modelConfigData).toEqual({ hidden_size: 8192 })
+    }
+  })
+
+  it('accepts a snapshot saved before deployment artifacts existed', () => {
+    const parsed = parseComparisonDocument(document([entry()]))
+
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.entries[0].deployment).toBeUndefined()
+  })
+
+  it('accepts a run that reported no engine limits as a null deployment', () => {
+    const parsed = parseComparisonDocument(document([entry({ deployment: null })]))
+
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.document.entries[0].deployment).toBeNull()
+  })
+
+  it('rejects a deployment whose engine section is not readable', () => {
+    const broken = entry({
+      deployment: { engine: { ...engine(), mode: 'split' } as never, modelConfigData: null },
+    })
+
+    const parsed = parseComparisonDocument(document([broken]))
+
+    expect(parsed.ok).toBe(false)
+    if (!parsed.ok) expect(parsed.problem).toContain('deployment.engine')
   })
 
   it('names the version it cannot read instead of accepting a guess', () => {

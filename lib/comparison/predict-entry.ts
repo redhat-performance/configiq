@@ -27,6 +27,8 @@ export interface PredictEntryInput {
   cloudRatePerHour: number | null
   hardwareCostUsd: number | null
   result: InferenceConfigResult
+  /** The model's config.json when the evaluation supplied one. */
+  deploymentModelConfigData?: Record<string, unknown> | null
   /** Overrides for tests; the page uses the current time and a fresh id. */
   now?: Date
   id?: string
@@ -80,6 +82,7 @@ export function buildPredictEntry({
   cloudRatePerHour,
   hardwareCostUsd,
   result,
+  deploymentModelConfigData = null,
   now = new Date(),
   id = newComparisonId(),
 }: PredictEntryInput): ComparisonEntry {
@@ -123,5 +126,8 @@ export function buildPredictEntry({
     workload,
     topology: topologyFor(result),
     figures,
+    deployment: result.engine
+      ? { engine: result.engine, modelConfigData: deploymentModelConfigData ?? null }
+      : null,
   }
 }

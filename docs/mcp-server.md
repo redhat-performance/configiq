@@ -159,9 +159,38 @@ sizing multiple workloads.
 | `pricing_sources` | List available hosted-model pricing feeds |
 | `pricing_models` | List hosted model prices from a pricing feed |
 | `pricing_systems` | List GPU system prices from a pricing feed |
+| `deploy_targets` | List deployment targets and whether this deployment can render them |
+| `deploy` | Render a deployable artifact (Dynamo `DynamoGraphDeployment` or llm-d) |
 
 The gateway does not currently expose `GET /networks`, even though the sizing
 API does. Ask the API directly if you need the fabric list.
+
+### Deployment artifacts over MCP
+
+`deploy` takes the `engine` section a prediction or recommendation returned with
+`include=engine`; nothing is re-sized. A typical sequence is `predict` with
+`include=engine`, then `deploy` with the section it returned:
+
+```json
+{
+  "target": "llm-d",
+  "engine": { "model": "Qwen/Qwen3-32B", "backend": "vllm", "mode": "agg", "agg": {} },
+  "system": "h200_sxm",
+  "isl": 4000,
+  "osl": 1000
+}
+```
+
+`target`, `engine`, `system`, `isl`, and `osl` are required. The workload is not
+defaulted because the artifact states the request lengths the evaluated run used,
+and guessing them would describe a different run than the one that was measured.
+
+The tool returns the bundle as a JSON file list (`path`, `contents`, `mode`), so
+a client can write it, or read `PROVENANCE.md` first. The REST endpoint's binary
+`format=zip` is not exposed: MCP results are JSON. Call `deploy_targets` first
+when a target may be unavailable in a given deployment: a target that cannot run
+its render gate reports `available: false` with the reason instead of failing a
+render.
 
 ## Tools
 
