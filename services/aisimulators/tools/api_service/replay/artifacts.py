@@ -166,7 +166,6 @@ def blis_run_invocation(
     argv: list[str],
     files: dict[str, str],
     binary: str,
-    catalog: str,
     scenario_directory: str,
     group: str | None = None,
     candidate_id: str | None = None,
@@ -174,17 +173,14 @@ def blis_run_invocation(
 ) -> ReplayInvocation:
     """Artifacts for one BLIS subprocess, captured while its files exist.
 
-    The command is rewritten to read its binary from ``BLIS_BINARY`` (and a
-    catalog flag, when a command names one, from ``BLIS_CATALOG``) and its
+    The command is rewritten to read its binary from ``BLIS_BINARY`` and its
     scenarios from the bundle directory, so it does not name this container's
-    layout.
+    layout. BLIS reads its catalog and coefficient registry from the binary
+    itself, so no data path is rewritten.
     """
     command = _render_command(
         argv,
-        variables={
-            binary: "BLIS_BINARY",
-            catalog: "BLIS_CATALOG",
-        },
+        variables={binary: "BLIS_BINARY"},
         literals={scenario_directory: "."},
     )
     invocation_notes = list(notes)

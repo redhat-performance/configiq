@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
 from tools.api_service.blis import service as blis_service
-from tools.api_service.blis.manifest import ModelResolution
+from tools.api_service.blis.catalog import ModelResolution
 from tools.api_service.blis.runtime import BlisRuntime
 from tools.api_service.blis.scenario import ScenarioRequest
 from tools.api_service.replay import (
@@ -112,17 +112,16 @@ def test_the_script_requires_the_runtime_paths_its_commands_use():
             "run",
             "--scenarios",
             "/tmp/x",
-            "--catalog",
-            "/opt/blis/catalog",
         ],
         files={"scenario.yaml": "kind: Scenario\n"},
         binary="/opt/blis/bin/blis",
-        catalog="/opt/blis/catalog",
         scenario_directory="/tmp/x",
     )
 
     assert '"$BLIS_BINARY"' in invocation.command
-    assert '"$BLIS_CATALOG"' in invocation.command
+    # BLIS reads its catalog and coefficient registry from the binary itself,
+    # so a record asks for no data path.
+    assert "BLIS_CATALOG" not in invocation.command
     assert '"$BLIS_REGISTRY"' not in invocation.command
     assert "--scenarios ." in invocation.command
     assert "/tmp/x" not in invocation.command
@@ -241,6 +240,7 @@ def test_a_primary_command_over_the_cap_is_not_returned(monkeypatch):
 
 def _scenario(**overrides) -> ScenarioRequest:
     values = {
+        "engine_kind": "vllm",
         "model": ModelResolution(catalog_name="qwen3-32b", hf_repo="Qwen/Qwen3-32B"),
         "hardware": "h100",
         "system": "h100_sxm",
@@ -260,11 +260,7 @@ def _scenario(**overrides) -> ScenarioRequest:
 
 
 def test_blis_scenario_files_are_captured_before_the_temp_directory_goes(monkeypatch):
-    runtime = BlisRuntime(
-        binary="/opt/blis/bin/blis",
-        catalog="/opt/blis/catalog",
-        registry="",
-    )
+    runtime = BlisRuntime(binary="/opt/blis/bin/blis")
     resolved = SimpleNamespace(runtime=runtime)
     recorder = _recorder(
         endpoint="/recommend",
@@ -301,11 +297,7 @@ def test_blis_scenario_files_are_captured_before_the_temp_directory_goes(monkeyp
 
 
 def test_nothing_is_captured_without_a_recorder(monkeypatch):
-    runtime = BlisRuntime(
-        binary="/opt/blis/bin/blis",
-        catalog="/opt/blis/catalog",
-        registry="",
-    )
+    runtime = BlisRuntime(binary="/opt/blis/bin/blis")
     calls: list[str] = []
 
     def fake_run(runtime, request, *, timeout_seconds):

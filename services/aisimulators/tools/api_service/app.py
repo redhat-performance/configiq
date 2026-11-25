@@ -44,15 +44,16 @@ from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_supported_databases, get_version_slots, load_system_spec
 from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
+from .blis.catalog import CatalogChip, load_catalog
 from .blis.engines import BlisEngine, cached_engines
-from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_catalog
+from .blis.errors import BlisCatalogError, BlisUnsupportedRequest
 from .blis.runner import BlisExecutionError, BlisTimeoutError
 from .blis.runtime import blis_commit, blis_release, resolve_runtime
 from .blis.service import EstimateInput as BlisEstimateInput
 from .blis.service import RecommendInput as BlisRecommendInput
 from .blis.service import estimate as run_blis_estimate
 from .blis.service import recommend as run_blis_recommend
-from .blis.service import supported_model_ids, supported_system_ids
+from .blis.service import supported_model_ids
 from .deploy import (
     TARGETS as DEPLOY_TARGETS,
 )
@@ -1096,6 +1097,10 @@ _SM_ARCHITECTURE = {
     103: "blackwell",
     120: "blackwell",
 }
+
+#: Byte conversions for the units the BLIS catalog states chip facts in.
+_GIB = 1024 ** 3
+_TERABYTE = 1_000_000_000_000
 
 _DEFAULT_GPU_MEMORY_UTILIZATION = 0.9
 _DEFAULT_MAX_CANDIDATE_GPUS = 1024
@@ -4917,11 +4922,6 @@ def _parse_include(include: str | None) -> set[str]:
     return {s.strip().lower() for s in include.split(",")}
 
 
-def _env_value(name: str) -> str | None:
-    value = os.environ.get(name, "").strip()
-    return value or None
-
-
 def _replay_versions() -> dict[str, str | None]:
     """Pin the releases and data revisions that shaped a recorded run.
 
@@ -4932,10 +4932,10 @@ def _replay_versions() -> dict[str, str | None]:
     return {
         "aisim": _installed_aisimulate_version(),
         "aisimulate_commit": _installed_aisimulate_commit(),
+        # The BLIS binary embeds its catalog and coefficient registry, so its
+        # build is the only pin a record needs for either.
         "blis": blis_release(),
         "blis_commit": blis_commit(),
-        "blis_image": _env_value("BLIS_IMAGE"),
-        "blis_catalog_commit": _env_value("BLIS_CATALOG_COMMIT"),
     }
 
 
@@ -5047,6 +5047,12 @@ app.add_middleware(
 )
 
 
+#: ConfigIQ's control for each engine kind's memory fraction, in the engine's own
+#: field name. An engine kind with no shared control reports none.
+_BLIS_RUNTIME_FIELDS: dict[str, str] = {
+    "vllm": "gpu_memory_utilization",
+    "sglang": "mem_fraction_static",
+}
 def _blis_engines() -> tuple[BlisEngine, ...]:
     """The engines the pinned BLIS build models, or none when it cannot say.
 
@@ -5057,14 +5063,18 @@ def _blis_engines() -> tuple[BlisEngine, ...]:
     """
     try:
         return cached_engines(resolve_runtime().binary)
-    except BlisManifestError:
+    except BlisCatalogError:
         return ()
 
 
 def _blis_backends() -> dict[str, Any]:
     """BLIS backend/version support, in the same shape as the AISim branch.
 
-    BLIS versions are properties of the BLIS release, not of a GPU system, and BLIS
+    Every engine kind the build reports becomes one backend entry. Its versions
+    and the serving roles it models are read from the build itself, so a client
+    can gate a topology on what this build can actually run.
+
+    BLIS versions are properties of the build, not of a GPU system, and BLIS
     takes no version-scoped memory fraction from the SDK. ``systems`` and
     ``system_defaults`` are therefore empty rather than filled with invented
     per-system rows.
@@ -5074,9 +5084,40 @@ def _blis_backends() -> dict[str, Any]:
     lists no versions, and the client must show the version as unreported rather
     than fall back to the build's engine snapshot.
     """
-    engines = _blis_engines()
-    vllm = next((engine for engine in engines if engine.kind == "vllm"), None)
-    versions = [vllm.modeled_version] if vllm and vllm.modeled_version else []
+    backends: list[dict[str, Any]] = []
+    for engine in _blis_engines():
+        version = engine.modeled_version
+        disaggregated = "prefill" in engine.roles and "decode" in engine.roles
+        backends.append({
+            "id": engine.kind,
+            "aisimulate_id": engine.kind,
+            "versions": [version] if version else [],
+            "default_version": version,
+            # The build applies the engine's own memory default when the request
+            # omits one, so there is no fraction to seed a control with.
+            "memory_fraction": None,
+            "memory_fraction_kind": "of_total",
+            "runtime_field": _BLIS_RUNTIME_FIELDS.get(engine.kind),
+            "systems": {},
+            "system_defaults": {},
+            # A P/D run transfers KV between pools, and BLIS prices that
+            # transfer through a named fabric, so the request must choose one.
+            "disaggregation_requires_fabric": _simulator_entry("blis")[
+                "disaggregation_requires_fabric"
+            ],
+            # BLIS capacity sizing is aggregate-only for now: it reads the
+            # aggregate engine's KV pool and does not model a disaggregated
+            # decode-pool capacity, so no comparison options are offered.
+            "capacity_options": {"disaggregated": False},
+            # What this release of this engine can express, as the build reports
+            # its roles. `max_model_len: auto` is a vLLM scenario policy this
+            # build does not expose, so it is not claimed here.
+            "version_support": (
+                {version: {"disaggregated": disaggregated, "max_model_len_auto": False}}
+                if version
+                else {}
+            ),
+        })
     return {
         "simulator": "blis",
         "simulator_version": blis_release(),
@@ -5086,31 +5127,7 @@ def _blis_backends() -> dict[str, Any]:
         # The sizing goals this simulator can answer. A client gates its goal
         # selector on this list instead of on the simulator's name.
         "objectives": ["min_gpus", "throughput_demand", "pareto", "concurrency_capacity"],
-        "backends": [
-            {
-                "id": "vllm",
-                "aisimulate_id": "vllm",
-                "versions": versions,
-                "default_version": versions[0] if versions else None,
-                "memory_fraction": None,
-                "memory_fraction_kind": "of_total",
-                "runtime_field": "gpu_memory_utilization",
-                "systems": {},
-                "system_defaults": {},
-                # A P/D run transfers KV between pools, and BLIS prices that
-                # transfer through a named fabric, so the request must choose one.
-                "disaggregation_requires_fabric": _simulator_entry("blis")[
-                    "disaggregation_requires_fabric"
-                ],
-                # BLIS capacity sizing is aggregate-only for now: it reads the
-                # aggregate engine's KV pool and does not model a disaggregated
-                # decode-pool capacity, so no comparison options are offered.
-                "capacity_options": {"disaggregated": False},
-                # The build fixes the engine release, so no release carries a
-                # topology it cannot model; the request cannot select one.
-                "version_support": {},
-            }
-        ],
+        "backends": backends,
     }
 
 
@@ -5264,7 +5281,7 @@ def post_recommend(
                 captured = None if req.objective == "concurrency_capacity" else recorder
                 with capture_into(captured):
                     outcome = _blis_recommend(req)
-            except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
+            except (BlisUnsupportedRequest, BlisCatalogError, BlisExecutionError) as e:
                 _handle_blis_error(e)
             except Exception as e:
                 _common_error_handler(e, "recommend", req.model_path, req.backend, req.system)
@@ -5654,7 +5671,7 @@ def post_recommend(
 def _handle_blis_error(error: Exception) -> None:
     if isinstance(error, BlisUnsupportedRequest):
         raise HTTPException(status_code=422, detail=str(error)) from error
-    if isinstance(error, BlisManifestError):
+    if isinstance(error, BlisCatalogError):
         raise HTTPException(status_code=503, detail=str(error)) from error
     if isinstance(error, BlisTimeoutError):
         raise HTTPException(status_code=504, detail=str(error)) from error
@@ -5838,7 +5855,7 @@ def post_predict(
         try:
             with capture_into(recorder):
                 prediction = _blis_estimate(req)
-        except (BlisUnsupportedRequest, BlisManifestError, BlisExecutionError) as e:
+        except (BlisUnsupportedRequest, BlisCatalogError, BlisExecutionError) as e:
             _handle_blis_error(e)
         except Exception as e:
             _common_error_handler(e, "estimate", req.model_path, req.backend, req.system)
@@ -6131,7 +6148,7 @@ def get_models(
                     "model_catalog_complete": True,
                     "models": [catalog.specs_for(model) for model in models],
                 }
-        except BlisManifestError as exc:
+        except BlisCatalogError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except BlisUnsupportedRequest as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -6148,15 +6165,11 @@ def get_models(
 
 def _system_entries(simulator: str, *, want_specs: bool) -> list[dict[str, Any]]:
     """Catalog entries for the requested simulator, in the /systems shape."""
-    system_ids = sorted(supported_systems())
     if simulator == "blis":
-        try:
-            system_ids = supported_system_ids(system_ids, load_catalog())
-        except BlisManifestError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _blis_system_entries(want_specs=want_specs)
 
     systems = []
-    for sys_id in system_ids:
+    for sys_id in sorted(supported_systems()):
         device_name = _DEVICE_DISPLAY_NAMES.get(sys_id)
         if device_name is None:
             # No perf-data display name -> no benchmark data; hide it.
@@ -6187,6 +6200,86 @@ def _system_entries(simulator: str, *, want_specs: bool) -> list[dict[str, Any]]
                 })
             except Exception:
                 logger.warning("failed to load spec for %s", sys_id)
+        systems.append(entry)
+    return systems
+
+
+def _architecture_from_compute_capability(value: str | None) -> str | None:
+    """The architecture family a catalog chip's compute capability belongs to."""
+    if not value:
+        return None
+    try:
+        major = int(value.split(".", 1)[0])
+    except ValueError:
+        return None
+    return _SM_ARCHITECTURE.get(major * 10)
+
+
+def _node_gpu_count(system_id: str) -> int | None:
+    """The node width ConfigIQ's system catalogue states, when the chip states none."""
+    try:
+        spec = load_system_spec(system_id)
+    except Exception:
+        return None
+    node = spec.get("node", {}) if isinstance(spec, dict) else {}
+    count = node.get("num_gpus_per_node") if isinstance(node, dict) else None
+    return count if isinstance(count, int) and count > 0 else None
+
+
+def _blis_system_specs(system_id: str, chip: CatalogChip) -> dict[str, Any]:
+    """The chip facts the BLIS catalog states, in the /systems?include=specs shape.
+
+    A fact the catalog does not carry is left out rather than filled from another
+    source, so a client shows it as unavailable. ``gpus_per_node`` is the one
+    exception by design: the chip's packaging wins where the chip states it,
+    because that is a property of the part BLIS prices, and ConfigIQ's own
+    system catalogue supplies it only where the chip leaves it open.
+    """
+    specs: dict[str, Any] = {}
+    if chip.memory_gib is not None:
+        specs["memory_bytes"] = round(chip.memory_gib * _GIB)
+    if chip.memory_bandwidth_tbs is not None:
+        specs["memory_bandwidth_bytes"] = round(chip.memory_bandwidth_tbs * _TERABYTE)
+    if chip.bf16_tflops is not None:
+        specs["bf16_tflops"] = chip.bf16_tflops
+    architecture = _architecture_from_compute_capability(chip.compute_capability)
+    if architecture is not None:
+        specs["architecture"] = architecture
+        # A compute capability is NVIDIA's SM numbering, so a chip that states
+        # one is an NVIDIA part; a chip that states none reports no vendor.
+        specs["vendor"] = "nvidia"
+    gpus_per_node = chip.gpus_per_node or _node_gpu_count(system_id)
+    if gpus_per_node is not None:
+        specs["gpus_per_node"] = gpus_per_node
+    return specs
+
+
+def _blis_system_entries(*, want_specs: bool) -> list[dict[str, Any]]:
+    """The ConfigIQ systems whose accelerator the BLIS catalog describes.
+
+    The system ID and display name come from ConfigIQ's own naming layer, which
+    is what a client keys on. Every simulation-facing value comes from the BLIS
+    catalog: a system whose accelerator the catalog does not describe is absent
+    rather than reported with another simulator's hardware.
+    """
+    try:
+        catalog = load_catalog()
+    except BlisCatalogError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    systems = []
+    for sys_id in sorted(supported_systems()):
+        device_name = _DEVICE_DISPLAY_NAMES.get(sys_id)
+        if device_name is None:
+            continue
+        chip = catalog.chip(sys_id)
+        if chip is None:
+            continue
+        entry: dict[str, Any] = {
+            "id": sys_id,
+            "name": device_name,
+        }
+        if want_specs:
+            entry.update(_blis_system_specs(sys_id, chip))
         systems.append(entry)
     return systems
 
@@ -6226,9 +6319,9 @@ def get_networks(
         return {"simulator": simulator, "networks": [], "default_network": None}
     try:
         catalog = load_catalog()
-    except BlisManifestError as exc:
+    except BlisCatalogError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    networks = sorted(catalog.networks)
+    networks = list(catalog.fabrics)
     default_network = entry.get("default_network")
     if not isinstance(default_network, str) or default_network not in networks:
         default_network = None

@@ -20,10 +20,10 @@
 # in this tree describes rather than one that predates it. See
 # services/aisimulators/README.md for the commands and their releases.
 #
-# BLIS v0.19 embeds its catalog and registry in the binary and refuses the
-# external clones earlier releases read. The catalog is still copied out of the
-# same commit because the API enumerates models, chips, and fabrics from it; BLIS
-# itself never reads that copy. See services/aisimulators/README.md.
+# BLIS embeds its catalog, coefficient registry, and engine facts in the binary
+# and reports them with its own commands. The API reads them from that same
+# binary, so the image carries no data directory and cannot pair a binary with a
+# different build's catalog. See services/aisimulators/README.md.
 
 # --- BLIS build -------------------------------------------------------------------
 # TEMPORARY: built from inference-sim's deploy/api branch at the commit pinned
@@ -69,20 +69,6 @@ WORKDIR /src
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
         go build -trimpath -ldflags="-s -w" -o /opt/blis/blis .
 
-# --- BLIS catalog facts ----------------------------------------------------------
-# The catalog the pinned BLIS build embeds: model graphs, chips, fabrics, and
-# workload presets, at the same commit. The API lists it; a run reads the
-# binary's own copy.
-FROM alpine/git:2.47.2 AS blis_catalog
-ARG BLIS_CATALOG_COMMIT=694802f59d852c3f1c4dfdac5dd2bd0249618642
-RUN git init /src \
-    && git -C /src remote add origin https://github.com/natoscott/inference-sim.git \
-    && git -C /src fetch --depth 1 origin "${BLIS_CATALOG_COMMIT}" \
-    && git -C /src checkout --quiet --detach FETCH_HEAD \
-    && mkdir -p /opt/blis \
-    && cp -a /src/substrate/catalog /opt/blis/catalog \
-    && rm -rf /src
-
 # --- llm-d deployment target ------------------------------------------------------
 # The llm-d overlay the deployment service renders references files in the llm-d
 # repository by relative path, so the bundle has to carry them. Vendor exactly
@@ -117,10 +103,6 @@ ARG BLIS_VERSION=0.19.2-0.20261127005804-694802f59d85
 # empty for the default BLIS_VERSION and runtime.py resolves the pinned commit.
 ARG BLIS_COMMIT=""
 
-# The catalog pin is an ARG of its own stage; redeclare it so a replay record
-# can name the data the binary embeds alongside the build it ran in.
-ARG BLIS_CATALOG_COMMIT=694802f59d852c3f1c4dfdac5dd2bd0249618642
-
 # Link the GHCR package to this repo (configiq), not the SDK-wheels fork whose
 # name it shares. Set on package creation; add here so future publishes resolve
 # to configiq/packages rather than redhat-performance/aisimulators.
@@ -131,23 +113,16 @@ WORKDIR /app
 # The build stage leaves the static binary at /opt/blis/blis; copy it into this
 # image's layout, which runs as its own non-root user.
 COPY --from=blis_build /opt/blis/blis /usr/local/bin/blis
-COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
 COPY --from=llm_d /opt/llm-d /opt/llm-d
 COPY --from=kustomize /usr/local/bin/kustomize /usr/local/bin/kustomize
 
-# The catalog directory is read only by the API's catalog endpoints. BLIS reads
-# its embedded catalog and registry, so there is no registry path to configure.
-#
-# The build commit and the catalog commit are reported as part of a replay
-# record, so a recorded command names the exact build and data it was run
-# against. They are identity, not configuration: nothing reads them to decide
-# behaviour.
+# The build commit is reported as part of a replay record, so a recorded command
+# names the exact build it was run against. It is identity, not configuration:
+# nothing reads it to decide behaviour.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     BLIS_VERSION=${BLIS_VERSION} \
     BLIS_COMMIT=${BLIS_COMMIT} \
-    BLIS_CATALOG=/opt/blis/catalog \
-    BLIS_CATALOG_COMMIT=${BLIS_CATALOG_COMMIT} \
     AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d \
     PATH=/opt/venv/bin:${PATH}
 

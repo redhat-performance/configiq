@@ -3276,7 +3276,26 @@ class TestBackendObjectives:
         ]
         assert data["backends"][0]["capacity_options"] == {"disaggregated": True}
 
-    def test_blis_advertises_the_goals_it_implements(self):
+    def test_blis_advertises_the_goals_it_implements(self, monkeypatch):
+        # The build's own engine report is what makes a backend list exist, so
+        # this request path is exercised with the report the deployed build
+        # makes; the endpoint test in test_blis_api.py covers the report's
+        # shape in detail.
+        from tools.api_service.blis.engines import BlisEngine
+
+        monkeypatch.setattr(
+            app_module,
+            "_blis_engines",
+            lambda: (
+                BlisEngine(
+                    kind="vllm",
+                    modeled_version="0.31.0",
+                    modeled_commit=None,
+                    build_version="0.34.0+0fda86a35419",
+                    roles=("colocated", "prefill", "decode"),
+                ),
+            ),
+        )
         data = client.get("/backends?simulator=blis").json()
         assert data["objectives"] == [
             "min_gpus",

@@ -8,15 +8,16 @@ import yaml
 
 from tools.api_service.blis import engines as blis_engines
 from tools.api_service.blis import service as blis_service
-from tools.api_service.blis.engines import BlisEngine
-from tools.api_service.blis.manifest import (
+from tools.api_service.blis.catalog import (
     BlisCatalog,
-    BlisUnsupportedRequest,
+    CatalogChip,
     CatalogModel,
     ModelResolution,
-    load_catalog,
-    model_specs,
+    parse_catalog,
+    read_catalog,
 )
+from tools.api_service.blis.engines import BlisEngine
+from tools.api_service.blis.errors import BlisCatalogError, BlisUnsupportedRequest
 from tools.api_service.blis.runner import (
     BlisExecutionError,
     RunRequest,
@@ -33,19 +34,27 @@ from tools.api_service.blis.scenario import (
 )
 
 
-def _catalog_model(slug: str, repo: str | None, config: dict | None = None) -> CatalogModel:
+def _catalog_model(
+    name: str,
+    repo: str | None,
+    *,
+    architecture: str = "Qwen3ForCausalLM",
+    context_window: int | None = 40960,
+    experts: int | None = None,
+    experts_top_k: int | None = None,
+    attention_heads: int = 40,
+    attention_kv_heads: int = 8,
+) -> CatalogModel:
     return CatalogModel(
-        slug=slug,
+        name=name,
         hf_repo=repo,
-        config=config or {
-            "architectures": ["Qwen3ForCausalLM"],
-            "hidden_size": 5120,
-            "num_hidden_layers": 64,
-            "num_attention_heads": 40,
-            "num_key_value_heads": 8,
-            "vocab_size": 151936,
-            "max_position_embeddings": 40960,
-        },
+        architecture=architecture,
+        context_window=context_window,
+        experts=experts,
+        experts_top_k=experts_top_k,
+        attention_kind="gqa",
+        attention_heads=attention_heads,
+        attention_kv_heads=attention_kv_heads,
     )
 
 
@@ -56,87 +65,151 @@ def catalog() -> BlisCatalog:
             "qwen3-32b": _catalog_model("qwen3-32b", "Qwen/Qwen3-32B"),
             "glm-5": _catalog_model("glm-5", "zai-org/GLM-5"),
         },
-        hardware=frozenset({"h100", "h200", "a100-sxm", "gb200-nvl72"}),
-        networks=frozenset({"roce-200g", "ib-400g"}),
+        chips={
+            "h100": CatalogChip(name="h100", memory_gib=80),
+            "h200": CatalogChip(name="h200", memory_gib=141),
+            "a100-sxm": CatalogChip(name="a100-sxm", memory_gib=80),
+            "gb200-nvl72": CatalogChip(name="gb200-nvl72", memory_gib=192, gpus_per_node=4),
+        },
+        fabrics=("ib-400g", "roce-200g"),
     )
 
 
-def _write_catalog(root: Path) -> Path:
-    """A catalog shaped exactly like blis-catalog's on-disk layout."""
-    def write_model(slug: str, repo: str, config: dict, *, graph: bool = True) -> None:
-        directory = root / "models" / slug
-        directory.mkdir(parents=True)
-        (directory / "model.yaml").write_text(yaml.safe_dump({
-            "name": slug,
-            "source": {"provider": "huggingface", "repo": repo},
-        }))
-        (directory / "config.json").write_text(json.dumps(config))
-        if graph:
-            (directory / "graph.yaml").write_text("kind: Graph\n")
+def _catalog_document() -> dict:
+    """A report shaped exactly like `blis catalog list --json`."""
+    return {
+        "models": [
+            {
+                "name": "qwen3-32b",
+                "source": {
+                    "provider": "huggingface",
+                    "repo": "Qwen/Qwen3-32B",
+                    "revision": "abc123",
+                },
+                "architecture": "Qwen3ForCausalLM",
+                "context_window": 40960,
+                "layers": 64,
+                "hidden_size": 5120,
+                "vocab_size": 151936,
+                "weight_dtype": "bf16",
+                "attention": {"kind": "gqa", "heads": 40, "kv_heads": 8, "head_dim": 128},
+            },
+            {
+                "name": "qwen3-30b-a3b",
+                "source": {"provider": "huggingface", "repo": "Qwen/Qwen3-30B-A3B"},
+                "architecture": "Qwen3MoeForCausalLM",
+                "layers": 48,
+                "hidden_size": 2048,
+                "vocab_size": 151936,
+                "weight_dtype": "bf16",
+                "attention": {"kind": "gqa", "heads": 32, "kv_heads": 4, "head_dim": 128},
+                "experts": {"count": 128, "top_k": 8},
+                "drafters": [{"name": "speculator", "method": "mtp", "num_spec_tokens": 1}],
+            },
+            {
+                # A draft graph can be published under the served model's repo.
+                "name": "speculator",
+                "source": {"provider": "huggingface", "repo": "Qwen/Qwen3-30B-A3B"},
+                "architecture": "Qwen3MoeForCausalLM",
+                "layers": 1,
+                "hidden_size": 2048,
+                "vocab_size": 151936,
+                "weight_dtype": "bf16",
+                "attention": {"kind": "gqa", "heads": 32, "kv_heads": 4, "head_dim": 128},
+            },
+            {
+                # A graph that states no window: the report must carry that gap
+                # rather than a value derived from a file the build never read.
+                "name": "no-window",
+                "source": {"provider": "huggingface", "repo": "org/NoWindow"},
+                "architecture": "Qwen3ForCausalLM",
+                "attention": {"kind": "gqa", "heads": 32, "kv_heads": 8, "head_dim": 128},
+            },
+            {
+                "name": "mla-model",
+                "source": {"provider": "huggingface", "repo": "org/Mla"},
+                "architecture": "DeepseekV3ForCausalLM",
+                "context_window": 1048576,
+                "attention": {"kind": "mla", "heads": 128, "kv_heads": 1, "head_dim": 576},
+                "experts": {"count": 256, "top_k": 8},
+            },
+        ],
+        "chips": [
+            {
+                "name": "h100",
+                "provenance": "vendor_spec",
+                "field_provenance": {"memory_gib": "vendor_spec"},
+                "bf16_tflops": 989,
+                "fp8_tflops": 1979,
+                "nvfp4_tflops": 3958,
+                "memory_gib": 80,
+                "memory_bandwidth_tbs": 3.35,
+                "intra_node_bw_gbps": 900,
+                "sm_count": 132,
+                "compute_capability": "9.0",
+                "host_cpu": "x86_64",
+            },
+            {
+                "name": "gb200-nvl72",
+                "memory_gib": 192,
+                "memory_bandwidth_tbs": 8,
+                "compute_capability": "10.0",
+                "gpus_per_node": 4,
+                "gpus_per_rack": 72,
+            },
+            {
+                "name": "rtx6000pro-server",
+                "memory_gib": 96,
+                "compute_capability": "12.0",
+            },
+            {
+                # A chip whose entry states neither capability nor packaging.
+                "name": "mystery",
+                "memory_gib": 48,
+            },
+        ],
+        "fabrics": [
+            {"name": "roce-200g", "provenance": "vendor_spec", "inter_node_bw_gbps": 25, "rdma": True},
+            {"name": "ib-400g", "provenance": "vendor_spec", "inter_node_bw_gbps": 50, "rdma": True},
+        ],
+    }
 
-    write_model("qwen3-32b", "Qwen/Qwen3-32B", {
-        "architectures": ["Qwen3ForCausalLM"],
-        "hidden_size": 5120,
-        "num_hidden_layers": 64,
-        "num_attention_heads": 40,
-        "num_key_value_heads": 8,
-        "vocab_size": 151936,
-        "max_position_embeddings": 40960,
-    })
-    write_model("qwen3-30b-a3b", "Qwen/Qwen3-30B-A3B", {
-        "architectures": ["Qwen3MoeForCausalLM"],
-        "num_experts": 128,
-        "num_experts_per_tok": 8,
-        "num_hidden_layers": 48,
-        "num_attention_heads": 32,
-        "num_key_value_heads": 4,
-        "max_position_embeddings": 40960,
-    })
-    write_model("vision-model", "org/Vision", {
-        "architectures": ["VisionForConditionalGeneration"],
-        "text_config": {
-            "num_experts": 64,
-            "num_experts_per_tok": 4,
-            "max_position_embeddings": 131072,
-            "num_attention_heads": 32,
-            "num_key_value_heads": 8,
-        },
-    })
-    # Declared but not priceable: blis-catalog ships no derived graph.
-    write_model("no-graph", "org/NoGraph", {}, graph=False)
 
-    (root / "hardware").mkdir()
-    for name in ("h100", "h200", "a100-sxm", "gb200-nvl72"):
-        (root / "hardware" / f"{name}.yaml").write_text("MemoryGiB: 80\n")
-    (root / "networks").mkdir()
-    for name in ("roce-200g", "ib-400g"):
-        (root / "networks" / f"{name}.yaml").write_text("kind: Network\n")
-    return root
+def _stub_blis(
+    tmp_path: Path,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    exit_code: int = 0,
+) -> Path:
+    """A stand-in `blis` that prints the given report and exits."""
+    script = "#!/bin/sh\n"
+    if stdout:
+        (tmp_path / "stdout.json").write_text(stdout)
+        script += f'cat "{tmp_path / "stdout.json"}"\n'
+    if stderr:
+        (tmp_path / "stderr.txt").write_text(stderr)
+        script += f'cat "{tmp_path / "stderr.txt"}" >&2\n'
+    script += f"exit {exit_code}\n"
+    binary = tmp_path / "blis"
+    binary.write_text(script)
+    binary.chmod(0o755)
+    return binary
 
 
-def test_search_modes_follow_the_evaluated_ledger():
-    def candidate(mode: str) -> blis_service._RecommendCandidate:
-        return blis_service._RecommendCandidate(mode=mode, total_gpus=4)
+def test_catalog_reports_the_hugging_face_ids_the_build_can_price():
+    catalog = parse_catalog(_catalog_document())
 
-    # Only what ran counts, in contract order, and "nothing ran" is reported as
-    # None rather than as an empty search of one mode.
-    assert blis_service._searched_modes([]) is None
-    assert blis_service._searched_modes([candidate("agg")]) == ["agg"]
-    assert blis_service._searched_modes([candidate("disagg")]) == ["disagg"]
-    assert blis_service._searched_modes(
-        [candidate("disagg"), candidate("agg")]
-    ) == ["agg", "disagg"]
+    assert catalog.model_ids() == [
+        "Qwen/Qwen3-30B-A3B",
+        "Qwen/Qwen3-32B",
+        "org/Mla",
+        "org/NoWindow",
+    ]
 
 
-def test_catalog_reads_hugging_face_ids_and_skips_unpriceable_models(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
-
-    assert catalog.model_ids() == ["Qwen/Qwen3-30B-A3B", "Qwen/Qwen3-32B", "org/Vision"]
-    assert "no-graph" not in catalog.models
-
-
-def test_catalog_resolves_slug_and_hugging_face_id_to_one_entry(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_resolves_slug_and_hugging_face_id_to_one_entry():
+    catalog = parse_catalog(_catalog_document())
 
     by_slug = catalog.resolve_model("qwen3-32b")
     by_hf_id = catalog.resolve_model("Qwen/Qwen3-32B")
@@ -148,81 +221,128 @@ def test_catalog_resolves_slug_and_hugging_face_id_to_one_entry(tmp_path: Path):
     assert by_slug.origin == "blis-catalog"
 
 
-def test_catalog_reads_context_from_text_config(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_resolves_a_repo_shared_with_a_draft_graph_to_the_served_model():
+    catalog = parse_catalog(_catalog_document())
 
-    assert catalog.resolve_model("org/Vision").context_length == 131072
+    # A draft graph may be published under the served model's repo. An ID that
+    # names both has to resolve to the entry a request can serve, or a model
+    # picker would offer a graph that cannot answer a request.
+    resolved = catalog.resolve_model("Qwen/Qwen3-30B-A3B")
+
+    assert resolved.catalog_name == "qwen3-30b-a3b"
+    # The draft graph is still addressable by its own catalog name.
+    assert catalog.resolve_model("speculator").catalog_name == "speculator"
+    # A shared repo is one public identifier, not two.
+    assert catalog.model_ids().count("Qwen/Qwen3-30B-A3B") == 1
 
 
-def test_catalog_refuses_models_it_cannot_price(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_reports_the_window_the_graph_states_and_null_when_it_states_none():
+    catalog = parse_catalog(_catalog_document())
 
-    with pytest.raises(BlisUnsupportedRequest, match="does not support model.*org/Vision"):
+    assert catalog.resolve_model("org/Mla").context_length == 1048576
+    # No window in the graph means no window in the report: the build reads no
+    # model config file, so there is nothing to derive one from.
+    assert catalog.resolve_model("org/NoWindow").context_length is None
+
+
+def test_catalog_refuses_models_it_cannot_price():
+    catalog = parse_catalog(_catalog_document())
+
+    with pytest.raises(BlisUnsupportedRequest, match="does not support model.*org/NoWindow"):
         catalog.resolve_model("Unknown/Model")
 
 
-def test_catalog_translates_system_aliases_but_not_pcie_parts(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_translates_system_aliases_but_not_pcie_parts():
+    catalog = parse_catalog(_catalog_document())
 
     assert catalog.resolve_hardware("h100_sxm") == "h100"
-    assert catalog.resolve_hardware("a100_sxm") == "a100-sxm"
     assert catalog.resolve_hardware("gb200") == "gb200-nvl72"
+    assert catalog.resolve_hardware("rtx_pro_6000_server") == "rtx6000pro-server"
     assert catalog.supports_hardware("h100_sxm") is True
     with pytest.raises(BlisUnsupportedRequest, match="available BLIS hardware keys"):
         catalog.resolve_hardware("h100_pcie")
 
 
-def test_catalog_reports_only_fabrics_it_declares(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_returns_the_chip_facts_the_build_states():
+    catalog = parse_catalog(_catalog_document())
 
+    h100 = catalog.chip("h100_sxm")
+    assert h100 is not None
+    assert h100.memory_gib == 80
+    assert h100.memory_bandwidth_tbs == 3.35
+    assert h100.bf16_tflops == 989
+    assert h100.compute_capability == "9.0"
+    assert h100.gpus_per_node is None
+    assert catalog.chip("gb200").gpus_per_node == 4
+    assert catalog.chip("h100_pcie") is None
+
+
+def test_catalog_reports_only_fabrics_it_declares():
+    catalog = parse_catalog(_catalog_document())
+
+    assert catalog.fabrics == ("ib-400g", "roce-200g")
     assert catalog.resolve_network("roce-200g") == "roce-200g"
     with pytest.raises(BlisUnsupportedRequest, match="available fabric keys: ib-400g, roce-200g"):
         catalog.resolve_network("unknown-fabric")
 
 
-def test_catalog_specs_read_moe_and_text_config_fields(tmp_path: Path):
-    catalog = load_catalog(str(_write_catalog(tmp_path)))
+def test_catalog_specs_read_experts_and_attention_fields():
+    catalog = parse_catalog(_catalog_document())
 
     dense = catalog.specs_for("Qwen/Qwen3-32B")
     moe = catalog.specs_for("qwen3-30b-a3b")
-    multimodal = catalog.specs_for("org/Vision")
+    mla = catalog.specs_for("org/Mla")
 
     assert dense["num_experts"] is None
+    assert dense["num_experts_per_tok"] is None
     assert dense["context_length"] == 40960
+    assert dense["num_attn_heads"] == 40
+    assert dense["num_kv_heads"] == 8
+    assert dense["architecture"] == "Qwen3ForCausalLM"
     assert moe["num_experts"] == 128
     assert moe["num_experts_per_tok"] == 8
-    assert multimodal["num_experts"] == 64
-    assert multimodal["context_length"] == 131072
-    assert multimodal["architecture"] == "VisionForConditionalGeneration"
+    assert mla["num_kv_heads"] == 1
+    assert catalog.specs_for("org/NoWindow")["context_length"] is None
 
 
-def test_model_specs_prefers_architecture_list_and_ignores_zero_experts():
-    specs = model_specs("org/Model", {
-        "architectures": ["SomeForCausalLM"],
-        "model_type": "some",
-        "num_experts": 0,
-        "max_position_embeddings": 0,
-    })
+def test_read_catalog_asks_the_build_for_the_catalog_it_embeds(tmp_path: Path):
+    binary = _stub_blis(tmp_path, stdout=json.dumps(_catalog_document()))
 
-    assert specs["architecture"] == "SomeForCausalLM"
-    assert specs["num_experts"] is None
-    assert specs["context_length"] is None
+    catalog = read_catalog(str(binary))
+
+    assert "Qwen/Qwen3-32B" in catalog.model_ids()
+    assert catalog.resolve_hardware("h100_sxm") == "h100"
 
 
-def test_catalog_missing_models_directory_is_an_explicit_error(tmp_path: Path):
-    from tools.api_service.blis.manifest import BlisManifestError
+def test_read_catalog_reports_a_binary_that_cannot_answer(tmp_path: Path):
+    binary = _stub_blis(tmp_path, stderr="catalog: not embedded", exit_code=2)
 
-    with pytest.raises(BlisManifestError, match="unavailable"):
-        load_catalog(str(tmp_path / "missing"))
+    with pytest.raises(BlisCatalogError, match="did not report its catalog.*not embedded"):
+        read_catalog(str(binary))
 
 
-def test_blis_rejects_non_vllm_before_loading_the_catalog():
-    with pytest.raises(BlisUnsupportedRequest, match="model vLLM"):
-        blis_service._resolve_request("Qwen/Qwen3-32B", "h200_sxm", "sglang", None)
+def test_read_catalog_rejects_output_that_is_not_json(tmp_path: Path):
+    binary = _stub_blis(tmp_path, stdout="not json")
+
+    with pytest.raises(BlisCatalogError, match="was not JSON"):
+        read_catalog(str(binary))
+
+
+def test_read_catalog_reports_an_unrunnable_binary(tmp_path: Path):
+    with pytest.raises(BlisCatalogError, match="could not ask BLIS for its catalog"):
+        read_catalog(str(tmp_path / "missing"))
+
+
+def test_catalog_report_without_models_is_an_explicit_error():
+    with pytest.raises(BlisCatalogError, match="no models"):
+        parse_catalog({"models": [], "chips": [{"name": "h100"}], "fabrics": []})
+    with pytest.raises(BlisCatalogError, match="must be a JSON object"):
+        parse_catalog([])
 
 
 def _scenario_request(**overrides) -> ScenarioRequest:
     values = {
+        "engine_kind": "vllm",
         "model": ModelResolution(
             catalog_name="qwen3-32b",
             hf_repo="Qwen/Qwen3-32B",
@@ -311,6 +431,122 @@ def test_different_engine_settings_get_distinct_scenario_files(tmp_path: Path):
     assert len(list(tmp_path.glob("*.yaml"))) == 2
 
 
+def test_sglang_documents_use_that_engines_own_setting_names():
+    _scenario, deployment = build_documents(_scenario_request(
+        engine_kind="sglang",
+        weight_quantization="NVFP4",
+        cache_dtype="FP8",
+        prefix_caching=True,
+    ))
+    engine = deployment["pools"][0]["engine"]
+
+    assert engine["max_running_requests"] == 8
+    assert engine["context_length"] == 2176
+    assert engine["mem_fraction_static"] == 0.9
+    assert engine["quantization"] == "modelopt_fp4"
+    assert engine["kv_cache_dtype"] == "fp8_e4m3"
+    # This engine states the opposite setting: whether the radix cache is off.
+    assert engine["disable_radix_cache"] is False
+    # Nothing from the other engine's vocabulary leaks into the block.
+    for name in (
+        "block_size",
+        "max_num_seqs",
+        "max_model_len",
+        "gpu_memory_utilization",
+        "enable_prefix_caching",
+        "compilation_config",
+    ):
+        assert name not in engine
+
+
+def test_sglang_refuses_a_quantization_it_cannot_name():
+    with pytest.raises(BlisUnsupportedRequest, match="cannot represent weight quantization"):
+        build_documents(_scenario_request(engine_kind="sglang", weight_quantization="int4"))
+    with pytest.raises(BlisUnsupportedRequest, match="cannot represent KV-cache dtype"):
+        build_documents(_scenario_request(engine_kind="sglang", cache_dtype="nvfp4"))
+    # A value this engine does name is passed through unchanged.
+    _scenario, deployment = build_documents(_scenario_request(
+        engine_kind="sglang", cache_dtype="fp8_e5m2",
+    ))
+    assert deployment["pools"][0]["engine"]["kv_cache_dtype"] == "fp8_e5m2"
+
+
+def test_sglang_disagg_pools_use_that_engines_own_setting_names():
+    _scenario, deployment = build_documents(_scenario_request(
+        engine_kind="sglang",
+        fabric="ib-400g",
+        prefill_pool=_pool_request("prefill", nodes=1),
+        decode_pool=_pool_request("decode", nodes=1),
+    ))
+
+    for pool in deployment["pools"]:
+        engine = pool["engine"]
+        assert "max_running_requests" in engine
+        assert "context_length" in engine
+        assert "max_num_seqs" not in engine
+        assert "max_model_len" not in engine
+
+
+def test_scenario_refuses_an_engine_kind_it_does_not_generate():
+    with pytest.raises(BlisUnsupportedRequest, match="does not model engine kind"):
+        build_documents(_scenario_request(engine_kind="trtllm"))
+
+
+def _resolved_for(engine: BlisEngine | None):
+    return blis_service._ResolvedRequest(
+        catalog=BlisCatalog(models={}, chips={}, fabrics=()),
+        runtime=BlisRuntime("/opt/blis"),
+        model=ModelResolution(catalog_name="qwen3-32b", hf_repo="Qwen/Qwen3-32B"),
+        hardware="h100",
+        gpus_per_node=8,
+        engine_kind=engine.kind if engine is not None else "vllm",
+        engine=engine,
+    )
+
+
+def _kernel_result(engine_version: str) -> dict:
+    return {
+        "reports": {
+            "kernel": {
+                "colocated": {
+                    "assumptions": [{
+                        "Name": "engine_version",
+                        "Scope": f"{engine_version}: the kernel prices its own tuning",
+                    }],
+                },
+            },
+        },
+    }
+
+
+def test_reported_engine_version_is_the_selected_kinds_own_release():
+    # The run's kernel assumptions name the latency kernel's shared behaviour,
+    # which is not this kind's release; the build's per-kind report is.
+    resolved = _resolved_for(BlisEngine(
+        kind="sglang",
+        modeled_version="0.5.23",
+        modeled_commit=None,
+        build_version="0.5.23",
+        roles=("colocated",),
+    ))
+
+    version = blis_service._reported_engine_version(_kernel_result("0.31.0"), resolved)
+
+    assert version == "0.5.23"
+
+
+def test_reported_engine_version_falls_back_to_the_runs_disclosure():
+    # A build that cannot report its engines leaves the run's disclosure as the
+    # only statement of the release it priced.
+    version = blis_service._reported_engine_version(_kernel_result("0.31.0"), _resolved_for(None))
+
+    assert version == "0.31.0"
+
+
+def test_reported_engine_version_is_null_when_nothing_reports_one():
+    assert blis_service._reported_engine_version({}, _resolved_for(None)) is None
+
+
 def test_serving_config_reports_the_settings_blis_resolved():
     result = {
         "input": {
@@ -330,7 +566,7 @@ def test_serving_config_reports_the_settings_blis_resolved():
         },
     }
 
-    config = blis_service._serving_config(result, "0.31.0")
+    config = blis_service._serving_config(result, "0.31.0", "vllm")
 
     assert config["tensor_parallel_size"] == 4
     assert config["max_model_len"] is None
@@ -348,7 +584,7 @@ def test_serving_config_reports_an_explicit_context_window():
         }]}},
     }
 
-    config = blis_service._serving_config(result, None)
+    config = blis_service._serving_config(result, None, "vllm")
 
     assert config["max_model_len"] == 2176
     assert config["max_model_len_policy"] is None
@@ -356,7 +592,7 @@ def test_serving_config_reports_an_explicit_context_window():
 
 
 def test_serving_config_is_absent_when_the_result_has_no_deployment():
-    assert blis_service._serving_config({"metrics": {}}, None) is None
+    assert blis_service._serving_config({"metrics": {}}, None, "vllm") is None
 
 
 def test_half_cache_dtype_leaves_the_blis_model_default_unmodified():
@@ -594,13 +830,108 @@ def _completed(*, stdout: str, returncode: int = 0, stderr: str = ""):
     return blis_engines.subprocess.CompletedProcess(
         args=(), returncode=returncode, stdout=stdout, stderr=stderr
     )
+def _resolving(monkeypatch, catalog, binary: str, engines: tuple[BlisEngine, ...]) -> None:
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: BlisRuntime(binary))
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(blis_service, "cached_engines", lambda _binary: engines)
+
+
+def test_request_for_an_engine_kind_the_build_does_not_report_is_refused(monkeypatch, catalog):
+    _resolving(
+        monkeypatch,
+        catalog,
+        "/opt/blis-only-vllm",
+        (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated", "prefill", "decode"),
+            ),
+        ),
+    )
+
+    with pytest.raises(BlisUnsupportedRequest, match="no engine kind 'sglang'"):
+        blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "sglang", None)
+
+
+def test_aggregated_request_is_refused_for_an_engine_without_that_role(monkeypatch, catalog):
+    _resolving(
+        monkeypatch,
+        catalog,
+        "/opt/blis-prefill-only",
+        (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version=None,
+                roles=("prefill", "decode"),
+            ),
+        ),
+    )
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", None)
+
+    assert resolved.supports_roles(("prefill", "decode")) is True
+    assert resolved.supports_roles(("colocated",)) is False
+    with pytest.raises(BlisUnsupportedRequest, match="models vllm for prefill, decode serving"):
+        blis_service._require_roles(resolved, ("colocated",), topology="aggregated")
+
+
+def test_disaggregated_request_is_refused_for_an_engine_without_pd_roles(monkeypatch, catalog):
+    _resolving(
+        monkeypatch,
+        catalog,
+        "/opt/blis-colocated-only",
+        (
+            BlisEngine(
+                kind="sglang",
+                modeled_version="0.5.23",
+                modeled_commit=None,
+                build_version=None,
+                roles=("colocated",),
+            ),
+        ),
+    )
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "sglang", None)
+
+    assert resolved.supports_roles(("colocated",)) is True
+    with pytest.raises(BlisUnsupportedRequest, match="a disaggregated request needs prefill, decode"):
+        blis_service._require_roles(resolved, ("prefill", "decode"), topology="disaggregated")
+
+
+def test_a_build_that_reports_no_roles_is_not_refused(monkeypatch, catalog):
+    _resolving(
+        monkeypatch,
+        catalog,
+        "/opt/blis-no-roles",
+        (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version=None,
+                roles=(),
+            ),
+        ),
+    )
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", None)
+
+    assert resolved.supports_roles(("colocated",)) is True
+    assert resolved.supports_roles(("prefill", "decode")) is True
 
 
 def test_request_for_an_unmodeled_release_is_refused_with_the_modeled_one(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis-unmodeled", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-unmodeled")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -621,13 +952,13 @@ def test_request_for_an_unmodeled_release_is_refused_with_the_modeled_one(
         ),
     )
 
-    with pytest.raises(BlisUnsupportedRequest, match="models vLLM 0.31.0"):
+    with pytest.raises(BlisUnsupportedRequest, match="models vllm 0.31.0"):
         blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
 
 
 def test_request_naming_the_modeled_release_resolves(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis-modeled", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-modeled")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -656,12 +987,12 @@ def test_request_naming_the_modeled_release_resolves(monkeypatch, catalog):
 def test_request_for_a_release_is_refused_when_the_build_cannot_report_it(monkeypatch, catalog):
     """An unreadable build must not answer a pinned release with a different one.
 
-    ``read_engines`` cannot tell a failed probe from a build that never reported,
-    so an empty report means "unknown", not "models nothing": answering would
+    The probe cannot tell a failed read from a build that never reported, so an
+    empty report means "unknown", not "models nothing": answering would
     substitute whatever release the build pins for the one the caller asked for.
     """
-    runtime = BlisRuntime("/opt/blis-silent", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-silent")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -670,14 +1001,14 @@ def test_request_for_a_release_is_refused_when_the_build_cannot_report_it(monkey
     )
     monkeypatch.setattr(blis_service, "cached_engines", lambda _binary: ())
 
-    with pytest.raises(BlisUnsupportedRequest, match="did not report which vLLM release"):
+    with pytest.raises(BlisUnsupportedRequest, match="did not report which vllm release"):
         blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
 
 
 def test_request_without_a_version_runs_on_a_build_that_cannot_report_it(monkeypatch, catalog):
     """Leaving the version blank asks for no release, so nothing is substituted."""
-    runtime = BlisRuntime("/opt/blis-silent-blank", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-silent-blank")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -693,8 +1024,8 @@ def test_request_without_a_version_runs_on_a_build_that_cannot_report_it(monkeyp
 
 def test_current_alias_means_the_release_the_build_models(monkeypatch, catalog):
     """`current` is the documented spelling of "the default", not a pin."""
-    runtime = BlisRuntime("/opt/blis-current", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-current")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -727,8 +1058,8 @@ def test_aisim_slot_aliases_are_refused_by_name(monkeypatch, catalog, alias):
     The refusal does not depend on the probe: the value is meaningless whether or
     not the build can report its release.
     """
-    runtime = BlisRuntime("/opt/blis-aliases", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis-aliases")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -760,11 +1091,7 @@ def test_scenario_can_model_a_disaggregated_topology():
 
 
 def test_run_command_passes_the_scenario_directory_without_external_data_paths():
-    runtime = BlisRuntime(
-        binary="/opt/venv/bin/blis",
-        catalog="/opt/blis/catalog",
-        registry="",
-    )
+    runtime = BlisRuntime(binary="/opt/venv/bin/blis")
 
     command = build_run_command(runtime, RunRequest(
         scenario="generated.yaml",
@@ -797,7 +1124,7 @@ def test_run_command_passes_the_scenario_directory_without_external_data_paths()
 
 
 def test_run_command_passes_p_and_d_instance_counts():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
+    runtime = BlisRuntime("/opt/venv/bin/blis")
     command = build_run_command(runtime, RunRequest(
         scenario="generated.yaml",
         scenario_directory="/tmp/scenarios",
@@ -965,8 +1292,8 @@ def _result(
 
 
 def test_recommend_candidate_ceiling_uses_configured_limit_and_hardware(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1007,8 +1334,8 @@ def test_recommend_candidate_ceiling_uses_configured_limit_and_hardware(monkeypa
 
 
 def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1057,8 +1384,8 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
 
 
 def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1101,8 +1428,8 @@ def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch
 
 
 def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1144,8 +1471,8 @@ def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monke
 
 
 def test_recommend_validates_a_named_fabric_even_when_serving_is_aggregated(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1165,8 +1492,8 @@ def test_recommend_validates_a_named_fabric_even_when_serving_is_aggregated(monk
 
 
 def test_recommend_searches_pd_when_disaggregated_is_named(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1188,8 +1515,8 @@ def test_recommend_searches_pd_when_disaggregated_is_named(monkeypatch, catalog)
 
 
 def test_recommend_demand_stays_aggregated_with_a_named_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1216,7 +1543,7 @@ def test_recommend_demand_stays_aggregated_with_a_named_fabric(monkeypatch, cata
 
 
 def test_run_command_uses_rate_and_omits_concurrency():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
+    runtime = BlisRuntime("/opt/venv/bin/blis")
     command = build_run_command(runtime, RunRequest(
         scenario="generated.yaml",
         scenario_directory="/tmp/scenarios",
@@ -1234,7 +1561,7 @@ def test_run_command_uses_rate_and_omits_concurrency():
 
 
 def test_run_command_requires_exactly_one_load_control():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
+    runtime = BlisRuntime("/opt/venv/bin/blis")
     with pytest.raises(ValueError, match="exactly one"):
         build_run_command(runtime, RunRequest(
             scenario="generated.yaml",
@@ -1298,8 +1625,8 @@ def _demand_recommend_input() -> blis_service.RecommendInput:
 
 
 def test_recommend_demand_selects_fewest_gpus_that_sustains_rate(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
     calls = []
@@ -1328,8 +1655,8 @@ def test_recommend_demand_selects_fewest_gpus_that_sustains_rate(monkeypatch, ca
 
 
 def test_recommend_demand_reports_best_observed_when_rate_is_unmet(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
 
@@ -1348,7 +1675,7 @@ def test_recommend_demand_reports_best_observed_when_rate_is_unmet(monkeypatch, 
 
 
 def test_recommend_demand_rejects_latency_targets(monkeypatch, catalog):
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     request = _demand_recommend_input()
     with pytest.raises(blis_service.BlisUnsupportedRequest, match="does not apply latency targets"):
         blis_service.recommend(blis_service.RecommendInput(
@@ -1357,8 +1684,8 @@ def test_recommend_demand_rejects_latency_targets(monkeypatch, catalog):
 
 
 def test_recommend_skips_pd_candidates_without_a_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
     monkeypatch.setattr(blis_service, "run_blis", lambda *_args, **_kwargs: _result())
@@ -1380,8 +1707,8 @@ def test_recommend_skips_pd_candidates_without_a_fabric(monkeypatch, catalog):
 
 
 def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1430,8 +1757,8 @@ def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypa
 
 
 def test_predict_maps_requests_per_load_unit_to_the_simulation_slice(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1513,8 +1840,8 @@ def _capacity_input(**overrides) -> blis_service.RecommendInput:
 def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1562,8 +1889,8 @@ def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
 def test_recommend_capacity_credits_the_shared_prefix_once_per_replica(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1595,7 +1922,7 @@ def test_recommend_capacity_credits_the_shared_prefix_once_per_replica(
 
 
 def test_recommend_capacity_rejects_a_request_rate_before_running(monkeypatch, catalog):
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
 
     with pytest.raises(BlisUnsupportedRequest, match="does not accept target_request_rate"):
         blis_service.recommend(_capacity_input(request_rate=10.0, concurrency=None))
@@ -1604,8 +1931,8 @@ def test_recommend_capacity_rejects_a_request_rate_before_running(monkeypatch, c
 def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1635,8 +1962,8 @@ def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
 
 
 def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1669,8 +1996,8 @@ def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog)
 
 
 def test_recommend_capacity_fails_when_blis_reports_no_kv_pool(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1690,8 +2017,8 @@ def test_recommend_capacity_fails_when_blis_reports_no_kv_pool(monkeypatch, cata
 def test_recommend_pareto_enumerates_topologies_and_concurrency(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1743,8 +2070,8 @@ def test_recommend_pareto_enumerates_topologies_and_concurrency(
 
 
 def test_recommend_pareto_marks_sla_violations_infeasible(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "")
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    runtime = BlisRuntime("/opt/blis")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
         blis_service,
@@ -1778,7 +2105,7 @@ def test_recommend_pareto_marks_sla_violations_infeasible(monkeypatch, catalog):
 
 
 def test_recommend_pareto_rejects_a_load_target(monkeypatch, catalog):
-    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
 
     with pytest.raises(BlisUnsupportedRequest, match="drive their own load"):
         blis_service.recommend(_capacity_input(

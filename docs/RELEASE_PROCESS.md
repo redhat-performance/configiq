@@ -130,9 +130,9 @@ inference-sim#2693, #2694, #2695), the Containerfile builds
 the binary from a pinned commit of the fork's `deploy/api` branch instead — the
 upstream `main` commit that tag names, plus those changes, tagged in the fork so
 a rewrite of the branch cannot orphan it. BLIS v0.19 embeds its catalog and
-coefficient registry, so the Containerfile no longer clones them for a run; it
-copies the catalog out of the same pinned commit because the API enumerates
-support facts from it:
+coefficient registry, so the Containerfile clones no data tree at all: the API
+reads the same facts from the binary with `blis catalog list --json`, and the
+image cannot pair a binary with a different build's catalog:
 
 | Argument | Upstream |
 |---|---|
@@ -142,7 +142,6 @@ support facts from it:
 | `BLIS_FETCH_DEPTH` | how far back that fetch goes; it must reach `BLIS_BASE_TAG` |
 | `BLIS_GO_VERSION` | the `go` directive of that commit |
 | `BLIS_VERSION` | what `blis version` prints for it, without the leading `v` (a Go pseudo-version while no release tag contains the commit) |
-| `BLIS_CATALOG_COMMIT` | the same commit: the catalog the API lists |
 
 To move to a new BLIS build:
 
@@ -152,28 +151,26 @@ To move to a new BLIS build:
    `BLIS_REPOSITORY`, `BLIS_COMMIT`, `BLIS_BASE_TAG` and `BLIS_GO_VERSION`, and
    `BLIS_VERSION` to the pseudo-version `blis version` prints. The reported
    version is a build fact, never a literal that can drift from the binary: the
-   build fails if `blis version --json` reports anything but `BLIS_VERSION`
-   plus the full `BLIS_COMMIT` revision.
+   build fails if `blis version --json` reports a version other than the one
+   `BLIS_VERSION` states, and the Python test pins the commit the footer shows.
 2. Set `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
    vX.Y.Z`): the binary embeds no revision, so this is the only source for the
    git commit the footer shows. The default `BLIS_VERSION` may omit it, because
    the service resolves the default build's commit; any other build without a
    commit reports no revision.
-3. Bump `BLIS_CATALOG_COMMIT` to the source commit the build reads from.
-4. Update `DEFAULT_BLIS_RELEASE` and `DEFAULT_BLIS_COMMIT` in
+3. Update `DEFAULT_BLIS_RELEASE` and `DEFAULT_BLIS_COMMIT` in
    `tools/api_service/blis/runtime.py`. Do not add an engine-version table: the
    build reports the release its kernel prices, and the adapter forwards it.
-5. Rebuild the image and confirm the new binary reports the build:
-   `/usr/local/bin/blis version`, then `GET /simulators` and
-   `GET /backends?simulator=blis`.
-6. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
+4. Rebuild the image and confirm the new binary reports the build:
+   `/usr/local/bin/blis version --json`, `blis catalog list --json`, then
+   `GET /simulators` and `GET /backends?simulator=blis`.
+5. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
    then a BLIS `/predict` for a listed model) so a catalog/binary mismatch fails
    before deployment.
 
-BLIS never fetches at run time, so the catalog and registry must be baked into
-the image. The catalog is read directly by the API and is the only source of
-BLIS support facts: models with a derived `graph.yaml`, hardware files, and
-network files.
+BLIS never fetches at run time, so its catalog and registry must be baked into
+the binary. The binary's own `catalog list` report is the only source of BLIS
+support facts: model graphs, chips, and fabrics.
 
 
 ## Deployment

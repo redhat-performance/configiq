@@ -15,13 +15,13 @@ from typing import Any, Literal
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from ..replay.capture import active_recorder, capture_blis_run
-from .engines import cached_engines
-from .manifest import (
+from .catalog import (
     BlisCatalog,
-    BlisUnsupportedRequest,
     ModelResolution,
     load_catalog,
 )
+from .engines import BlisEngine, cached_engines
+from .errors import BlisUnsupportedRequest
 from .runner import (
     BlisExecutionError,
     BlisTimeoutError,
@@ -269,34 +269,72 @@ class _ResolvedRequest:
     model: ModelResolution
     hardware: str
     gpus_per_node: int
+    #: The engine kind the request selected, named as BLIS names it.
+    engine_kind: str
+    #: That kind's entry from the build's own engine report. None when the build
+    #: cannot report its engines, in which case no role or version can be checked
+    #: and none is refused.
+    engine: BlisEngine | None
+
+    def supports_roles(self, roles: Iterable[str]) -> bool:
+        """Whether the selected engine models every role, or reports no roles at all."""
+        if self.engine is None or not self.engine.roles:
+            return True
+        return all(role in self.engine.roles for role in roles)
+
+
+def _require_roles(
+    resolved: _ResolvedRequest,
+    roles: Iterable[str],
+    *,
+    topology: str,
+) -> None:
+    """Refuse a topology the selected engine does not model.
+
+    A build that reports no engine report has no roles to check, so the request
+    proceeds and the run itself decides.
+    """
+    if resolved.supports_roles(roles):
+        return
+    assert resolved.engine is not None
+    modelled = ", ".join(resolved.engine.roles) or "no reported roles"
+    missing = ", ".join(role for role in roles if role not in resolved.engine.roles)
+    raise BlisUnsupportedRequest(
+        f"BLIS {blis_release()} models {resolved.engine.kind} for {modelled} serving; "
+        f"a {topology} request needs {missing}. Select an engine that reports it."
+    )
 
 
 def _resolve_request(model_path: str, system: str, backend: str, backend_version: str | None) -> _ResolvedRequest:
-    if backend != "vllm":
-        raise BlisUnsupportedRequest(
-            f"BLIS scenarios currently model vLLM deployments, not backend {backend!r}; "
-            "select vLLM or choose AISimulate explicitly"
-        )
     runtime = resolve_runtime()
+    engines = cached_engines(runtime.binary)
+    engine = next((candidate for candidate in engines if candidate.kind == backend), None)
+    if engines and engine is None:
+        kinds = ", ".join(sorted(candidate.kind for candidate in engines))
+        raise BlisUnsupportedRequest(
+            f"BLIS {blis_release()} models {kinds}; it has no engine kind {backend!r}. "
+            "Select one of the reported engines."
+        )
     # The build fixes which engine release it prices, so `backend_version` selects
     # nothing. A request that names a release the build does not model is refused
-    # with the releases it does, rather than answered with a different one.
+    # with the release it does, rather than answered with a different one. An
+    # unreadable build cannot verify a pin, so it refuses one rather than
+    # substituting whatever release it happens to price.
     requested = _requested_engine_version(backend_version)
     if requested is not None:
-        modeled = _modeled_engine_versions(runtime.binary)
-        if not modeled:
+        if engine is None or not engine.modeled_version:
             raise BlisUnsupportedRequest(
-                f"BLIS {blis_release()} did not report which vLLM release it models, so "
-                f"backend_version {backend_version!r} cannot be checked against it. Leave "
-                "backend_version blank to run the release the build models."
+                f"BLIS {blis_release()} did not report which {backend} release it models, "
+                f"so backend_version {backend_version!r} cannot be checked against it. "
+                "Leave backend_version blank to run the release the build models."
             )
-        if requested not in modeled:
+        if requested != engine.modeled_version:
             raise BlisUnsupportedRequest(
-                f"BLIS {blis_release()} models vLLM {', '.join(modeled)}; "
+                f"BLIS {blis_release()} models {backend} {engine.modeled_version}; "
                 f"requested backend_version {backend_version!r}. Leave backend_version "
                 "blank to use the release the build models."
             )
-    catalog = load_catalog()
+    catalog = load_catalog(runtime.binary)
     model = catalog.resolve_model(model_path)
     hardware = catalog.resolve_hardware(system)
     try:
@@ -313,6 +351,8 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
         model=model,
         hardware=hardware,
         gpus_per_node=gpus_per_node,
+        engine_kind=backend,
+        engine=engine,
     )
 
 
@@ -345,22 +385,6 @@ def _requested_engine_version(raw: str | None) -> str | None:
     return requested
 
 
-def _modeled_engine_versions(binary: str) -> tuple[str, ...]:
-    """The vLLM releases the build models, or none when it cannot report them.
-
-    An unreadable build is retried rather than remembered, so one failed probe does
-    not leave the version check switched off for the life of the process (see
-    ``cached_engines``). A caller that must check a requested release treats an
-    empty tuple as "cannot verify" rather than as "models nothing" — see
-    ``_resolve_request``.
-    """
-    return tuple(
-        engine.modeled_version
-        for engine in cached_engines(binary)
-        if engine.kind == "vllm" and engine.modeled_version
-    )
-
-
 def _provenance(
     resolved: _ResolvedRequest,
     model_path: str,
@@ -379,6 +403,22 @@ def _provenance(
         "model_config_relation": None,
         "engine_version": engine_version,
     }
+
+
+def _reported_engine_version(result: dict[str, Any], resolved: _ResolvedRequest) -> str | None:
+    """The engine release whose serving behaviour a run of the selected kind priced.
+
+    The build's own engine report is the answer: its ``modeled_version`` is by
+    definition the release the kernel's behaviour encodes for that kind, and it
+    is per kind. A run's kernel assumptions can also disclose a release, but that
+    disclosure names the latency kernel's shared behaviour and not this kind's
+    release, so it is used only for a build that cannot report its engines. The
+    build's engine snapshot is neither: it is provenance, not a release a
+    benchmark can be compared against.
+    """
+    if resolved.engine is not None and resolved.engine.modeled_version:
+        return resolved.engine.modeled_version
+    return _modeled_engine_version(result)
 
 
 def _modeled_engine_version(result: dict[str, Any]) -> str | None:
@@ -415,12 +455,6 @@ def supported_model_ids(catalog: BlisCatalog | None = None) -> list[str]:
     """Model identifiers the BLIS catalog can price, for the catalog endpoints."""
     catalog = catalog or load_catalog()
     return catalog.model_ids()
-
-
-def supported_system_ids(systems: Iterable[str], catalog: BlisCatalog | None = None) -> list[str]:
-    """The subset of ``systems`` whose hardware BLIS has a catalog chip for."""
-    catalog = catalog or load_catalog()
-    return [system for system in systems if catalog.supports_hardware(system)]
 
 
 def _model_warnings(resolved: _ResolvedRequest, *, model_config_provided: bool = False) -> list[str]:
@@ -469,7 +503,9 @@ def _scenario_request(
     enable_chunked_prefill: bool | None = None,
 ) -> ScenarioRequest:
     gemm_quant_mode, moe_quant_mode = _weight_quantization(gemm_quant_mode, moe_quant_mode)
+    _require_roles(resolved, ("colocated",), topology="aggregated")
     return ScenarioRequest(
+        engine_kind=resolved.engine_kind,
         model=resolved.model,
         hardware=resolved.hardware,
         system=system,
@@ -529,40 +565,81 @@ def _deployment_pools(result: dict[str, Any]) -> list[dict[str, Any]]:
     return [pool for pool in pools if isinstance(pool, dict)] if isinstance(pools, list) else []
 
 
-def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], backend_version: str | None) -> dict[str, Any]:
+#: Where each engine kind names, in its own engine block, the settings ConfigIQ
+#: reports back. `None` means the kind has no equivalent setting.
+_ENGINE_SETTING_FIELDS: dict[str, dict[str, str | None]] = {
+    "vllm": {
+        "max_model_len": "max_model_len",
+        "max_num_seqs": "max_num_seqs",
+        "max_num_batched_tokens": "max_num_batched_tokens",
+        "memory_fraction": "gpu_memory_utilization",
+        "prefix_caching": "enable_prefix_caching",
+        "quantization": "quantization",
+    },
+    "sglang": {
+        "max_model_len": "context_length",
+        "max_num_seqs": "max_running_requests",
+        "max_num_batched_tokens": None,
+        "memory_fraction": "mem_fraction_static",
+        "prefix_caching": "disable_radix_cache",
+        "quantization": "quantization",
+    },
+}
+
+
+def _engine_serving_config(
+    engine: dict[str, Any],
+    parallel: dict[str, Any],
+    backend_version: str | None,
+    engine_kind: str,
+) -> dict[str, Any]:
     """Report the engine settings BLIS resolved, not a reconstruction of them."""
-    max_model_len = engine.get("max_model_len")
+    fields = _ENGINE_SETTING_FIELDS.get(engine_kind, {})
+
+    def setting(name: str) -> Any:
+        field = fields.get(name)
+        return engine.get(field) if field is not None else None
+
+    max_model_len = setting("max_model_len")
     max_model_len_policy: str | None = None
     if max_model_len == "auto":
         # `auto` is the simulator's own policy, so report the policy rather than
         # inventing a token window the run did not state.
         max_model_len = None
         max_model_len_policy = "auto"
+    prefix_caching = setting("prefix_caching")
+    if fields.get("prefix_caching") == "disable_radix_cache" and prefix_caching is not None:
+        # This kind states the opposite setting: whether the radix cache is off.
+        prefix_caching = not prefix_caching
     return {
-        "backend": "vllm",
+        "backend": engine_kind,
         "backend_version": backend_version,
         "tensor_parallel_size": parallel.get("tp") or 1,
         "max_model_len": max_model_len if isinstance(max_model_len, int) else None,
         "max_model_len_policy": max_model_len_policy,
-        "max_num_seqs": engine.get("max_num_seqs"),
-        "max_num_batched_tokens": engine.get("max_num_batched_tokens"),
-        "gpu_memory_utilization": engine.get("gpu_memory_utilization"),
+        "max_num_seqs": setting("max_num_seqs"),
+        "max_num_batched_tokens": setting("max_num_batched_tokens"),
+        "gpu_memory_utilization": setting("memory_fraction"),
         # Chunked prefill is not a Scenario field. Leave it unknown rather than
         # claiming a default that the generated document did not specify.
         "enable_chunked_prefill": None,
-        "enable_prefix_caching": engine.get("enable_prefix_caching"),
-        "quantization": engine.get("quantization") or "model default",
+        "enable_prefix_caching": prefix_caching,
+        "quantization": setting("quantization") or "model default",
     }
 
 
-def _serving_config(result: dict[str, Any], backend_version: str | None) -> dict[str, Any] | None:
+def _serving_config(
+    result: dict[str, Any],
+    backend_version: str | None,
+    engine_kind: str,
+) -> dict[str, Any] | None:
     pools = _deployment_pools(result)
     if not pools:
         return None
     pool = pools[0]
     engine = pool.get("engine") if isinstance(pool.get("engine"), dict) else {}
     parallel = pool.get("parallel") if isinstance(pool.get("parallel"), dict) else {}
-    return _engine_serving_config(engine, parallel, backend_version)
+    return _engine_serving_config(engine, parallel, backend_version, engine_kind)
 
 
 def _run_scenario(
@@ -627,7 +704,6 @@ def _capture_scenario(
             argv=build_run_command(resolved.runtime, request),
             files=files,
             binary=resolved.runtime.binary,
-            catalog=resolved.runtime.catalog,
             scenario_directory=scenario_directory,
             candidate_id=candidate_id,
         )
@@ -642,6 +718,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         )
     if not request.fabric:
         raise BlisUnsupportedRequest("BLIS disaggregated predictions require an explicit fabric")
+    _require_roles(resolved, ("prefill", "decode"), topology="disaggregated")
     fabric = resolved.catalog.resolve_network(request.fabric)
     if request.dp != 1:
         raise BlisUnsupportedRequest("BLIS disaggregated predictions currently require attention_dp_size=1")
@@ -704,6 +781,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
     prefill = make_pool("prefill")
     decode = make_pool("decode")
     base = ScenarioRequest(
+        engine_kind=resolved.engine_kind,
         model=resolved.model,
         hardware=resolved.hardware,
         system=request.system,
@@ -734,7 +812,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
-    engine_version = _modeled_engine_version(result)
+    engine_version = _reported_engine_version(result, resolved)
     total_gpus = (
         prefill.tp * prefill.pp * (request.prefill_num_workers or 1)
         + decode.tp * decode.pp * (request.decode_num_workers or 1)
@@ -811,12 +889,12 @@ def estimate(request: EstimateInput) -> BlisPrediction:
         num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
-    engine_version = _modeled_engine_version(result)
+    engine_version = _reported_engine_version(result, resolved)
     total_gpus = request.tp * request.pp * request.dp
     return BlisPrediction(
         summary=_metrics_summary(metrics, total_gpus),
         provenance=_provenance(resolved, request.model_path, request.system, engine_version=engine_version),
-        serving_config=_serving_config(result, engine_version),
+        serving_config=_serving_config(result, engine_version, resolved.engine_kind),
         warnings=_model_warnings(resolved, model_config_provided=request.model_config_provided) + (
             [f"Simulator marked {int(metrics['dropped_unservable'])} request(s) unservable."]
             if isinstance(metrics.get("dropped_unservable"), (int, float)) and metrics["dropped_unservable"] > 0
@@ -877,6 +955,7 @@ def _recommend_disagg_scenario(
         )
 
     return ScenarioRequest(
+        engine_kind=resolved.engine_kind,
         model=resolved.model,
         hardware=resolved.hardware,
         system=request.system,
@@ -1182,7 +1261,7 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
             continue
         evaluated.append(candidate)
         if engine_version is None:
-            engine_version = _modeled_engine_version(raw)
+            engine_version = _reported_engine_version(raw, resolved)
         capacity_tokens = metrics.get("kv_capacity_tokens_per_replica")
         if not isinstance(capacity_tokens, (int, float)) or capacity_tokens <= 0:
             execution_failures.append(BlisExecutionError(
@@ -1547,7 +1626,8 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     # always searches P/D: a caller's topology assumption must be valid before
     # the sweep reports a frontier built from it.
     fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
-    include_disagg = fabric is not None
+    # Only an engine that models both P/D roles can serve a disaggregated pool.
+    include_disagg = fabric is not None and resolved.supports_roles(("prefill", "decode"))
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg and fabric is not None
     )
@@ -1601,7 +1681,7 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
                 )
                 raw = normalize_result(result)
                 if engine_version is None:
-                    engine_version = _modeled_engine_version(result)
+                    engine_version = _reported_engine_version(result, resolved)
             except BlisTimeoutError:
                 ledger.append({
                     "candidate": {
@@ -1792,7 +1872,16 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     # cannot attach a P/D transfer fabric to a rate-driven run it did not search.
     # An aggregated serving mode asks for that same aggregate-only search even
     # when a fabric is present. Pareto does not use this path.
-    include_disagg = fabric is not None and not demand and request.mode != "agg"
+    include_disagg = (
+        fabric is not None
+        and not demand
+        and request.mode != "agg"
+        and resolved.supports_roles(("prefill", "decode"))
+    )
+    if request.mode == "disagg" and not include_disagg:
+        # The caller asked for P/D and the selected engine cannot serve it. An
+        # aggregate answer would be a substitution the caller did not ask for.
+        _require_roles(resolved, ("prefill", "decode"), topology="disaggregated")
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg
     )
@@ -1851,7 +1940,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             )
             metrics = normalize_result(result)
             if engine_version is None:
-                engine_version = _modeled_engine_version(result)
+                engine_version = _reported_engine_version(result, resolved)
         except BlisExecutionError as exc:
             evaluated.append(candidate)
             execution_failures.append(exc)
