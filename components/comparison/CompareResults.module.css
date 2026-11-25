@@ -21,8 +21,9 @@
 }
 
 .pageTitle {
-  margin: 0 0 6px;
-  font: 500 26px/1.2 var(--display);
+  margin: 8px 0 4px;
+  font: 700 30px/1.2 var(--display);
+  letter-spacing: -0.01em;
   color: var(--t);
 }
 
