@@ -27,7 +27,12 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 function fenceRun(line) {
   const match = FENCE.exec(line)
   if (match === null) return null
-  return { character: match[1][0], length: match[1].length, rest: match[2] }
+  const character = match[1][0]
+  const rest = match[2]
+  // A backtick fence's info string may not contain a backtick, so a line like
+  // ```code``` is an inline code span, not an opener that hides what follows.
+  if (character === '`' && rest.includes('`')) return null
+  return { character, length: match[1].length, rest }
 }
 
 /**

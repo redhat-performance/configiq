@@ -237,6 +237,15 @@ describe('pull request description check', () => {
     expect(checkDescription(body, template)).toEqual([])
   })
 
+  it('does not treat an inline code span as a fence', () => {
+    // A backtick fence's info string cannot contain a backtick, so these are
+    // inline spans. Reading the first as an opener would never find a close.
+    const spans = '```first```\n\n```second```\n\n'
+    const body = completed().replace('## Checks\n', `${spans}## Checks\n`)
+
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
   it('removes only the line breaks that fall inside a comment', () => {
     expect(
       stripComments('- [x] Shared views <!-- guidance\n-->\n      contract'),
