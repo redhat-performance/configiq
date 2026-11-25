@@ -198,4 +198,25 @@ describe('documented hosts', () => {
         .toContain(example);
     }
   });
+
+  /**
+   * A route's fallback is the address a deployment without an explicit gateway
+   * setting actually calls, so it is as canonical as anything the docs publish.
+   */
+  it('falls back to a canonical costings host when the gateway is unset', () => {
+    const routes = [
+      'app/api/costings/health/route.ts',
+      'app/api/costings/models/route.ts',
+      'app/api/costings/offers/route.ts',
+      'app/api/costings/sources/route.ts',
+      'app/api/costings/systems/route.ts',
+    ];
+    for (const file of routes) {
+      const text = readFileSync(path.join(ROOT, file), 'utf8');
+      for (const host of RETIRED) {
+        expect(text, `${file} falls back to the retired host ${host}`).not.toContain(host);
+      }
+      expect(text, `${file} names no canonical costings host`).toContain(CANONICAL_COSTINGS[0]);
+    }
+  });
 });

@@ -23,6 +23,10 @@ the `aisimulate` and `aisimulate_core` APIs used by this service.
 | GET | `/networks` | Network fabrics (per `simulator`; empty when it models none) |
 | GET | `/simulators` | Simulator identity, label, description, version, and revision |
 
+`/recommend`, `/predict`, and `/estimate` accept an `include` query parameter for
+optional sections (`config`, `memory`, `debug`); `/memory` accepts `debug`. See
+[Replay artifacts](#replay-artifacts-includedebug) for `debug`.
+
 Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 
 ## Run with the container (recommended)
@@ -79,20 +83,62 @@ facts:
 
 ## Simulator API behavior
 
-`POST /predict` and `POST /recommend` accept `simulator: "aisimulate" | "blis"`
+`POST /predict` and `POST /recommend` accept `simulator: "aisim" | "blis"`
 (`GET /simulators` is the authoritative list). The default remains
-`aisimulate`. A BLIS request resolves its model, hardware, and fabric from the
+`aisim`. A BLIS request resolves its model, hardware, and fabric from the
 pinned catalog, generates a temporary Scenario + Deployment for the requested
 configuration, and passes it to `blis run`. Unsupported models, systems, fabrics,
 or settings return an explicit client error. A BLIS failure is never retried
-through AISimulate, and an unknown `simulator` value is a 422 rather than a
+through AISim, and an unknown `simulator` value is a 422 rather than a
 fall-through to another branch.
 
-`POST /memory` is an AISimulate capability. A request that names a simulator
+`POST /memory` is an AISim capability. A request that names a simulator
 without a memory capability (currently BLIS) returns 422 instead of borrowing
-AISimulate's answer.
+AISim's answer.
 
-## AISimulate backend versions
+## Replay artifacts (`include=debug`)
+
+`POST /recommend`, `POST /predict`, `POST /estimate`, and `POST /memory` accept
+`include=debug`. The response then carries a `debug` record of what the request
+executed: a command line per run, the input files that command reads, and the
+simulator releases and data revisions the run was made against. The record is
+meant to be reproducible outside ConfigIQ — write the files to a directory and
+run the command, or run the record's `script` (`run.sh`), on a machine with the
+pinned simulators installed.
+
+The record travels inline in the response rather than being fetched by id. The
+service runs more than one worker process, so a later request has no guarantee of
+reaching the worker that made a record; an id-addressed store would answer 404
+for a record that exists.
+
+What a command means:
+
+| Simulator | `execution` | Meaning |
+|---|---|---|
+| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. Runtime paths are read from `BLIS_BINARY`, `BLIS_CATALOG`, and `BLIS_REGISTRY`, so the command does not name this image's layout. |
+| AISim | `in_process` | An equivalent CLI invocation, `aisimulate predict -c <file>` or `aisimulate recommend -c <file>`. The service calls the Python API directly, so the command repeats the same work rather than the same process. |
+| AISim (memory) | `in_process` | A Python snippet calling `estimate_kv_cache`. The memory model has no CLI verb. |
+
+`debug: null` is a real answer, not an error: recording is best-effort so a
+simulation never fails because its description could not be built. It means the
+request has no single command of its own — a `concurrency_capacity`
+recommendation is an enumeration over the search space, not one invocation — or
+that the artifacts exceeded the size cap (`AISIMULATORS_REPLAY_MAX_BYTES`,
+default 2 MiB). Over the cap, per-candidate commands are dropped first and the
+record says how many, because the command that produced the answer is what
+explains the answer.
+
+Each Pareto candidate's recorded invocation carries that candidate's
+`candidate_id`, so a candidate row copies its own command instead of the sweep's.
+`script` leaves candidate invocations out: running every candidate is not the
+sweep. A record holds at most 512 invocations, and a version-fallback attempt
+that failed is dropped from it — the record describes the run that produced the
+answer, not the ones that did not. A GPU window the search skipped because the
+model did not fit is dropped the same way, so `run.sh` never stops before the
+window that answered.
+
+
+## AISim backend versions
 
 `backend_version` is optional. When it is omitted, the service resolves it to the
 system default — the SDK's `current` slot, the same value `/backends` reports in
@@ -115,7 +161,7 @@ previously surfaced as a generic 500.
 
 ### MoE / FFN width resolution
 
-AISimulate validates that `tp_size * attention_dp_size * cp_size` equals
+AISim validates that `tp_size * attention_dp_size * cp_size` equals
 `moe_tp_size * moe_ep_size` for model families that can host MoE layers,
 including dense variants such as dense Gemma 4. The service therefore resolves
 an omitted width pair per worker to
@@ -144,23 +190,23 @@ otherwise the catalog model's native context, otherwise `isl + osl`. It does not
 emit `auto`, because BLIS resolves that from the model graph and some catalog
 graphs (for example `gpt-oss-120b`) omit the context window. A P/D scenario
 gives each pool its own limit from `prefill_max_seq_len` /
-`decode_max_seq_len` when set, falling back to `max_seq_len`; AISimulate applies
+`decode_max_seq_len` when set, falling back to `max_seq_len`; AISim applies
 the same per-pool fallback. Any other
-`backend_version`, including AISimulate aliases such as `current`, is refused
+`backend_version`, including AISim aliases such as `current`, is refused
 with a 422 that names the modeled releases — BLIS treats `engine_version` as a
 check, not a selector, so the service never substitutes a different release
 silently.
 
 `GET /backends`, `/models`, `/systems`, and `/networks` take `simulator` so a
 client can ask what the selected simulator supports. `/backends?simulator=...`
-reports `simulator_version` and `recommend_search` (`windowed` for AISimulate's
+reports `simulator_version` and `recommend_search` (`windowed` for AISim's
 service-owned GPU window ladder, `single` for BLIS's one bounded search). The BLIS
 branch also reports the modeled versions, the literal default, and a
 `version_support` map (`disaggregated`, `max_model_len_auto`) per release.
 `/models?simulator=blis` returns the catalog's Hugging Face repo IDs (catalog
 slugs are accepted as input aliases), and `/systems?simulator=blis` returns only
-systems that resolve to a catalog chip. `/networks?simulator=aisimulate` is an
-empty list, because AISimulate does not model an inter-node fabric; each
+systems that resolve to a catalog chip. `/networks?simulator=aisim` is an
+empty list, because AISim does not model an inter-node fabric; each
 response includes `simulator`, and the BLIS response names its `default_network`.
 Each backend entry reports `disaggregation_requires_fabric`, so a client knows
 whether a P/D topology needs a fabric selection without matching on the
@@ -174,7 +220,7 @@ Simulator provenance includes the requested and resolved model, hardware,
 simulator version, and engine version. BLIS prices the catalog's own model
 configuration, so there is no cross-simulator config relation to report.
 BLIS predictions do not include KV-cache memory breakdowns; `/memory` refuses a
-simulator without that capability rather than substituting AISimulate.
+simulator without that capability rather than substituting AISim.
 
 Both `/predict` and `/recommend` accept `prefix`, the shared prefix cached as a
 subset of `isl`; a value larger than `isl` or a supplied context limit is
@@ -187,7 +233,7 @@ system for both pools, and `attention_dp_size=1`. The adapter generates separate
 role pools, a NIXL transfer connector, and a router configuration that
 disaggregates every request. Both modes accept `requests_per_load_unit` and
 simulate `max(1, round(batch_size x requests_per_load_unit))` total requests
-when it is specified, the same rule AISimulate uses. When omitted, both modes
+when it is specified, the same rule AISim uses. When omitted, both modes
 simulate one total request.
 
 The run also pins the prompt and output token distributions to the requested
@@ -217,7 +263,7 @@ only through a fabric (`disaggregation_requires_fabric` on `/backends`, true
 for BLIS) also rejects `mode=disagg` when the request resolves to no fabric.
 Validation reads that capability flag, never the simulator ID.
 
-`mode=disagg` is accepted with `objective=throughput_demand` because AISimulate
+`mode=disagg` is accepted with `objective=throughput_demand` because AISim
 searches P/D for that goal. BLIS demand sizing replays open-loop traffic and
 attaches no P/D transfer fabric, so its search stays aggregated; the response
 says so in `sweep.modes_searched` (`["agg"]`) rather than echoing the request.
@@ -227,7 +273,7 @@ searched.
 Both simulators report what the search covered in `sweep.modes_searched`
 (contract values `agg`/`disagg`; null when the simulator reported no search
 facts). `chosen_mode` describes the recommendation, which can be aggregated
-even when P/D candidates were evaluated. AISimulate reports the union over the
+even when P/D candidates were evaluated. AISim reports the union over the
 GPU windows that returned a result, so a one-GPU window contributes `agg` only;
 BLIS reports the modes its candidate grid reached, where a candidate that ran
 and failed still counts, and also lists them in
@@ -252,7 +298,7 @@ run bound rather than a modeled production queue. Any latency target on a
 demand request is rejected with 422.
 
 BLIS recommendation's candidate ceiling is the same
-`AISIMULATORS_MAX_CANDIDATE_GPUS` service setting used by AISimulate, further
+`AISIMULATORS_MAX_CANDIDATE_GPUS` service setting used by AISim, further
 limited by one node for aggregate-only search or two nodes (one per P/D pool)
 when a fabric is active. A total search budget bounds the individual simulations. The service
 caps that budget at 60 seconds; the web
@@ -350,7 +396,7 @@ rate, then lowest E2E latency. When none comply, the highest sustained rate wins
 (then fewest GPUs) and the response is still 200 with `met=false`. A request
 that produces no feasible candidate with a rate measurement returns 422.
 
-AISimulate demand runs use `DEMAND_MAX_TRIALS` (default 16),
+AISim demand runs use `DEMAND_MAX_TRIALS` (default 16),
 `DEMAND_PARALLELISM` (default 4), `DEMAND_CANDIDATE_TIMEOUT_S` (default 15) and
 `DEMAND_REQUESTS_PER_LOAD_UNIT` (default 5). The SDK config uses open-loop
 `constant_rate` traffic and stops after `requests_per_load_unit` units, so the
@@ -394,7 +440,7 @@ input. The optional memory breakdown is a cold-request model: it charges every
 sequence the full peak context and does not subtract the prefix credit, so the
 capacity block, not the breakdown, carries the reuse assumption.
 
-For **AISimulate**, selection enumerates the parallel search space (the same
+For **AISim**, selection enumerates the parallel search space (the same
 backend filters, wideEP heuristic, and KV-feasibility rule as `min_gpus`) and
 reads each shape's KV token capacity. A sequence cannot span ranks or replicas,
 so aggregated shapes count whole per-rank sequences, multiply by attention DP
@@ -422,7 +468,7 @@ as confirmed.
 
 The capacity evidence is always the selected simulator's own answer:
 
-- **AISimulate** derives weights plus KV cache for each enumerated shape, then
+- **AISim** derives weights plus KV cache for each enumerated shape, then
   applies the replica math above. It also enumerates disaggregated pairs and
   returns `capacity_options`.
 - **BLIS** runs each aggregate shape at concurrency 1 and reads the engine's
@@ -437,7 +483,7 @@ The capacity evidence is always the selected simulator's own answer:
   `kv_transfer_bandwidth_gb_per_second`, because it models P/D transfer through
   the selected fabric rather than an explicit bandwidth.
 
-`configs[0]` remains the single primary recommendation. For AISimulate,
+`configs[0]` remains the single primary recommendation. For AISim,
 `capacity_options` is a ranked comparison set: rank 1 is the same minimum, and
 the initial selection adds up to three same-GPU ties, up to two larger
 aggregated deployments, and up to two disaggregated representatives. Those are
@@ -483,7 +529,7 @@ A capacity result carries a `capacity` block:
   informational simulation produced timing data.
 - `simulator` — the simulator that produced this capacity result.
 
-For AISimulate, each option is simulated at the requested concurrency.
+For AISim, each option is simulated at the requested concurrency.
 Simulations share one wall-clock budget and run at most two at a time, with the
 primary simulated first, then disaggregated representatives, then the remaining
 alternatives. That simulation never gates `fits`: when timing data cannot cover
@@ -503,7 +549,7 @@ simulator.
 
 ### Pareto frontier provenance and availability
 
-Both simulators report `objective=pareto` in `/backends`. AISimulate samples the
+Both simulators report `objective=pareto` in `/backends`. AISim samples the
 frontier; BLIS has no native Pareto command, so the service enumerates topology
 and closed-loop concurrency combinations, runs each through BLIS, and computes
 the non-dominated set over throughput per user and throughput per GPU itself.
@@ -519,7 +565,7 @@ point, and that absence is reported rather than filled in. BLIS includes P/D
 topologies only when the request names a supported `fabric`; the web client
 sends the simulator's announced default fabric.
 
-When the caller sends a Pareto request, AISimulate resolves a model-aware
+When the caller sends a Pareto request, AISim resolves a model-aware
 window before sampling. The floor is the smallest aggregated worker shape that
 holds one full-context sequence (from the KV-feasibility enumeration), and the
 ceiling is `max(configured ceiling, floor × 2)`. The first window ends at
@@ -540,7 +586,7 @@ maximum; it does not resolve a model-aware fit floor.
 For a Pareto result:
 
 - `candidates` contains every evaluated candidate, including infeasible,
-  unsupported, timed-out, failed, and resource-limited records. AISimulate's raw
+  unsupported, timed-out, failed, and resource-limited records. AISim's raw
   fields such as `topology`, `metrics`, and `objectives` are copied verbatim;
   the service does not synthesize topology, transfer, or performance values.
   BLIS candidates carry the service-built topology and the metrics BLIS
@@ -554,14 +600,14 @@ For a Pareto result:
   (throughput per user vs throughput per GPU). Clients may recompute dominance
   only for a different axis or orientation, and must say so in the UI.
 - `transfer_delay_modeled` is true only when a P/D transfer delay was actually
-  modeled for that candidate. Under AISimulate, omitting
+  modeled for that candidate. Under AISim, omitting
   `kv_transfer_bandwidth_gb_per_second` means no modeled transfer delay; it does
   not imply a fabric default. BLIS models transfer through the named `fabric`
   and rejects an explicit bandwidth.
 - `sweep` reports the algorithm, seed, trial budget, evaluated/feasible/timed-out
   counts, and the GPU window. `sweep.budget_exhausted=true` means a wall-clock
   search time budget stopped the run: BLIS's Pareto enumeration or an
-  AISimulate window ladder. Trial spend is reported separately by
+  AISim window ladder. Trial spend is reported separately by
   `max_trials`/`evaluated`; for a sampled sweep, `evaluated >= max_trials`
   means the trial budget was spent. Exhaustion never means the search was
   exhaustive. `BLIS_PARETO_CONCURRENCY_LEVELS` overrides the

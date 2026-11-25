@@ -378,9 +378,10 @@ const memoryEstimate: ToolDefinition = {
     const raw = asRecord(await context.fetchJsonPost(`${context.gatewayUrl}/memory`, body));
     if (!raw) return unavailable('Memory service unavailable', 'The memory endpoint did not answer.');
 
-    // `/memory` is an AISimulate capability. If a different simulator is named
-    // in the result, the numbers did not come from what the user selected, so
-    // report that instead of presenting them as the requested simulator's.
+    // `/memory` is a capability the catalog advertises per simulator. If a
+    // different simulator is named in the result, the numbers did not come
+    // from what the user selected, so report that instead of presenting them
+    // as the requested simulator's.
     const reported = str(raw.simulator);
     if (context.simulator && reported && reported !== context.simulator) {
       return unavailable(

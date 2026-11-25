@@ -6,15 +6,20 @@ ConfigIQ uses semantic versioning with git tags to version the UI and its
 container images. The image build workflows are stored in this repository under
 `.github/workflows/`.
 
-The deployment contract consists of four container images:
+The deployment contract consists of five container images:
 
 - `ghcr.io/redhat-performance/configiq` (Next.js webapp)
 - `ghcr.io/redhat-performance/aisimulators` (GPU sizing / estimation API)
 - `ghcr.io/redhat-performance/aicostings` (GPU / LLM pricing API)
+- `ghcr.io/redhat-performance/configiq-mcp` (MCP gateway for the assistant)
 - `ghcr.io/redhat-performance/tritonserver` (FIL classifiers; carries the
   assistant's vLLM runtime)
 
 Keep the image versions compatible when releasing the frontend and services.
+
+`build.yml` builds four of them; `tritonserver.yml` builds the fifth. The
+`configiq-mcp` image is built by the matrix leg named `mcp-gateway`, so read a
+leg's `image:` value rather than its `name:` when auditing this list.
 
 ## Creating a Release
 
@@ -33,9 +38,9 @@ Keep the image versions compatible when releasing the frontend and services.
 
 3. Build, publish, and deploy the images using the workflows in
    `.github/workflows/build.yml` and `.github/workflows/tritonserver.yml`.
-   A release tag builds matching tags for all four images:
-   - `ghcr.io/redhat-performance/{configiq,aisimulators,aicostings,tritonserver}:X.Y.Z`
-   - `ghcr.io/redhat-performance/{configiq,aisimulators,aicostings,tritonserver}:latest`
+   A release tag builds matching tags for all five images:
+   - `ghcr.io/redhat-performance/{configiq,aisimulators,aicostings,configiq-mcp,tritonserver}:X.Y.Z`
+   - `ghcr.io/redhat-performance/{configiq,aisimulators,aicostings,configiq-mcp,tritonserver}:latest`
 
 ## Version Display in UI
 
@@ -44,7 +49,7 @@ The sidebar footer shows:
   short commit (via `NEXT_PUBLIC_GIT_COMMIT`)
 - **Every simulator**: label, version, and git commit, from `GET /simulators`,
   in that endpoint's order. Each simulator reports the commit of the artifact
-  this image runs: AISimulate's comes from the SDK wheel's direct-URL release
+  this image runs: AISim's comes from the SDK wheel's direct-URL release
   tag; BLIS's from the `BLIS_COMMIT` build arg. `revision` is null when the
   artifact does not report a commit, and the footer then shows the version
   only.
@@ -54,7 +59,7 @@ from the catalog API, so adding a simulator needs no footer change.
 
 ## Container Tags
 
-When the four images are released together, they carry the same tag set:
+When the five images are released together, they carry the same tag set:
 
 - **`latest`** - Most recent tagged release (release-tracking; the `configiq.io` host follows this)
 - **`dev`** - Latest commit from `main` (commit-tracking; the `.dev` host follows this)
@@ -203,7 +208,7 @@ models are separate from the generated bundle.
 
 ## Rollback
 
-To roll back, deploy a previous tagged version (do so for all four images so
+To roll back, deploy a previous tagged version (do so for all five images so
 they stay in the version lockstep they shipped in):
 ```bash
 podman pull ghcr.io/redhat-performance/configiq:X.Y.Z

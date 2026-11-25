@@ -187,7 +187,7 @@ export const HELP_AFFORDANCES: HelpAffordance[] = [
     doc: 'settings',
     anchor: 'simulator',
     label: 'Select a simulator',
-    keywords: ['simulator', 'aisimulate', 'blis', 'default'],
+    keywords: ['simulator', 'aisim', 'blis', 'default'],
   },
   {
     id: 'settings-backend',

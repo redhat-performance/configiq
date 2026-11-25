@@ -20,7 +20,7 @@ function memoryContext(options: {
 }
 
 const memoryResult = {
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   total_gpu_capacity_bytes: 141_000_000_000,
   total_kv_size_bytes: 20_000_000_000,
   kv_size_per_token_bytes: 320_000,
@@ -53,9 +53,9 @@ describe('memory tool', () => {
   });
 
   it('names the simulator that produced the numbers in its evidence', async () => {
-    const result = await runMemory(memoryContext({ response: memoryResult, simulator: 'aisimulate' }));
+    const result = await runMemory(memoryContext({ response: memoryResult, simulator: 'aisim' }));
     expect(result.ok).toBe(true);
-    expect(result.evidence.join(' ')).toContain('produced by aisimulate');
+    expect(result.evidence.join(' ')).toContain('produced by aisim');
   });
 
   it('refuses a result from a different simulator instead of substituting it', async () => {
@@ -67,7 +67,7 @@ describe('memory tool', () => {
   });
 
   it('links to the KV cache calculator through that page\'s own contract', async () => {
-    const result = await runMemory(memoryContext({ response: memoryResult, simulator: 'aisimulate' }));
+    const result = await runMemory(memoryContext({ response: memoryResult, simulator: 'aisim' }));
     expect(result.link).toBeDefined();
 
     const href = result.link?.href ?? '';

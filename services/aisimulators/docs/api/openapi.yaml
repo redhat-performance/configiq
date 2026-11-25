@@ -35,14 +35,14 @@ paths:
       description: |
         Given a model, GPU system, backend, workload shape, and performance
         targets (SLA), finds a deployment that meets the constraints. With
-        `simulator=aisimulate`, searches parallelism configurations (TP/PP/DP/EP)
+        `simulator=aisim`, searches parallelism configurations (TP/PP/DP/EP)
         and serving modes (aggregated and disaggregated). With `simulator=blis`,
         searches aggregate TP candidates for concurrency workloads. Supplying a
         `fabric` from `/networks` also enables a bounded grid of P/D TP and
         worker-count candidates, with one node per pool. Unsupported requests
-        return an error instead of falling back to AISimulate.
+        return an error instead of falling back to AISim.
 
-        The AISimulate path wraps `cli_recommend()` from the aisimulate SDK.
+        The AISim path wraps `cli_recommend()` from the aisimulate SDK.
         The BLIS path generates a temporary Scenario and Deployment and runs the
         image-pinned BLIS CLI.
 
@@ -79,7 +79,7 @@ paths:
           sampled configuration meets the rate, the response is still 200 with
           `demand.met=false` and the best observed rate. Compliance uses the
           rate sustained over the arrival window (excluding the final response
-          drain), not `completed / duration`. AISimulate grows its GPU window
+          drain), not `completed / duration`. AISim grows its GPU window
           from 8 GPUs (default) until the rate is met, the ceiling is reached,
           or the demand search budget is spent. The request carries no GPU
           bounds; the service owns the demand ladder too.
@@ -90,12 +90,12 @@ paths:
           `target_request_rate`; any `ttft`, `tpot`, or `request_latency` is
           rejected. Selection is a deterministic enumeration of the parallel
           search space, not a sampled sweep. The capacity answer comes from the
-          selected simulator: AISimulate derives weights plus KV cache, while
+          selected simulator: AISim derives weights plus KV cache, while
           BLIS reads the KV pool the engine reports
           (`engine.cluster.kv_capacity_tokens_per_replica`) and multiplies it by
           the replicas needed. BLIS capacity is aggregate-only, so it returns no
           `capacity_options` and rejects an explicit non-null `fabric`.
-          `configs[0]` is the fewest-GPU recommendation. For AISimulate,
+          `configs[0]` is the fewest-GPU recommendation. For AISim,
           `capacity_options` returns a ranked comparison set that starts with
           that same minimum and adds same-GPU ties, larger aggregated
           deployments, and disaggregated deployments where the backend
@@ -105,7 +105,7 @@ paths:
           disaggregated candidates exist and 6 otherwise; an explicit `top_n`
           overrides that count. Each option carries its own config and capacity
           block and can be used as the primary result. Performance is simulated
-          for a bounded set of AISimulate options under one shared budget;
+          for a bounded set of AISim options under one shared budget;
           options that do not complete remain valid capacity answers with
           `performance_available=false` and a reason. BLIS does not simulate the
           target concurrency during capacity sizing, so its capacity result also
@@ -122,7 +122,7 @@ paths:
           point. `sla_mode=enforce` restricts the frontier to SLA-compliant
           candidates; `sla_mode=none` sweeps capacity without an SLA.
           `target_request_rate` and `target_concurrency` are rejected because
-          the sweep drives its own load. AISimulate owns the window for a
+          the sweep drives its own load. AISim owns the window for a
           Pareto sweep: the floor is the model's fit floor (the smallest
           aggregated shape that holds one full-context sequence) and the
           ceiling is `max(configured ceiling, floor × 2)`, with the first
@@ -155,13 +155,17 @@ paths:
         detail sections:
         - `config` — serving configuration (vLLM/SGLang parameters)
         - `memory` — per-component memory breakdown
+        - `debug` — the commands and input files that reproduce the answer
 
         Example: `POST /recommend?include=config,memory`
       parameters:
         - name: include
           in: query
           required: false
-          description: Comma-separated list of optional sections to include (config, memory).
+          description: |
+            Comma-separated list of optional sections to include (config,
+            memory, debug). `debug` returns a `debug` record of the commands
+            and input files that reproduce the answer, inline in the response.
           schema:
             type: string
             example: "config,memory"
@@ -204,26 +208,30 @@ paths:
         Use this when you know your deployment configuration and want to predict
         its performance. Use `/recommend` when you want to find the optimal config.
 
-        With `simulator=aisimulate`, wraps `cli_estimate()` from the aisimulate
+        With `simulator=aisim`, wraps `cli_estimate()` from the aisimulate
         SDK. With `simulator=blis`, runs a generated vLLM scenario. Aggregated
         and prefill/decode disaggregated predictions are supported; P/D requests
         require an explicit `fabric` from `GET /networks`, matching GPU systems
         for both pools, and DP=1. The BLIS path creates dedicated prefill and
         decode pools, NIXL transfer, and an always-disaggregate router profile.
         Unsupported settings return an error instead of falling back to
-        AISimulate. BLIS results do not include a KV-cache memory breakdown.
+        AISim. BLIS results do not include a KV-cache memory breakdown.
 
         Use the `include` query parameter to enrich the result with optional
         detail sections:
         - `config` — serving configuration (vLLM/SGLang parameters)
         - `memory` — per-component memory breakdown
+        - `debug` — the commands and input files that reproduce the answer
 
         Example: `POST /estimate?include=config,memory`
       parameters:
         - name: include
           in: query
           required: false
-          description: Comma-separated list of optional sections to include (config, memory).
+          description: |
+            Comma-separated list of optional sections to include (config,
+            memory, debug). `debug` returns a `debug` record of the commands
+            and input files that reproduce the answer, inline in the response.
           schema:
             type: string
             example: "config,memory"
@@ -276,11 +284,15 @@ paths:
         detail sections:
         - `config` — serving configuration (vLLM/SGLang parameters)
         - `memory` — per-component memory breakdown
+        - `debug` — the commands and input files that reproduce the answer
       parameters:
         - name: include
           in: query
           required: false
-          description: Comma-separated list of optional sections to include (config, memory).
+          description: |
+            Comma-separated list of optional sections to include (config,
+            memory, debug). `debug` returns a `debug` record of the commands
+            and input files that reproduce the answer, inline in the response.
           schema:
             type: string
             example: "config,memory"
@@ -325,6 +337,20 @@ paths:
         runtime overhead, communication buffers, and KV cache capacity.
 
         Wraps `estimate_kv_cache()` from the aisimulate SDK.
+
+        Use the `include` query parameter to add `debug`, which returns the
+        snippet that reproduces this estimate.
+      parameters:
+        - name: include
+          in: query
+          required: false
+          description: |
+            Comma-separated extras. `debug` returns a `debug` record of the
+            snippet and input files that reproduce this estimate, inline in the
+            response.
+          schema:
+            type: string
+            example: "debug"
       requestBody:
         required: true
         content:
@@ -365,7 +391,7 @@ paths:
         and `recommend_search` shape, the sizing `objectives` this simulator
         implements, and effective memory defaults. With `simulator=blis`,
         reports the vLLM releases BLIS models, a literal default version (never
-        an AISimulate alias), a `version_support` map per release, and empty
+        an AISim alias), a `version_support` map per release, and empty
         per-system maps.
       parameters:
         - name: simulator
@@ -374,7 +400,7 @@ paths:
           description: Simulator whose backend support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            default: aisimulate
+            default: aisim
       responses:
         '200':
           description: Backend list
@@ -432,11 +458,11 @@ paths:
                           description: |
                             Git commit of the simulator artifact this deployment
                             runs, or null when the artifact does not report one.
-                            For AISimulate this is the SDK wheel's release
+                            For AISim this is the SDK wheel's release
                             commit; for BLIS the upstream release tag's commit.
                   default_simulator:
                     type: string
-                    example: aisimulate
+                    example: aisim
 
   /models:
     get:
@@ -465,7 +491,7 @@ paths:
           description: Simulator whose model support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            default: aisimulate
+            default: aisim
       responses:
         '200':
           description: Model list
@@ -499,7 +525,7 @@ paths:
           description: Simulator whose GPU system support is reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            default: aisimulate
+            default: aisim
       responses:
         '200':
           description: System list
@@ -526,7 +552,7 @@ paths:
           description: Simulator whose fabrics are reported. Discover supported values from GET /simulators.
           schema:
             type: string
-            default: aisimulate
+            default: aisim
       responses:
         '200':
           description: Available network fabrics
@@ -638,7 +664,7 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          default: aisimulate
+          default: aisim
           description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
@@ -649,7 +675,7 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null resolves to the system default
+            Backend version. AISim: null resolves to the system default
             (`current`, the same value `/backends` reports in
             `system_defaults`); the `current` alias behaves the same way. If
             that version has no performance data for the model, the service
@@ -699,7 +725,7 @@ components:
           nullable: true
           description: |
             P/D KV transfer bandwidth to model with objective=pareto under
-            AISimulate. Omit to apply AISimulate's default of no modeled
+            AISim. Omit to apply AISim's default of no modeled
             transfer delay; omission is not a fabric default. BLIS models P/D
             transfer through the selected `fabric` and rejects this field with
             422. A non-null value for any other objective is rejected with 422
@@ -812,7 +838,7 @@ components:
             candidates only. An unknown fabric name is rejected with 422 even
             when the search excludes P/D, because a named fabric is a topology
             assumption the caller made. BLIS concurrency-capacity sizing is
-            aggregate-only and rejects an explicit non-null fabric. AISimulate
+            aggregate-only and rejects an explicit non-null fabric. AISim
             does not consume this field and rejects a non-null value.
           default: null
         mode:
@@ -838,7 +864,7 @@ components:
             `disaggregation_requires_fabric` on GET /backends.
 
             `mode=disagg` is accepted with `objective=throughput_demand`:
-            AISimulate searches P/D for that goal, while BLIS demand sizing
+            AISim searches P/D for that goal, while BLIS demand sizing
             replays open-loop traffic without a P/D transfer fabric and stays
             aggregated. The response reports what was searched in
             `sweep.modes_searched` rather than echoing this field.
@@ -871,7 +897,7 @@ components:
             configured_max_gpus:
               type: integer
               description: |
-                Configured candidate ceiling for this search. AISimulate
+                Configured candidate ceiling for this search. AISim
                 responses leave `search_summary` null; read
                 `sweep.configured_max_gpus` and `sweep.effective_max_gpus`
                 there for fit-floor adjustments.
@@ -881,7 +907,7 @@ components:
               description: |
                 Ceiling the selected search actually used. A simulator hardware
                 limit can make it lower than `configured_max_gpus`; an
-                AISimulate fit floor can make it higher. AISimulate reports
+                AISim fit floor can make it higher. AISim reports
                 this in `sweep.effective_max_gpus`, not here.
             time_budget_seconds: { type: number }
             budget_exhausted: { type: boolean }
@@ -905,7 +931,7 @@ components:
             KV-residency outcome. Present only with
             objective=concurrency_capacity, including when the target could not
             fit (200 with fits=false). The fit comes from the selected
-            simulator's capacity answer (AISimulate's KV estimate or BLIS's
+            simulator's capacity answer (AISim's KV estimate or BLIS's
             reported engine KV pool), not from the informational performance
             simulation.
         capacity_options:
@@ -943,6 +969,13 @@ components:
             objective=pareto. `pareto_front` is authoritative for the
             simulator's own objectives; clients must not substitute a locally
             computed frontier for it.
+
+        debug:
+          nullable: true
+          description: |
+            Present only when the request asked for `include=debug`: the
+            commands and input files that reproduce this answer.
+          $ref: '#/components/schemas/ReplayRecord'
 
     DemandOutcome:
       type: object
@@ -1161,7 +1194,7 @@ components:
           nullable: true
           example: random
           description: |
-            Sampler used by AISimulate (`random` or `bayesian`). BLIS enumerates
+            Sampler used by AISim (`random` or `bayesian`). BLIS enumerates
             its candidate grid and reports `enumerate`. Capacity sizing also
             enumerates and reports `enumerate` with `budget_exhausted=false`.
         seed: { type: integer, nullable: true }
@@ -1174,7 +1207,7 @@ components:
           description: |
             Whether a wall-clock search budget stopped the run. BLIS reports
             true when its search time budget stopped the enumeration before
-            every grid point ran. AISimulate reports true when a window-ladder
+            every grid point ran. AISim reports true when a window-ladder
             search ran out of its whole-request time budget
             (`MIN_GPUS_SEARCH_BUDGET_S` / `DEMAND_SEARCH_BUDGET_S`). A sampled
             sweep's trial spend is reported separately by `max_trials` and
@@ -1202,7 +1235,7 @@ components:
           description: |
             Ceiling the selected search actually used. It can be lower than
             `configured_max_gpus` when the simulator applies a hardware limit
-            (for example a single BLIS node), and higher when an AISimulate fit
+            (for example a single BLIS node), and higher when an AISim fit
             floor needs headroom (`max(configured_max_gpus, floor × 2)`).
         modes_searched:
           type: array
@@ -1211,7 +1244,7 @@ components:
             Deployment modes the search actually covered, in contract order.
             An aggregated winner can come from a search that also evaluated
             prefill/decode, so `chosen_mode` describes the recommendation, not
-            the search space. AISimulate reports the union over the GPU windows
+            the search space. AISim reports the union over the GPU windows
             that returned a result; BLIS reports the modes its candidate grid
             reached, where a candidate that ran and failed still counts, and
             also lists them in `search_summary.modes_searched`. Null when the
@@ -1222,7 +1255,7 @@ components:
       type: object
       required: [candidate_id, status, mode, topology, simulator]
       description: |
-        One evaluated candidate from a pareto sweep. AISimulate candidates are
+        One evaluated candidate from a pareto sweep. AISim candidates are
         copied verbatim from the SDK record; BLIS candidates are constructed by
         the service from its own measured runs.
       properties:
@@ -1521,7 +1554,7 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          default: aisimulate
+          default: aisim
           description: Simulator to use. Discover supported values from GET /simulators. A request never falls back to another simulator.
         backend:
           type: string
@@ -1532,7 +1565,7 @@ components:
           type: string
           nullable: true
           description: |
-            Backend version. AISimulate: null resolves to the system default
+            Backend version. AISim: null resolves to the system default
             (`current`, the same value `/backends` reports in
             `system_defaults`); the `current` alias behaves the same way. If
             that version has no performance data for the model, the service
@@ -1552,7 +1585,7 @@ components:
           type: string
           nullable: true
           minLength: 1
-          description: Inter-node fabric for P/D transfer; list values with GET /networks. BLIS consumes it; AISimulate does not.
+          description: Inter-node fabric for P/D transfer; list values with GET /networks. BLIS consumes it; AISim does not.
           default: null
         decode_system:
           type: string
@@ -1830,6 +1863,13 @@ components:
           description: Per-component memory breakdown (present when include=memory).
           $ref: '#/components/schemas/MemoryBreakdown'
 
+        debug:
+          nullable: true
+          description: |
+            Present only when the request asked for `include=debug`: the
+            commands and input files that reproduce this answer.
+          $ref: '#/components/schemas/ReplayRecord'
+
     # ── Memory ─────────────────────────────────────────────────────────────
 
     MemoryRequest:
@@ -1846,7 +1886,7 @@ components:
           example: h200_sxm
         simulator:
           type: string
-          default: aisimulate
+          default: aisim
           description: Simulator to use. Only a simulator that reports the memory capability accepts this endpoint; others return 422.
         backend:
           type: string
@@ -1963,6 +2003,13 @@ components:
             tolerance_fraction:
               type: number
 
+        debug:
+          nullable: true
+          description: |
+            Present only when the request asked for `include=debug`: the
+            commands and input files that reproduce this answer.
+          $ref: '#/components/schemas/ReplayRecord'
+
     MemoryBreakdown:
       type: object
       properties:
@@ -1983,6 +2030,121 @@ components:
           description: KV cache memory (bytes). Mirrors total_kv_size_bytes.
 
     # ── Catalog ────────────────────────────────────────────────────────────
+
+    # ── Replay artifacts ───────────────────────────────────────────────────
+
+    ReplayFile:
+      type: object
+      required: [path, contents]
+      description: One input file of a recorded run, relative to the bundle root.
+      properties:
+        path:
+          type: string
+          description: Path inside the replay bundle.
+        contents:
+          type: string
+          description: Full file contents.
+
+    ReplayInvocation:
+      type: object
+      required: [id, label, command, execution]
+      description: |
+        One runnable unit: a command and the input files it reads. Every command
+        reads its inputs from the bundle, so writing the files to a directory is
+        enough to run it unchanged.
+      properties:
+        id:
+          type: string
+          description: Unique within the record.
+        label:
+          type: string
+          description: Human-readable name for this run.
+        command:
+          type: string
+          description: |
+            Shell command, already quoted. A `subprocess` command is the exact
+            process ConfigIQ ran; an `in_process` command is the equivalent
+            invocation for code the service called directly.
+        execution:
+          type: string
+          enum: [subprocess, in_process]
+          description: |
+            How the simulator ran. `subprocess` reproduces the exact process;
+            `in_process` reproduces the same work through the simulator's CLI.
+        group:
+          type: string
+          nullable: true
+          description: Optional grouping, such as a pool, a search window, or a candidate.
+        candidate_id:
+          type: string
+          nullable: true
+          description: |
+            Set when this invocation reproduces one Pareto candidate, so a
+            candidate row can copy the command for its own shape.
+        notes:
+          type: array
+          items:
+            type: string
+          description: Caveats a reader needs before trusting the command.
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReplayFile'
+
+    ReplayRecord:
+      type: object
+      required: [endpoint, simulator, execution, created_at]
+      description: |
+        What one request executed, returned inline when the request asked for
+        `include=debug`. The record travels with the response rather than being
+        fetched by id: the service runs more than one worker process, so a later
+        request has no guarantee of reaching the worker that made the record.
+
+        Recording is best-effort. `null` means the request has no single command
+        of its own (for example a capacity enumeration) or that its artifacts
+        exceeded the size cap.
+      properties:
+        endpoint:
+          type: string
+          description: Endpoint that produced the record.
+        simulator:
+          type: string
+          description: Simulator that produced the answer.
+        execution:
+          type: string
+          enum: [subprocess, in_process]
+          description: How that simulator ran; see ReplayInvocation.execution.
+        created_at:
+          type: number
+          description: Unix timestamp when the run finished.
+        versions:
+          type: object
+          additionalProperties:
+            type: string
+            nullable: true
+          description: |
+            Simulator releases and data revisions the run was made against. A
+            value this deployment cannot report is null rather than a guess.
+        selection:
+          type: string
+          nullable: true
+          description: What the run chose, in one line, when it had a choice to make.
+        notes:
+          type: array
+          items:
+            type: string
+          description: Caveats about the record as a whole.
+        invocations:
+          type: array
+          description: Runs in execution order.
+          items:
+            $ref: '#/components/schemas/ReplayInvocation'
+        script:
+          type: string
+          nullable: true
+          description: |
+            `run.sh` for the record: every non-candidate invocation in execution
+            order, pinned to the versions above.
 
     BackendListResponse:
       type: object
@@ -2024,7 +2186,7 @@ components:
           example: vllm
         aisimulate_id:
           type: string
-          description: The corresponding AISimulate backend ID, when the simulator reuses one.
+          description: The corresponding AISim backend ID, when the simulator reuses one.
         versions:
           type: array
           description: Engine versions the simulator models.
@@ -2034,7 +2196,7 @@ components:
           type: string
           nullable: true
           description: |
-            The version used when a request omits backend_version. AISimulate reports
+            The version used when a request omits backend_version. AISim reports
             its per-system namespace (`current`); BLIS reports a literal release.
         memory_fraction:
           type: number
@@ -2068,7 +2230,7 @@ components:
           description: |
             Whether a prefill/decode topology needs an inter-node fabric selected
             before the request is sent. BLIS prices the KV transfer through a named
-            fabric; AISimulate's P/D search takes none.
+            fabric; AISim's P/D search takes none.
         capacity_options:
           type: object
           description: |
@@ -2080,7 +2242,7 @@ components:
               type: boolean
               description: |
                 Whether capacity runs can include disaggregated alternatives.
-                AISimulate reports true; BLIS reports false because its
+                AISim reports true; BLIS reports false because its
                 concurrency-capacity sizing is aggregate-only.
         version_support:
           type: object

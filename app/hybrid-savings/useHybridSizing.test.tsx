@@ -16,13 +16,13 @@ function gpu(systemId: string): GpuOption {
     bandwidthTbps: null, tflopsBf16: null, tdpWatts: 400, gpusPerNode: null }
 }
 const result = {
-  status: 'completed', simulator: 'aisimulate',
+  status: 'completed', simulator: 'aisim',
   recommendation: { gpusPerReplica: 1, replicasNeeded: 1 },
   throughput: { tokensPerSecond: 1000 },
   performance: { ttftLatencyMs: 100, tpotMs: 20 },
 } as RecommendResponse
 const input = {
-  signature: 'first', model: 'Qwen/Qwen3-8B', backend: 'vllm', simulator: 'aisimulate' as const, backendVersion: '',
+  signature: 'first', model: 'Qwen/Qwen3-8B', backend: 'vllm', simulator: 'aisim' as const, backendVersion: '',
   averageInputTokens: 2048, averageOutputTokens: 512, targetTtftMs: 5000, targetTpotMs: 60,
   targetConcurrency: 32, prefixTokens: 0,
   preferredCloudProvider: null, gpuOptions: [gpu('l40s')],

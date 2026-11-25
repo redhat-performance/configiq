@@ -2,7 +2,6 @@
 
 import { Label } from '@patternfly/react-core'
 import { useCatalog } from '@/lib/hooks/useCatalog'
-import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 
 /**
  * Identifies which simulator produced a result. The label comes from the
@@ -11,6 +10,6 @@ import { simulatorDisplayLabel } from '@/lib/simulator-labels'
  */
 export function SimulatorBadge({ simulator }: { simulator: string }) {
   const { simulators } = useCatalog()
-  const label = simulatorDisplayLabel(simulator, simulators.find(entry => entry.id === simulator)?.label ?? simulator)
+  const label = simulators.find(entry => entry.id === simulator)?.label ?? simulator
   return <Label isCompact color="blue">{label}</Label>
 }

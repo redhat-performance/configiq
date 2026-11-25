@@ -22,6 +22,8 @@ interface GpuSystemInputProps {
   testedSystemIds?: string[]
   /** When set, prepend an option with an empty value that clears the filter. */
   allLabel?: string
+  /** Shown in place of the options when the list is empty. */
+  emptyLabel?: string
   /** Disable the toggle and its menu, for example while a request is running. */
   isDisabled?: boolean
 }
@@ -33,6 +35,7 @@ export function GpuSystemInput({
   gpuOptions,
   testedSystemIds = [],
   allLabel,
+  emptyLabel = 'Loading GPU catalog…',
   isDisabled = false,
 }: GpuSystemInputProps) {
   const [open, setOpen] = React.useState(false)
@@ -120,7 +123,7 @@ export function GpuSystemInput({
           )}
           {gpuOptions.length === 0 ? (
             <SelectOption isDisabled value="__empty__">
-              Loading GPU catalog…
+              {emptyLabel}
             </SelectOption>
           ) : (
             [...architectureGroups.entries()].map(([groupLabel, gpus]) => (

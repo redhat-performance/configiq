@@ -2,6 +2,7 @@ import type { RecommendRequest } from './schemas'
 import { gatewayTimeoutSeconds } from './timeout'
 import type { Candidate, CandidateViews, FrontierSweep } from '../types/pareto'
 import { isRecord, parseFrontierBody } from '../pareto/parse'
+import { parseDebugRecord, type DebugRecord } from '../debug/types'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -200,6 +201,21 @@ export interface RecommendResult {
     } | null
   }
   memoryAvailable: boolean
+  /**
+   * Engine release the chosen configuration used, as the response reported it.
+   * Null means the response did not say; callers must not infer one.
+   */
+  engineVersion: string | null
+  /**
+   * Quantization the chosen configuration resolved, when it reported one.
+   * Null names an unreported mode, not a default.
+   */
+  precision: {
+    weights: string | null
+    kvCache: string | null
+  }
+  /** Commands and input files that reproduce this answer, when the API sent them. */
+  debug?: DebugRecord | null
   metadata: {
     modelPath: string
     system: string
@@ -378,7 +394,9 @@ export async function callRecommend(
       : timeoutSignal
     // Native AISimulators keeps the detailed memory estimate behind the
     // optional include flag; the sizing result renders that value directly.
-    const recommendUrl = `${baseUrl}/recommend?include=memory`
+    // `debug` adds the commands and input files that reproduce the answer, so
+    // the Debug panel can show them beside the request and response.
+    const recommendUrl = `${baseUrl}/recommend?include=memory,debug`
     response = await fetch(recommendUrl, {
       method: 'POST',
       headers: {
@@ -686,6 +704,20 @@ function parseRecommendPayload(
     : memoryFromBreakdown
   const memoryAvailable = typeof best.memory === 'number' || memoryBreakdown != null
 
+  // The chosen configuration names the engine release and the quantization it
+  // resolved. Both are reported facts used by saved comparisons; an absent
+  // value stays null rather than being filled from the request or a default.
+  const reportedText = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
+  const bestProvenance = best.provenance && typeof best.provenance === 'object'
+    ? best.provenance as Record<string, unknown>
+    : null
+  const engineVersion = reportedText(best.backend_version) ?? reportedText(bestProvenance?.engine_version)
+  const precision = {
+    weights: reportedText(best.gemm),
+    kvCache: reportedText(best.kvcache),
+  }
+
   const isCapacityObjective = request.objective === 'concurrency_capacity'
   const requiredValues = [
     totalGpusNeeded,
@@ -734,6 +766,7 @@ function parseRecommendPayload(
       ? parseCapacityOptions(rawData, request, requestId, startTime)
       : undefined,
     sweep,
+    debug: parseDebugRecord(rawData.debug),
     mode,
     recommendation: {
       gpusNeeded: totalGpusNeeded,
@@ -766,6 +799,8 @@ function parseRecommendPayload(
       breakdown: memoryBreakdownGb,
     },
     memoryAvailable,
+    engineVersion,
+    precision,
     metadata: {
       modelPath: request.model_path,
       system: request.system,
@@ -848,6 +883,8 @@ export interface ParetoResult {
   candidates: Candidate[]
   views: CandidateViews | null
   sweep: FrontierSweep | null
+  /** Commands and input files that reproduce the sweep, when the API sent them. */
+  debug?: DebugRecord | null
 }
 
 export interface ParetoErrorResponse {
@@ -910,7 +947,7 @@ export async function callPareto(
   }
   let response: Response
   try {
-    response = await fetch(`${baseUrl}/recommend`, {
+    response = await fetch(`${baseUrl}/recommend?include=debug`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ ...basePayload, objective: 'pareto' }),
@@ -984,6 +1021,7 @@ export async function callPareto(
     candidates: parsed.candidates,
     views: parsed.views,
     sweep: parsed.sweep,
+    debug: parsed.debug,
   }
 }
 

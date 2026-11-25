@@ -34,7 +34,7 @@ export function describeSweepCoverage(
   }
 
   // An enumerated sweep is bounded by wall-clock search time (BLIS), while a
-  // sampled sweep is bounded by its trial count (AISimulate). Trial spend is
+  // sampled sweep is bounded by its trial count (AISim). Trial spend is
   // already visible in the counts above, so `budgetExhausted` means a
   // wall-clock budget stopped the search; say that rather than calling both a
   // "trial" budget.

@@ -1,6 +1,11 @@
+/* Debug panel — a terminal surface, deliberately dark so pasted commands and
+   payloads read as the machine text they are. The design system's type floor
+   still applies: nothing below 11.5px, and secondary text is light enough to
+   read on #1e1e1e rather than fading into it. */
+
 .debugSection {
   background: #1e1e1e;
-  border: 1px solid #333;
+  border: 1px solid #3d3d3d;
   border-radius: 6px;
   margin-top: 8px;
   overflow: hidden;
@@ -14,8 +19,8 @@
   padding: 10px 16px;
   border: none;
   background: none;
-  color: #a0a0a0;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: #e0e0e0;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
@@ -23,77 +28,178 @@
 }
 
 .debugToggle:hover {
-  color: #d4d4d4;
+  background: #262626;
 }
 
 .debugToggleIcon {
-  font-size: 11px;
+  font-size: 11.5px;
   width: 12px;
   display: inline-block;
 }
 
+.debugEndpoint {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: #c7c7c7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .debugStatusBadge {
+  font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: 700;
   padding: 1px 7px;
   border-radius: 8px;
   margin-left: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .debugStatusOk {
-  background: rgba(62, 134, 53, 0.25);
-  color: #6ccf5e;
+  background: rgba(108, 207, 94, 0.18);
+  color: #8fdc84;
 }
 
 .debugStatusErr {
-  background: rgba(238, 0, 0, 0.2);
-  color: #ff6b6b;
+  background: rgba(255, 107, 107, 0.18);
+  color: #ff8f8f;
 }
 
 .debugDuration {
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  color: #777;
+  color: #c7c7c7;
   margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .debugBody {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: #333;
-  border-top: 1px solid #333;
+  border-top: 1px solid #3d3d3d;
+  padding-bottom: 12px;
 }
 
-@media (max-width: 800px) {
-  .debugBody {
-    grid-template-columns: 1fr;
-  }
-}
-
-.debugPane {
-  background: #1e1e1e;
-  padding: 12px 16px;
-  overflow: auto;
-}
-
-.debugPaneHeader {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+.debugNotes {
+  margin: 10px 16px 0;
+  padding-left: 16px;
+  color: #c7c7c7;
+  font-family: var(--font-mono);
   font-size: 11.5px;
-  font-weight: 600;
+  line-height: 1.6;
+}
+
+.tabStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.tabStrip_run {
+  margin: 8px 16px 0;
+  border-bottom-color: #4d4d4d;
+}
+
+.tabStrip_group {
+  margin: 6px 16px 0;
+}
+
+.tabStrip_artifact {
+  border-bottom: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab {
+  appearance: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: #c7c7c7;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: #ffffff;
+}
+
+.tab:focus-visible {
+  outline: 2px solid #73bcf7;
+  outline-offset: -2px;
+}
+
+.tabSelected {
+  color: #ffffff;
+  border-bottom-color: #73bcf7;
+}
+
+.paneHeader {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px 0;
+}
+
+.paneActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.paneLanguage {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #888;
-  margin-bottom: 8px;
+  color: #c7c7c7;
+}
+
+.copyButton {
+  appearance: none;
+  border: 1px solid #5c5c5c;
+  border-radius: 4px;
+  background: none;
+  color: #e0e0e0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.copyButton:hover {
+  background: #333333;
+  border-color: #7a7a7a;
+}
+
+.copyButton:focus-visible {
+  outline: 2px solid #73bcf7;
+  outline-offset: 2px;
+}
+
+.paneBody {
+  margin: 8px 16px 0;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #3d3d3d;
+  border-radius: 4px;
+  background: #161616;
 }
 
 .debugPre {
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.6;
-  color: #d4d4d4;
-  white-space: pre-wrap;
-  word-break: break-all;
+  color: #e8e8e8;
+  white-space: pre;
   margin: 0;
-  max-height: 400px;
-  overflow: auto;
+  padding: 10px 12px;
+  font-variant-numeric: tabular-nums;
 }

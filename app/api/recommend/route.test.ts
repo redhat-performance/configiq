@@ -75,7 +75,7 @@ describe('POST /api/recommend through a ConfigIQ gateway', () => {
 
   it('returns an upstream failure status when BLIS provenance is missing', async () => {
     vi.stubEnv('AISIMULATORS_GATEWAY_URL', 'https://aisimulators.dev')
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(Response.json({ simulator: 'aisimulate', configs: [] }))))
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(Response.json({ simulator: 'aisim', configs: [] }))))
 
     const req = new NextRequest('http://localhost:3001/api/recommend', {
       method: 'POST',

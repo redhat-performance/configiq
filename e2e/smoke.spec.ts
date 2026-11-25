@@ -4,8 +4,8 @@ import { expect, test, type Page } from '@playwright/test'
 const smokeCatalog = {
   timeoutSeconds: 1,
   simulators: [{
-    id: 'aisimulate',
-    label: 'AISimulate',
+    id: 'aisim',
+    label: 'AISim',
     default: true,
     available: true,
     models: ['smoke/model'],
@@ -147,7 +147,7 @@ function inputNearLabel(page: Page, labelText: string) {
 const recommendResponse = {
   requestId: 'smoke-recommend',
   status: 'completed',
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   mode: 'agg',
   recommendation: {
     gpusNeeded: 2,
@@ -196,7 +196,7 @@ test.beforeEach(async ({ page }) => {
     if (window.location.origin === 'null') return
     if (localStorage.getItem('settings_default_model') === null) localStorage.setItem('settings_default_model', 'smoke/model')
     if (localStorage.getItem('settings_default_system') === null) localStorage.setItem('settings_default_system', 'smoke-gpu')
-    if (localStorage.getItem('settings_simulator') === null) localStorage.setItem('settings_simulator', 'aisimulate')
+    if (localStorage.getItem('settings_simulator') === null) localStorage.setItem('settings_simulator', 'aisim')
     if (localStorage.getItem('settings_inference_backend') === null) localStorage.setItem('settings_inference_backend', 'vllm')
     if (localStorage.getItem('hf_token') === null) localStorage.setItem('hf_token', 'hf_initial_smoke_token')
   })
@@ -211,7 +211,7 @@ test('home opens the core tools from the main navigation', async ({ page }) => {
   const navigation = page.getByRole('navigation', { name: 'Main navigation' })
   for (const name of [
     'Recommend sizing', 'KV cache calculator', 'Predict performance', 'GPU explorer',
-    'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
+    'Simulator scorecard', 'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
   ]) {
     await expect(navigation.getByRole('link', { name, exact: true })).toBeVisible()
   }
@@ -241,6 +241,7 @@ for (const route of modelPages) {
 const secondaryPages = [
   { path: '/hybrid-savings', heading: 'Hybrid savings' },
   { path: '/routing', heading: 'Routing economics' },
+  { path: '/validation/scorecard', heading: 'Simulator scorecard' },
   { path: '/validation/compare', heading: 'Benchmark comparison' },
   { path: '/sources', heading: 'Cost sources' },
   { path: '/docs', heading: 'ConfigIQ documentation' },
@@ -253,6 +254,24 @@ for (const route of secondaryPages) {
     await expect(page.getByRole('heading', { name: route.heading, level: 1 })).toBeVisible()
   })
 }
+
+test('Simulator scorecard says plainly when no snapshot is published', async ({ page }) => {
+  await stubApi(page)
+  // The page reads a published artifact; an unpublished channel is a 404, not
+  // an empty scorecard that looks like a result of zero error.
+  await page.route('**/api/validation/scorecard', route => route.fulfill({
+    status: 404,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'failed',
+      error: { code: 'SCORECARD_NOT_PUBLISHED', message: 'No scorecard snapshot is published.' },
+    }),
+  }))
+  await page.goto('/validation/scorecard')
+
+  await expect(page.getByRole('heading', { name: 'Simulator scorecard', level: 1 })).toBeVisible()
+  await expect(page.getByText('No scorecard snapshot is published yet')).toBeVisible()
+})
 
 test('GPU explorer loads with an available preset control', async ({ page }) => {
   await stubApi(page)
@@ -292,7 +311,7 @@ test('Settings enforces and persists simulator and backend selections', async ({
 
   const simulator = page.locator('#settings-simulator')
   const backend = page.locator('#settings-backend')
-  await expect(simulator).toHaveValue('aisimulate')
+  await expect(simulator).toHaveValue('aisim')
   await expect(backend.locator('option[value="sglang"]')).toBeDisabled()
 
   await simulator.selectOption('blis')
@@ -315,7 +334,7 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   const api = await stubApi(page, {
     '/api/predict': {
       status: 'success',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       memory_breakdown: {
         weights_bytes: 16 * 1_073_741_824,
         kv_cache_bytes: 2 * 1_073_741_824,
@@ -351,7 +370,7 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   expect(api.posts['/api/predict']).toMatchObject({
     model_path: 'smoke/model',
     system: 'smoke-gpu',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     backend: 'vllm',
     isl: 768,
     osl: 96,
@@ -359,6 +378,71 @@ test('Predict submits selected workload inputs and renders the mocked estimate',
   await expect(page.getByTestId('predict-ttft')).toHaveText('640.0 ms')
   await expect(page.getByTestId('predict-tpot')).toHaveText('24.0 ms')
   await expect(page.getByTestId('predict-throughput')).toContainText('37.8 tok/s')
+})
+
+test('Saved and copy feedback keeps each control where it was', async ({ page, context }) => {
+  // The copy control must succeed here, or the test would only prove that a
+  // failure label also keeps its place.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await stubApi(page, {
+    '/api/predict': {
+      status: 'success',
+      simulator: 'aisim',
+      memory_breakdown: {
+        weights_bytes: 16 * 1_073_741_824,
+        kv_cache_bytes: 2 * 1_073_741_824,
+      },
+      ttft: 640,
+      tpot: 24,
+      tokens_per_second: 37.8,
+      serving_config: {
+        tensor_parallel_size: 1,
+        max_model_len: 864,
+        max_num_seqs: 32,
+        gpu_memory_utilization: 0.9,
+        enable_chunked_prefill: false,
+        enable_prefix_caching: false,
+        quantization: 'auto',
+      },
+    },
+  })
+  await page.goto('/predict')
+  await selectModel(page, 'predict-performance-model')
+  await selectSystem(page, 'predict-performance-gpu')
+
+  const responsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/predict' && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: 'Calculate', exact: true }).click()
+  await responsePromise
+
+  for (const width of [768, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+
+    const save = page.getByRole('button', { name: /Save for comparison|Saved|Not saved/ })
+    const copy = page.getByRole('button', { name: /Copy link|Copied|Copy failed/ })
+    // Each width measures the idle-to-success transition. Wait out the previous
+    // pass's feedback so this is not a success-to-success comparison.
+    await expect(save).toHaveText('Save for comparison', { timeout: 10_000 })
+    await expect(copy).toHaveText('Copy link', { timeout: 10_000 })
+
+    await expect(save).toBeVisible()
+    const saveBefore = await save.boundingBox()
+    await save.click()
+    await expect(save).toHaveText(/Saved/)
+    const saveAfter = await save.boundingBox()
+    expect(Math.abs((saveAfter?.x ?? 0) - (saveBefore?.x ?? 0))).toBeLessThan(0.5)
+    expect(Math.abs((saveAfter?.width ?? 0) - (saveBefore?.width ?? 0))).toBeLessThan(0.5)
+
+    const copyBefore = await copy.boundingBox()
+    await copy.click()
+    await expect(copy).toHaveText(/Copied/)
+    const copyAfter = await copy.boundingBox()
+    expect(Math.abs((copyAfter?.x ?? 0) - (copyBefore?.x ?? 0))).toBeLessThan(0.5)
+    expect(Math.abs((copyAfter?.width ?? 0) - (copyBefore?.width ?? 0))).toBeLessThan(0.5)
+  }
+  // Feedback is not printed into the header.
+  await expect(page.getByText('View comparison')).toHaveCount(0)
 })
 
 test('Recommend submits selected workload inputs and renders the mocked sizing result', async ({ page }) => {
@@ -383,7 +467,7 @@ test('Recommend submits selected workload inputs and renders the mocked sizing r
   expect(api.posts['/api/recommend']).toMatchObject({
     model_path: 'smoke/model',
     system: 'smoke-gpu',
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     backend: 'vllm',
     isl: 768,
     osl: 96,
@@ -468,7 +552,7 @@ test('KV cache submits selected capacity inputs and renders the mocked result', 
         totalBytes: 85_899_345_920,
       },
       metadata: {
-        simulator: 'aisimulate',
+        simulator: 'aisim',
         modelPath: 'smoke/model',
         backend: 'vllm',
         backendVersion: null,

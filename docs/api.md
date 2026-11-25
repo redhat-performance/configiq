@@ -55,7 +55,7 @@ the request count simulates one request in total; setting it simulates
 `max(1, round(batch_size × value))` requests. `/recommend` accepts `prefix` but
 not `requests_per_load_unit`.
 
-`POST /memory` requires `model_path` and `system`. It is an AISimulate
+`POST /memory` requires `model_path` and `system`. It is an AISim
 capability; a simulator that does not model memory rejects the request rather
 than returning an empty breakdown.
 

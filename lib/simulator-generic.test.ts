@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
  * `lib/api/` is exempt because it is the documented boundary where simulator
  * identity is allowed to change behavior.
  */
-const SIMULATOR = /\b(?:AISimulate|BLIS|aisimulate|blis)\b/;
+const SIMULATOR = /\b(?:AISimulate|AISim|BLIS|aisimulate|aisim|blis)\b/;
 const CAPABILITY =
   /\b(?:accepts?|rejects?|requires?|needs?|cannot|can't|does not|doesn't|takes?|supports?)\b|(?<!\/)\bmodels?\b/i;
 
@@ -94,10 +94,10 @@ function offenders(): string[] {
 
 describe('simulator-generic frontend', () => {
   it('detects the note shape this guard exists for', () => {
-    expect(statesSimulatorCapability('AISimulate does not accept a fabric.')).toBe(true);
+    expect(statesSimulatorCapability('AISim does not accept a fabric.')).toBe(true);
     expect(statesSimulatorCapability('BLIS needs an inter-node fabric for P/D.')).toBe(true);
     expect(statesSimulatorCapability('The simulator rejects a fabric it does not model.')).toBe(false);
-    expect(statesSimulatorCapability('AISimulate catalog, from the /models endpoint.')).toBe(false);
+    expect(statesSimulatorCapability('AISim catalog, from the /models endpoint.')).toBe(false);
   });
 
   it('reads a note wrapped across comment lines as one statement', () => {

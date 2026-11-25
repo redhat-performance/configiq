@@ -12,6 +12,7 @@ import {
   Spinner,
   ToggleGroup,
   ToggleGroupItem,
+  Tooltip,
 } from '@patternfly/react-core';
 import {
   Chart,
@@ -21,9 +22,14 @@ import {
   ChartVoronoiContainer,
 } from '@patternfly/react-charts/victory';
 import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
+import CheckIcon from '@patternfly/react-icons/dist/esm/icons/check-icon';
+import CopyIcon from '@patternfly/react-icons/dist/esm/icons/copy-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
-import { computeFrontier } from '@/lib/pareto/frontier';
+import { invocationBundle, invocationForCandidate } from '@/lib/debug/replay';
+import type { DebugInvocation, DebugRecord } from '@/lib/debug/types';
+import { displayedFrontier } from '@/lib/pareto/frontier';
 import { formatCandidateId } from '@/lib/pareto/format';
+import { RECOMMENDED_CANDIDATE_ID, isSizingProjection, resolveSelection, sweepCandidates } from '@/lib/pareto/recommendation';
 import { describeFrontierDeployments, describeSweepCoverage } from '@/lib/pareto/sweep-caption';
 import { topologySummary, xpydLabel } from '@/lib/pareto/recipe';
 import type { Candidate, FrontierState } from '@/lib/types/pareto';
@@ -49,6 +55,7 @@ type AxisMode = 'throughput_per_user' | 'ttft';
 const C_FRONTIER = '#0066cc';
 const C_FEASIBLE = '#009596';
 const C_SELECTED = '#f0ab00';
+const C_RECOMMENDED = '#5752d1';
 
 const FEASIBLE_STATUSES = new Set(['feasible']);
 
@@ -122,10 +129,93 @@ function fmtThousands(n: number | null): string {
 
 function candidateLabel(candidate: Candidate): string {
   const role = xpydLabel(candidate) ?? (candidate.mode === 'disagg' ? 'disagg' : 'agg');
-  return `${role} · ${candidate.used_gpus ?? '?'} GPU`;
+  const label = `${role} · ${candidate.used_gpus ?? '?'} GPU`;
+  return candidate.recommended ? `${label} · recommended` : label;
 }
 
-function useContainerWidth(): [React.RefObject<HTMLDivElement>, number] {
+/** The display name for a row; a projected row has no sweep identifier. */
+function candidateName(candidate: Candidate): string {
+  return candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+    ? 'Sizing recommendation'
+    : formatCandidateId(candidate.candidate_id);
+}
+
+const COPY_FEEDBACK_MS = 2000;
+/** A failure stays on screen longer than a success tick. */
+const COPY_FAILURE_MS = 6000;
+
+interface ReplayControlProps {
+  candidate: Candidate;
+  invocation: DebugInvocation | null;
+  copied: boolean;
+  failed: boolean;
+  onCopy: (candidate: Candidate, invocation: DebugInvocation) => void;
+}
+
+/**
+ * Copy the command that reproduced one candidate.
+ *
+ * The service records an invocation per evaluated candidate, tagged with the
+ * candidate's identifier. A row whose command was omitted (or a row projected
+ * from the sizing response, which the sweep never ran) keeps the control
+ * disabled and says why, rather than copying a different candidate's command.
+ */
+function ReplayControl({ candidate, invocation, copied, failed, onCopy }: ReplayControlProps) {
+  const name = candidateName(candidate);
+  if (invocation == null) {
+    const reason = candidate.candidate_id === RECOMMENDED_CANDIDATE_ID
+      ? 'This row is projected from the sizing response, so the sweep has no command to replay.'
+      : 'The sweep did not report a replay command for this candidate.';
+    return (
+      <Tooltip content={reason}>
+        <span
+          className={styles.replayUnavailable}
+          tabIndex={0}
+          aria-label={`Replay unavailable for ${name}. ${reason}`}
+        >
+          <Button variant="plain" size="sm" isDisabled aria-hidden="true" icon={<CopyIcon />} />
+        </span>
+      </Tooltip>
+    );
+  }
+
+  // A matched row keeps the sweep's command but shows the sizing response's
+  // figures, so the control must not present that command as reproducing them.
+  const sweepOnly = isSizingProjection(candidate);
+  const noun = sweepOnly ? 'Sweep command' : 'Replay command';
+  const hint = copied
+    ? 'Copied'
+    : failed
+      ? 'Copy failed — select the button to try again'
+      : sweepOnly
+        ? 'Copies the sweep command that evaluated this deployment; the figures shown come from the sizing response.'
+        : 'Copy replay command and its input files';
+  const label = copied
+    ? `${noun} copied for ${name}`
+    : failed
+      ? `${noun} copy failed for ${name}`
+      : sweepOnly
+        ? `Copy sweep command for ${name}`
+        : `Copy replay command for ${name}`;
+
+  return (
+    <Tooltip content={hint}>
+      <Button
+        variant="plain"
+        size="sm"
+        isDanger={failed}
+        aria-label={label}
+        icon={copied ? <CheckIcon /> : failed ? <ExclamationTriangleIcon /> : <CopyIcon />}
+        onClick={event => {
+          event.stopPropagation();
+          onCopy(candidate, invocation);
+        }}
+      />
+    </Tooltip>
+  );
+}
+
+function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = React.useRef<HTMLDivElement>(null);
   const [width, setWidth] = React.useState(640);
   React.useEffect(() => {
@@ -256,8 +346,24 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
         {feasibleOff.length > 0 && (
           <ChartScatter
             data={feasibleOff}
-            size={6}
-            style={{ data: { fill: C_FEASIBLE, stroke: '#fff', strokeWidth: 1 } }}
+            size={(args: { datum?: ChartPoint }) => {
+              const candidate = args.datum?.candidate;
+              if (candidate == null) return 6;
+              if (candidate.candidate_id === selectedId) return 10;
+              return candidate.recommended ? 9 : 6;
+            }}
+            style={{
+              data: {
+                fill: (args: { datum?: ChartPoint }) => {
+                  const candidate = args.datum?.candidate;
+                  if (candidate == null) return C_FEASIBLE;
+                  if (candidate.candidate_id === selectedId) return C_SELECTED;
+                  return candidate.recommended ? C_RECOMMENDED : C_FEASIBLE;
+                },
+                stroke: '#fff',
+                strokeWidth: 1,
+              },
+            }}
             events={[{ target: 'data', eventHandlers: { onClick: handlePointClick } }]}
           />
         )}
@@ -265,13 +371,20 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
         {frontierPoints.length > 0 && (
           <ChartScatter
             data={frontierPoints}
-            size={(args: { datum?: ChartPoint }) =>
-              selectedId === args.datum?.candidate.candidate_id ? 10 : 8
-            }
+            size={(args: { datum?: ChartPoint }) => {
+              const candidate = args.datum?.candidate;
+              if (candidate == null) return 8;
+              if (candidate.candidate_id === selectedId) return 10;
+              return candidate.recommended ? 9 : 8;
+            }}
             style={{
               data: {
-                fill: (args: { datum?: ChartPoint }) =>
-                  selectedId === args.datum?.candidate.candidate_id ? C_SELECTED : C_FRONTIER,
+                fill: (args: { datum?: ChartPoint }) => {
+                  const candidate = args.datum?.candidate;
+                  if (candidate == null) return C_FRONTIER;
+                  if (candidate.candidate_id === selectedId) return C_SELECTED;
+                  return candidate.recommended ? C_RECOMMENDED : C_FRONTIER;
+                },
                 stroke: '#fff',
                 strokeWidth: 2,
               },
@@ -284,6 +397,9 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
       <div className={styles.legend}>
         <LegendDot color={C_FRONTIER} label="Pareto frontier" />
         <LegendDot color={C_FEASIBLE} label="Feasible" />
+        {feasiblePoints.some(point => point.candidate.recommended) && (
+          <LegendDot color={C_RECOMMENDED} label="Recommended configuration" />
+        )}
         <span className={styles.legendItem}>
           <span className={styles.legendSelected} style={{ background: C_SELECTED }} />
           <span>Selected</span>
@@ -299,9 +415,48 @@ interface CandidateTableProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   caption: string;
+  /** Replay record for the sweep, when the service returned one. */
+  replay: DebugRecord | null;
 }
 
-function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption }: CandidateTableProps) {
+function CandidateTable({
+  candidates,
+  frontierIds,
+  selectedId,
+  onSelect,
+  caption,
+  replay,
+}: CandidateTableProps) {
+  const [copyState, setCopyState] = React.useState<{ id: string; name: string; ok: boolean } | null>(null);
+
+  React.useEffect(() => {
+    if (copyState == null) return;
+    const timer = window.setTimeout(
+      () => setCopyState(null),
+      copyState.ok ? COPY_FEEDBACK_MS : COPY_FAILURE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [copyState]);
+
+  const hasReplay = React.useMemo(
+    () => replay != null && replay.invocations.some(invocation => invocation.candidate_id != null),
+    [replay],
+  );
+
+  const copyReplay = React.useCallback(
+    async (candidate: Candidate, invocation: DebugInvocation) => {
+      const name = candidateName(candidate);
+      try {
+        if (!navigator.clipboard) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(invocationBundle(invocation));
+        setCopyState({ id: candidate.candidate_id, name, ok: true });
+      } catch {
+        setCopyState({ id: candidate.candidate_id, name, ok: false });
+      }
+    },
+    [],
+  );
+
   const sorted = React.useMemo(
     () =>
       [...candidates].sort((a, b) => {
@@ -330,12 +485,20 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
             <th scope="col" className={styles.numeric}>TTFT</th>
             <th scope="col" className={styles.numeric}>TPOT</th>
             <th scope="col">Topology</th>
+            {hasReplay && <th scope="col">Replay</th>}
           </tr>
         </thead>
         <tbody>
           {sorted.map(candidate => {
             const selected = candidate.candidate_id === selectedId;
             const onFrontier = frontierIds.has(candidate.candidate_id);
+            const invocation = invocationForCandidate(replay, candidate.candidate_id);
+            const copied = copyState != null
+              && copyState.id === candidate.candidate_id
+              && copyState.ok;
+            const failed = copyState != null
+              && copyState.id === candidate.candidate_id
+              && !copyState.ok;
             return (
               <tr
                 key={candidate.candidate_id}
@@ -352,8 +515,11 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
                       onSelect(candidate.candidate_id);
                     }}
                   >
-                    {formatCandidateId(candidate.candidate_id)}
+                    {candidateName(candidate)}
                     {onFrontier && <Label isCompact color="blue" className={styles.frontierLabel}>frontier</Label>}
+                    {candidate.recommended && candidate.candidate_id !== RECOMMENDED_CANDIDATE_ID && (
+                      <Label isCompact color="purple" className={styles.frontierLabel}>recommended</Label>
+                    )}
                   </button>
                 </td>
                 <td>
@@ -369,11 +535,33 @@ function CandidateTable({ candidates, frontierIds, selectedId, onSelect, caption
                 <td className={styles.numeric}>{fmt(ttftOf(candidate), 1)}</td>
                 <td className={styles.numeric}>{fmt(tpotOf(candidate), 2)}</td>
                 <td>{topologySummary(candidate)}</td>
+                {hasReplay && (
+                  <td className={styles.replayCell}>
+                    <ReplayControl
+                      candidate={candidate}
+                      invocation={invocation}
+                      copied={copied}
+                      failed={failed}
+                      onCopy={copyReplay}
+                    />
+                  </td>
+                )}
               </tr>
             );
           })}
         </tbody>
       </table>
+      <span
+        role="status"
+        aria-live="polite"
+        className={copyState?.ok === false ? styles.replayStatusError : styles.replayStatus}
+      >
+        {copyState == null
+          ? ''
+          : copyState.ok
+            ? `Replay command for ${copyState.name} copied with its input files.`
+            : `Could not copy the replay command for ${copyState.name}.`}
+      </span>
     </div>
   );
 }
@@ -390,7 +578,12 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
     <dl className={styles.detail}>
       <div>
         <dt>Candidate</dt>
-        <dd>{formatCandidateId(candidate.candidate_id)}</dd>
+        <dd>
+          {candidateName(candidate)}
+          {candidate.recommended && candidate.candidate_id !== RECOMMENDED_CANDIDATE_ID && (
+            <Label isCompact color="purple" className={styles.frontierLabel}>recommended</Label>
+          )}
+        </dd>
       </div>
       <div>
         <dt>Topology</dt>
@@ -422,7 +615,13 @@ function CandidateDetail({ candidate }: { candidate: Candidate | null }) {
       </div>
       <div>
         <dt>P/D transfer</dt>
-        <dd>{candidate.transfer_delay_modeled ? 'modeled' : 'not modeled'}</dd>
+        <dd>
+          {candidate.transfer_delay_modeled
+            ? 'modeled'
+            : isSizingProjection(candidate)
+              ? 'not reported'
+              : 'not modeled'}
+        </dd>
       </div>
     </dl>
   );
@@ -437,7 +636,13 @@ export function FrontierPanel({
 }: FrontierPanelProps) {
   const [axisMode, setAxisMode] = React.useState<AxisMode>('throughput_per_user');
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [selectionExplicit, setSelectionExplicit] = React.useState(false);
   const [showFailures, setShowFailures] = React.useState(false);
+
+  const selectCandidate = React.useCallback((id: string) => {
+    setSelectionExplicit(true);
+    setSelectedId(id);
+  }, []);
 
   const candidates = React.useMemo(
     () => (state.status === 'ready' ? state.candidates : []),
@@ -445,6 +650,7 @@ export function FrontierPanel({
   );
   const views = state.status === 'ready' ? state.views : null;
   const sweep = state.status === 'ready' ? state.sweep : null;
+  const replay = state.status === 'ready' ? state.replay : null;
   // `sweep` is null until the run reports one, and the helper describes the
   // workload rather than promising deployments it cannot confirm.
   const subtitle = describeFrontierDeployments(sweep);
@@ -457,30 +663,35 @@ export function FrontierPanel({
     [feasible],
   );
 
-  // The server's Pareto view is authoritative for the simulator's own
-  // objectives. It is recomputed only for the TTFT x-axis, where the dominance
-  // direction differs.
+  // The server's Pareto view describes the sweep's own measurements. It is used
+  // unchanged unless a row displays objectives the sweep never measured (a
+  // sizing projection), and on the TTFT axis, where the dominance direction
+  // differs.
   const frontierIds = React.useMemo(() => {
     if (axisMode === 'ttft') return computeTtftFrontier(feasible);
-    // An empty server frontier is still the server's answer: no evaluated
-    // candidate was non-dominated. Only a missing view falls back locally.
-    if (views) return new Set(views.pareto_front);
-    return new Set(computeFrontier(feasible).map(candidate => candidate.candidate_id));
+    return displayedFrontier(feasible, views?.pareto_front ?? null);
   }, [axisMode, feasible, views]);
 
   React.useEffect(() => {
-    if (selectedId != null && candidates.some(candidate => candidate.candidate_id === selectedId)) return;
-    const next =
-      [...frontierIds].find(id => feasible.some(candidate => candidate.candidate_id === id)) ??
-      feasible[0]?.candidate_id ??
-      null;
+    const next = resolveSelection(
+      selectedId,
+      candidates,
+      feasible,
+      frontierIds,
+      selectionExplicit,
+    );
+    if (next === selectedId) return;
     setSelectedId(next);
-  }, [candidates, feasible, frontierIds, selectedId]);
+    // The panel picked this row; only a later user click makes it explicit.
+    setSelectionExplicit(false);
+  }, [candidates, feasible, frontierIds, selectedId, selectionExplicit]);
 
   const selected = candidates.find(candidate => candidate.candidate_id === selectedId) ?? null;
 
   const statusSummary = React.useMemo(
-    () => describeSweepCoverage(sweep, candidates),
+    // `sweep.evaluated` counts tries, so the added sizing row must not inflate
+    // the feasible count; a matched row is an evaluated try and stays.
+    () => describeSweepCoverage(sweep, sweepCandidates(candidates)),
     [candidates, sweep],
   );
 
@@ -501,8 +712,9 @@ export function FrontierPanel({
           candidates={failed}
           frontierIds={frontierIds}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={selectCandidate}
           caption={`Failed attempts for ${gpuLabel}. Kept for transparency; they are not plotted.`}
+          replay={replay}
         />
       )}
     </div>
@@ -622,7 +834,7 @@ export function FrontierPanel({
                     frontierIds={frontierIds}
                     axisMode={axisMode}
                     selectedId={selectedId}
-                    onSelect={setSelectedId}
+                    onSelect={selectCandidate}
                   />
                 </div>
                 <div className={styles.detailColumn}>
@@ -635,8 +847,9 @@ export function FrontierPanel({
                 candidates={feasible}
                 frontierIds={frontierIds}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={selectCandidate}
                 caption={`Feasible candidates for ${gpuLabel}. Select a row to inspect it on the chart.`}
+                replay={replay}
               />
 
               {failuresDisclosure}

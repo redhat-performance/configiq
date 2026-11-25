@@ -558,10 +558,6 @@
   margin-bottom: 8px;
 }
 
-/* ---------- footer actions ---------- */
-.footerRow { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; align-items: center; }
-.footerSpacer { flex: 1; }
-
 /* ---------- input field overrides ---------- */
 .inputCard :global(.pf-v6-c-form-control),
 .inputCard :global(.pf-v6-c-select__toggle),

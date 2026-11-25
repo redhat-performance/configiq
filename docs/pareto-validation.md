@@ -1,4 +1,4 @@
-# Pareto frontier — AISimulate and BLIS validation
+# Pareto frontier — AISim and BLIS validation
 
 Validation of the `objective=pareto` topology-design feature against the real
 aisimulate SDK (v0.13.0 wheel). The goal was not "does it run" but "are the
@@ -89,16 +89,49 @@ destination_missing` shows up in **TTFT / e2e latency**, not in steady-state
 not cleanly in `mean_ttst_ms`. Use `mean_e2e_latency_ms` / `mean_ttft_ms` as the
 transfer-sensitive signal.
 
-## ConfigIQ standalone-sweep contract
+## ConfigIQ Pareto contract
 
-The Pareto frontier is a standalone action, not a companion scan. `Pareto
-frontier` and `Calculate` are alternative buttons: either action replaces the
-other's result, and retrying re-runs only the active action. The contract below
-is what the UI and service rely on.
+The Pareto action answers two questions for one workload. It submits the sizing
+recommendation and the frontier sweep concurrently and keeps both answers:
+
+- the **sizing recommendation** (`objective=min_gpus`, or the visible goal's
+  objective) names the configuration to deploy;
+- the **sweep** (`objective=pareto`) reports how that workload trades
+  throughput per user against throughput per GPU.
+
+The sizing recommendation is collated into the sweep's candidate list. When the
+sweep evaluated the same deployment (same mode, GPU count, and parallelism
+widths), that row is marked as the recommendation. Otherwise the recommendation
+is added as a row projected from the sizing response, using the GPU count,
+topology, latency, and throughput the response reported. Either way it appears
+once in the chart and once in the list, and its numbers are the sizing
+response's numbers rather than a second prediction. Its frontier label follows
+those displayed numbers (see Dominance authority). A sizing response that does
+not report per-user or per-GPU throughput lists the recommendation without
+plotting a point rather than plotting zero.
+
+`Calculate` remains a sizing-only action and clears a displayed frontier.
+Retrying the frontier panel re-runs both halves. When the sizing half fails, the
+sweep still displays and no recommendation is marked; when the sweep fails, a
+successful sizing result stays on the page.
+
+Each evaluated candidate carries its own recorded command and input files in the
+response's replay record, tagged with the candidate identifier. A candidate row
+copies that command as a self-contained script, so the row's figures can be
+reproduced on a machine with the simulator installed. A row that matched the
+sizing recommendation displays the sizing response's figures but keeps the
+sweep's command; its control is labelled as the sweep command, because that
+command reproduces the sweep evaluation, not the sizing numbers. The Debug
+panel's Replay run lists the request-level commands; per-candidate commands are
+reproduced from their candidate row instead of appearing in that list. A row the
+service did not record a command for, including a row projected from the sizing
+response, says so rather than copying a different command.
+
+The contract below is what the UI and service rely on.
 
 ### Availability
 
-Both simulators advertise `pareto` in `GET /backends`. AISimulate samples the
+Both simulators advertise `pareto` in `GET /backends`. AISim samples the
 frontier with the SDK. BLIS has no native Pareto command, so the service
 enumerates topology and closed-loop concurrency combinations, runs each through
 BLIS, and computes the non-dominated set itself. Each result reports the
@@ -108,7 +141,7 @@ cross-simulator frontier.
 
 ### Deployment modes
 
-An AISimulate sweep searches both aggregated and disaggregated deployments (when
+An AISim sweep searches both aggregated and disaggregated deployments (when
 the window can hold more than one GPU). A workload may legitimately have no
 feasible disaggregated point; that absence is reported, not hidden. Both modes
 contribute candidates and frontier points when they are feasible.
@@ -121,7 +154,7 @@ restriction, not a measured infeasibility.
 ### Automatic GPU window
 
 The request has no GPU window fields; the service owns the range. For
-AISimulate, a Pareto sweep resolves a model-aware window before sampling:
+AISim, a Pareto sweep resolves a model-aware window before sampling:
 
 - **Floor** — the smallest aggregated worker shape that holds one full-context
   sequence (`min(shape.gpus_per_worker)` from the KV-feasibility enumeration).
@@ -163,7 +196,7 @@ optimization rounds, so it is not the default. The trial budget is split across
 aggregated and disaggregated modes via `divmod`, so `max_trials` is a total, not
 a per-mode count.
 
-For AISimulate's sampled sweep, `sweep.budget_exhausted` is a wall-clock
+For AISim's sampled sweep, `sweep.budget_exhausted` is a wall-clock
 signal only. Pareto sampling has no wall-clock budget, so trial spend is
 reported by `max_trials` and `evaluated` instead; `evaluated >= max_trials`
 means the trial budget was spent, never that the search enumerated every
@@ -209,8 +242,18 @@ empty chart.
 ### Dominance authority
 
 `views.pareto_front` is computed by the simulator and is authoritative for the
-simulator's own objectives: maximize `throughput_per_user` and
-`throughput_per_gpu`. The browser uses that view unchanged.
+sweep's own measurements: maximize `throughput_per_user` and
+`throughput_per_gpu`. The browser uses that view unchanged while every plotted
+objective is a sweep measurement.
+
+Collation can break that premise: a matched row displays the sizing response's
+objectives, and a projected recommendation row has no sweep measurement at all.
+Those values are not part of the sweep, so keeping the server's verdict would
+label a point using numbers the chart no longer shows. When a sizing projection
+with objectives is on screen, the panel therefore recomputes membership over the
+displayed objectives so the chart, table, and frontier labels agree. This is a
+display overlay only: the server's `views.pareto_front` stays in the response
+and is what the panel uses for an ordinary sweep.
 
 When the user flips the x-axis to TTFT, the orientation changes (minimize TTFT,
 maximize throughput per GPU), so the browser recomputes the non-dominated set
@@ -256,21 +299,23 @@ unmet. `demand.window_seconds` reports that same arrival window.
 
 ### Timing
 
-A sweep is the only request in flight for the Pareto action, so it must fit the
-gateway timeout on its own. The auto window keeps the search near the model's
-fit floor, which materially reduces sparse curves and timeout noise compared
-with a one-GPU-to-ceiling sweep. Measured wall times against the deployed
-service (then at `aisimulators.dev`) for 0.6B/8B/32B sweeps over 1–16 GPUs were
-20–29 seconds with 20/20 feasible candidates; a Qwen3-235B-A22B sweep from its
-4-GPU floor over 4–16 GPUs took 21 seconds with 10 aggregated and 10
-disaggregated candidates. The frontend shows elapsed time and the gateway limit
-while the sweep runs, and a timeout degrades only the frontier panel.
+The sizing recommendation and the sweep are separate requests in flight
+together, so each must fit the gateway timeout on its own; the action is
+bounded by the slower of the two rather than their sum. The auto window keeps
+the search near the model's fit floor, which materially reduces sparse curves
+and timeout noise compared with a one-GPU-to-ceiling sweep. Measured wall times
+against the deployed service (then at `aisimulators.dev`) for 0.6B/8B/32B
+sweeps over 1–16 GPUs were 20–29 seconds with 20/20 feasible candidates; a
+Qwen3-235B-A22B sweep from its 4-GPU floor over 4–16 GPUs took 21 seconds with
+10 aggregated and 10 disaggregated candidates. The frontend shows elapsed time
+and the gateway limit while the sweep runs, and a timeout degrades only the
+frontier panel; a failed sizing half leaves a successful frontier on screen.
 
 ## Conclusion
 
 Across model size, MoE sparsity, GPU class, context length, the Pareto trade-off,
 disagg emergence under load, and P/D transfer bandwidth, every output moves the
-way the physics demands. The feature emits genuine, correctly-behaving AISimulate
+way the physics demands. The feature emits genuine, correctly-behaving AISim
 output — not cached or constant values.
 
 ## Note on running heavy sweeps

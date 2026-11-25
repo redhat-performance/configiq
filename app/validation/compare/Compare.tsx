@@ -38,7 +38,6 @@ import {
 } from '@/lib/hooks/useCatalog'
 import { fetchEstimateAsInferenceResult } from '@/lib/api/estimate-adapter'
 import type { InferenceConfigResult } from '@/lib/gpu-math/inference-config/types'
-import { simulatorDisplayLabel } from '@/lib/simulator-labels'
 import { backendDisplayLabel } from '@/lib/backend-labels'
 import {
   comparisonRequestsPerLoadUnit,
@@ -48,11 +47,12 @@ import {
   type ServingMode,
 } from '@/lib/validation/benchmark-predictions'
 import {
-  acceleratorNamesMatch,
   type BenchmarkAdjustment,
   type BenchmarkUnavailable,
 } from '@/lib/validation/benchmark-resolve'
+import { findCatalogGpu, matchAccelerator } from '@/lib/validation/gpu-catalog'
 import { backendVersionIdentity, backendVersionsComparable, backendVersionsMatch } from '@/lib/validation/benchmark-versions'
+import { formatDatasetDate } from '@/lib/utils/format'
 import {
   BENCHMARK_FILTER_KEYS,
   type BenchmarkFilterKey,
@@ -180,23 +180,6 @@ function isHttpsUrl(value: string | null | undefined): value is string {
   } catch {
     return false
   }
-}
-
-function findCatalogGpu(accelerator: string, gpus: GpuOption[]): GpuOption | null {
-  const normalized = accelerator.trim().toLocaleLowerCase()
-  if (!normalized) return null
-  return gpus.find(gpu => gpu.label.toLocaleLowerCase() === normalized)
-    ?? gpus.find(gpu => acceleratorNamesMatch(gpu.label, accelerator))
-    ?? null
-}
-
-function matchAccelerator(options: string[], requested: string): string {
-  const normalized = requested.trim().toLocaleLowerCase()
-  if (!normalized) return options[0] ?? ''
-  return options.find(option => option.toLocaleLowerCase() === normalized)
-    ?? options.find(option => acceleratorNamesMatch(option, requested))
-    ?? options[0]
-    ?? ''
 }
 
 function backendVersionsFor(backend: BackendOption, systemId: string | null): string[] {
@@ -328,7 +311,7 @@ function simulatorPlans({
     const support = simulatorSupport[simulator.id]
     const plan = (skipReason: string, backend: BackendOption | null = null): SimulatorPlan => ({
       simulator: simulator.id,
-      label: simulatorDisplayLabel(simulator.id, support?.label ?? simulator.label),
+      label: support?.label ?? simulator.label,
       backend,
       version: null,
       requiresFabric: false,
@@ -369,7 +352,7 @@ function simulatorPlans({
 
     return {
       simulator: simulator.id,
-      label: simulatorDisplayLabel(simulator.id, support.label),
+      label: support.label,
       backend,
       version: matchedVersion,
       requiresFabric: backend.disaggregationRequiresFabric,
@@ -951,7 +934,10 @@ export default function BenchmarkComparisonPage() {
 
   const measuredCount = new Set([...results.benchmark, ...results.inferencex].map(point => point.concurrency)).size
   const safeInferenceXRuns = results.runs.filter(run => isHttpsUrl(run.url))
-  const datasetDate = source?.lastModified ? new Date(source.lastModified).toLocaleDateString() : null
+  // A dataset timestamp, not a local event: render its UTC calendar date so the
+  // badge cannot read as the next day east of UTC or as a different date by locale.
+  const datasetDate = formatDatasetDate(source?.lastModified)
+  const snapshotDate = formatDatasetDate(inferencexSource?.retrievedAt)
   const selectedVersionLabel = backendVersion || 'Simulator default'
   const measuredVersionLabel = resolvedFilters?.backendVersion ?? null
   // Core-equivalent labels are comparable, but a measured vendor image build is
@@ -989,7 +975,10 @@ export default function BenchmarkComparisonPage() {
                 {isHttpsUrl(inferencexSource.url)
                   ? <a href={inferencexSource.url} target="_blank" rel="noreferrer">Benchmark data from SemiAnalysis InferenceX</a>
                   : <span>Benchmark data from SemiAnalysis InferenceX</span>}
-                <span>{inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows · snapshot {new Date(inferencexSource.retrievedAt).toLocaleDateString()}</span>
+                <span>
+                  {inferencexSource.rowCount.toLocaleString('en-US')} 8k/1k rows
+                  {snapshotDate ? ` · snapshot ${snapshotDate}` : ''}
+                </span>
               </div>}
             </div>
           )}

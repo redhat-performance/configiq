@@ -50,6 +50,13 @@
       "description": "How predicted configurations are checked against measured data."
     },
     {
+      "slug": "validation-scorecard",
+      "title": "Simulator scorecard",
+      "file": "docs/validation-scorecard.md",
+      "order": 65,
+      "description": "How simulator predictions are scored against measured benchmark data."
+    },
+    {
       "slug": "settings",
       "title": "Settings and simulators",
       "file": "docs/settings.md",

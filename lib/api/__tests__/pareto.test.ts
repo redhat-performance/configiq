@@ -10,7 +10,7 @@ function mockFetchOk(data: unknown) {
 }
 
 const FRONTIER_BODY = {
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   candidates: [{
     candidate_id: 'candidate-000001',
     status: 'feasible',
@@ -66,9 +66,9 @@ describe('buildFrontierRequest', () => {
     expect(body).not.toHaveProperty('max_candidate_gpus')
   })
 
-  it('preserves the caller simulator rather than substituting AISimulate', () => {
+  it('preserves the caller simulator rather than substituting AISim', () => {
     expect(buildFrontierRequest({ simulator: 'blis' }).simulator).toBe('blis')
-    expect(buildFrontierRequest({ simulator: 'aisimulate' }).simulator).toBe('aisimulate')
+    expect(buildFrontierRequest({ simulator: 'aisim' }).simulator).toBe('aisim')
   })
 })
 
@@ -87,7 +87,7 @@ describe('fetchFrontier', () => {
       tpot: 30,
       target_concurrency: 8,
       objective: 'min_gpus',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
 
     expect(result.candidates).toHaveLength(1)
@@ -98,7 +98,7 @@ describe('fetchFrontier', () => {
     const body = JSON.parse(init?.body as string)
     expect(body).toMatchObject({
       objective: 'pareto',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       sla_mode: 'enforce',
     })
     // A standalone sweep lets the service choose the GPU window.
@@ -150,7 +150,7 @@ describe('fetchFrontier', () => {
   it('rejects a response that names a different simulator', async () => {
     vi.stubGlobal('fetch', mockFetchOk({ ...FRONTIER_BODY, simulator: 'blis' }))
 
-    await expect(fetchFrontier({ model_path: 'org/model', system: 'h200_sxm', simulator: 'aisimulate' }))
-      .rejects.toThrow('Requested aisimulate, but the API confirmed blis')
+    await expect(fetchFrontier({ model_path: 'org/model', system: 'h200_sxm', simulator: 'aisim' }))
+      .rejects.toThrow('Requested aisim, but the API confirmed blis')
   })
 })

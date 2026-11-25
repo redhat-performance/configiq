@@ -26,8 +26,8 @@ Find optimal GPU configuration for a workload.
 efficiency frontier). A demand result includes a measured `demand` block; an
 unmet target returns 200 with `demand.met=false` and the best observed rate. A
 Pareto result includes every evaluated `candidate` and the simulator's
-`views.pareto_front` (AISimulate samples it; BLIS enumerates a grid). BLIS
-requests never fall back to AISimulate. See the service README and OpenAPI spec
+`views.pareto_front` (AISim samples it; BLIS enumerates a grid). BLIS
+requests never fall back to AISim. See the service README and OpenAPI spec
 for the full request/response contract.
 
 **Example:**

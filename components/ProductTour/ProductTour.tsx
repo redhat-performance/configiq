@@ -238,7 +238,12 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
     frame = requestAnimationFrame(update);
     const settleTimer = window.setTimeout(update, 320);
 
-    window.addEventListener('scroll', scheduleUpdate, { passive: true });
+    // The page can scroll in the window or in an inner container such as the
+    // application shell's main region. Scroll events do not bubble, so listen
+    // in the capture phase to hear every scroller between the target and the
+    // document; otherwise the highlight only catches up at the settle timer and
+    // appears to jump while the page is still moving.
+    document.addEventListener('scroll', scheduleUpdate, { capture: true, passive: true });
     window.addEventListener('resize', scheduleUpdate);
 
     if (target && typeof ResizeObserver !== 'undefined') {
@@ -249,7 +254,7 @@ export function ProductTour({ steps, onComplete }: ProductTourProps) {
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
-      window.removeEventListener('scroll', scheduleUpdate);
+      document.removeEventListener('scroll', scheduleUpdate, { capture: true });
       window.removeEventListener('resize', scheduleUpdate);
       resizeObserver?.disconnect();
     };

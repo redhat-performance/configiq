@@ -33,7 +33,7 @@ vi.mock('./usePageTour', () => ({
 // The question box reads the active simulator for link provenance; the menu
 // itself does not depend on settings.
 vi.mock('@/contexts/SettingsContext', () => ({
-  useSettings: () => ({ simulator: 'aisimulate', inferenceBackend: 'vllm', backendVersion: '' }),
+  useSettings: () => ({ simulator: 'aisim', inferenceBackend: 'vllm', backendVersion: '' }),
 }));
 
 const INDEX = {

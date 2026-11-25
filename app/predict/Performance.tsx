@@ -9,7 +9,6 @@ import {
   Label,
   Accordion, AccordionItem, AccordionToggle, AccordionContent,
 } from '@patternfly/react-core';
-import CheckCircleIcon from '@patternfly/react-icons/dist/esm/icons/check-circle-icon';
 import ExclamationTriangleIcon from '@patternfly/react-icons/dist/esm/icons/exclamation-triangle-icon';
 import MicrochipIcon from '@patternfly/react-icons/dist/esm/icons/microchip-icon';
 import MemoryIcon from '@patternfly/react-icons/dist/esm/icons/memory-icon';
@@ -21,12 +20,11 @@ import EyeSlashIcon from '@patternfly/react-icons/dist/esm/icons/eye-slash-icon'
 import styles from './Performance.module.css';
 import { Term, FlipTile, Sparkline, useCountUp } from './performanceHelpers';
 import { TourButton } from '@/components/help/TourButton';
-import { SaveEstimateModal } from './SaveEstimateModal';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import { exchangeRuns } from '@/lib/debug/types';
 import type { GlossaryId } from '@/lib/help/glossary';
 import { fetchModelConfig, type HFModelConfig } from '@/lib/huggingface/fetch-config';
-import { saveEstimate, getSavedEstimateCount } from '@/lib/saved-estimates';
-import { fetchEstimateAsInferenceResult, EstimateError, buildPredictRequestBody, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
+import { fetchEstimateAsInferenceResult, EstimateError, isMoeConfig, type EstimateAdapterInput } from '@/lib/api/estimate-adapter';
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { WarningPanel } from '@/components/ui/WarningPanel';
 import { ModelInput, type ModelStatus } from '@/components/ui/ModelInput';
@@ -36,7 +34,6 @@ import { GpuSystemInput } from '@/components/ui/GpuSystemInput';
 import { SimulatorBadge } from '@/components/ui/SimulatorBadge'
 import { TestedPerformanceFeedback } from '@/components/ui/TestedPerformanceFeedback';
 import { useCatalog, systemMemoryFraction, engineVersionSupport, type ModelSpec } from '@/lib/hooks/useCatalog';
-import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { GpuChipLoader } from '@/components/GpuChipLoader/GpuChipLoader';
@@ -49,9 +46,8 @@ import { matchConcurrencyPresetKey, type ConcurrencyPreset } from '@/lib/concurr
 import type { EstimatePhase, InferenceConfigResult } from '@/lib/gpu-math/inference-config';
 import { useTestedClassifier } from '@/lib/hooks/useTestedClassifier';
 import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/tested-models/types';
-import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { HOURS_PER_MONTH, AMORT_MONTHS_3YR, AMORT_MONTHS_5YR } from '@/lib/utils/format';
+import { HOURS_PER_MONTH, AMORT_MONTHS_5YR } from '@/lib/utils/format';
 import {
   DEFAULT_MOE_QUANT_MODE,
   MAX_REQUESTS_PER_LOAD_UNIT,
@@ -67,6 +63,8 @@ import { useSharedView } from '@/lib/deep-links/useSharedView';
 import { useLinkProvenance } from '@/lib/deep-links/useLinkProvenance';
 import { SharedViewProvenance } from '@/components/ui/SharedViewProvenance';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { buildPredictEntry } from '@/lib/comparison/predict-entry';
 
 /**
  * The link's own starting points. A field left at one of these is omitted from
@@ -437,12 +435,6 @@ export default function Performance() {
     ?? systemMemoryFraction(backendOptions?.find(backend => backend.id === inferenceBackend), gpu)
     ?? null;
 
-  // Save estimate modal
-  const [showSaveModal, setShowSaveModal] = React.useState(false);
-  const [savedCount, setSavedCount] = React.useState(0);
-  const [showToast, setShowToast] = React.useState(false);
-  const [toastMessage, setToastMessage] = React.useState('');
-
   // Interactive controls
   const [testConcurrentUsers, setTestConcurrentUsers] = React.useState(1);
   const [testISL, setTestISL] = React.useState(2048);
@@ -480,6 +472,10 @@ export default function Performance() {
   // to aggregated rather than letting the request fail.
   React.useEffect(() => {
     if (servingMode === 'disagg' && !disaggSupported) {
+      // Discard a disagg calculation still in flight: its completion must not
+      // be stored against the aggregated mode.
+      calcGenRef.current += 1;
+      setIsCalculating(false);
       setServingMode('agg');
       setTestResult(null); setTestClassifierInput(null);
     }
@@ -1187,241 +1183,45 @@ export default function Performance() {
     null;
   const realMonthlyCostForDisplay = realMonthlyCost ?? 0;
 
+  // A saved comparison is a result snapshot, so it is only offered while the
+  // displayed result still matches the inputs that produced it.
+  const comparisonDisabledReason = isCalculating
+    ? 'A calculation is running; save when it finishes.'
+    : testResult == null
+      ? 'Run a calculation first; there is no result to save.'
+      : inputsDirty
+        ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
+        : null;
+
+  const buildComparisonEntry = () => {
+    if (testResult == null || isCalculating || inputsDirty) return null;
+    return buildPredictEntry({
+      link: shared.build(),
+      model,
+      system: gpu,
+      systemLabel: currentCatalogGpu?.label ?? gpu,
+      backend: inferenceBackend || null,
+      backendVersion: backendVersion || null,
+      workload: {
+        isl: testISL,
+        osl: testOSL,
+        concurrency: testConcurrentUsers,
+        // The request and the page use the model's effective precision, which
+        // a quantization config can override.
+        weightPrecision: actualWeightPrecision,
+        kvPrecision: testKVCachePrecision,
+      },
+      gpus: realGpuCount,
+      cloudRatePerHour: gpuPricePerHour,
+      hardwareCostUsd: catalogGpuForPricing?.hardware_cost_usd ?? null,
+      result: testResult,
+    });
+  };
+
   const gpus = useCountUp(realGpuCount);
   const weight = useCountUp(realWeightGB);
   const kv = useCountUp(realKVPerReqMB);
   const cost = useCountUp(realMonthlyCostForDisplay);
-
-  // Load saved count on mount
-  React.useEffect(() => {
-    setSavedCount(getSavedEstimateCount());
-  }, []);
-
-  // Generate auto name for save
-  const generateAutoName = () => {
-    const modelName = model.split('/').pop() || model;
-    const gpuName = gpu.replace('NVIDIA ', '').replace('AMD ', '');
-    return `${modelName} · ${gpuName} · ${testConcurrentUsers} users`;
-  };
-
-  const handleSaveEstimate = (data: { name: string; tags: string; notes: string }) => {
-    if (!testResult || !catalogGpuForPricing || gpuPricePerHour == null) return;
-
-    const kvPerUserGB = (testResult.memory_analysis.kv_cache_used_gb || 0) / testConcurrentUsers;
-    const kvMBPerToken = (kvPerUserGB * 1000) / (testISL + testOSL);
-
-    saveEstimate({
-      name: data.name,
-      tags: data.tags,
-      notes: data.notes,
-      model,
-      gpu,
-      inputs: {
-        isl: testISL,
-        osl: testOSL,
-        concurrentUsers: testConcurrentUsers,
-        weightPrecision: testWeightPrecision,
-        kvCachePrecision: testKVCachePrecision,
-      },
-      results: {
-        gpusRequired: realGpuCount,
-        tpSize: testResult.memory_analysis.tp_size,
-        ppSize: testResult.parallelism_strategy.pp_size,
-        replicas: testResult.memory_analysis.replicas,
-        weightMemoryGB: testResult.memory_analysis.weight_gb,
-        kvCachePerUserGB: kvPerUserGB,
-        kvCacheTotalGB: testResult.memory_analysis.kv_cache_used_gb || 0,
-        kvCacheMBPerToken: kvMBPerToken,
-        kvCategory: testResult.memory_analysis.kv_category || 'KV-1',
-        kvCategoryLabel: testResult.memory_analysis.kv_category_label || 'Standard Dense',
-        cloudCostMonthly: realMonthlyCost ?? 0,
-        cloudCost5Year: (realMonthlyCost ?? 0) * 60,
-        selfHostedCostMonthly: (catalogGpuForPricing.hardware_cost_usd * realGpuCount) / AMORT_MONTHS_5YR,
-        selfHostedCost5Year: catalogGpuForPricing.hardware_cost_usd * realGpuCount,
-      },
-    });
-
-    setSavedCount(getSavedEstimateCount());
-    setToastMessage('saved');
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 5000);
-  };
-
-  // Build the /api/predict request body from current form state and GPU-specific values
-  const modelNeedsHfConfig = needsHfConfig(model, catalogModels);
-  const currentGpuVramGb = currentCatalogGpu?.vramGb ?? null;
-  const buildEstimateRequestBody = React.useCallback(() => {
-    const spec = modelSpecs.get(model);
-    const isMoe = detectMoe(spec, hfConfig);
-
-    const input: EstimateAdapterInput = {
-      model_path: model || '(select model)',
-      system: gpu || '(select GPU)',
-      backend: inferenceBackend,
-      simulator,
-      isl: testISL,
-      osl: testOSL,
-      batch_size: testConcurrentUsers,
-      tp_size: testResult?.memory_analysis.tp_size ?? testTpSize,
-      pp_size: testResult?.parallelism_strategy.pp_size ?? testPpSize,
-      vram_gb: currentGpuVramGb,
-      ...(effectiveContextLimit != null && { max_seq_len: effectiveContextLimit }),
-      ...(servingMode === 'disagg' && prefillMaxSeqLen != null && { prefill_max_seq_len: prefillMaxSeqLen }),
-      ...(servingMode === 'disagg' && decodeMaxSeqLen != null && { decode_max_seq_len: decodeMaxSeqLen }),
-      ...(gpuMemoryUtilization != null && { gpu_memory_utilization: gpuMemoryUtilization }),
-      ...(vllmOverride && vllmManualMaxNumSeqs != null && { max_num_seqs: vllmManualMaxNumSeqs }),
-      ...(vllmOverride && vllmManualChunkedPrefill != null && { enable_chunked_prefill: vllmManualChunkedPrefill }),
-      ...(testPrefix > 0 && { prefix: testPrefix }),
-      ...(requestsPerLoadUnit != null && { requests_per_load_unit: requestsPerLoadUnit }),
-      ...(backendVersion && { backend_version: backendVersion }),
-      ...(testWeightPrecision === 'FP8' && { gemm_quant_mode: 'fp8' }),
-      ...(testWeightPrecision === 'INT8' && { gemm_quant_mode: 'int8_wo' }),
-      ...(testWeightPrecision === 'INT4' && { gemm_quant_mode: 'int4_wo' }),
-      ...(testWeightPrecision === 'MXFP4' && { gemm_quant_mode: 'mxfp4' }),
-      ...(testWeightPrecision === 'NVFP4' && { gemm_quant_mode: 'nvfp4' }),
-      ...(testKVCachePrecision === 'FP8' && { kvcache_quant_mode: 'fp8' }),
-      ...(testKVCachePrecision === 'NVFP4' && { kvcache_quant_mode: 'nvfp4' }),
-      hf_model_config: modelNeedsHfConfig
-        ? (hfConfig as Record<string, unknown> | null)
-        : null,
-      moe_quant_mode: isMoe ? testMoeQuantMode : undefined,
-      ...(isMoe && moeEpSizeInput !== '' && { moe_ep_size: testMoeEpSize }),
-      ...(isMoe && moeEtpSizeInput !== '' && { moe_tp_size: testMoeEtpSize }),
-      ...(servingMode === 'disagg' && {
-        mode: 'disagg' as const,
-        fabric: fabricRequired && selectedNetworkFabric ? selectedNetworkFabric : undefined,
-        prefill: parsePerfPhase(prefillCfg),
-        decode: parsePerfPhase(decodeCfg),
-      }),
-    };
-
-    return buildPredictRequestBody(input);
-  }, [model, gpu, inferenceBackend, testISL, testOSL, testConcurrentUsers,
-    effectiveContextLimit, prefillMaxSeqLen, decodeMaxSeqLen, gpuMemoryUtilization,
-    vllmOverride, vllmManualMaxNumSeqs, vllmManualChunkedPrefill, testResult, testTpSize,
-    testPpSize, currentGpuVramGb, testPrefix, requestsPerLoadUnit, backendVersion, testWeightPrecision,
-    testKVCachePrecision, servingMode, prefillCfg, decodeCfg, modelSpecs, hfConfig,
-    modelNeedsHfConfig, testMoeQuantMode, testMoeEpSize, testMoeEtpSize,
-    moeEpSizeInput, moeEtpSizeInput, simulator, selectedNetworkFabric, fabricRequired]);
-
-  // Copy API request body to clipboard
-  const handleCopyAPIRequest = async () => {
-    if (!testResult) return;
-
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(buildEstimateRequestBody(), null, 2));
-      setToastMessage('api-copied');
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  // Copy CLI command to clipboard
-  const handleCopyCLICommand = async () => {
-    if (!testResult) return;
-
-    // Only FP16/FP8 are valid --dtype values; quantized modes use --quantization
-    const dtypeValue = testWeightPrecision === 'FP16' ? 'float16' :
-                       testWeightPrecision === 'FP8' ? 'fp8' : 'auto';
-
-    // Map quantization modes: NVFP4 requires modelopt_fp4, others use backend value
-    let quantValue = testResult.vllm_config.quantization;
-    if (testWeightPrecision === 'NVFP4' && (!quantValue || quantValue === 'auto')) {
-      quantValue = 'modelopt_fp4';
-    }
-
-    const quantFlag = (testWeightPrecision === 'INT4' || testWeightPrecision === 'INT8' || testWeightPrecision === 'MXFP4' || testWeightPrecision === 'NVFP4')
-      ? ` \\\n  --quantization ${quantValue}`
-      : '';
-    const cliMemoryFraction = (effectiveGpuMemoryUtilization ?? 0.9).toFixed(3);
-
-    let cliCommand: string;
-    if (isDisagg) {
-      // A single vllm serve can't express disagg; emit one command per pool and
-      // note the KV-transfer connector needed to wire prefill -> decode.
-      const poolCmd = (role: string, ph: EstimatePhase) => {
-        const ppFlag = ph.pp_size > 1 ? ` \\\n  --pipeline-parallel-size ${ph.pp_size}` : '';
-        return `# ${role} pool — ${ph.workers} worker(s), TP${ph.tp_size}${ph.pp_size > 1 ? ` PP${ph.pp_size}` : ''}, batch ${ph.batch_size}\n` +
-          `vllm serve ${model} \\\n` +
-          `  --tensor-parallel-size ${ph.tp_size}${ppFlag} \\\n` +
-          `  --gpu-memory-utilization ${cliMemoryFraction} \\\n` +
-          `  --dtype ${dtypeValue}${quantFlag} \\\n` +
-          `  --kv-cache-dtype ${testKVCachePrecision.toLowerCase()}`;
-      };
-      cliCommand =
-        `# Disaggregated serving: run the prefill and decode pools separately and\n` +
-        `# connect them with a KV-transfer connector (e.g. LMCache / NIXL / Dynamo).\n` +
-        `# Scale each pool to the worker count shown.\n\n` +
-        `${poolCmd('Prefill', disagg.prefill)}\n\n` +
-        `${poolCmd('Decode', disagg.decode)}`;
-    } else {
-      const ppFlag = testResult.parallelism_strategy.pp_size > 1
-        ? ` \\\n  --pipeline-parallel-size ${testResult.parallelism_strategy.pp_size}`
-        : '';
-      cliCommand = `vllm serve ${model} \\
-  --tensor-parallel-size ${testResult.memory_analysis.tp_size}${ppFlag} \\
-  --max-model-len auto \\
-  --gpu-memory-utilization ${cliMemoryFraction} \\
-  --dtype ${dtypeValue}${quantFlag} \\
-  --kv-cache-dtype ${testKVCachePrecision.toLowerCase()} \\
-  --max-num-seqs ${testResult.vllm_config?.max_num_seqs || 256}${testResult.vllm_config?.enable_chunked_prefill ? ' \\\n  --enable-chunked-prefill' : ''}`;
-    }
-
-    try {
-      await navigator.clipboard.writeText(cliCommand);
-      setToastMessage('cli-copied');
-      setShowToast(true);
-      setTimeout(() => setShowToast(false), 3000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
-
-  // Export to Google Sheets (downloads as CSV)
-  const handleExportToSheets = () => {
-    if (!testResult || !catalogGpuForPricing) return;
-
-    // Prepare data in CSV format
-    const headers = [
-      'Model', 'GPU', 'GPUs Required', 'TP Size', 'PP Size', 'Replicas',
-      'ISL', 'OSL', 'Concurrent Users',
-      'Weight Precision', 'KV Cache Precision',
-      'Weight Memory (GB)', 'KV Cache Total (GB)', 'KV Category',
-      'Cloud Cost (Monthly)', 'Cloud Cost (5yr)',
-      'Self-Hosted Cost (Monthly)', 'Self-Hosted Cost (5yr)'
-    ];
-
-    const values = [
-      model, gpu, realGpuCount, testResult.memory_analysis.tp_size, testResult.parallelism_strategy.pp_size, testResult.memory_analysis.replicas,
-      testISL, testOSL, testConcurrentUsers,
-      testWeightPrecision, testKVCachePrecision,
-      testResult.memory_analysis.weight_gb.toFixed(1),
-      (testResult.memory_analysis.kv_cache_used_gb || 0).toFixed(1),
-      testResult.memory_analysis.kv_category_label || 'Standard Dense',
-      `$${(realMonthlyCost ?? 0).toLocaleString()}`, `$${((realMonthlyCost ?? 0) * AMORT_MONTHS_5YR).toLocaleString()}`,
-      `$${((catalogGpuForPricing.hardware_cost_usd * realGpuCount) / AMORT_MONTHS_5YR).toFixed(0)}`,
-      `$${(catalogGpuForPricing.hardware_cost_usd * realGpuCount).toLocaleString()}`
-    ];
-
-    const csvContent = headers.join(',') + '\n' + values.map(v => `"${v}"`).join(',');
-
-    // Download as CSV (can be imported into Google Sheets)
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `configiq-estimate-${Date.now()}.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    setToastMessage('exported');
-    setShowToast(true);
-    setTimeout(() => setShowToast(false), 3000);
-  };
 
   // Validation warnings for manual overrides
   const getValidationWarnings = (): string[] => {
@@ -1731,6 +1531,8 @@ export default function Performance() {
         if (servingPolicyOverride) {
            setServingPolicyOverride(false);
            setServingManualContextLimit(null);
+           // Back to the computed limit, which this result may not have used.
+           markInputsDirty();
         } else {
           setServingPolicyOverride(true);
            if (testResult) {
@@ -1749,7 +1551,7 @@ export default function Performance() {
           term: 'maxModelLen',
           readonly: !servingPolicyOverride,
           type: servingPolicyOverride ? 'number' as const : undefined,
-          onChange: servingPolicyOverride ? (val: string) => setServingManualContextLimit(parseInt(val) || 1) : undefined,
+          onChange: servingPolicyOverride ? (val: string) => { setServingManualContextLimit(parseInt(val) || 1); markInputsDirty(); } : undefined,
         },
         {
           label: 'Prefix caching',
@@ -1772,6 +1574,8 @@ export default function Performance() {
            setVllmOverride(false);
            setVllmManualMaxNumSeqs(null);
            setVllmManualChunkedPrefill(null);
+           // Back to the computed engine settings, which this result may not have used.
+           markInputsDirty();
         } else {
           // Enable manual override - initialize with current computed values
            setVllmOverride(true);
@@ -1796,7 +1600,7 @@ export default function Performance() {
           term: 'maxNumSeqs',
           readonly: !vllmOverride,
           type: vllmOverride ? 'number' as const : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualMaxNumSeqs(parseInt(val) || 1) : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualMaxNumSeqs(parseInt(val) || 1); markInputsDirty(); } : undefined
         },
         {
           label: 'enable_chunked_prefill',
@@ -1809,7 +1613,7 @@ export default function Performance() {
           readonly: !vllmOverride,
           type: vllmOverride ? 'select' as const : undefined,
           options: vllmOverride ? ['Yes', 'No'] : undefined,
-          onChange: vllmOverride ? (val: string) => setVllmManualChunkedPrefill(val === 'Yes') : undefined
+          onChange: vllmOverride ? (val: string) => { setVllmManualChunkedPrefill(val === 'Yes'); markInputsDirty(); } : undefined
         },
       ],
     },
@@ -1826,6 +1630,10 @@ export default function Performance() {
             <p className={styles.subtitle}>See time to first token, throughput, and memory estimates in seconds — refine as needed.</p>
           </div>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <SaveToComparisonButton
+              buildEntry={buildComparisonEntry}
+              disabledReason={comparisonDisabledReason}
+            />
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
@@ -1866,14 +1674,14 @@ export default function Performance() {
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? support.label : 'the selected simulator'}</strong> could not be read,
             so it cannot predict performance. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? support.label : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}
@@ -2758,7 +2566,16 @@ export default function Performance() {
                             variant={servingMode === 'agg' ? 'secondary' : 'tertiary'}
                             size="sm"
                             aria-pressed={servingMode === 'agg'}
-                            onClick={() => { setServingMode('agg'); setTestResult(null); setTestClassifierInput(null); setInputsDirty(false); }}
+                            onClick={() => {
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
+                              setServingMode('agg');
+                              setTestResult(null);
+                              setTestClassifierInput(null);
+                              setInputsDirty(false);
+                            }}
                           >
                             Aggregated
                           </Button>
@@ -2770,6 +2587,10 @@ export default function Performance() {
                             isDisabled={!disaggSupported}
                             onClick={() => {
                               if (!disaggSupported) return;
+                              // Discard a calculation still running in the other
+                              // mode before switching.
+                              calcGenRef.current += 1;
+                              setIsCalculating(false);
                               setServingMode('disagg');
                               setTestResult(null);
                               setTestClassifierInput(null);
@@ -2873,85 +2694,9 @@ export default function Performance() {
         </div>
       </div>
 
-      {/* ---------- footer actions ---------- */}
-      <div className={styles.footerRow}>
-        <Button variant="secondary" onClick={handleCopyAPIRequest} isDisabled={!testResult}>
-          Copy API request
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={handleCopyCLICommand}
-          isDisabled={!testResult || (!testResult.memory_available && !isDisagg)}
-          title={!testResult?.memory_available && !isDisagg ? 'The CLI configuration export requires a memory estimate.' : undefined}
-        >
-          Copy CLI command
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={handleExportToSheets}
-          isDisabled={!testResult || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Export currently supports aggregated results only' : !testResult?.memory_available ? 'Export requires a memory estimate.' : undefined}
-        >
-          Export to Sheets
-        </Button>
-        <span className={styles.footerSpacer} />
-        <Button
-          variant="primary"
-          onClick={() => setShowSaveModal(true)}
-          isDisabled={!testResult || inputsDirty || !testResult.memory_available || !catalogGpuForPricing || gpuPricePerHour == null || isDisagg}
-          title={isDisagg ? 'Saving currently supports aggregated results only' : !testResult?.memory_available ? 'Saving requires a memory estimate.' : undefined}
-        >
-          Save estimate{savedCount > 0 && ` (${savedCount})`}
-        </Button>
-      </div>
-      {isDisagg && (
-        <div style={{ marginTop: 6, fontSize: '12px', color: '#54585c' }}>
-          Save and export currently support aggregated results only.
-        </div>
-      )}
-
-      {/* Save estimate modal */}
-      <SaveEstimateModal
-        isOpen={showSaveModal}
-        onClose={() => setShowSaveModal(false)}
-        onSave={handleSaveEstimate}
-        defaultName={generateAutoName()}
-      />
-
-      {/* Toast notification */}
-      {showToast && (
-        <div style={{
-          position: 'fixed',
-          bottom: '24px',
-          right: '24px',
-          background: '#151515',
-          color: '#fff',
-          padding: '16px 20px',
-          borderRadius: '6px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-          zIndex: 9999,
-          fontFamily: 'var(--font-sans)',
-          fontSize: '14px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '12px'
-        }}>
-          <CheckCircleIcon style={{ color: '#3d7317' }} />
-          <span>
-            {toastMessage === 'saved' && (
-              <>Estimate saved — <Link href="/compare" style={{ color: '#4da6ff', textDecoration: 'underline' }}>view in Compare →</Link></>
-            )}
-            {toastMessage === 'api-copied' && 'API request copied to clipboard'}
-            {toastMessage === 'cli-copied' && 'CLI command copied to clipboard'}
-            {toastMessage === 'exported' && 'CSV file downloaded — import into Google Sheets'}
-          </span>
-        </div>
-      )}
-
       {/* Debug panel */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}

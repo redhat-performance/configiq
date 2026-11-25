@@ -119,8 +119,8 @@ export interface EstimateWithDebug {
 /**
  * Build the /api/predict body for an adapter input.
  *
- * Exported so replay surfaces (the debug panel and "Copy API request") use the
- * exact payload that is submitted instead of reconstructing it.
+ * Exported so replay surfaces and tests use the exact payload that
+ * `fetchEstimateAsInferenceResult` submits instead of reconstructing it.
  */
 export function buildPredictRequestBody(input: EstimateAdapterInput): Record<string, unknown> {
   const body: Record<string, unknown> = {
@@ -193,7 +193,7 @@ export async function fetchEstimateAsInferenceResult(
   const body = buildPredictRequestBody(input)
 
   const startTime = performance.now()
-  const res = await fetch('/api/predict?include=config,memory', {
+  const res = await fetch('/api/predict?include=config,memory,debug', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -245,7 +245,7 @@ export async function fetchEstimateAsInferenceResult(
   const sc = data.serving_config
   const mb = data.memory_breakdown
   const simulator: string = actualSimulator
-  // The response names the engine release it actually used. AISimulate reports
+  // The response names the engine release it actually used. AISim reports
   // `backend_version`; BLIS reports it under provenance. Null means the
   // response did not say, and callers must not infer one.
   const provenance = data?.provenance && typeof data.provenance === 'object'

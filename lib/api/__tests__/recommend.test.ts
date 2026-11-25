@@ -17,7 +17,7 @@ const VALID_REQUEST = {
   prefix: 0,
   database_mode: 'HYBRID' as const,
   top_n: 5,
-  simulator: 'aisimulate' as const,
+  simulator: 'aisim' as const,
 }
 
 const EXTERNAL_RESPONSE = {
@@ -58,7 +58,7 @@ const CAPACITY_OUTCOME = {
   exhaustive: true,
   performance_available: true,
   performance_unavailable_reason: null,
-  simulator: 'aisimulate',
+  simulator: 'aisim',
 }
 
 const CAPACITY_OPTION_OUTCOME = {
@@ -430,11 +430,11 @@ describe('RecommendRequestSchema', () => {
     if (result.success) expect(result.data.fabric).toBe('ib-400g')
   })
 
-  it('defaults simulator to aisimulate', () => {
+  it('defaults simulator to aisim', () => {
     const { simulator: _omit, ...rest } = VALID_REQUEST
     const result = RecommendRequestSchema.safeParse(rest)
     expect(result.success).toBe(true)
-    if (result.success) expect(result.data.simulator).toBe('aisimulate')
+    if (result.success) expect(result.data.simulator).toBe('aisim')
   })
 
   it('accepts target_request_rate instead of target_concurrency', () => {
@@ -662,7 +662,41 @@ describe('callRecommend', () => {
 
     await callRecommend(VALID_REQUEST)
 
-    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory')
+    expect(mockFetch.mock.calls[0][0]).toBe('https://aisimulators.dev/recommend?include=memory,debug')
+  })
+
+  it('keeps the replay record the API returned beside the result', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      simulator: 'aisim',
+      debug: {
+        endpoint: '/recommend',
+        simulator: 'aisim',
+        execution: 'in_process',
+        created_at: 1730000000,
+        versions: { aisim: '0.14.0' },
+        selection: '4 GPUs, agg',
+        notes: [],
+        invocations: [{
+          id: 'recommend',
+          label: 'Recommendation',
+          command: 'aisimulate recommend -c recommend.yaml',
+          execution: 'in_process',
+          group: null,
+          candidate_id: null,
+          notes: [],
+          files: [{ path: 'recommend.yaml', contents: 'engine: {}\n' }],
+        }],
+        script: '#!/usr/bin/env bash\naisimulate recommend -c recommend.yaml\n',
+      },
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.debug?.invocations[0].command).toBe('aisimulate recommend -c recommend.yaml')
+    expect(result.debug?.script).toContain('aisimulate recommend')
   })
 
   it('normalizes native memory breakdown bytes when the candidate has no memory metric', async () => {
@@ -689,6 +723,53 @@ describe('callRecommend', () => {
       unit: 'GB',
       breakdown: { weightsGb: 4, kvCacheGb: 2, overheadGb: 1.5 },
     })
+  })
+
+  it('reports the engine release and resolved quantization of the chosen configuration', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        backend_version: '0.9.2',
+        gemm: 'fp8',
+        kvcache: 'fp8_e5m2',
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBe('0.9.2')
+    expect(result.precision).toEqual({ weights: 'fp8', kvCache: 'fp8_e5m2' })
+  })
+
+  it('falls back to the reported provenance engine release', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      configs: [{
+        ...EXTERNAL_RESPONSE.configs[0],
+        backend_version: null,
+        provenance: { simulator: 'aisimulate', engine_version: '0.10.1' },
+      }],
+      chosen_mode: 'agg',
+    }))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBe('0.10.1')
+  })
+
+  it('leaves an unreported engine release and quantization null', async () => {
+    vi.stubGlobal('fetch', mockFetchOk(EXTERNAL_RESPONSE))
+
+    const result = await callRecommend(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.engineVersion).toBeNull()
+    expect(result.precision).toEqual({ weights: null, kvCache: null })
   })
 
   it('sends correct fields in the upstream request', async () => {
@@ -764,7 +845,7 @@ describe('callRecommend', () => {
   })
 
   it('rejects a request when the API confirms a different simulator', async () => {
-    vi.stubGlobal('fetch', mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'aisimulate' }))
+    vi.stubGlobal('fetch', mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'aisim' }))
 
     const result = await callRecommend({ ...VALID_REQUEST, simulator: 'blis' })
 
@@ -824,7 +905,7 @@ describe('callRecommend', () => {
         met: true,
         best_observed_rps: 12,
         evaluated_configurations: 3,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       },
       sweep: {
         algorithm: 'random',
@@ -1137,7 +1218,7 @@ describe('callRecommend', () => {
         completed_requests: 125,
         evaluated_configurations: 4,
         best_observed_rps: 12.5,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       },
       sweep: {
         algorithm: 'random',
@@ -1165,7 +1246,7 @@ describe('callRecommend', () => {
       observedConcurrency: 25,
       windowSeconds: 10,
       evaluatedConfigurations: 4,
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
     expect(result.sweep).toMatchObject({
       evaluated: 4,
@@ -1185,7 +1266,7 @@ describe('callRecommend', () => {
         met: false,
         best_observed_rps: 4,
         evaluated_configurations: 2,
-        simulator: 'aisimulate',
+        simulator: 'aisim',
       },
     }))
 
@@ -1244,7 +1325,7 @@ describe('callRecommend', () => {
       attentionDp: 1,
       exhaustive: true,
       performanceAvailable: true,
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
     expect(result.sweep).toMatchObject({ algorithm: 'enumerate', evaluated: 5 })
   })
@@ -1287,7 +1368,7 @@ describe('callRecommend', () => {
 // ─── callPareto Tests ────────────────────────────────────────────────────────
 
 const PARETO_EXTERNAL_RESPONSE = {
-  simulator: 'aisimulate',
+  simulator: 'aisim',
   chosen_mode: 'agg',
   configs: EXTERNAL_RESPONSE.configs,
   candidates: [{
@@ -1332,13 +1413,16 @@ describe('callPareto', () => {
     const result = await callPareto({
       ...VALID_REQUEST,
       objective: 'pareto',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
 
     expect(result.status).toBe('completed')
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://aisimulators.dev/recommend?include=debug',
+    )
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string)
     expect(body.objective).toBe('pareto')
-    expect(body.simulator).toBe('aisimulate')
+    expect(body.simulator).toBe('aisim')
     expect(body).not.toHaveProperty('target_concurrency')
     expect(body).not.toHaveProperty('target_request_rate')
     expect(body.ttft).toBe(1000)
@@ -1374,10 +1458,42 @@ describe('callPareto', () => {
       candidate_id: 'candidate-000001',
       status: 'feasible',
       used_gpus: 2,
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     })
     expect(result.views?.pareto_front).toEqual(['candidate-000001'])
     expect(result.sweep).toMatchObject({ evaluated: 1, windowMaxGpus: 32, strictSla: true })
+  })
+
+  it('keeps the replay record that reproduces the sweep', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...PARETO_EXTERNAL_RESPONSE,
+      debug: {
+        endpoint: '/recommend',
+        simulator: 'aisim',
+        execution: 'in_process',
+        created_at: 1730000000,
+        versions: { aisim: '0.14.0' },
+        selection: '1 candidate on the frontier',
+        notes: [],
+        invocations: [{
+          id: 'recommend',
+          label: 'GPU window 1-32',
+          command: 'aisimulate recommend -c window.yaml',
+          execution: 'in_process',
+          group: 'Search windows',
+          candidate_id: null,
+          notes: [],
+          files: [{ path: 'window.yaml', contents: 'engine: {}\n' }],
+        }],
+        script: '#!/usr/bin/env bash\naisimulate recommend -c window.yaml\n',
+      },
+    }))
+
+    const result = await callPareto({ ...VALID_REQUEST, objective: 'pareto' })
+
+    if (result.status !== 'completed') throw new Error('expected a Pareto result')
+    expect(result.debug?.invocations[0].group).toBe('Search windows')
+    expect(result.debug?.script).toContain('aisimulate recommend')
   })
 
   it('keeps a single-search sweep inside the gateway timeout', async () => {
@@ -1392,7 +1508,7 @@ describe('callPareto', () => {
     expect(single.search_budget_seconds).toBe(40)
 
     await callPareto(
-      { ...VALID_REQUEST, objective: 'pareto', simulator: 'aisimulate', search_strategy: 'windowed' },
+      { ...VALID_REQUEST, objective: 'pareto', simulator: 'aisim', search_strategy: 'windowed' },
       { timeoutSeconds: 45 },
     )
     const windowed = JSON.parse(fetchMock.mock.calls[1][1]?.body as string)

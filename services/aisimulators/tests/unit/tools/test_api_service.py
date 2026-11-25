@@ -1086,7 +1086,7 @@ class TestRecommendServingMode:
 
     def test_disagg_without_a_fabric_is_accepted_where_it_needs_none(self):
         request = app_module.RecommendRequest.model_validate(
-            {**VALID_RECOMMEND_BODY, "simulator": "aisimulate", "mode": "disagg"}
+            {**VALID_RECOMMEND_BODY, "simulator": "aisim", "mode": "disagg"}
         )
 
         assert request.fabric is None
@@ -1944,7 +1944,7 @@ class TestDemandOutcome:
         assert outcome.observed_concurrency == 24.0
         assert outcome.window_seconds == 10.0
         assert outcome.completed_requests == 120
-        assert outcome.simulator == "aisimulate"
+        assert outcome.simulator == "aisim"
 
     def test_omits_derived_values_when_metrics_are_missing(self):
         record = MockLedgerCandidate(metrics={"request_throughput_rps": 4.0})
@@ -2032,7 +2032,7 @@ class TestRecommendDemandEndpoint:
         assert data["demand"]["target_rps"] == 10.0
         assert data["demand"]["achieved_rps"] == 12.0
         assert data["demand"]["evaluated_configurations"] == 2
-        assert data["demand"]["simulator"] == "aisimulate"
+        assert data["demand"]["simulator"] == "aisim"
         # The winner, not the SDK's throughput-per-GPU pick, is the response.
         assert data["configs"][0]["total_gpus_needed"] == 2
         assert data["sweep"]["strict_sla"] is False
@@ -2535,7 +2535,7 @@ class TestCapacityConfig:
         assert config.tokens_per_second_per_user == 7.5
         assert config.power_w == 2100.0
         assert config.mode == "agg"
-        assert config.simulator == "aisimulate"
+        assert config.simulator == "aisim"
 
     def test_no_simulation_leaves_performance_empty_but_sizing_intact(self):
         config = self._config(prediction=None)
@@ -3102,7 +3102,7 @@ class TestRecommendCapacityEndpoint:
         data = response.json()
         assert data["capacity"]["fits"] is True
         assert data["capacity"]["capacity_sequences"] == 229
-        assert data["capacity"]["simulator"] == "aisimulate"
+        assert data["capacity"]["simulator"] == "aisim"
         assert data["configs"][0]["total_gpus_needed"] == 4
         assert data["sweep"]["algorithm"] == "enumerate"
         assert data["demand"] is None
@@ -3418,7 +3418,7 @@ class TestBackends:
         assert backend["default_version"] == "current"
         # The union still advertises every version; only the default namespace moved.
         assert backend["versions"] == ["0.14.0", "0.24.0", "0.26.0", "0.28.0", "0.31.0"]
-        # AISimulate's P/D search takes no fabric, so it must not ask for one.
+        # AISim's P/D search takes no fabric, so it must not ask for one.
         assert backend["disaggregation_requires_fabric"] is False
 
     def test_system_defaults_follow_each_systems_current_slot(self, monkeypatch):
@@ -3853,7 +3853,7 @@ class TestEstimate:
         # resolved default layout it sent.
         assert resp.json()["moe_tp"] == 2
         assert resp.json()["moe_ep"] == 1
-        assert resp.json()["provenance"]["simulator"] == "aisimulate"
+        assert resp.json()["provenance"]["simulator"] == "aisim"
         assert resp.json()["provenance"]["requested_model"] == VALID_ESTIMATE_BODY["model_path"]
 
     @patch("tools.api_service.app._blis_estimate")
@@ -4235,7 +4235,7 @@ class TestEstimate:
 # The real replay error for a model the selected data never measured. The runner
 # wraps it, so the service has to classify it by text, not by exception type.
 EMPIRICAL_GAP = (
-    "AISimulate replay failed: engine error: generalized engine worker 0 is now poisoned "
+    "AISim replay failed: engine error: generalized engine worker 0 is now poisoned "
     "because a rank may have been partially mutated: executing attention-DP rank 0: external "
     "prefill prediction failed: AIC static_ctx evidence prediction failed: "
     "EmpiricalNotImplementedError: empirical estimation not implemented: No empirical "

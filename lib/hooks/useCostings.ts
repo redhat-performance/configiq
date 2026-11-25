@@ -156,7 +156,14 @@ export function resolveCloudRate(
 // Survives re-renders and navigation. Healthy data lasts one hour; incomplete
 // startup snapshots retry after one minute without requiring a page reload.
 
-export type CostingsScope = 'all' | 'models'
+/**
+ * Which part of the pricing service a consumer needs.
+ *
+ * `all` is the page default; `models` skips infrastructure prices and
+ * `systems` skips hosted models, so a page that only fills in saved cost
+ * figures does not download a catalogue it will not read.
+ */
+export type CostingsScope = 'all' | 'models' | 'systems'
 type CacheKey = `${PricingSource}:${CostingsScope}`
 const RETRY_INTERVAL_MS = 60_000
 
@@ -178,38 +185,57 @@ const inFlight = new Map<CacheKey, Promise<CostingsResult>>()
 
 function cacheTtl(result: CostingsResult, scope: CostingsScope, source: PricingSource): number {
   const staleSource = Object.entries(result.health?.sources ?? {}).some(([name, status]) =>
-    status.stale && (scope === 'all' || (source === 'merged'
-      ? name.startsWith('models.') : name === `models.${source}`)),
+    status.stale && sourceAppliesToScope(name, source, scope),
   )
-  const incomplete = result.modelsStale || result.models.length === 0 ||
-    (scope === 'all' && (result.cloudRates.size === 0 || result.hardwareCosts.size === 0)) ||
-    result.health === null || staleSource
+  const missingModels = scope !== 'systems' && (result.modelsStale || result.models.length === 0)
+  const missingSystems = scope !== 'models'
+    && (result.cloudRates.size === 0 || result.hardwareCosts.size === 0)
+  const incomplete = missingModels || missingSystems || result.health === null || staleSource
   return incomplete ? RETRY_INTERVAL_MS : CLIENT_CACHE_TTL_MS.costings
 }
 
+/**
+ * Whether a health source's staleness matters to a scope: hosted-model sources
+ * only for scopes that read models, everything else only for scopes that read
+ * infrastructure prices.
+ */
+function sourceAppliesToScope(
+  name: string,
+  source: PricingSource,
+  scope: CostingsScope,
+): boolean {
+  if (name.startsWith('models.')) {
+    if (scope === 'systems') return false
+    return source === 'merged' || name === `models.${source}`
+  }
+  return scope !== 'models'
+}
+
 async function fetchCostings(source: PricingSource, scope: CostingsScope): Promise<CostingsResult> {
+  const wantsModels = scope !== 'systems'
+  const wantsSystems = scope !== 'models'
   const [modelsRes, systemsRes, healthRes] = await Promise.all([
-    fetch(`/api/costings/models?source=${source}`),
-    scope === 'all' ? fetch('/api/costings/systems?include=cloud,hardware') : null,
+    wantsModels ? fetch(`/api/costings/models?source=${source}`) : null,
+    wantsSystems ? fetch('/api/costings/systems?include=cloud,hardware') : null,
     fetch('/api/costings/health'),
   ])
 
-  if (!modelsRes.ok) throw new Error(`/models ${modelsRes.status}`)
+  if (modelsRes && !modelsRes.ok) throw new Error(`/models ${modelsRes.status}`)
   if (systemsRes && !systemsRes.ok) throw new Error(`/systems ${systemsRes.status}`)
 
-  const modelsData = parseHostedModels(await modelsRes.json())
+  const modelsData = modelsRes ? parseHostedModels(await modelsRes.json()) : null
   const systemsData = systemsRes ? await systemsRes.json() : { systems: [] }
   const healthData = healthRes.ok ? await healthRes.json() : null
 
   const systems = (systemsData.systems ?? []) as Record<string, unknown>[]
 
   return {
-    models: modelsData.models,
+    models: modelsData?.models ?? [],
     cloudRates: parseCloudRates(systems),
     hardwareCosts: parseHardwareCosts(systems),
     health: healthData as CostingsHealth | null,
-    modelsUpdatedAt: modelsData.updated_at ?? null,
-    modelsStale: modelsData.stale ?? false,
+    modelsUpdatedAt: modelsData?.updated_at ?? null,
+    modelsStale: modelsData?.stale ?? false,
   }
 }
 

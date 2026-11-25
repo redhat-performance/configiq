@@ -52,7 +52,7 @@ export const RecommendRequestSchema = z.object({
   // simulator IDs: a simulator is added or retired by the service, and an
   // unknown value must reach the service for an explicit unsupported response
   // rather than be rejected here against a stale union.
-  simulator: z.string().min(1).default('aisimulate'),
+  simulator: z.string().min(1).default('aisim'),
   // Whether a simulator consumes a fabric is its own capability; the service
   // rejects one it does not support instead of this schema matching on its ID.
   fabric: z.string().min(1).nullish(),
@@ -87,8 +87,8 @@ export const RecommendRequestSchema = z.object({
    */
   sla_mode: z.enum(['enforce', 'none']).default('enforce'),
   /**
-   * Optional P/D KV transfer bandwidth for a Pareto sweep. Omit to apply
-   * AISimulate's default (no modeled P/D transfer delay).
+   * Optional P/D KV transfer bandwidth for a Pareto sweep. Omit to let the
+   * service resolve its default; it decides whether that models a delay.
    */
   kv_transfer_bandwidth_gb_per_second: z.number().positive().nullish(),
 }).strict().superRefine((data, ctx) => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeSimulatorId } from '@/lib/simulator-ids';
 
 /**
  * Shared deep-link primitives.
@@ -50,7 +51,9 @@ export const FABRIC_NONE = 'none';
 export const PROVENANCE_FIELDS = {
   backend: z.enum(INFERENCE_BACKENDS),
   backendVersion: text(MAX_ID_LENGTH),
-  simulator: text(MAX_ID_LENGTH),
+  // A link shared before the simulator rename still names the old id; read it
+  // as the current one so the recipient sees the same implementation.
+  simulator: text(MAX_ID_LENGTH).transform(normalizeSimulatorId),
 } as const;
 
 export type LinkFieldMap = Record<string, z.ZodTypeAny>;

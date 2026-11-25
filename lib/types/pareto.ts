@@ -2,6 +2,8 @@
 // AISimulators REST API. Values are copied from the aisimulate SDK record; the
 // browser must not synthesize topology or performance data.
 
+import type { DebugRecord } from '../debug/types'
+
 export type CandidateStatus =
   | 'feasible'
   | 'infeasible'
@@ -76,6 +78,12 @@ export interface Candidate {
   transfer_delay_modeled: boolean
   provenance_sources: string[]
   simulator: SimulatorId
+  /**
+   * Set on the row that represents this run's sizing recommendation. The row is
+   * either the sweep candidate with the same deployment or a row projected from
+   * the sizing result, so it is never listed twice.
+   */
+  recommended?: boolean
 }
 
 export interface CandidateViews {
@@ -110,6 +118,11 @@ export type FrontierState =
       candidates: Candidate[]
       views: CandidateViews | null
       sweep: FrontierSweep | null
+      /**
+       * Commands and input files the sweep recorded, including one invocation
+       * per evaluated candidate. Null when the service returned none.
+       */
+      replay: DebugRecord | null
     }
   | { status: 'unavailable'; reason: string }
   | { status: 'error'; message: string }

@@ -10,6 +10,8 @@ import {
   fetchFrontier,
   FrontierRequestError,
 } from '@/lib/api/pareto';
+import { collateRecommendation } from '@/lib/pareto/recommendation';
+import type { DebugPayload } from '@/lib/debug/types';
 import type { FrontierState } from '@/lib/types/pareto';
 
 export type SizingGoal = 'latency' | 'demand' | 'capacity';
@@ -74,14 +76,14 @@ interface RecommendState {
   error: string | null;
   errorCode: string | null;
   elapsed: number;
-  debugRequest: Record<string, unknown> | null;
-  debugResponse: Record<string, unknown> | null;
+  debugRequest: DebugPayload;
+  debugResponse: DebugPayload;
   debugStatus: number | null;
   debugDuration: number | null;
   /**
-   * Standalone Pareto result. A Pareto run never shares state with a sizing
-   * result: starting one clears the other, so the page always shows exactly the
-   * action the user asked for.
+   * Pareto run state. A Pareto action runs the sizing recommendation and the
+   * sweep together: the recommendation is collated into this list so it can be
+   * plotted and listed beside the candidates the sweep evaluated.
    */
   frontier: FrontierState;
   startSizing: (params: RecommendParams) => void;
@@ -159,8 +161,8 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = React.useState<string | null>(null);
   const [errorCode, setErrorCode] = React.useState<string | null>(null);
   const [elapsed, setElapsed] = React.useState(0);
-  const [debugRequest, setDebugRequest] = React.useState<Record<string, unknown> | null>(null);
-  const [debugResponse, setDebugResponse] = React.useState<Record<string, unknown> | null>(null);
+  const [debugRequest, setDebugRequest] = React.useState<DebugPayload>(null);
+  const [debugResponse, setDebugResponse] = React.useState<DebugPayload>(null);
   const [debugStatus, setDebugStatus] = React.useState<number | null>(null);
   const [debugDuration, setDebugDuration] = React.useState<number | null>(null);
   const [frontier, setFrontier] = React.useState<FrontierState>({ status: 'idle' });
@@ -188,8 +190,9 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    // A sizing result and a Pareto frontier are alternatives. Discard the
-    // other action's request and result instead of running them in sequence.
+    // Calculate answers the sizing question on its own. A frontier from an
+    // earlier Pareto run would describe a different action, so it is discarded
+    // rather than left beside a result it was not collated into.
     if (frontierAbortRef.current) frontierAbortRef.current.abort();
     frontierAbortRef.current = null;
 
@@ -255,12 +258,19 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
 
   const startPareto = React.useCallback((p: RecommendParams) => {
     if (abortRef.current) abortRef.current.abort();
-    abortRef.current = null;
     if (frontierAbortRef.current) frontierAbortRef.current.abort();
-    const controller = new AbortController();
-    frontierAbortRef.current = controller;
+    const sizingController = new AbortController();
+    const frontierController = new AbortController();
+    abortRef.current = sizingController;
+    frontierAbortRef.current = frontierController;
 
-    const requestBody = buildFrontierRequest(requestBodyFor(p));
+    // One click asks two questions of the same workload: the sizing
+    // recommendation (which configuration to deploy) and the sweep (how that
+    // workload trades throughput against GPU efficiency). They run
+    // concurrently and both answers are kept, so the recommendation can be
+    // collated into the frontier it belongs on.
+    const requestBody = requestBodyFor(p);
+    const frontierBody = buildFrontierRequest(requestBody);
 
     setParams({ ...p, pareto: true });
     setRunMode('pareto');
@@ -268,41 +278,101 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setResult(null);
     setError(null);
     setErrorCode(null);
-    setDebugRequest(requestBody);
+    setDebugRequest([requestBody, frontierBody]);
     setDebugResponse(null);
     setDebugStatus(null);
     setDebugDuration(null);
     setFrontier({ status: 'loading' });
 
     const t0 = performance.now();
+    let sizingDebug: Record<string, unknown> | null = null;
+    let frontierDebug: Record<string, unknown> | null = null;
+    const statuses: number[] = [];
 
-    void fetchFrontier(requestBody, controller.signal)
-      .then(({ candidates, views, sweep }) => {
-        if (controller.signal.aborted) return;
-        setFrontier({ status: 'ready', candidates, views, sweep });
-        setDebugStatus(200);
-        setDebugResponse({ candidates, views, sweep });
-        setDebugDuration(Math.round(performance.now() - t0));
+    const sizing = (async () => {
+      try {
+        const res = await fetch('/api/recommend', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+          body: JSON.stringify(requestBody),
+          signal: sizingController.signal,
+        });
+        statuses.push(res.status);
+        if (sizingController.signal.aborted) return;
+        if (!res.ok) {
+          const data = await res.json().catch(() => null) as Record<string, unknown> | null;
+          const error = data?.error as Record<string, unknown> | undefined;
+          if (sizingController.signal.aborted) return;
+          sizingDebug = data ?? { status: res.status };
+          setError(typeof error?.message === 'string' ? error.message : `Recommendation request failed (${res.status})`);
+          setErrorCode(typeof error?.code === 'string' ? error.code : 'NETWORK_ERROR');
+          return;
+        }
+        const response = await readRecommendStream(res);
+        if (sizingController.signal.aborted) return;
+        sizingDebug = response as unknown as Record<string, unknown>;
+        if (response.status === 'failed') {
+          setError(response.error.message);
+          setErrorCode(response.error.code);
+          return;
+        }
+        setResult(response);
+      } catch (err: unknown) {
+        if (sizingController.signal.aborted) return;
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setError(err instanceof Error ? err.message : 'Network error');
+        setErrorCode('NETWORK_ERROR');
+      }
+    })();
+
+    const sweep = fetchFrontier(frontierBody, frontierController.signal)
+      .then(response => {
+        statuses.push(200);
+        if (frontierController.signal.aborted) return;
+        setFrontier({
+          status: 'ready',
+          candidates: response.candidates,
+          views: response.views,
+          sweep: response.sweep,
+          // Each evaluated candidate carries its own command, so the frontier
+          // rows can copy the one that produced their figures.
+          replay: response.debug,
+        });
+        // Keep the replay record with the payload the panel reads, so it can
+        // show the commands that reproduce each half beside the responses.
+        frontierDebug = {
+          candidates: response.candidates,
+          views: response.views,
+          sweep: response.sweep,
+          debug: response.debug,
+        };
       })
       .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
+        if (frontierController.signal.aborted) return;
         const message = err instanceof Error ? err.message : 'Pareto sweep failed';
         setFrontier({ status: 'error', message });
         if (err instanceof FrontierRequestError) {
-          setDebugStatus(err.status);
-          setDebugResponse(
-            err.body && typeof err.body === 'object'
-              ? err.body as Record<string, unknown>
-              : { error: message },
-          );
+          statuses.push(err.status);
+          frontierDebug = err.body && typeof err.body === 'object'
+            ? err.body as Record<string, unknown>
+            : { error: message };
         } else {
-          setDebugResponse({ error: message });
+          frontierDebug = { error: message };
         }
-        setDebugDuration(Math.round(performance.now() - t0));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setIsLoading(false);
       });
+
+    void Promise.allSettled([sizing, sweep]).then(() => {
+      const aborted = sizingController.signal.aborted && frontierController.signal.aborted;
+      if (aborted) return;
+      setIsLoading(false);
+      setDebugDuration(Math.round(performance.now() - t0));
+      const failed = statuses.find(status => status < 200 || status >= 300);
+      setDebugStatus(failed ?? statuses[0] ?? null);
+      const responses = [sizingDebug, frontierDebug].filter(
+        (response): response is Record<string, unknown> => response !== null,
+      );
+      setDebugResponse(responses.length > 0 ? responses : null);
+    });
   }, []);
 
   const reset = React.useCallback(() => {
@@ -324,9 +394,19 @@ export function RecommendProvider({ children }: { children: React.ReactNode }) {
     setFrontier({ status: 'idle' });
   }, []);
 
+  // The sweep and the sizing recommendation arrive independently. Collating
+  // them on read keeps the recommendation on the frontier whenever it lands,
+  // without a second state write racing the sweep.
+  const displayedFrontier = React.useMemo<FrontierState>(
+    () => frontier.status === 'ready'
+      ? { ...frontier, candidates: collateRecommendation(frontier.candidates, result) }
+      : frontier,
+    [frontier, result],
+  );
+
   const value = React.useMemo<RecommendState>(
-    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset }),
-    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier, startSizing, startPareto, reset]
+    () => ({ params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, frontier: displayedFrontier, startSizing, startPareto, reset }),
+    [params, runMode, isLoading, result, error, errorCode, elapsed, debugRequest, debugResponse, debugStatus, debugDuration, displayedFrontier, startSizing, startPareto, reset]
   );
 
   return (

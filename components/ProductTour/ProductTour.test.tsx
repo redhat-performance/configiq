@@ -144,6 +144,43 @@ describe('ProductTour', () => {
     expect(tooltip!.style.visibility).toBe('visible')
   })
 
+  it('follows its target when an inner container scrolls, not only the window', async () => {
+    // The app shell scrolls a main region rather than the window. Scroll events
+    // do not bubble, so the spotlight has to hear them in the capture phase or
+    // it stays behind while the page moves under it.
+    let top = 100
+    const target = addTarget('tour-target-scroll', { top })
+    target.getBoundingClientRect = () =>
+      ({
+        top,
+        left: 0,
+        width: 100,
+        height: 40,
+        right: 100,
+        bottom: top + 40,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+      }) as DOMRect
+    const scroller = document.createElement('div')
+    scroller.append(target)
+    document.body.append(scroller)
+
+    await renderTour([tourStep('#tour-target-scroll', 'Scroll step')], vi.fn())
+
+    const spotlight = () => document.querySelector<HTMLElement>('[class*="spotlight"]')
+    // 100 - 8px padding.
+    expect(spotlight()!.style.top).toBe('92px')
+
+    top = 40
+    await act(async () => {
+      scroller.dispatchEvent(new Event('scroll'))
+    })
+
+    expect(spotlight()!.style.top).toBe('32px')
+    scroller.remove()
+  })
+
   it('counts only the steps whose targets are on screen', async () => {
     // The recommend tour ends on the result tiles, which do not exist before a
     // calculation. Promising five steps and stopping at four reads as a broken

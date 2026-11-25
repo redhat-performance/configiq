@@ -14,6 +14,7 @@ import DollarSignIcon from '@patternfly/react-icons/dist/esm/icons/dollar-sign-i
 import { InfoStrip, InfoStripAction } from '@/components/ui/InfoStrip';
 import { WarningPanel } from '@/components/ui/WarningPanel';
 import { DebugPanel } from '@/components/DebugPanel/DebugPanel';
+import { exchangeRuns } from '@/lib/debug/types';
 
 import styles from './Sizing.module.css';
 import { fetchModelConfig } from '@/lib/huggingface/fetch-config';
@@ -23,7 +24,6 @@ import { isMoeConfig, type PhaseConfig } from '@/lib/api/recommend';
 import { FrontierPanel } from '@/components/frontier/FrontierPanel';
 import { CapacityOptionsPanel } from '@/components/capacity/CapacityOptionsPanel';
 import { useCatalog, engineVersionSupport } from '@/lib/hooks/useCatalog';
-import { simulatorDisplayLabel } from '@/lib/simulator-labels';
 import { useTestedModels } from '@/lib/hooks/useTestedModels';
 import { testedSystemsFirst } from '@/lib/tested-models/registry-types';
 import { useSettings } from '@/contexts/SettingsContext';
@@ -43,6 +43,8 @@ import type { CanonicalClassifierInput, ClassifierPhaseInput } from '@/lib/teste
 import { resolveSearchFabric, submittedInputsMatch } from './inputs-match';
 import { statusForModel, type ModelCheckStatus, type ModelStatusCheck } from '@/lib/model-status';
 import { CopyLinkButton } from '@/components/help/CopyLinkButton';
+import { SaveToComparisonButton } from '@/components/comparison/SaveToComparisonButton';
+import { buildRecommendEntry, sizingGoalFrom } from '@/lib/comparison/recommend-entry';
 import { TourButton } from '@/components/help/TourButton';
 import { FABRIC_NONE } from '@/lib/deep-links/common';
 import { recommendLink, type RecommendLinkValues } from '@/lib/deep-links/pages';
@@ -1085,6 +1087,51 @@ export default function Sizing() {
   // caching does not shrink that, so it is not subtracted.
   const capacityContextTokens = maxSeqLen ?? isl + osl;
 
+  // A saved comparison is a result snapshot, so offer it only while the
+  // displayed result still matches the request that produced it. A sweep's
+  // frontier is many results, so it is not saved as one.
+  const comparisonDisabledReason =
+    runMode === 'pareto'
+      ? 'A Pareto sweep is not a single result; run Calculate to save one.'
+      : isLoading
+        ? 'A calculation is running; save when it finishes.'
+        : result == null || params == null
+          ? 'Run a calculation first; there is no result to save.'
+          : inputsDirty
+            ? 'The inputs changed after this result; recalculate so the saved snapshot matches them.'
+            : null;
+
+  const buildComparisonEntry = () => {
+    if (result == null || params == null || isLoading || inputsDirty || runMode === 'pareto') return null;
+    const systemOption = selectableGpus.find(option => option.systemId === params.system);
+    const cloudRate = resolveCloudRate(costings.gpuCloudRates.get(params.system), preferredCloudProvider);
+    const hardwareCost = costings.gpuHardwareCosts.get(params.system)?.new_usd ?? null;
+    // The submitted backend is a string; a link only names a backend its
+    // contract knows. An unrecognized one leaves the field out rather than
+    // claiming the current setting produced this run.
+    const runBackend = recommendLink.fields.backend.safeParse(params.backend ?? inferenceBackend);
+    return buildRecommendEntry({
+      // The link reads simulator and backend from current settings, which can
+      // move after a run without touching the form. Describe the run that
+      // produced the result, so replaying the saved link does not name a
+      // different simulator or engine than the snapshot.
+      link: shared.build({
+        simulator: result.simulator || undefined,
+        backend: runBackend.success ? runBackend.data : undefined,
+        backendVersion: params.backend_version ?? undefined,
+      }),
+      model: params.model_path,
+      system: params.system,
+      systemLabel: systemOption?.label ?? params.system,
+      backend: params.backend ?? inferenceBackend,
+      backendVersion: params.backend_version ?? null,
+      goal: sizingGoalFrom(params),
+      cloudRatePerHour: cloudRate?.rate ?? null,
+      hardwareCostUsd: hardwareCost,
+      result,
+    });
+  };
+
   return (
     <div className={styles.page}>
       {/* ─── Header ─── */}
@@ -1097,6 +1144,10 @@ export default function Sizing() {
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 'none' }}>
+            <SaveToComparisonButton
+              buildEntry={buildComparisonEntry}
+              disabledReason={comparisonDisabledReason}
+            />
             <CopyLinkButton getUrl={shared.build} />
             <TourButton />
           </div>
@@ -1136,14 +1187,14 @@ export default function Sizing() {
 
         {simulatorUnavailable && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            The capabilities for <strong>{support ? simulatorDisplayLabel(support.id, support.label) : 'the selected simulator'}</strong> could not be read,
+            The capabilities for <strong>{support ? support.label : 'the selected simulator'}</strong> could not be read,
             so it cannot size workloads. Choose another simulator in Settings.
           </div>
         )}
 
         {modelUnsupported && (
           <div style={{ marginTop: 12, fontSize: 13, color: '#a30000' }}>
-            <strong>{model}</strong> is not in the {support ? simulatorDisplayLabel(support.id, support.label) : 'selected simulator'} model catalog,
+            <strong>{model}</strong> is not in the {support ? support.label : 'selected simulator'} model catalog,
             which lists every model that simulator can price. Choose a catalog model or switch simulators in Settings.
           </div>
         )}
@@ -1194,7 +1245,7 @@ export default function Sizing() {
           </div>
         )}
 
-        {/* Calculate and Pareto are alternative actions, not a chain. */}
+        {/* Pareto runs the sizing recommendation and the sweep together. */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 16 }} data-tour="calculate">
           <Button
             variant="secondary"
@@ -2154,7 +2205,7 @@ export default function Sizing() {
         />
       )}
 
-      {/* ─── Pareto frontier (standalone action, exclusive of the sizing result) ─── */}
+      {/* ─── Pareto frontier (sweep plus the sizing recommendation collated in) ─── */}
       {runMode === 'pareto' && (
         <FrontierPanel
           state={frontier}
@@ -2172,8 +2223,7 @@ export default function Sizing() {
 
       {/* ─── Debug panel ─── */}
       <DebugPanel
-        request={debugRequest}
-        response={debugResponse}
+        runs={exchangeRuns({ request: debugRequest, response: debugResponse })}
         status={debugStatus}
         duration={debugDuration}
         open={debugOpen}

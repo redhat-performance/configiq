@@ -27,6 +27,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000
 /** Explicit refreshes are ignored until the cache is at least this old. */
 const MIN_REFRESH_INTERVAL_MS = 30 * 1000
 const INFERENCEX_DATASET_ID = 'redhat-performance/configiq-inferencex-comparison'
+
+/** Dataset identifiers, for provenance surfaces that must name the source. */
+export const BENCHMARK_DATASET_ID = DATASET_ID
+export const INFERENCEX_COMPARISON_DATASET_ID = INFERENCEX_DATASET_ID
 const INFERENCEX_FILE_URL = `https://huggingface.co/datasets/${INFERENCEX_DATASET_ID}/resolve/main/inferencex-8k1k.json`
 
 /** External links are rendered in anchors, so only https URLs are accepted. */
@@ -152,6 +156,13 @@ interface ParquetFileList {
   parquet_files: ParquetFile[]
 }
 
+/** One entry from the Hub's repository tree listing. */
+interface HubTreeEntry {
+  type?: string
+  path?: string
+  size?: number
+}
+
 interface HubMetadata {
   sha?: string
   lastModified?: string
@@ -199,7 +210,7 @@ export function benchmarkFilterValues(rows: DatasetRow[], key: BenchmarkFilterKe
   return values
 }
 
-function configurationForRow(row: DatasetRow): DatasetConfiguration {
+export function configurationForRow(row: DatasetRow): DatasetConfiguration {
   return Object.fromEntries(CONFIGURATION_FIELDS.map(field => {
     if (field === 'measurement_source') return [field, row.benchmark_source === 'inferencex' ? 'InferenceX' : 'Red Hat']
     if (field === 'benchmark_version') return [field, row.benchmark_source === 'inferencex' ? null : normalizeValue(row.version)]
@@ -209,7 +220,8 @@ function configurationForRow(row: DatasetRow): DatasetConfiguration {
   })) as DatasetConfiguration
 }
 
-function configurationKey(values: DatasetConfiguration): string {
+/** Stable key for one measured runtime configuration. */
+export function configurationKey(values: DatasetConfiguration): string {
   return JSON.stringify(values)
 }
 
@@ -299,12 +311,51 @@ async function fetchParquetFile(file: ParquetFile, refresh: boolean): Promise<Da
   }
 }
 
+/**
+ * The Parquet files that make up the dataset.
+ *
+ * The dataset viewer's listing endpoint is the natural source, but it is a
+ * shared service that answers "busier than usual" (HTTP 500) under load. The
+ * repository tree is the same data from the Hub itself, so a viewer outage
+ * degrades this to a slower read instead of a failed one.
+ */
+async function listParquetFiles(refresh: boolean): Promise<ParquetFile[]> {
+  try {
+    const listing = await fetchJson<ParquetFileList>(
+      `${VIEWER_API}/parquet?dataset=${encodeURIComponent(DATASET_ID)}`,
+      'Hugging Face Parquet listing',
+      refresh,
+    )
+    if (Array.isArray(listing.parquet_files) && listing.parquet_files.length > 0) {
+      return listing.parquet_files
+    }
+  } catch {
+    // Fall through to the Hub tree below.
+  }
+
+  const tree = await fetchJson<HubTreeEntry[]>(
+    `https://huggingface.co/api/datasets/${DATASET_ID}/tree/main?recursive=true`,
+    'Hugging Face dataset tree',
+    refresh,
+  )
+  const files = (Array.isArray(tree) ? tree : [])
+    .filter(entry => entry.type === 'file' && typeof entry.path === 'string' && entry.path.endsWith('.parquet'))
+    .map(entry => ({
+      url: `https://huggingface.co/datasets/${DATASET_ID}/resolve/main/${entry.path}`,
+      filename: entry.path as string,
+      size: typeof entry.size === 'number' ? entry.size : 0,
+    }))
+  if (files.length === 0) {
+    throw new Error('Hugging Face did not list any Parquet files for this dataset')
+  }
+  return files
+}
+
 async function loadDataset(refresh: boolean): Promise<DatasetCache> {
-  const [filesResponse, metadata] = await Promise.all([
-    fetchJson<ParquetFileList>(`${VIEWER_API}/parquet?dataset=${encodeURIComponent(DATASET_ID)}`, 'Hugging Face Parquet listing', refresh),
+  const [files, metadata] = await Promise.all([
+    listParquetFiles(refresh),
     fetchJson<HubMetadata>(`https://huggingface.co/api/datasets/${DATASET_ID}`, 'Hugging Face dataset metadata', refresh),
   ])
-  const files = filesResponse.parquet_files
   if (!Array.isArray(files) || files.length === 0) {
     throw new Error('Hugging Face did not list any Parquet files for this dataset')
   }

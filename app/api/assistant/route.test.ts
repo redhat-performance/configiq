@@ -318,7 +318,7 @@ describe('assistant answer', () => {
         }
         if (url.startsWith('http://gateway.test/systems')) {
           return jsonResponse({
-            simulator: 'aisimulate',
+            simulator: 'aisim',
             systems: [{ id: 'h200_sxm', name: 'H200 SXM', vendor: 'nvidia' }],
           });
         }
@@ -522,7 +522,7 @@ describe('assistant answer', () => {
         }
         if (url.startsWith('http://gateway.test/systems')) {
           return jsonResponse({
-            simulator: 'aisimulate',
+            simulator: 'aisim',
             systems: [
               { id: 'h200_sxm', name: 'H200 SXM', vendor: 'nvidia', memory_bytes: 141_000_000_000 },
             ],
@@ -583,7 +583,7 @@ describe('assistant answer', () => {
           return completion({ content: 'The catalog lists 10 GPU systems.' });
         }
         if (url.startsWith('http://gateway.test/systems')) {
-          return jsonResponse({ simulator: 'aisimulate', systems });
+          return jsonResponse({ simulator: 'aisim', systems });
         }
         return jsonResponse({}, 404);
       }),
@@ -621,7 +621,7 @@ describe('assistant answer', () => {
           return completion({ content: 'The catalog lists 40 GPU systems.' });
         }
         if (url.startsWith('http://gateway.test/systems')) {
-          return jsonResponse({ simulator: 'aisimulate', systems });
+          return jsonResponse({ simulator: 'aisim', systems });
         }
         return jsonResponse({}, 404);
       }),
@@ -854,7 +854,7 @@ describe('assistant answer', () => {
         }
         if (url.endsWith('/memory')) {
           return jsonResponse({
-            simulator: 'aisimulate',
+            simulator: 'aisim',
             total_gpu_capacity_bytes: 141_000_000_000,
             total_kv_size_tokens: 62_500,
             memory_breakdown: { weights_bytes: 70_000_000_000 },
@@ -865,7 +865,7 @@ describe('assistant answer', () => {
     );
 
     const { events } = await ask('how much VRAM does this model need', {
-      simulator: 'aisimulate',
+      simulator: 'aisim',
       backend: 'vllm',
       backendVersion: '0.10.1',
     });
@@ -908,7 +908,7 @@ describe('assistant answer', () => {
         }
         if (url.endsWith('/memory')) {
           return jsonResponse({
-            simulator: 'aisimulate',
+            simulator: 'aisim',
             total_gpu_capacity_bytes: 141_000_000_000,
             total_kv_size_tokens: 62_500,
             memory_breakdown: { weights_bytes: 70_000_000_000 },
@@ -923,7 +923,7 @@ describe('assistant answer', () => {
     // the form and must survive.
     const { events } = await ask('how much VRAM does this model need', {
       route: '/kv-cache',
-      simulator: 'aisimulate',
+      simulator: 'aisim',
     });
 
     const result = events.find((event) => event.type === 'result');

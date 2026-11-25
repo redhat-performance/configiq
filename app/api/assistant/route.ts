@@ -318,7 +318,7 @@ const PROVENANCE_ROUTES = new Set([
   '/recommend',
   '/hybrid-savings',
   '/validation/compare',
-  // AISimulate-only by contract: it carries the backend but never a simulator.
+  // AISim-only by contract: it carries the backend but never a simulator.
   '/kv-cache',
 ]);
 

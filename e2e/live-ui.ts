@@ -170,7 +170,7 @@ export async function checkPredict(
   expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
   await page.addInitScript(() => localStorage.setItem('predict-performance-tour-seen', 'true'))
   await page.goto('/predict')
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
   await selectModel(page, 'predict-performance-model', model)
   await selectSystem(page, 'predict-performance-gpu', system!.name)
   await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -199,7 +199,7 @@ export async function checkPredict(
     model_path: model,
     system: systemId,
     backend: appConfig.defaultBackend,
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     tp_size: parallelism,
     isl: workload.isl,
     osl: workload.osl,
@@ -273,7 +273,7 @@ export async function checkKvCache(
   const system = systems.find(item => item.id === systemId)
   expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
   await page.goto('/kv-cache')
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
   await selectModel(page, 'kv-model', model)
   await selectSystem(page, 'kv-gpu', system!.name)
   await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -406,7 +406,7 @@ export async function checkRecommend(
     })
     throw error
   }
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisimulate'))
+  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
   await selectModel(page, 'adv-model', model)
   await selectSystem(page, 'adv-gpu', system!.name)
   const goalButton = page.getByRole('button', { name: goalLabels[scenario.goal], exact: true })
@@ -440,7 +440,7 @@ export async function checkRecommend(
   expect(request).toMatchObject({
     model_path: model, system: systemId,
     backend: appConfig.defaultBackend,
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     isl: workload.isl, osl: workload.osl,
     objective: scenario.action === 'pareto' ? 'pareto' : scenario.goal === 'latency' ? 'min_gpus' : scenario.goal === 'capacity' ? 'concurrency_capacity' : 'throughput_demand',
     sla_mode: scenario.goal === 'latency' ? 'enforce' : 'none',
@@ -484,7 +484,7 @@ export async function checkRecommend(
     }
     const parsed = parseFrontierBody(result)
     expect(parsed, 'The current API must return a parseable Pareto response').not.toBeNull()
-    expect(parsed!.simulator).toBe('aisimulate')
+    expect(parsed!.simulator).toBe('aisim')
     const feasible = parsed!.candidates.filter(candidate => candidate.status === 'feasible')
     const failed = parsed!.candidates.filter(candidate => candidate.status !== 'feasible')
     if (parsed!.candidates.length === 0) {

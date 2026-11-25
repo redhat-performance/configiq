@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from aisimulate_core.sdk.perf_database import load_system_spec
 
+from ..replay.capture import active_recorder, capture_blis_run
 from .manifest import (
     BlisCatalog,
     BlisUnsupportedRequest,
@@ -22,6 +25,7 @@ from .runner import (
     BlisExecutionError,
     BlisTimeoutError,
     RunRequest,
+    build_run_command,
     normalize_result,
     run_blis,
 )
@@ -34,6 +38,8 @@ from .scenario import (
     resolve_engine_version,
     write_scenario,
 )
+
+logger = logging.getLogger(__name__)
 
 _MAX_RECOMMEND_BUDGET_SECONDS = 60.0
 _DEFAULT_RUN_TIMEOUT_SECONDS = 60.0
@@ -483,31 +489,65 @@ def _run_scenario(
     decode_instances: int = 0,
     rate: float | None = None,
     num_requests: int | None = None,
+    candidate_id: str | None = None,
 ) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="configiq-blis-") as scenario_directory:
         filename = write_scenario(scenario_directory, scenario)
+        request = RunRequest(
+            scenario=filename,
+            scenario_directory=scenario_directory,
+            isl=scenario.isl,
+            osl=scenario.osl,
+            # Closed-loop runs use concurrency as virtual users. Open-loop
+            # demand runs send only the arrival rate, because BLIS refuses
+            # a command that sets both.
+            concurrency=None if rate is not None else scenario.concurrency,
+            rate=rate,
+            # BLIS treats concurrency as virtual users and num-requests as
+            # the total simulation slice. Closed-loop recommendations use a
+            # bounded smoke run of one request per virtual user.
+            num_requests=num_requests if num_requests is not None else scenario.concurrency,
+            prefix_tokens=prefix,
+            prefill_instances=prefill_instances,
+            decode_instances=decode_instances,
+        )
+        _capture_scenario(resolved, request, scenario_directory, candidate_id)
         return run_blis(
             resolved.runtime,
-            RunRequest(
-                scenario=filename,
-                scenario_directory=scenario_directory,
-                isl=scenario.isl,
-                osl=scenario.osl,
-                # Closed-loop runs use concurrency as virtual users. Open-loop
-                # demand runs send only the arrival rate, because BLIS refuses
-                # a command that sets both.
-                concurrency=None if rate is not None else scenario.concurrency,
-                rate=rate,
-                # BLIS treats concurrency as virtual users and num-requests as
-                # the total simulation slice. Closed-loop recommendations use a
-                # bounded smoke run of one request per virtual user.
-                num_requests=num_requests if num_requests is not None else scenario.concurrency,
-                prefix_tokens=prefix,
-                prefill_instances=prefill_instances,
-                decode_instances=decode_instances,
-            ),
+            request,
             timeout_seconds=timeout_seconds,
         )
+
+
+def _capture_scenario(
+    resolved: _ResolvedRequest,
+    request: RunRequest,
+    scenario_directory: str,
+    candidate_id: str | None = None,
+) -> None:
+    """Record the files and argv of a run before its temp directory is removed."""
+    if active_recorder() is None:
+        return
+    try:
+        files = {
+            str(path.relative_to(scenario_directory)): path.read_text(encoding="utf-8")
+            for path in sorted(Path(scenario_directory).rglob("*"))
+            if path.is_file()
+        }
+        capture_blis_run(
+            # A Pareto row copies its own candidate's command, so the candidate
+            # id is the label that row can find again.
+            label=candidate_id or request.scenario.removesuffix(".yaml"),
+            argv=build_run_command(resolved.runtime, request),
+            files=files,
+            binary=resolved.runtime.binary,
+            catalog=resolved.runtime.catalog,
+            registry=resolved.runtime.registry,
+            scenario_directory=scenario_directory,
+            candidate_id=candidate_id,
+        )
+    except Exception:
+        logger.exception("could not capture a BLIS replay artifact")
 
 
 def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> BlisPrediction:
@@ -1461,6 +1501,7 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
                     prefill_instances=prefill_instances,
                     decode_instances=decode_instances,
                     num_requests=concurrency,
+                    candidate_id=candidate_id,
                 ))
             except BlisTimeoutError:
                 ledger.append({

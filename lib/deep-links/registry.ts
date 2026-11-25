@@ -18,6 +18,7 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
@@ -67,9 +68,23 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
     sharedView: { kind: 'link', fields: Object.keys(hybridSavingsLink.fields) },
   },
   {
+    path: '/validation/scorecard',
+    name: 'Simulator scorecard',
+    sharedView: { kind: 'link', fields: Object.keys(scorecardLink.fields) },
+  },
+  {
     path: '/validation/compare',
     name: 'Validation compare',
     sharedView: { kind: 'link', fields: Object.keys(validationCompareLink.fields) },
+  },
+  {
+    path: '/compare',
+    name: 'Saved results',
+    sharedView: {
+      kind: 'none',
+      reason:
+        'it renders the result snapshots saved in this browser; each entry carries the link of the page that produced it, and the set itself has no URL',
+    },
   },
   {
     path: '/',
@@ -83,15 +98,6 @@ export const PAGE_REGISTRY: readonly SharedViewRoute[] = [
       kind: 'none',
       reason:
         'its inputs describe a reader-owned cluster and its rates, which are not a sizing view anyone else can reproduce',
-    },
-  },
-  {
-    path: '/compare',
-    name: 'Saved estimates',
-    sharedView: {
-      kind: 'none',
-      reason:
-        'it compares estimates saved in this browser; there is no server-side view for a link to name',
     },
   },
   {

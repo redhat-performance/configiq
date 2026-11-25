@@ -13,6 +13,7 @@ import {
   hybridSavingsLink,
   kvCacheLink,
   recommendLink,
+  scorecardLink,
   validationCompareLink,
 } from './pages';
 import { predictLink } from './predict';
@@ -50,7 +51,7 @@ function maximalPredictInput(): EstimateAdapterInput {
     gemm_quant_mode: 'fp8',
     moe_quant_mode: 'w4a8_mxfp4_mxfp8',
     hf_model_config: { hidden_size: 4096 },
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     moe_ep_size: 8,
     moe_tp_size: 1,
     mode: 'disagg',
@@ -79,7 +80,7 @@ function maximalRecommendRequest(): RecommendRequest {
     prefix: 512,
     top_n: 5,
     model_config: { hidden_size: 4096 },
-    simulator: 'aisimulate',
+    simulator: 'aisim',
     fabric: 'ib-400g',
     mode: 'disagg',
     objective: 'min_gpus',
@@ -235,6 +236,21 @@ const compareCensus: RequestCensus = {
   },
 };
 
+const scorecardCensus: RequestCensus = {
+  page: '/validation/scorecard',
+  request: {},
+  viewOnly: {
+    metric: 'selects which published statistic slice to show; the request returns all of them',
+    statistic: 'selects a column of the published totals; not a request field',
+    releaseMatch: 'selects the matched or mixed slice the artifact already contains',
+    source: 'selects one measured source from the same artifact',
+    model: 'selects a slice of the published point detail the page fetches when a row filter is active',
+    gpu: 'selects a slice of the published point detail the page fetches when a row filter is active',
+    workload: 'selects a slice of the published point detail the page fetches when a row filter is active',
+    pair: 'selects one comparison pair the artifact already contains; not a request field',
+  },
+};
+
 describe('every request key is accounted for by a link field', () => {
   it('/predict', () => {
     expect(
@@ -254,8 +270,13 @@ describe('every request key is accounted for by a link field', () => {
     ).toEqual([]);
   });
 
-  it('/validation/compare', () => {
-    // Both requests the page sends: resolving a selection, then loading the
+  it('/validation/scorecard', () => {
+    // The page reads one published artifact and narrows it in the browser, so
+    // its only keys are transport parameters, not view values.
+    expect(auditRequestCensus(Object.keys(scorecardLink.fields), scorecardCensus, {})).toEqual([]);
+  });
+
+  it('/validation/compare', () => {    // Both requests the page sends: resolving a selection, then loading the
     // measured rows for it.
     const resolve = Object.fromEntries(
       buildResolveParams(
