@@ -12,7 +12,6 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  flex-wrap: wrap;
   margin-bottom: 20px;
 }
 
@@ -48,28 +47,32 @@
 }
 
 /* Source provenance and the page actions form one cluster in the top-right
-   corner. The column keeps the two measured sources aligned and the cluster
-   narrow enough to sit beside the title on a normal console width. */
+   corner. The badges share a row, as they do on Benchmark comparison, and the
+   actions sit beneath them. The cluster keeps its width and the intro text
+   yields the remaining space, so the measured sources stay side by side. */
 .headingAside {
   display: flex;
+  flex: none;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
   margin-left: auto;
 }
 
+/* Two measured sources share the row. The cap sends a third badge — an
+   unavailable source, or a wider one — to a second row instead of letting the
+   cluster squeeze the intro. */
 .sourceBadges {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-  width: min(340px, 100%);
+  flex-wrap: wrap;
+  gap: 10px;
+  max-width: 600px;
 }
 
 .sourceBadge {
   display: grid;
   gap: 3px;
-  max-width: 320px;
+  max-width: 340px;
   padding: 8px 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -1173,12 +1176,16 @@
   color: var(--link);
 }
 
-@media (max-width: 720px) {
+/* Below this width the source cluster and the intro cannot share a line
+   without squeezing the intro; stack them and keep the badges side by side. */
+@media (max-width: 1240px) {
   .heading {
     flex-direction: column;
     gap: 12px;
   }
+}
 
+@media (max-width: 720px) {
   .tileStats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
