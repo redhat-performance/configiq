@@ -21,7 +21,7 @@ export const TEMPLATE_PATH = resolve(
   'pull_request_template.md',
 )
 
-const FENCE = /^\s*(`{3,}|~{3,})(.*)$/
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 
 /** The opening run of a fenced code block, or null for any other line. */
 function fenceRun(line) {
@@ -57,9 +57,14 @@ function closesFence(line, fence) {
  * Fenced code blocks are the exception: `sections` already ignores them, so a
  * literal opener in an example must survive. Stripping it would also swallow
  * the closing fence and every section after it.
+ *
+ * A line break inside a comment is removed with the comment, joining the text
+ * on either side, while a line break outside one is preserved. That keeps a
+ * commented checklist item attached to its indented continuation.
  */
 export function stripComments(markdown) {
   const kept = []
+  let current = ''
   let fence = null
   let inComment = false
 
@@ -71,7 +76,6 @@ export function stripComments(markdown) {
     }
 
     let rest = line
-    let output = ''
     while (rest !== '') {
       if (inComment) {
         const end = rest.indexOf('-->')
@@ -85,21 +89,24 @@ export function stripComments(markdown) {
       }
       const start = rest.indexOf('<!--')
       if (start === -1) {
-        output += rest
+        current += rest
         break
       }
-      output += rest.slice(0, start)
+      current += rest.slice(0, start)
       rest = rest.slice(start + 4)
       inComment = true
     }
 
-    if (!inComment) {
-      const opener = fenceRun(output)
-      if (opener !== null) fence = opener
-    }
-    kept.push(output)
+    if (inComment) continue
+
+    kept.push(current)
+    const opener = fenceRun(current)
+    current = ''
+    if (opener !== null) fence = opener
   }
 
+  // Text before an opener that is never closed is still outside the comment.
+  if (current !== '') kept.push(current)
   return kept.join('\n')
 }
 

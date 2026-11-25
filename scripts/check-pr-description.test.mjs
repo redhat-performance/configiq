@@ -228,6 +228,33 @@ describe('pull request description check', () => {
     expect(checklist(sections(nested).get('Checks'))).toHaveLength(1)
   })
 
+  it('does not treat an indented code block as a fence', () => {
+    // A fence may be indented at most three spaces; four is indented code.
+    // Reading it as a fence would hide the real Checks section.
+    const indented = '    ~~~\n    example\n\n'
+    const body = completed().replace('## Checks\n', `${indented}## Checks\n`)
+
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
+  it('removes only the line breaks that fall inside a comment', () => {
+    expect(
+      stripComments('- [x] Shared views <!-- guidance\n-->\n      contract'),
+    ).toBe('- [x] Shared views \n      contract')
+    expect(stripComments('a<!-- b\nc -->d\ne')).toBe('ad\ne')
+  })
+
+  it('keeps a checklist continuation after a comment that wraps a line', () => {
+    // The comment used to leave a blank line, which detached the item from the
+    // continuation carrying the defineAccessors key.
+    const body = completed().replace(
+      '- [x] Shared views',
+      '- [x] Shared views <!-- guidance\n-->',
+    )
+
+    expect(checkDescription(body, template)).toEqual([])
+  })
+
   it('reads CRLF descriptions', () => {
     expect(checkDescription(completed().replace(/\n/g, '\r\n'), template)).toEqual([])
   })
