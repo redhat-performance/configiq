@@ -116,9 +116,11 @@ sweep still displays and no recommendation is marked; when the sweep fails, a
 successful sizing result stays on the page.
 
 Each evaluated candidate carries its own recorded command and input files in the
-response's replay record, tagged with the candidate identifier. A candidate row
-copies that command as a self-contained script, so the row's figures can be
-reproduced on a machine with the simulator installed. A row that matched the
+response's replay record, tagged with the candidate identifier. The **Save**
+column in a candidate row copies that command and its input files as a
+self-contained script, so the row's figures can be reproduced on a machine with
+the simulator installed, and the package can be kept for later comparisons or
+export. A row that matched the
 sizing recommendation displays the sizing response's figures but keeps the
 sweep's command; its control is labelled as the sweep command, because that
 command reproduces the sweep evaluation, not the sizing numbers. The Debug

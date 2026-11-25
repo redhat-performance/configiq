@@ -117,7 +117,9 @@ describe('FrontierPanel candidate replay', () => {
   it('copies the command and input files recorded for that candidate', async () => {
     await render(ready([candidate()], replay()));
 
-    const copy = button('Copy replay command for candidate-001');
+    expect(Array.from(host.querySelectorAll('th')).map(th => th.textContent)).toContain('Save');
+
+    const copy = button('Copy command for candidate-001');
     expect(copy).toBeDefined();
     await act(async () => copy!.click());
 
@@ -125,8 +127,8 @@ describe('FrontierPanel candidate replay', () => {
     const bundle = writeText.mock.calls[0][0];
     expect(bundle).toContain("cat > 'candidate-1.yaml'");
     expect(bundle).toContain('aisimulate predict -c candidate-1.yaml --format json');
-    expect(button('Replay command copied for candidate-001')).toBeDefined();
-    expect(host.textContent).toContain('Replay command for candidate-001 copied with its input files.');
+    expect(button('Command copied for candidate-001')).toBeDefined();
+    expect(host.textContent).toContain('Command for candidate-001 copied with its input files.');
   });
 
   it('labels the sweep command when a matched row shows sizing figures', async () => {
@@ -135,18 +137,18 @@ describe('FrontierPanel candidate replay', () => {
     ], replay()));
 
     expect(button('Copy sweep command for candidate-001')).toBeDefined();
-    expect(button('Copy replay command for candidate-001')).toBeUndefined();
+    expect(button('Copy command for candidate-001')).toBeUndefined();
   });
 
   it('shows a failed copy instead of silently keeping the copy icon', async () => {
     writeText.mockRejectedValueOnce(new Error('denied'));
     await render(ready([candidate()], replay()));
 
-    const copy = button('Copy replay command for candidate-001');
+    const copy = button('Copy command for candidate-001');
     await act(async () => copy!.click());
 
-    expect(button('Replay command copy failed for candidate-001')).toBeDefined();
-    expect(host.textContent).toContain('Could not copy the replay command for candidate-001.');
+    expect(button('Command copy failed for candidate-001')).toBeDefined();
+    expect(host.textContent).toContain('Could not copy the command for candidate-001.');
     const status = host.querySelector('[role="status"]');
     expect(status?.getAttribute('class')).toContain('replayStatusError');
   });
@@ -154,24 +156,24 @@ describe('FrontierPanel candidate replay', () => {
   it('explains a row the sweep recorded no command for instead of copying another', async () => {
     await render(ready([candidate({ candidate_id: 'candidate-000002' })], replay()));
 
-    expect(button('Copy replay command for candidate-002')).toBeUndefined();
-    const unavailable = host.querySelector('[aria-label^="Replay unavailable for candidate-002"]');
+    expect(button('Copy command for candidate-002')).toBeUndefined();
+    const unavailable = host.querySelector('[aria-label^="Save unavailable for candidate-002"]');
     expect(unavailable).not.toBeNull();
-    expect(unavailable?.getAttribute('aria-label')).toContain('did not report a replay command');
+    expect(unavailable?.getAttribute('aria-label')).toContain('did not report a command to save');
     expect(writeText).not.toHaveBeenCalled();
   });
 
-  it('offers no replay column when the response carried no record', async () => {
+  it('offers no save column when the response carried no record', async () => {
     await render(ready([candidate()], null));
 
-    expect(host.textContent).not.toContain('Replay');
-    expect(button('Copy replay command for candidate-001')).toBeUndefined();
+    expect(Array.from(host.querySelectorAll('th')).map(th => th.textContent)).not.toContain('Save');
+    expect(button('Copy command for candidate-001')).toBeUndefined();
   });
 
   it('does not offer a sweep command for a row projected from the sizing response', async () => {
     await render(ready([candidate({ candidate_id: 'sizing-recommendation', recommended: true })], replay()));
 
-    const unavailable = host.querySelector('[aria-label^="Replay unavailable for Sizing recommendation"]');
+    const unavailable = host.querySelector('[aria-label^="Save unavailable for Sizing recommendation"]');
     expect(unavailable?.getAttribute('aria-label')).toContain('projected from the sizing response');
   });
 });
