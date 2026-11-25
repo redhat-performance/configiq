@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -200,6 +201,8 @@ def _env_flags(text: str) -> dict[str, str | None]:
 def _explicit_bool(value: Any) -> str | None:
     if value is None or pd.isna(value) or str(value).strip() == "":
         return None
+    if isinstance(value, Real) and value in (0, 1):
+        return str(int(value))
     normalized = str(value).strip().lower()
     if normalized in ("1", "true", "yes"):
         return "1"

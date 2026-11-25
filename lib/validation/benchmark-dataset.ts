@@ -141,7 +141,12 @@ const CONFIGURATION_FIELDS = [
   'cp',
   'moe_tp_size',
   'moe_ep_size',
+  'moe_num_experts',
+  'moe_top_k',
   'enable_expert_parallel',
+  'runtime_args',
+  'env_vars',
+  'guidellm_version',
   'vllm_rocm_use_aiter',
   'vllm_rocm_use_aiter_moe',
   'vllm_rocm_use_aiter_moe_situv2',
@@ -260,7 +265,12 @@ function configurationLabel(values: DatasetConfiguration): string {
   if (values.tp_decode) labels.push(`decode TP ${values.tp_decode}`)
   if (values.moe_tp_size) labels.push(`MoE TP ${values.moe_tp_size}`)
   if (values.moe_ep_size) labels.push(`MoE EP ${values.moe_ep_size}`)
+  if (values.moe_num_experts) labels.push(`${values.moe_num_experts} MoE experts`)
+  if (values.moe_top_k) labels.push(`MoE top k ${values.moe_top_k}`)
   if (values.enable_expert_parallel) labels.push(`expert parallel ${values.enable_expert_parallel}`)
+  if (values.runtime_args && values.runtime_args !== '{}') labels.push(`runtime args ${values.runtime_args}`)
+  if (values.env_vars && values.env_vars !== '{}') labels.push(`environment ${values.env_vars}`)
+  if (values.guidellm_version) labels.push(`GuideLLM ${values.guidellm_version}`)
   if (values.vllm_rocm_use_aiter) labels.push(`ROCm AITER ${values.vllm_rocm_use_aiter}`)
   if (values.vllm_rocm_use_aiter_moe) labels.push(`ROCm AITER MoE ${values.vllm_rocm_use_aiter_moe}`)
   if (values.vllm_rocm_use_aiter_moe_situv2) labels.push(`ROCm AITER MoE SITU v2 ${values.vllm_rocm_use_aiter_moe_situv2}`)

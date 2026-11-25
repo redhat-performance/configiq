@@ -140,6 +140,20 @@ def test_normalize_rows_keeps_explicit_serving_parallelism() -> None:
     assert not {"PP", "DP", "TP_prefill", "TP_decode"} & set(frame)
 
 
+def test_normalize_rows_accepts_numeric_explicit_booleans_with_missing_values() -> None:
+    rows = [
+        {"version": "vLLM-0.31.0", "enable_expert_parallel": value}
+        for value in (1, 0, None)
+    ]
+
+    frame = normalize_rows(rows, "org/model", "H200")
+
+    assert frame["enable_expert_parallel"].iloc[:2].tolist() == ["1", "0"]
+    assert pd.isna(frame.loc[2, "enable_expert_parallel"])
+    with pytest.raises(ValueError, match="unsupported explicit boolean value"):
+        normalize_rows([{"version": "vLLM-0.31.0", "enable_expert_parallel": 2.0}], "org/model", "H200")
+
+
 def test_normalize_rows_preserves_safe_env_values_and_omits_paths() -> None:
     frame = normalize_rows([{
         "model": "org/model", "version": "vLLM-0.31.0",

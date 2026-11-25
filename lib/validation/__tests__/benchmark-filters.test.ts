@@ -77,6 +77,22 @@ describe('shared measured backend filters', () => {
       .toEqual([1, 1, 1])
   })
 
+  it('does not combine runs distinguished by published runtime or workload settings', () => {
+    const rows: DatasetRow[] = [
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"debug"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '4' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.9.0', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{"VLLM_ROCM_USE_AITER":"1"}', guidellm_version: '0.8.1', moe_top_k: '2' },
+      { ...internal, runtime_args: '{"uvicorn-log-level":"info"}', env_vars: '{}', guidellm_version: '0.8.1', moe_top_k: '2', moe_num_experts: '16' },
+    ]
+    const options = getConfigurationOptions(rows)
+
+    expect(options).toHaveLength(6)
+    expect(options.map(option => rows.filter(row => rowMatchesConfiguration(row, option.values)).length))
+      .toEqual([1, 1, 1, 1, 1, 1])
+  })
+
   it('does not equate unknown or nightly tags with a numbered release', () => {
     expect(normalizeBackendVersion('vllm', null)).toBe('Version not reported')
     expect(normalizeBackendVersion('vllm', 'nightly-abc123')).toBe('nightly-abc123')

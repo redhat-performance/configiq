@@ -50,7 +50,7 @@ without run identifiers. They do not attest that unrecorded vLLM defaults or
 settings were identical. Compare and classifier training use summary rows only.
 
 - Model/hardware pairs: {pair_count}
-- Aggregate benchmark rows: {row_count}
+- Published summary and per-turn rows: {row_count}
 - Format: one Parquet file per model/hardware pair
 - License: CC BY 4.0
 
@@ -169,7 +169,9 @@ def prepare(manifest_path: Path, datasets_dir: Path, output_dir: Path) -> dict:
             raise FileNotFoundError(source_path)
         frame = pd.read_parquet(source_path)
         validate_public_frame(frame)
-        if "concurrency" not in frame or frame["concurrency"].isna().any():
+        if "concurrency" not in frame or frame["concurrency"].isna().any() or frame["concurrency"].map(
+            lambda value: isinstance(value, str) and not value.strip()
+        ).any():
             raise ValueError(f"pair {pair_id} requires nonblank concurrency")
         if "turn_index" not in frame:
             raise ValueError(f"pair {pair_id} requires turn_index to distinguish summary and per-turn rows")

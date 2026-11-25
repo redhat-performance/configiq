@@ -50,7 +50,7 @@ def test_import_keeps_only_plain_upstream_vllm_versions(tmp_path, capsys) -> Non
         "vLLM-0.10.2-rc1": 1,
     }
     output = capsys.readouterr().out
-    assert "Prepared 3 upstream summary rows" in output
+    assert "Prepared 3 upstream summary and per-turn rows" in output
     assert "Dropped 3 approved rows" in output
 
 

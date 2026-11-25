@@ -278,7 +278,7 @@ def import_csv(csv_path: Path, config_path: Path, output_dir: Path, manifest_pat
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(
-        f"Prepared {manifest['published_rows']} upstream summary rows in {len(pairs)} model/accelerator pairs "
+        f"Prepared {manifest['published_rows']} upstream summary and per-turn rows in {len(pairs)} model/accelerator pairs "
         f"from {source_rows} CSV rows ({approved_rows} approved rows before the version filter)"
     )
     if dropped_versions:

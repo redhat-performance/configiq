@@ -251,9 +251,11 @@ def test_publish_copies_each_source_pair_into_output_manifest(tmp_path, version:
 @pytest.mark.parametrize(("concurrencies", "message"), [
     ([1, 1], "repeated published settings, concurrency, and turn rows"),
     ([None, 2], "requires nonblank concurrency"),
+    (["", "2"], "requires nonblank concurrency"),
+    (["   ", "2"], "requires nonblank concurrency"),
 ])
 def test_publish_requires_unique_published_settings(
-    tmp_path, concurrencies: list[int | None], message: str,
+    tmp_path, concurrencies: list[int | str | None], message: str,
 ) -> None:
     datasets = tmp_path / "datasets"
     datasets.mkdir()
