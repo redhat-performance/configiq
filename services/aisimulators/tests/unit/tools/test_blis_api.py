@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
 from tools.api_service.app import app
+from tools.api_service.blis.engines import BlisEngine
 from tools.api_service.blis.manifest import BlisCatalog, CatalogModel
 
 client = TestClient(app)
@@ -71,7 +72,7 @@ def _prediction():
         },
         provenance={
             "simulator": "blis",
-            "simulator_version": "0.15.0",
+            "simulator_version": "0.19.0",
             "requested_model": "Qwen/Qwen3-32B",
             "resolved_model": "qwen3-32b",
             "model_source": "blis-catalog",
@@ -139,7 +140,7 @@ def test_blis_predict_returns_selected_simulator_and_provenance_without_memory_f
     assert response.status_code == 200
     body = response.json()
     assert body["simulator"] == "blis"
-    assert body["provenance"]["simulator_version"] == "0.15.0"
+    assert body["provenance"]["simulator_version"] == "0.19.0"
     assert body["serving_config"]["tensor_parallel_size"] == 2
     assert body["serving_config"]["max_model_len"] is None
     assert body["serving_config"]["max_model_len_policy"] == "auto"
@@ -601,34 +602,58 @@ def test_blis_recommend_normalizes_fractional_concurrency_like_aisim():
     assert run_blis.call_args.args[0].concurrency == 8
 
 
-def test_backends_endpoint_reports_simulator_version_and_search_shape():
-    with patch("tools.api_service.app.blis_release", return_value="0.15.0"):
-        response = client.get("/backends?simulator=blis")
+def test_backends_endpoint_reports_the_engine_release_the_build_models(monkeypatch):
+    monkeypatch.setattr(app_module, "blis_release", lambda: "0.19.0")
+    monkeypatch.setattr(
+        app_module,
+        "_blis_engines",
+        lambda: (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                # The build's own snapshot is provenance, never the served
+                # version.
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated", "prefill", "decode"),
+            ),
+        ),
+    )
+
+    response = client.get("/backends?simulator=blis")
 
     assert response.status_code == 200
     body = response.json()
     assert body["simulator"] == "blis"
-    assert body["simulator_version"] == "0.15.0"
+    assert body["simulator_version"] == "0.19.0"
     assert body["recommend_search"] == "single"
     assert set(body["objectives"]) == {
         "min_gpus", "throughput_demand", "pareto", "concurrency_capacity",
     }
     backend = body["backends"][0]
     assert backend["id"] == "vllm"
-    assert backend["versions"] == ["0.29.0", "0.31.0", "0.32.0"]
+    assert backend["versions"] == ["0.31.0"]
     assert backend["default_version"] == "0.31.0"
     assert backend["memory_fraction"] is None
     assert backend["systems"] == {}
     assert backend["system_defaults"] == {}
     assert backend["disaggregation_requires_fabric"] is True
-    assert backend["version_support"]["0.31.0"] == {
-        "disaggregated": True,
-        "max_model_len_auto": True,
-    }
-    assert backend["version_support"]["0.32.0"] == {
-        "disaggregated": True,
-        "max_model_len_auto": False,
-    }
+    # The build fixes the release, so a client cannot select a topology by
+    # version.
+    assert backend["version_support"] == {}
+    assert "0.34.0" not in str(body)
+
+
+def test_backends_endpoint_reports_an_unreported_version_rather_than_the_snapshot(monkeypatch):
+    # A build that predates the engine report lists no version; the client shows
+    # it as unreported instead of substituting the build's engine snapshot.
+    monkeypatch.setattr(app_module, "_blis_engines", lambda: ())
+
+    body = client.get("/backends?simulator=blis").json()
+
+    backend = body["backends"][0]
+    assert backend["versions"] == []
+    assert backend["default_version"] is None
 
 
 def test_aisim_backends_reports_simulator_version_and_windowed_search():

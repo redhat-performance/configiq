@@ -44,10 +44,10 @@ from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_supported_databases, get_version_slots, load_system_spec
 from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
+from .blis.engines import BlisEngine, read_engines
 from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_catalog
 from .blis.runner import BlisExecutionError, BlisTimeoutError
-from .blis.runtime import blis_commit, blis_release
-from .blis.scenario import DEFAULT_ENGINE_VERSION, ENGINE_VERSION_SUPPORT, MODELED_ENGINE_VERSIONS
+from .blis.runtime import blis_commit, blis_release, resolve_runtime
 from .blis.service import EstimateInput as BlisEstimateInput
 from .blis.service import RecommendInput as BlisRecommendInput
 from .blis.service import estimate as run_blis_estimate
@@ -4936,7 +4936,6 @@ def _replay_versions() -> dict[str, str | None]:
         "blis_commit": blis_commit(),
         "blis_image": _env_value("BLIS_IMAGE"),
         "blis_catalog_commit": _env_value("BLIS_CATALOG_COMMIT"),
-        "blis_registry_commit": _env_value("BLIS_REGISTRY_COMMIT"),
     }
 
 
@@ -5048,17 +5047,40 @@ app.add_middleware(
 )
 
 
+_BLIS_ENGINES: tuple[BlisEngine, ...] | None = None
+
+
+def _blis_engines() -> tuple[BlisEngine, ...]:
+    """The engines the pinned BLIS build models, or none when it cannot say.
+
+    Reading the build once per process keeps /backends from spawning a probe on
+    every request; the build cannot change while the service is running.
+    """
+    global _BLIS_ENGINES
+    if _BLIS_ENGINES is None:
+        try:
+            _BLIS_ENGINES = read_engines(resolve_runtime().binary)
+        except BlisManifestError:
+            _BLIS_ENGINES = ()
+    return _BLIS_ENGINES
+
+
 def _blis_backends() -> dict[str, Any]:
     """BLIS backend/version support, in the same shape as the AISim branch.
 
     BLIS versions are properties of the BLIS release, not of a GPU system, and BLIS
     takes no version-scoped memory fraction from the SDK. ``systems`` and
     ``system_defaults`` are therefore empty rather than filled with invented
-    per-system rows; ``version_support`` is the extra field that lets a client
-    disable a topology the selected release cannot model.
-    ``disaggregation_requires_fabric`` tells a client whether a P/D topology
-    needs an inter-node fabric it must collect from the user first.
+    per-system rows.
+
+    The version a client shows is the release whose serving behaviour the build's
+    kernel prices, read from the build itself. A build that predates that report
+    lists no versions, and the client must show the version as unreported rather
+    than fall back to the build's engine snapshot.
     """
+    engines = _blis_engines()
+    vllm = next((engine for engine in engines if engine.kind == "vllm"), None)
+    versions = [vllm.modeled_version] if vllm and vllm.modeled_version else []
     return {
         "simulator": "blis",
         "simulator_version": blis_release(),
@@ -5072,9 +5094,8 @@ def _blis_backends() -> dict[str, Any]:
             {
                 "id": "vllm",
                 "aisimulate_id": "vllm",
-                "versions": list(MODELED_ENGINE_VERSIONS),
-                # A literal, not AISim's `current` alias: BLIS refuses aliases.
-                "default_version": DEFAULT_ENGINE_VERSION,
+                "versions": versions,
+                "default_version": versions[0] if versions else None,
                 "memory_fraction": None,
                 "memory_fraction_kind": "of_total",
                 "runtime_field": "gpu_memory_utilization",
@@ -5089,9 +5110,9 @@ def _blis_backends() -> dict[str, Any]:
                 # aggregate engine's KV pool and does not model a disaggregated
                 # decode-pool capacity, so no comparison options are offered.
                 "capacity_options": {"disaggregated": False},
-                "version_support": {
-                    version: dict(support) for version, support in ENGINE_VERSION_SUPPORT.items()
-                },
+                # The build fixes the engine release, so no release carries a
+                # topology it cannot model; the request cannot select one.
+                "version_support": {},
             }
         ],
     }

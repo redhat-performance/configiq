@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tools.api_service.blis import engines as blis_engines
 from tools.api_service.blis import service as blis_service
+from tools.api_service.blis.engines import BlisEngine
 from tools.api_service.blis.manifest import (
     BlisCatalog,
     BlisUnsupportedRequest,
@@ -27,8 +29,6 @@ from tools.api_service.blis.scenario import (
     ScenarioPoolRequest,
     ScenarioRequest,
     build_documents,
-    engine_version_support,
-    resolve_engine_version,
     write_scenario,
 )
 
@@ -231,7 +231,6 @@ def _scenario_request(**overrides) -> ScenarioRequest:
         "hardware": "h100",
         "system": "h100_sxm",
         "gpus_per_node": 8,
-        "engine_version": "0.31.0",
         "tp": 2,
         "pp": 1,
         "dp": 1,
@@ -259,12 +258,26 @@ def test_generated_documents_use_catalog_id_and_requested_deployment():
 
     assert scenario["kind"] == "Scenario"
     assert scenario["model"] == "qwen3-32b"
+    assert scenario["engine"] == {"kind": "vllm"}
+    assert "engine_version" not in scenario
+    assert scenario["coefficients"] == [
+        "cost-model-primitives",
+        "cost-model-collectives",
+        "cost-model-host-overheads",
+        "cost-model-attention",
+        "cost-model-recurrent",
+        "cost-model-memory",
+        "cost-model-fabric",
+        "cost-model-offload-tiers",
+    ]
     assert scenario["cluster"] == {"hardware": "h100", "nodes": 1, "gpus_per_node": 8}
     assert pool["parallel"] == {
         "tp": 2, "pp": 1, "dp": 1, "enable_expert_parallel": False,
     }
     assert pool["engine"]["quantization"] == "nvfp4"
-    assert pool["engine"]["cache_dtype"] == "fp8"
+    assert pool["engine"]["kv_cache_dtype"] == "fp8"
+    assert pool["engine"]["compilation_config"] == {"cudagraph_mode": "PIECEWISE"}
+    assert "cudagraph_mode" not in pool["engine"]
     assert pool["engine"]["enable_prefix_caching"] is True
     assert pool["engine"]["max_model_len"] == 2176
 
@@ -315,10 +328,9 @@ def test_serving_config_reports_the_settings_blis_resolved():
                 }],
             },
         },
-        "revisions": {"engine": {"upstream_version": "0.31.0"}},
     }
 
-    config = blis_service._serving_config(result)
+    config = blis_service._serving_config(result, "0.31.0")
 
     assert config["tensor_parallel_size"] == 4
     assert config["max_model_len"] is None
@@ -336,20 +348,21 @@ def test_serving_config_reports_an_explicit_context_window():
         }]}},
     }
 
-    config = blis_service._serving_config(result)
+    config = blis_service._serving_config(result, None)
 
     assert config["max_model_len"] == 2176
     assert config["max_model_len_policy"] is None
+    assert config["backend_version"] is None
 
 
 def test_serving_config_is_absent_when_the_result_has_no_deployment():
-    assert blis_service._serving_config({"metrics": {}}) is None
+    assert blis_service._serving_config({"metrics": {}}, None) is None
 
 
 def test_half_cache_dtype_leaves_the_blis_model_default_unmodified():
     _scenario, deployment = build_documents(_scenario_request(cache_dtype="half"))
 
-    assert "cache_dtype" not in deployment["pools"][0]["engine"]
+    assert "kv_cache_dtype" not in deployment["pools"][0]["engine"]
 
 
 def test_scenario_rejects_cross_node_and_unrepresentable_parallelism():
@@ -436,35 +449,163 @@ def test_disagg_documents_reject_missing_fabric():
         build_documents(request)
 
 
-def test_blis_requires_exact_version_instead_of_resolving_aisim_aliases():
-    with pytest.raises(BlisUnsupportedRequest, match="exact backend_version"):
-        resolve_engine_version("current")
+#: The document `blis version --json` prints for the pinned build: the build's
+#: identity plus one record per engine kind it runs.
+VERSION_DOCUMENT = {
+    "inference_sim": "0.19.1-0.20261126224925-c3a405954b35",
+    "substrate": "4f9c2a0e1b",
+    "engines": [
+        {
+            "kind": "sglang",
+            "modeled_version": "0.5.23",
+            "modeled_commit": "b1f2c3d4e5",
+            "build_version": "0.5.23",
+            "build_commit": "b1f2c3d4e5",
+            "roles": ["colocated", "prefill", "decode"],
+        },
+        {
+            "kind": "vllm",
+            "modeled_version": "0.31.0",
+            "modeled_commit": "0a1b2c3d4e",
+            "build_version": "0.34.0+0fda86a35419",
+            "build_commit": "0fda86a35419",
+            "roles": ["colocated", "prefill", "decode"],
+        },
+    ],
+}
 
 
-def test_engine_version_defaults_to_the_pd_capable_release():
-    assert resolve_engine_version(None) == "0.31.0"
-    assert resolve_engine_version("") == "0.31.0"
-    assert resolve_engine_version("0.29.0") == "0.29.0"
+def test_read_engines_asks_version_for_its_json_document(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return _completed(stdout=json.dumps(VERSION_DOCUMENT))
+
+    monkeypatch.setattr(blis_engines.subprocess, "run", fake_run)
+
+    engines = blis_engines.read_engines("/opt/blis")
+
+    # `version` owns the build's identity and the engines it models, so an
+    # adapter reads them from that one document instead of a second command.
+    assert captured["command"] == ["/opt/blis", "version", "--json"]
+    assert [engine.kind for engine in engines] == ["sglang", "vllm"]
+    vllm = engines[1]
+    # The modelled release is what a benchmark is comparable with; the build's
+    # own snapshot is provenance beside it, not a substitute for it.
+    assert (vllm.modeled_version, vllm.modeled_commit) == ("0.31.0", "0a1b2c3d4e")
+    assert vllm.build_version == "0.34.0+0fda86a35419"
+    assert vllm.roles == ("colocated", "prefill", "decode")
 
 
-def test_unmodeled_engine_version_names_the_modeled_releases():
-    with pytest.raises(BlisUnsupportedRequest) as error:
-        resolve_engine_version("0.24.0")
+def test_read_engines_reports_nothing_for_a_build_without_the_json_flag(monkeypatch):
+    # A build that predates `--json` refuses the flag and prints the text form,
+    # which is not a document: report no engines rather than parse prose.
+    monkeypatch.setattr(
+        blis_engines.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(
+            stdout="inference-sim 0.19.0\nsubstrate abc\n",
+            returncode=1,
+            stderr="unknown flag: --json",
+        ),
+    )
 
-    message = str(error.value)
-    assert "0.29.0, 0.31.0, 0.32.0" in message
-    assert "blank" in message
+    assert blis_engines.read_engines("/opt/blis") == ()
 
 
-def test_v032_scenario_states_an_explicit_context_window():
-    _scenario, deployment = build_documents(_scenario_request(engine_version="0.32.0"))
+def _completed(*, stdout: str, returncode: int = 0, stderr: str = ""):
+    return blis_engines.subprocess.CompletedProcess(
+        args=(), returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def test_request_for_an_unmodeled_release_is_refused_with_the_modeled_one(
+    monkeypatch, catalog
+):
+    runtime = BlisRuntime("/opt/blis-unmodeled", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    # The binary path keys the per-build version cache, so a distinct path keeps
+    # this test's answer from leaking into another.
+    monkeypatch.setattr(
+        blis_service,
+        "read_engines",
+        lambda _binary: (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated", "prefill", "decode"),
+            ),
+        ),
+    )
+
+    with pytest.raises(BlisUnsupportedRequest, match="models vLLM 0.31.0"):
+        blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
+
+
+def test_request_naming_the_modeled_release_resolves(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis-modeled", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "read_engines",
+        lambda _binary: (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version=None,
+                roles=(),
+            ),
+        ),
+    )
+
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.31.0")
+
+    assert resolved.hardware == "h100"
+
+
+def test_request_for_a_release_a_build_cannot_report_is_not_refused(monkeypatch, catalog):
+    runtime = BlisRuntime("/opt/blis-silent", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    # A build that predates the engine report says nothing; the request cannot be
+    # checked against it, so it is not refused.
+    monkeypatch.setattr(blis_service, "read_engines", lambda _binary: ())
+
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
+
+    assert resolved.model.catalog_name == "qwen3-32b"
+
+
+def test_scenario_states_an_explicit_context_window():
+    _scenario, deployment = build_documents(_scenario_request())
 
     assert deployment["pools"][0]["engine"]["max_model_len"] == 2048 + 128
 
 
-def test_v032_can_model_a_disaggregated_topology():
+def test_scenario_can_model_a_disaggregated_topology():
     request = _scenario_request(
-        engine_version="0.32.0",
         fabric="ib-400g",
         prefill_pool=_pool_request("prefill", nodes=1),
         decode_pool=_pool_request("decode", nodes=1),
@@ -475,17 +616,11 @@ def test_v032_can_model_a_disaggregated_topology():
     assert [pool["role"] for pool in deployment["pools"]] == ["prefill", "decode"]
 
 
-def test_engine_version_support_reports_what_each_release_models():
-    assert engine_version_support("0.31.0") == {"disaggregated": True, "max_model_len_auto": True}
-    assert engine_version_support("0.32.0") == {"disaggregated": True, "max_model_len_auto": False}
-    assert engine_version_support("0.99.0") == {"disaggregated": False, "max_model_len_auto": False}
-
-
-def test_run_command_passes_catalog_registry_and_scenario_directory():
+def test_run_command_passes_the_scenario_directory_without_external_data_paths():
     runtime = BlisRuntime(
         binary="/opt/venv/bin/blis",
         catalog="/opt/blis/catalog",
-        registry="/opt/blis/registry",
+        registry="",
     )
 
     command = build_run_command(runtime, RunRequest(
@@ -500,8 +635,6 @@ def test_run_command_passes_catalog_registry_and_scenario_directory():
 
     assert command == [
         "/opt/venv/bin/blis", "run",
-        "--catalog", "/opt/blis/catalog",
-        "--registry", "/opt/blis/registry",
         "--scenarios", "/tmp/scenarios",
         "--scenario", "generated.yaml",
         "--prompt-tokens", "2048",
@@ -516,10 +649,12 @@ def test_run_command_passes_catalog_registry_and_scenario_directory():
         "--concurrency", "8",
         "--prefix-tokens", "16",
     ]
+    assert "--catalog" not in command
+    assert "--registry" not in command
 
 
 def test_run_command_passes_p_and_d_instance_counts():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
     command = build_run_command(runtime, RunRequest(
         scenario="generated.yaml",
         scenario_directory="/tmp/scenarios",
@@ -557,16 +692,22 @@ def test_parse_result_requires_a_result_document():
         parse_result('{"kind":"Progress","step":1}')
 
 
+def _metric(value: float) -> dict:
+    """One Result v4 aggregate: the value BLIS measured, its sample count, scope."""
+    return {"value": value, "samples": 1, "scope": "cluster"}
+
+
 def test_normalize_result_maps_metrics_requests_and_window():
     result = {
+        "schema_version": 4,
         "metrics": {
-            "ttft_mean_ms": 80.0,
-            "itl_mean_ms": 20.0,
-            "e2e_mean_ms": 2640.0,
-            "output_tok_s": 500.0,
-            "request_throughput": 2.5,
+            "ttft_mean_ms": _metric(80.0),
+            "itl_mean_ms": _metric(20.0),
+            "e2e_mean_ms": _metric(2640.0),
+            "output_tok_s": _metric(500.0),
+            "request_throughput": _metric(2.5),
         },
-        "requests": {"completed": 8, "dropped_unservable": 1},
+        "requests": {"completed": 8, "dropped": {"unservable": 1}},
         "window": {"duration_s": 3.2},
     }
 
@@ -580,10 +721,34 @@ def test_normalize_result_maps_metrics_requests_and_window():
     assert metrics["vllm_estimated_duration_s"] == 3.2
 
 
+def test_normalize_result_reads_whole_run_rates_when_a_metric_is_absent():
+    result = {
+        "schema_version": 4,
+        "metrics": {"ttft_mean_ms": _metric(80.0), "itl_mean_ms": _metric(20.0)},
+        "reports": {
+            "engine": {
+                "cluster": {
+                    "whole_run": {"tokens_per_sec": 480.0, "responses_per_sec": 2.4},
+                    "kv_capacity_tokens_per_replica": 99_999,
+                },
+            },
+        },
+    }
+
+    metrics = normalize_result(result)
+
+    assert metrics["tokens_per_sec"] == 480.0
+    assert metrics["responses_per_sec"] == 2.4
+    assert metrics["kv_capacity_tokens_per_replica"] == 99_999
+    assert metrics["completed_requests"] is None
+    assert metrics["dropped_unservable"] == 0
+
+
 def test_normalize_result_falls_back_to_the_simulated_duration():
     result = {
-        "metrics": {"ttft_mean_ms": 80.0, "itl_mean_ms": 20.0},
-        "engine": {"cluster": {"simulated_duration_s": 9.5}},
+        "schema_version": 4,
+        "metrics": {"ttft_mean_ms": _metric(80.0), "itl_mean_ms": _metric(20.0)},
+        "reports": {"engine": {"cluster": {"simulated_duration_s": 9.5}}},
     }
 
     metrics = normalize_result(result)
@@ -604,32 +769,60 @@ def _result(
     duration: float = 3.2,
     throughput: float | None = None,
     kv_capacity: float | None = None,
+    modeled_engine_version: str | None = "0.31.0",
 ) -> dict:
-    """A minimal BLIS v0.15 Result document for service-level tests."""
-    result = {
-        "kind": "Result",
-        "metrics": {
-            "ttft_mean_ms": ttft,
-            "itl_mean_ms": itl,
-            "e2e_mean_ms": e2e,
-            "output_tok_s": tok_s,
-            "request_throughput": throughput if throughput is not None else completed / duration,
+    """A minimal BLIS Result v4 document for service-level tests."""
+    cluster: dict = {
+        "whole_run": {
+            "tokens_per_sec": tok_s,
+            "responses_per_sec": throughput if throughput is not None else completed / duration,
         },
-        "requests": {"completed": completed, "dropped_unservable": dropped},
+    }
+    if kv_capacity is not None:
+        cluster["kv_capacity_tokens_per_replica"] = kv_capacity
+    kernel: dict = {}
+    if modeled_engine_version is not None:
+        kernel["colocated"] = {
+            "assumptions": [{
+                "Name": "engine_version",
+                "Scope": f"{modeled_engine_version}: the scenario declares the release the kernel prices",
+            }],
+        }
+    return {
+        "kind": "Result",
+        "schema_version": 4,
+        # The build's own engine snapshot. It is provenance, never the release
+        # the service reports as modelled.
+        "engine": {
+            "kind": "vllm",
+            "version": "0.34.0+0fda86a35419",
+            "commit": "0fda86a35419c9c70dbfada224c838c10fbb62ad",
+        },
+        "metrics": {
+            "ttft_mean_ms": _metric(ttft),
+            "itl_mean_ms": _metric(itl),
+            "e2e_mean_ms": _metric(e2e),
+            "output_tok_s": _metric(tok_s),
+            "request_throughput": _metric(
+                throughput if throughput is not None else completed / duration
+            ),
+        },
+        "requests": {
+            "generated": completed + dropped,
+            "completed": completed,
+            "dropped": {"unservable": dropped},
+        },
         "window": {"duration_s": duration},
         "input": {"deployment": {"pools": [{
             "parallel": {"tp": 1},
-            "engine": {"max_model_len": "auto"},
+            "engine": {"max_model_len": 2176},
         }]}},
-        "revisions": {"engine": {"upstream_version": "0.31.0"}},
+        "reports": {"engine": {"cluster": cluster}, "kernel": kernel},
     }
-    if kv_capacity is not None:
-        result["engine"] = {"cluster": {"kv_capacity_tokens_per_replica": kv_capacity}}
-    return result
 
 
 def test_recommend_candidate_ceiling_uses_configured_limit_and_hardware(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -671,7 +864,7 @@ def test_recommend_candidate_ceiling_uses_configured_limit_and_hardware(monkeypa
 
 
 def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -721,7 +914,7 @@ def test_recommend_includes_bounded_pd_topologies_when_fabric_is_selected(monkey
 
 
 def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -765,7 +958,7 @@ def test_recommend_warns_when_a_named_fabric_reached_no_pd_candidate(monkeypatch
 
 
 def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -808,7 +1001,7 @@ def test_recommend_aggregated_mode_skips_pd_even_when_a_fabric_is_selected(monke
 
 
 def test_recommend_validates_a_named_fabric_even_when_serving_is_aggregated(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -829,7 +1022,7 @@ def test_recommend_validates_a_named_fabric_even_when_serving_is_aggregated(monk
 
 
 def test_recommend_searches_pd_when_disaggregated_is_named(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -852,7 +1045,7 @@ def test_recommend_searches_pd_when_disaggregated_is_named(monkeypatch, catalog)
 
 
 def test_recommend_demand_stays_aggregated_with_a_named_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -880,7 +1073,7 @@ def test_recommend_demand_stays_aggregated_with_a_named_fabric(monkeypatch, cata
 
 
 def test_run_command_uses_rate_and_omits_concurrency():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
     command = build_run_command(runtime, RunRequest(
         scenario="generated.yaml",
         scenario_directory="/tmp/scenarios",
@@ -898,7 +1091,7 @@ def test_run_command_uses_rate_and_omits_concurrency():
 
 
 def test_run_command_requires_exactly_one_load_control():
-    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/venv/bin/blis", "/catalog", "")
     with pytest.raises(ValueError, match="exactly one"):
         build_run_command(runtime, RunRequest(
             scenario="generated.yaml",
@@ -962,7 +1155,7 @@ def _demand_recommend_input() -> blis_service.RecommendInput:
 
 
 def test_recommend_demand_selects_fewest_gpus_that_sustains_rate(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
@@ -992,7 +1185,7 @@ def test_recommend_demand_selects_fewest_gpus_that_sustains_rate(monkeypatch, ca
 
 
 def test_recommend_demand_reports_best_observed_when_rate_is_unmet(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
@@ -1021,7 +1214,7 @@ def test_recommend_demand_rejects_latency_targets(monkeypatch, catalog):
 
 
 def test_recommend_skips_pd_candidates_without_a_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(blis_service, "load_system_spec", lambda _system: {"node": {"num_gpus_per_node": 4}})
@@ -1044,7 +1237,7 @@ def test_recommend_skips_pd_candidates_without_a_fabric(monkeypatch, catalog):
 
 
 def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1094,7 +1287,7 @@ def test_disagg_estimate_builds_p_and_d_pools_and_uses_requested_fabric(monkeypa
 
 
 def test_predict_maps_requests_per_load_unit_to_the_simulation_slice(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1140,8 +1333,11 @@ def test_prediction_requests_rejects_an_oversized_slice():
 
 def test_normalize_result_maps_the_engine_kv_pool():
     metrics = normalize_result({
+        "schema_version": 4,
         "metrics": {},
-        "engine": {"cluster": {"kv_capacity_tokens_per_replica": 123456}},
+        "reports": {
+            "engine": {"cluster": {"kv_capacity_tokens_per_replica": 123456}},
+        },
     })
 
     assert metrics["kv_capacity_tokens_per_replica"] == 123456
@@ -1174,7 +1370,7 @@ def _capacity_input(**overrides) -> blis_service.RecommendInput:
 def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1223,7 +1419,7 @@ def test_recommend_capacity_reads_the_blis_kv_pool_and_sizes_replicas(
 def test_recommend_capacity_credits_the_shared_prefix_once_per_replica(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1265,7 +1461,7 @@ def test_recommend_capacity_rejects_a_request_rate_before_running(monkeypatch, c
 def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1296,7 +1492,7 @@ def test_recommend_capacity_reports_the_shortfall_when_the_window_is_too_small(
 
 
 def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1330,7 +1526,7 @@ def test_recommend_capacity_sizes_replicas_beyond_one_node(monkeypatch, catalog)
 
 
 def test_recommend_capacity_fails_when_blis_reports_no_kv_pool(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1351,7 +1547,7 @@ def test_recommend_capacity_fails_when_blis_reports_no_kv_pool(monkeypatch, cata
 def test_recommend_pareto_enumerates_topologies_and_concurrency(
     monkeypatch, catalog
 ):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(
@@ -1404,7 +1600,7 @@ def test_recommend_pareto_enumerates_topologies_and_concurrency(
 
 
 def test_recommend_pareto_marks_sla_violations_infeasible(monkeypatch, catalog):
-    runtime = BlisRuntime("/opt/blis", "/catalog", "/registry")
+    runtime = BlisRuntime("/opt/blis", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
     monkeypatch.setattr(

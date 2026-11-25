@@ -44,10 +44,6 @@ def build_run_command(runtime: BlisRuntime, request: RunRequest) -> list[str]:
     command = [
         runtime.binary,
         "run",
-        "--catalog",
-        runtime.catalog,
-        "--registry",
-        runtime.registry,
         "--scenarios",
         request.scenario_directory,
         "--scenario",
@@ -122,33 +118,48 @@ def parse_result(stdout: str) -> dict[str, Any]:
 
 
 def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
-    """Flatten a Result into the metric keys the service reasons about.
+    """Flatten a Result v4 document into the metric keys the service reasons about.
 
-    BLIS reports rates over its measured window. Fall back to the simulated
-    duration only when the window is absent, matching the previous contract.
+    Result v4 wraps every aggregate as ``{value, samples, scope}`` under
+    ``metrics``; the engine's own cluster section keeps the whole-run rates. Read
+    the metric entry first and fall back to the whole-run value only when the
+    metric is absent, so a run that reported one but not the other still answers.
     """
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
     requests = result.get("requests") if isinstance(result.get("requests"), dict) else {}
-    engine = result.get("engine") if isinstance(result.get("engine"), dict) else {}
+    dropped = requests.get("dropped") if isinstance(requests.get("dropped"), dict) else {}
+    reports = result.get("reports") if isinstance(result.get("reports"), dict) else {}
+    engine = reports.get("engine") if isinstance(reports.get("engine"), dict) else {}
     cluster = engine.get("cluster") if isinstance(engine.get("cluster"), dict) else {}
+    whole_run = cluster.get("whole_run") if isinstance(cluster.get("whole_run"), dict) else {}
     window = result.get("window") if isinstance(result.get("window"), dict) else {}
-
-    duration = window.get("duration_s")
-    if not isinstance(duration, (int, float)) or duration <= 0:
-        duration = cluster.get("simulated_duration_s")
 
     def number(source: dict[str, Any], key: str) -> float | int | None:
         value = source.get(key)
         return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
+    def metric(name: str) -> float | int | None:
+        """The value of one Result v4 metric entry."""
+        entry = metrics.get(name)
+        if not isinstance(entry, dict):
+            return None
+        return number(entry, "value")
+
+    duration = number(window, "duration_s")
+    if duration is None or duration <= 0:
+        duration = number(cluster, "simulated_duration_s")
+
     return {
-        "ttft_mean_ms": number(metrics, "ttft_mean_ms"),
-        "itl_mean_ms": number(metrics, "itl_mean_ms"),
-        "e2e_mean_ms": number(metrics, "e2e_mean_ms"),
-        "tokens_per_sec": number(metrics, "output_tok_s"),
-        "responses_per_sec": number(metrics, "request_throughput"),
+        "ttft_mean_ms": metric("ttft_mean_ms"),
+        "itl_mean_ms": metric("itl_mean_ms"),
+        "e2e_mean_ms": metric("e2e_mean_ms"),
+        "tokens_per_sec": metric("output_tok_s") if metric("output_tok_s") is not None else number(whole_run, "tokens_per_sec"),
+        "responses_per_sec": metric("request_throughput") if metric("request_throughput") is not None else number(whole_run, "responses_per_sec"),
         "completed_requests": number(requests, "completed"),
-        "dropped_unservable": number(requests, "dropped_unservable") or 0,
+        # The engine refused these because they can never fit in the KV cache.
+        # Result v4 counts every fate by reason; the unservable reason is the one
+        # this service previously called dropped_unservable.
+        "dropped_unservable": number(dropped, "unservable") or 0,
         "vllm_estimated_duration_s": duration,
         # The smallest instance's GPU KV pool in tokens. BLIS reports this in
         # the engine cluster section; capacity sizing reads it instead of

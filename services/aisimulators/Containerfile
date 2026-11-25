@@ -9,8 +9,7 @@
 #
 #   * the aisimulate SDK, installed from the single published wheel pinned in
 #     pyproject.toml (bump it there to move to a newer SDK), and
-#   * BLIS, taken from the upstream release image pinned below, together with the
-#     blis-catalog and blis-registry clones it reads at run time. BLIS is CPU-only
+#   * BLIS, taken from the upstream release image pinned below. BLIS is CPU-only
 #     and fetches nothing at run time. A request's scenario is generated per call,
 #     so no scenario directory is bundled.
 #
@@ -20,33 +19,29 @@
 # the Go toolchain from this build. Pin the digest, not just the tag, so the
 # reported release cannot drift.
 #
-# The catalog and registry are cloned separately (rather than copied from the
-# BLIS image) because their pins advance independently of the BLIS binary and
-# are part of the API's support facts. See services/aisimulators/README.md.
+# BLIS v0.19 embeds its catalog and registry in the binary and refuses the
+# external clones earlier releases read. The catalog is still copied out of the
+# pinned source commit because the API enumerates models, chips, and fabrics from
+# it; BLIS itself never reads that copy. See services/aisimulators/README.md.
 
 # --- BLIS release image ----------------------------------------------------------
-# ghcr.io/inference-sim/blis:v0.15.0, multi-arch index digest.
-ARG BLIS_IMAGE=ghcr.io/inference-sim/blis:v0.15.0@sha256:ae02212a5c06d147f98e62f90d8101ec158bcd74c55cc3a424d9f2b213d89c33
+# ghcr.io/inference-sim/blis:v0.19.0, multi-arch index digest.
+ARG BLIS_IMAGE=ghcr.io/inference-sim/blis:v0.19.0@sha256:6c6915118e15d60eb0d6ebb62f41a3b6c3e1a980c095ee5bc9872024543cc51b
 FROM ${BLIS_IMAGE} AS blis_release
 
-# --- BLIS declared facts and fitted numbers --------------------------------------
-# blis-catalog 0.3.0: model graphs, chips, fabrics, workload presets.
+# --- BLIS catalog facts ----------------------------------------------------------
+# The catalog the pinned BLIS build embeds: model graphs, chips, fabrics, and
+# workload presets, at the release commit. The API lists it; a run reads the
+# binary's own copy.
 FROM alpine/git:2.47.2 AS blis_catalog
-ARG BLIS_CATALOG_COMMIT=676326ec6c708e91ec4981bd6b03922a7fe60512
-RUN git init /opt/blis/catalog \
-    && git -C /opt/blis/catalog remote add origin https://github.com/inference-sim/blis-catalog.git \
-    && git -C /opt/blis/catalog fetch --depth 1 origin "${BLIS_CATALOG_COMMIT}" \
-    && git -C /opt/blis/catalog checkout --quiet --detach FETCH_HEAD \
-    && rm -rf /opt/blis/catalog/.git
-
-# blis-registry v0.2.0: the coefficient sets a scenario names.
-FROM alpine/git:2.47.2 AS blis_registry
-ARG BLIS_REGISTRY_COMMIT=7f6662d7188dc3dc873a37623e1f7bbfe1d6081b
-RUN git init /opt/blis/registry \
-    && git -C /opt/blis/registry remote add origin https://github.com/inference-sim/blis-registry.git \
-    && git -C /opt/blis/registry fetch --depth 1 origin "${BLIS_REGISTRY_COMMIT}" \
-    && git -C /opt/blis/registry checkout --quiet --detach FETCH_HEAD \
-    && rm -rf /opt/blis/registry/.git
+ARG BLIS_CATALOG_COMMIT=e7597a8c9510f876653d7d87bd8baf195c37c5c7
+RUN git init /src \
+    && git -C /src remote add origin https://github.com/inference-sim/inference-sim.git \
+    && git -C /src fetch --depth 1 origin "${BLIS_CATALOG_COMMIT}" \
+    && git -C /src checkout --quiet --detach FETCH_HEAD \
+    && mkdir -p /opt/blis \
+    && cp -a /src/substrate/catalog /opt/blis/catalog \
+    && rm -rf /src
 
 # --- llm-d deployment target ------------------------------------------------------
 # The llm-d overlay the deployment service renders references files in the llm-d
@@ -74,7 +69,7 @@ FROM python:3.12-slim
 
 # The BLIS release reported by GET /simulators, GET /backends, and in every
 # BLIS prediction's provenance. Keep in step with BLIS_IMAGE above.
-ARG BLIS_VERSION=0.15.0
+ARG BLIS_VERSION=0.19.0
 # The upstream commit the BLIS release tag was built from, reported alongside
 # BLIS_VERSION. The release binary embeds no revision. Leave this empty for the
 # default BLIS_VERSION: runtime.py resolves the default release's commit. When
@@ -85,10 +80,9 @@ ARG BLIS_COMMIT=""
 # stage. Redeclare it here to compare that image's tag with the reported
 # release: the footer must never name a different version than the binary.
 ARG BLIS_IMAGE
-# The data pins are ARGs of their own stages; redeclare them so a replay record
-# can name them alongside the image it was run in.
-ARG BLIS_CATALOG_COMMIT=676326ec6c708e91ec4981bd6b03922a7fe60512
-ARG BLIS_REGISTRY_COMMIT=7f6662d7188dc3dc873a37623e1f7bbfe1d6081b
+# The catalog pin is an ARG of its own stage; redeclare it so a replay record
+# can name it alongside the image it was run in.
+ARG BLIS_CATALOG_COMMIT=e7597a8c9510f876653d7d87bd8baf195c37c5c7
 RUN image_ref="${BLIS_IMAGE%%@*}" \
     && image_tag="${image_ref##*:}" \
     && image_version="${image_tag#v}" \
@@ -109,15 +103,13 @@ WORKDIR /app
 # inheriting that user.
 COPY --from=blis_release /usr/local/bin/blis /usr/local/bin/blis
 COPY --from=blis_catalog /opt/blis/catalog /opt/blis/catalog
-COPY --from=blis_registry /opt/blis/registry /opt/blis/registry
 COPY --from=llm_d /opt/llm-d /opt/llm-d
 COPY --from=kustomize /usr/local/bin/kustomize /usr/local/bin/kustomize
 
-# BLIS reads the catalog from a flag the wrapper supplies and the registry has
-# no environment fallback, so both paths are explicit. There is no build-time
-# support manifest: the API reads the catalog directly.
+# The catalog directory is read only by the API's catalog endpoints. BLIS reads
+# its embedded catalog and registry, so there is no registry path to configure.
 #
-# The image digest and the two data commits are reported as part of a replay
+# The image digest and the catalog commit are reported as part of a replay
 # record, so a recorded command names the exact build and data it was run
 # against. They are identity, not configuration: nothing reads them to decide
 # behaviour.
@@ -126,10 +118,8 @@ ENV PYTHONUNBUFFERED=1 \
     BLIS_VERSION=${BLIS_VERSION} \
     BLIS_COMMIT=${BLIS_COMMIT} \
     BLIS_CATALOG=/opt/blis/catalog \
-    BLIS_REGISTRY=/opt/blis/registry \
     BLIS_IMAGE=${BLIS_IMAGE} \
     BLIS_CATALOG_COMMIT=${BLIS_CATALOG_COMMIT} \
-    BLIS_REGISTRY_COMMIT=${BLIS_REGISTRY_COMMIT} \
     AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d \
     PATH=/opt/venv/bin:${PATH}
 

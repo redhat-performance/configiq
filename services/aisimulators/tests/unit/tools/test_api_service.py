@@ -4885,20 +4885,20 @@ class TestSimulatorRevision:
         monkeypatch.delenv("BLIS_VERSION", raising=False)
         assert (
             app_module.blis_commit()
-            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+            == "e7597a8c9510f876653d7d87bd8baf195c37c5c7"
         )
 
         # An overridden release without its commit must report no revision
         # rather than the default release's commit.
-        monkeypatch.setenv("BLIS_VERSION", "0.16.0")
+        monkeypatch.setenv("BLIS_VERSION", "0.20.0")
         assert app_module.blis_commit() is None
 
         # The default release resolves its commit even when the build sets only
         # BLIS_VERSION, as the Containerfile does.
-        monkeypatch.setenv("BLIS_VERSION", "0.15.0")
+        monkeypatch.setenv("BLIS_VERSION", "0.19.0")
         assert (
             app_module.blis_commit()
-            == "762f1605ff27cd825d6b2cb2d9e991cd4b864c91"
+            == "e7597a8c9510f876653d7d87bd8baf195c37c5c7"
         )
 
         monkeypatch.setenv("BLIS_COMMIT", "abc1234")

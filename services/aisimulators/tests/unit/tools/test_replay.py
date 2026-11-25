@@ -114,19 +114,16 @@ def test_the_script_requires_the_runtime_paths_its_commands_use():
             "/tmp/x",
             "--catalog",
             "/opt/blis/catalog",
-            "--registry",
-            "/opt/blis/registry",
         ],
         files={"scenario.yaml": "kind: Scenario\n"},
         binary="/opt/blis/bin/blis",
         catalog="/opt/blis/catalog",
-        registry="/opt/blis/registry",
         scenario_directory="/tmp/x",
     )
 
     assert '"$BLIS_BINARY"' in invocation.command
     assert '"$BLIS_CATALOG"' in invocation.command
-    assert '"$BLIS_REGISTRY"' in invocation.command
+    assert '"$BLIS_REGISTRY"' not in invocation.command
     assert "--scenarios ." in invocation.command
     assert "/tmp/x" not in invocation.command
 
@@ -248,7 +245,6 @@ def _scenario(**overrides) -> ScenarioRequest:
         "hardware": "h100",
         "system": "h100_sxm",
         "gpus_per_node": 8,
-        "engine_version": "0.31.0",
         "tp": 2,
         "pp": 1,
         "dp": 1,
@@ -267,7 +263,7 @@ def test_blis_scenario_files_are_captured_before_the_temp_directory_goes(monkeyp
     runtime = BlisRuntime(
         binary="/opt/blis/bin/blis",
         catalog="/opt/blis/catalog",
-        registry="/opt/blis/registry",
+        registry="",
     )
     resolved = SimpleNamespace(runtime=runtime)
     recorder = _recorder(
@@ -308,7 +304,7 @@ def test_nothing_is_captured_without_a_recorder(monkeypatch):
     runtime = BlisRuntime(
         binary="/opt/blis/bin/blis",
         catalog="/opt/blis/catalog",
-        registry="/opt/blis/registry",
+        registry="",
     )
     calls: list[str] = []
 
