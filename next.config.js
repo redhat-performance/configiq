@@ -31,7 +31,6 @@ const nextConfig = {
     "@patternfly/react-core",
     "@patternfly/react-charts",
     "@patternfly/react-icons",
-    "@patternfly/react-table",
   ],
   serverExternalPackages: [
     '@opentelemetry/api',
