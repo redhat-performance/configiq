@@ -255,6 +255,11 @@ interface ChartPoint {
   name: string;
 }
 
+// The connector line plots the same points as the frontier scatter. Excluding it
+// from voronoi resolution keeps each hover to one point, so the tooltip lists
+// the point label once instead of once per data component at that coordinate.
+const FRONTIER_LINE_NAME = 'frontier-line';
+
 function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect }: FrontierChartProps) {
   const [wrapRef, width] = useContainerWidth();
 
@@ -308,6 +313,7 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
         containerComponent={
           <ChartVoronoiContainer
             labels={({ datum }) => (datum as ChartPoint).name ?? ''}
+            voronoiBlacklist={[FRONTIER_LINE_NAME]}
             constrainToVisibleArea
           />
         }
@@ -337,6 +343,7 @@ function FrontierChart({ candidates, frontierIds, axisMode, selectedId, onSelect
 
         {frontierPoints.length > 1 && (
           <ChartLine
+            name={FRONTIER_LINE_NAME}
             data={frontierPoints}
             interpolation="stepAfter"
             style={{ data: { stroke: C_FRONTIER, strokeWidth: 2, opacity: 0.35 } }}

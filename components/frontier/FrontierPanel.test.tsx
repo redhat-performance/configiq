@@ -4,15 +4,34 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const charts = vi.hoisted(() => ({
+  /** Name given to every rendered connector line. */
+  lines: [] as Array<{ name?: string }>,
+  /** Voronoi components ignored when resolving a hover. */
+  voronoiBlacklist: undefined as string[] | undefined,
+}));
+
 vi.mock('@patternfly/react-charts/victory', async () => {
   const ReactModule = await import('react');
-  const Wrapper = ({ children }: { children?: React.ReactNode }) =>
-    ReactModule.createElement('div', null, children);
+  const Wrapper = ({
+    children,
+    containerComponent,
+  }: {
+    children?: React.ReactNode;
+    containerComponent?: React.ReactElement<{ voronoiBlacklist?: string[] }>;
+  }) => {
+    charts.voronoiBlacklist = containerComponent?.props.voronoiBlacklist;
+    return ReactModule.createElement('div', null, children);
+  };
   const Empty = () => null;
+  const ChartLine = ({ name }: { name?: string }) => {
+    charts.lines.push({ name });
+    return null;
+  };
   return {
     Chart: Wrapper,
     ChartAxis: Empty,
-    ChartLine: Empty,
+    ChartLine,
     ChartScatter: Empty,
     ChartVoronoiContainer: Empty,
   };
@@ -20,7 +39,7 @@ vi.mock('@patternfly/react-charts/victory', async () => {
 
 import { FrontierPanel } from './FrontierPanel';
 import type { DebugRecord } from '@/lib/debug/types';
-import type { Candidate, FrontierState } from '@/lib/types/pareto';
+import type { Candidate, CandidateViews, FrontierState } from '@/lib/types/pareto';
 
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
@@ -66,11 +85,18 @@ function replay(): DebugRecord {
   };
 }
 
-function ready(candidates: Candidate[], record: DebugRecord | null): FrontierState {
+function ready(
+  candidates: Candidate[],
+  record: DebugRecord | null,
+  views: CandidateViews = {
+    pareto_front: ['candidate-000001'],
+    top_n: ['candidate-000001'],
+  },
+): FrontierState {
   return {
     status: 'ready',
     candidates,
-    views: { pareto_front: ['candidate-000001'], top_n: ['candidate-000001'] },
+    views,
     sweep: null,
     replay: record,
   };
@@ -90,6 +116,8 @@ function button(label: string): HTMLButtonElement | undefined {
 }
 
 beforeEach(() => {
+  charts.lines.length = 0;
+  charts.voronoiBlacklist = undefined;
   Object.assign(globalThis, {
     IS_REACT_ACT_ENVIRONMENT: true,
     ResizeObserver: class {
@@ -111,6 +139,31 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+});
+
+describe('FrontierPanel chart hover labels', () => {
+  it('keeps the connector line out of voronoi resolution so each point labels once', async () => {
+    const first = candidate({ candidate_id: 'candidate-000001' });
+    const second = candidate({
+      candidate_id: 'candidate-000002',
+      objectives: { throughput_per_user: 40, throughput_per_gpu: 150 },
+    });
+    const state = ready([first, second], null, {
+      pareto_front: ['candidate-000001', 'candidate-000002'],
+      top_n: ['candidate-000001', 'candidate-000002'],
+    });
+
+    await render(state);
+
+    // The line plots the same points as the frontier scatter. Victory's voronoi
+    // container activates every dataset at the hovered coordinate, so the line
+    // must be excluded or the tooltip repeats the point label.
+    const lineNames = new Set(charts.lines.map(line => line.name));
+    expect(lineNames.size).toBe(1);
+    const [lineName] = [...lineNames];
+    expect(lineName).toBeTruthy();
+    expect(charts.voronoiBlacklist).toContain(lineName);
+  });
 });
 
 describe('FrontierPanel candidate replay', () => {

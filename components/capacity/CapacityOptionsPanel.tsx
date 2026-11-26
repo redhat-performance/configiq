@@ -144,6 +144,12 @@ interface ChartPoint {
   name: string;
 }
 
+// The comparison curve plots a subset of the same points as the scatter.
+// Excluding it from voronoi resolution keeps each hover to one point, so the
+// tooltip lists the point label once instead of once per data component at
+// that coordinate.
+const CAPACITY_CURVE_NAME = 'capacity-curve';
+
 function LegendDot({ color, label }: { color: string; label: string }) {
   return (
     <span className={styles.legendItem}>
@@ -213,6 +219,7 @@ function CapacityChart({ options, selectedOptionId, onSelect }: CapacityChartPro
         containerComponent={
           <ChartVoronoiContainer
             labels={({ datum }) => (datum as ChartPoint).name ?? ''}
+            voronoiBlacklist={[CAPACITY_CURVE_NAME]}
             constrainToVisibleArea
           />
         }
@@ -241,6 +248,7 @@ function CapacityChart({ options, selectedOptionId, onSelect }: CapacityChartPro
         />
         {efficient.length > 1 && (
           <ChartLine
+            name={CAPACITY_CURVE_NAME}
             data={efficient}
             interpolation="stepAfter"
             style={{ data: { stroke: C_MINIMUM, strokeWidth: 2, opacity: 0.3 } }}
