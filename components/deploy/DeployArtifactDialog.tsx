@@ -137,8 +137,9 @@ export function DeployArtifactDialog({
   // the state it sets would abort its own request on the first re-render.
   const targetsRef = React.useRef<DeployTargetInfo[] | null>(null);
 
-  // Cancel unfinished work when the dialog closes or unmounts; a late answer
-  // must not overwrite a newer dialog state.
+  // Cancel unfinished work when the dialog unmounts; a late answer must not
+  // overwrite a newer dialog state. Closing cancels separately, because the
+  // button keeps this component mounted while the modal is hidden.
   React.useEffect(
     () => () => {
       inFlight.current?.abort();
@@ -177,6 +178,10 @@ export function DeployArtifactDialog({
     if (!isOpen) {
       targetsRequest.current?.abort();
       targetsRequest.current = null;
+      // Closing abandons the work started from this dialog: an answer that
+      // arrives afterwards must neither render checks nor save an archive for
+      // a window the reader has dismissed.
+      resetArtifact();
       return;
     }
     if (targetsRef.current != null) return;
@@ -202,7 +207,7 @@ export function DeployArtifactDialog({
         if (!controller.signal.aborted) setTargetsLoading(false);
       });
     return () => controller.abort();
-  }, [isOpen]);
+  }, [isOpen, resetArtifact]);
 
   const selectedTarget = targets?.find(target => target.id === targetId) ?? null;
 

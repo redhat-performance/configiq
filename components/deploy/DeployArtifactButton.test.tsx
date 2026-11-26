@@ -312,4 +312,28 @@ describe('DeployArtifactButton', () => {
     expect(saveDeployDownload).not.toHaveBeenCalled();
     expect(document.body.textContent).not.toContain('The archive could not be downloaded');
   });
+
+  it('abandons an in-flight download when the dialog is closed', async () => {
+    vi.mocked(renderDeployArtifact).mockResolvedValue(artifact());
+    let resolveDownload: (value: { blob: Blob; fileName: string }) => void = () => {};
+    vi.mocked(downloadDeployArtifact).mockReturnValue(
+      new Promise(resolve => {
+        resolveDownload = resolve;
+      }),
+    );
+    await renderButton();
+    await openDialog();
+    await act(async () => buttonNamed('Render artifact').click());
+    await act(async () => buttonNamed('Download .zip').click());
+
+    await act(async () => buttonNamed('Close').click());
+
+    await act(async () => {
+      resolveDownload({ blob: new Blob(['PK']), fileName: 'a.zip' });
+    });
+    await act(async () => {});
+
+    expect(vi.mocked(downloadDeployArtifact).mock.calls[0][1]?.aborted).toBe(true);
+    expect(saveDeployDownload).not.toHaveBeenCalled();
+  });
 });
