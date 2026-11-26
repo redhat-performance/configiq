@@ -31,6 +31,7 @@ import {
   RouteIcon,
   CogIcon,
   DatabaseIcon,
+  ChartBarIcon,
   ChartLineIcon,
   ListIcon,
   ClipboardCheckIcon,
@@ -197,10 +198,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               isActive={pathname === "/predict"}
             />
             <NavItemWithIcon
-              icon={CubesIcon}
-              label="GPU explorer"
-              href="/gpu-explorer"
-              isActive={pathname === "/gpu-explorer"}
+              icon={ListIcon}
+              label="Saved results"
+              href="/compare"
+              isActive={pathname === "/compare"}
             />
             {false && <NavItemWithIcon
               icon={HistoryIcon}
@@ -233,6 +234,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               href="/hybrid-savings"
               isActive={pathname === "/hybrid-savings"}
             />
+            <NavItemWithIcon
+              icon={ChartBarIcon}
+              label="GPU explorer"
+              href="/gpu-explorer"
+              isActive={pathname === "/gpu-explorer"}
+            />
             {costingsEnabled && (
               <>
                 <NavItemWithIcon
@@ -249,15 +256,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
               </>
             )}
-
-            <div style={groupLabelStyle}>STORAGE</div>
-
-            <NavItemWithIcon
-              icon={ListIcon}
-              label="Saved results"
-              href="/compare"
-              isActive={pathname === "/compare"}
-            />
 
             <div style={groupLabelStyle}>SYSTEM</div>
 

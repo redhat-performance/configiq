@@ -17,8 +17,9 @@ AISimulators and aicostings services without exposing service URLs to the browse
 | Performance | Instant GPU memory and throughput estimate |
 | Recommend Sizing | Full inference sizing with batching and quantization |
 | KV Cache Calculator | Memory breakdown and KV cache capacity analysis |
-| GPU Explorer | Side-by-side GPU comparison table and charts |
+| Saved results | Compare, export, and import saved result snapshots |
 | Hybrid Savings | Cloud vs on-premise cost modeling |
+| GPU Explorer | Side-by-side GPU comparison table and charts |
 | Routing Economics | Multi-tier model routing cost analysis |
 | Cluster cost | Estimate costs for multi-node GPU clusters |
 

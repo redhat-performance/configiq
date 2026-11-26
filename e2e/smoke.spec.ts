@@ -210,8 +210,9 @@ test('home opens the core tools from the main navigation', async ({ page }) => {
 
   const navigation = page.getByRole('navigation', { name: 'Main navigation' })
   for (const name of [
-    'Recommend sizing', 'KV cache calculator', 'Predict performance', 'GPU explorer',
-    'Simulator scorecard', 'Benchmark comparison', 'Hybrid savings', 'Settings', 'Cost sources', 'Documentation',
+    'Recommend sizing', 'KV cache calculator', 'Predict performance', 'Saved results',
+    'Simulator scorecard', 'Benchmark comparison', 'Hybrid savings', 'GPU explorer',
+    'Settings', 'Cost sources', 'Documentation',
   ]) {
     await expect(navigation.getByRole('link', { name, exact: true })).toBeVisible()
   }
