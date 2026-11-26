@@ -862,10 +862,11 @@ export default function SimulatorScorecard() {
 /**
  * Chart on the front, table on the back.
  *
- * The chart ranks by magnitude so the configurations that dominate the mean
- * appear first; the table still lists every row, including the ones the chart
- * leaves out. This is the Benchmark comparison flip-tile pattern, so the dense
- * table is available without being the default reading.
+ * The chart puts the configurations with the closest agreement at the top, so
+ * the models and GPUs worth choosing read first; the table still lists every
+ * row, including the ones the chart leaves out. This is the Benchmark
+ * comparison flip-tile pattern, so the dense table is available without being
+ * the default reading.
  */
 function MatrixFlipCard({
   matrix,

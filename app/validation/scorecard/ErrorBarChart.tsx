@@ -13,7 +13,7 @@ import styles from './scorecard.module.css';
 
 /**
  * Grouped horizontal bars: one bar per simulator for each measured
- * configuration, ranked worst first.
+ * configuration, with the closest agreement at the top.
  *
  * This draws published cells, never a second aggregation. Bars that would be
  * unreadable at a glance are left to the table behind the flip; the labels at
@@ -157,10 +157,11 @@ export default function ErrorBarChart({
   // two bars in a pair; distinct slots keep them apart and leave each value
   // label its own line, on a phone as well as a wide card.
   //
-  // Category points are laid out from the plot's bottom edge upwards, so the
-  // ranked list is reversed: the worst configuration, first in `rows`, lands
-  // at the top of the chart where a reader starts.
-  const displayedRows = [...rows].reverse();
+  // Category points are laid out from the plot's bottom edge upwards, so
+  // drawing the ranked list in order puts the best configuration, last in
+  // `rows`, at the top of the chart where a reader starts. The worst sits at
+  // the bottom, still reachable by scrolling.
+  const displayedRows = rows;
   const categories: string[] = [];
   const labelTicks: string[] = [];
   const tickText = new Map<string, string>();
@@ -207,7 +208,7 @@ export default function ErrorBarChart({
           <Chart
             ariaTitle={`${statisticLabel} by measured configuration`}
             ariaDesc={`Grouped bars comparing ${series.map(entry => entry.label).join(' and ')} `
-              + `on ${statisticLabel} for ${rows.length} measured configurations, worst first.`}
+              + `on ${statisticLabel} for ${rows.length} measured configurations, best first.`}
             backgroundComponent={
               <RowBands
                 rowCount={rows.length}
