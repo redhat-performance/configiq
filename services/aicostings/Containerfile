@@ -49,20 +49,34 @@ COPY aicostings /app
 # revision cache is only its input and would otherwise double the image size.
 # Offline from here on, so a missing file fails the build rather than a
 # deployment.
+#
+# The composed root's name ends in `_specs_fingerprint()`, a hash over the
+# packaged spec files' paths, sizes, and mtimes. Pin those mtimes first: a
+# restored build-cache layer can otherwise carry different ones than the layer
+# that composed the root, leaving a shipped image whose name no longer matches,
+# so offline compose ignores the root and fails on every container start.
 ENV AISIM_DATA_CACHE=/app/.cache/aisim/data \
     AISIM_DATA_MAX_BYTES=4294967296
 RUN python -c \
+        "import os; from aisim_core.data.default_systems import PACKAGED_SYSTEMS_DIR; \
+stamp = 1600000000; \
+[os.utime(path, (stamp, stamp)) for path in PACKAGED_SYSTEMS_DIR.rglob('*') if path.is_file()]" \
+    && python -c \
         "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())" \
     && test -d /app/.cache/aisim/data/systems \
     && find /app/.cache/aisim/data -mindepth 1 -maxdepth 1 ! -name systems -exec rm -rf {} +
 ENV AISIM_DATA_OFFLINE=1
-RUN python -c \
-        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
 
 # OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
 # group-writable so an arbitrary assigned UID can still write.
 RUN chown -R 1001:0 /app \
     && chmod -R g=u /app
+
+# Resolve the composed root after every layer that can touch the install, with
+# the raw cache already pruned. A drifted fingerprint fails the build here
+# instead of crash-looping every replica on the host.
+RUN python -c \
+        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
 
 USER 1001
 
