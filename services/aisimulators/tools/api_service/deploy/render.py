@@ -457,12 +457,55 @@ def _generator_files(request: DeployRequest, target: DeployTarget, model_path: s
     return generate_from_request(generator_request)
 
 
+def _overlay_references(overlay: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """The bundle-root files a rendered Kustomization names, and its resources.
+
+    The overlay, not this module, decides which of the generator's files make up
+    the deployable unit: it lists the patches it applies and the configurations
+    that teach kustomize how to patch the base. Keeping a fixed list here means
+    a later generator that adds a referenced file ships an overlay whose own
+    references are missing. Resources are returned separately because a
+    resource may be a file this render produced or a directory in the pinned
+    tree, and only the file needs to reach the bundle root.
+    """
+    files = {"kustomization.yaml"}
+    for configuration in overlay.get("configurations") or []:
+        files.add(str(configuration))
+    for patch in overlay.get("patches") or []:
+        if isinstance(patch, dict) and patch.get("path"):
+            files.add(str(patch["path"]))
+    resources = {str(resource) for resource in overlay.get("resources") or []}
+    return files, resources
+
+
 def _deployable_subset(rendered: dict[str, str], target: DeployTarget) -> dict[str, str]:
-    keep = (
-        {"kustomization.yaml", "patch-vllm.yaml", "patch-decode.yaml", "patch-prefill.yaml"}
-        if target.kind == "llm-d"
-        else {"k8s_deploy.yaml"}
-    )
+    if target.kind != "llm-d":
+        return {name: contents for name, contents in rendered.items() if name == "k8s_deploy.yaml"}
+
+    overlay_text = rendered.get("kustomization.yaml")
+    if overlay_text is None:
+        raise DeployRenderError(
+            f"the generator produced no deployable overlay for target {target.id!r}; "
+            f"it produced {sorted(rendered)}"
+        )
+    try:
+        overlay = yaml.safe_load(overlay_text)
+    except yaml.YAMLError as exc:
+        raise DeployRenderError(f"the generator's kustomization.yaml is unparsable: {exc}") from exc
+    if not isinstance(overlay, dict):
+        raise DeployRenderError(
+            "the generator's kustomization.yaml is not a Kustomization, so the "
+            f"overlay cannot be subset: {sorted(rendered)}"
+        )
+    files, resources = _overlay_references(overlay)
+    missing = sorted(files - set(rendered))
+    if missing:
+        raise DeployRenderError(
+            "the rendered overlay references "
+            + ", ".join(repr(name) for name in missing)
+            + ", which the generator did not produce"
+        )
+    keep = files | (resources & set(rendered))
     return {name: contents for name, contents in rendered.items() if name in keep}
 
 

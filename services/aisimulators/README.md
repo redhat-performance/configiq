@@ -239,7 +239,10 @@ ids answer 404 with the list of ids.
 
 `README.md`, `PROVENANCE.md` (every pin, the evaluated limits, the gate's
 checks, accepted warnings), `install.sh`, `preflight.sh`, and `verify.sh`, plus
-the manifests or overlay. `preflight.sh` is read-only and fails rather than
+the manifests or overlay. The overlay's own files are the ones the rendered
+`kustomization.yaml` names — itself, the configurations it loads, and the
+patches it applies — so a file the overlay references cannot be left behind
+when a generator release adds one. `preflight.sh` is read-only and fails rather than
 installing into a cluster whose CRDs, GPUs, or Helm are missing; `verify.sh`
 waits for the rollout and queries `/v1/models`. `format=zip` returns the same
 files with executable modes preserved.

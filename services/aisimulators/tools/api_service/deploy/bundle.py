@@ -202,12 +202,21 @@ def _layout(engine: EngineSection, target: DeployTarget) -> str:
             "| Path | Purpose |",
             "| --- | --- |",
             "| `kustomization.yaml` | The overlay `kubectl apply -k .` builds. Pins the routing sidecar and the namespace. |",
-            "| `patch-vllm.yaml` | The evaluated limits for the aggregated model server. |"
-            if engine.mode == "agg"
-            else "| `patch-prefill.yaml`, `patch-decode.yaml` | The evaluated limits for each pool. |",
-            "| `llm-d/` | The pinned llm-d v1.0.0 subtrees the overlay and the router values reference, verbatim. |",
-            "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |",
         ]
+        if engine.mode == "agg":
+            rows.append("| `patch-vllm.yaml` | The evaluated limits for the aggregated model server. |")
+        else:
+            rows.append(
+                "| `name-reference.yaml` | Tells kustomize which fields of the base "
+                "`DisaggregatedSet` are name references, so the name prefix rewrites them. |"
+            )
+            rows.append("| `patch-decode.yaml`, `patch-prefill.yaml` | The evaluated limits for each pool. |")
+        rows.extend(
+            [
+                "| `llm-d/` | The pinned llm-d v1.0.0 subtrees the overlay and the router values reference, verbatim. |",
+                "| `install.sh`, `preflight.sh`, `verify.sh` | Install, check, and confirm this bundle. |",
+            ]
+        )
         return "\n".join(rows)
     return (
         "| Path | Purpose |\n"

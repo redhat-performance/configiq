@@ -46,7 +46,10 @@ re-deriving them from the original request.
 **llm-d v1.0.0 is vendored; Dynamo is generated.** The llm-d overlay is only
 valid against the exact commit its release tag points at, so the bundle carries
 the requested mode's Kustomize closure (aggregated and disaggregated differ) at
-repo-relative depth. Aggregated mode renders a `Deployment`; disaggregated mode
+repo-relative depth. The bundle-root files come from the rendered overlay
+itself — the patches it applies and the configurations it loads — rather than a
+list kept here, so a generator release that references one more file cannot ship
+an overlay with a dangling reference. Aggregated mode renders a `Deployment`; disaggregated mode
 renders a `DisaggregatedSet` plus the pinned routing sidecar. The llm-d
 `ModelService` chart is deliberately not used. The Dynamo bundle is a single
 `DynamoGraphDeployment`, and its model-server image is discovered from the

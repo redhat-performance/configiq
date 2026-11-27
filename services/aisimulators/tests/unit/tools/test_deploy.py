@@ -16,7 +16,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 import yaml
@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 # The `render` submodule, not a re-export: the tests patch its catalog binding
 # and call its entry point directly.
+import tools.api_service.deploy.bundle as bundle_module
 import tools.api_service.deploy.render as render_module
 from tools.api_service import app as app_module
 from tools.api_service.deploy import catalog
@@ -337,6 +338,108 @@ class TestDynamoDgdArtifact:
         assert "-k ." not in readme
 
 
+class TestDeployableSubset:
+    """The deployable subset is derived from the overlay the generator rendered.
+
+    These run without the vendored llm-d tree or kustomize, so they are the
+    guard that still fires where the render gate is skipped.
+    """
+
+    OVERLAY: ClassVar[dict[str, Any]] = {
+        "apiVersion": "kustomize.config.k8s.io/v1beta1",
+        "kind": "Kustomization",
+        "resources": ["llm-d/guides/pd-disaggregation/modelserver/gpu/vllm/base"],
+        "configurations": ["name-reference.yaml"],
+        "patches": [{"path": "patch-decode.yaml"}, {"path": "patch-prefill.yaml"}],
+    }
+
+    def _rendered(self, **overrides: str) -> dict[str, str]:
+        rendered = {
+            "kustomization.yaml": yaml.safe_dump(self.OVERLAY),
+            "name-reference.yaml": "nameReference:\n",
+            "patch-decode.yaml": "patch: decode\n",
+            "patch-prefill.yaml": "patch: prefill\n",
+            "cli_args_decode": "--max-num-seqs 8\n",
+            "run_0.sh": "#!/bin/sh\n",
+            "sflow.yaml": "scenario: true\n",
+        }
+        rendered.update(overrides)
+        return rendered
+
+    def test_every_file_the_overlay_references_is_kept(self):
+        kept = render_module._deployable_subset(self._rendered(), catalog.TARGETS["llm-d"])
+
+        assert set(kept) == {
+            "kustomization.yaml",
+            "name-reference.yaml",
+            "patch-decode.yaml",
+            "patch-prefill.yaml",
+        }
+
+    def test_the_measurement_files_are_not_part_of_the_bundle(self):
+        rendered = self._rendered()
+
+        kept = render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+        assert set(rendered) - set(kept) == {"cli_args_decode", "run_0.sh", "sflow.yaml"}
+
+    def test_a_resource_is_kept_only_when_the_render_produced_it(self):
+        overlay = {**self.OVERLAY, "resources": ["llm-d/base", "extra.yaml"]}
+        rendered = self._rendered(
+            **{"kustomization.yaml": yaml.safe_dump(overlay), "extra.yaml": "kind: ConfigMap\n"}
+        )
+
+        kept = render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+        assert "extra.yaml" in kept
+        assert "llm-d/base" not in kept
+
+    def test_a_reference_the_generator_did_not_produce_is_an_error(self):
+        rendered = self._rendered()
+        del rendered["name-reference.yaml"]
+
+        with pytest.raises(render_module.DeployRenderError, match="name-reference.yaml"):
+            render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+    def test_a_kustomization_that_is_not_a_mapping_is_an_error(self):
+        rendered = self._rendered(**{"kustomization.yaml": "- not a mapping\n"})
+
+        with pytest.raises(render_module.DeployRenderError, match="not a Kustomization"):
+            render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+    def test_a_missing_kustomization_is_an_error(self):
+        rendered = self._rendered()
+        del rendered["kustomization.yaml"]
+
+        with pytest.raises(render_module.DeployRenderError, match="no deployable overlay"):
+            render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+    def test_an_unparsable_kustomization_is_an_error(self):
+        rendered = self._rendered(**{"kustomization.yaml": "resources: [\n"})
+
+        with pytest.raises(render_module.DeployRenderError, match="unparsable"):
+            render_module._deployable_subset(rendered, catalog.TARGETS["llm-d"])
+
+    def test_a_single_manifest_target_keeps_only_its_manifest(self):
+        rendered = {"k8s_deploy.yaml": "kind: DynamoGraphDeployment\n", "sflow.yaml": "x\n"}
+
+        kept = render_module._deployable_subset(rendered, catalog.TARGETS["dynamo-dgd"])
+
+        assert set(kept) == {"k8s_deploy.yaml"}
+
+    def test_the_layout_lists_the_name_reference_a_disaggregatedset_needs(self):
+        layout = bundle_module._layout(
+            _section(_engine("disagg", "0.31.0")), catalog.TARGETS["llm-d"]
+        )
+
+        assert "`name-reference.yaml`" in layout
+
+    def test_the_layout_has_no_name_reference_for_a_deployment(self):
+        layout = bundle_module._layout(_section(_engine("agg", "0.31.0")), catalog.TARGETS["llm-d"])
+
+        assert "`name-reference.yaml`" not in layout
+
+
 @requires_kustomize
 class TestLlmdArtifact:
     def test_an_aggregated_overlay_renders_a_deployment(self):
@@ -349,6 +452,7 @@ class TestLlmdArtifact:
         files = _files(payload)
         assert "llm-d/guides/optimized-baseline/modelserver/gpu/vllm/base/kustomization.yaml" in files
         assert "llm-d/guides/pd-disaggregation/modelserver/gpu/vllm/base/kustomization.yaml" not in files
+        assert "name-reference.yaml" not in files
         overlay = yaml.safe_load(files["kustomization.yaml"])
         assert overlay["resources"] == ["llm-d/guides/optimized-baseline/modelserver/gpu/vllm/base"]
         assert overlay["namespace"] == "configiq"
@@ -362,7 +466,15 @@ class TestLlmdArtifact:
         assert all(check["status"] != "failed" for check in payload["checks"])
 
         files = _files(payload)
+        assert "name-reference.yaml" in files
         overlay = yaml.safe_load(files["kustomization.yaml"])
+        # Every bundle-root file the overlay names has to ship with it: the
+        # gate builds this same tree, and kustomize fails on a missing one.
+        for reference in overlay.get("configurations") or []:
+            assert reference in files
+        for patch in overlay.get("patches") or []:
+            if isinstance(patch, dict) and patch.get("path"):
+                assert patch["path"] in files
         assert overlay["images"] == [
             {
                 "name": "ghcr.io/llm-d/llm-d-router-disagg-sidecar",
