@@ -57,9 +57,9 @@ the request count simulates one request in total; setting it simulates
 `max(1, round(batch_size × value))` requests. `/recommend` accepts `prefix` but
 not `requests_per_load_unit`.
 
-`POST /memory` requires `model_path` and `system`. It is an AISim
-capability; a simulator that does not model memory rejects the request rather
-than returning an empty breakdown.
+`POST /memory` requires `model_path` and `system`. The selected simulator
+answers it from its own memory model; a simulator that does not model memory
+rejects the request rather than returning an empty breakdown.
 
 Webapp workload presets are not API defaults. Preset names and values come from
 the deployment's `config.json`, so a preset is a convenience for filling the
