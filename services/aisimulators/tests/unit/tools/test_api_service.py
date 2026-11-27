@@ -122,7 +122,10 @@ class MockCandidate:
     prediction_config: dict = field(default_factory=lambda: {
         "engine": {
             "model": "Qwen/Qwen3-32B", "hardware": "h200_sxm",
-            "backend": "vllm", "backend_version": "0.24.0", "mode": "aggregated",
+            # A literal the SDK still queries: the recommend path hands this
+            # to the real KV-cache estimator, which refuses a version outside
+            # the system's slots. Keep it on the current slot.
+            "backend": "vllm", "backend_version": "0.32.0", "mode": "aggregated",
             "workers": {"aggregated": {
                 "parallelism": {"tensor": 2, "pipeline": 1, "attention_data": 1, "replicas": 1},
                 "scheduler": {"max_sequences": 48},
@@ -309,7 +312,7 @@ class TestRecommend:
         assert cfg["model"] == "Qwen/Qwen3-32B"
         assert cfg["system"] == "h200_sxm"
         assert cfg["backend"] == "vllm"
-        assert cfg["backend_version"] == "0.24.0"
+        assert cfg["backend_version"] == "0.32.0"
 
     @patch("tools.api_service.app._run_aisimulate_recommendation")
     def test_response_derives_compatibility_metrics_from_engine_report(self, mock_recommend):
@@ -3681,7 +3684,9 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "backend": "vllm",
-            "backend_version": "0.24.0",
+            # The alias tracks whichever release the SDK declares current; a
+            # literal pin here would stop being queryable as the slots move.
+            "backend_version": "current",
             "tp_size": 2,
         })
         _skip_if_missing_perf_data(resp)
@@ -3753,7 +3758,9 @@ class TestIntegration:
             "model_path": "Qwen/Qwen3-32B",
             "system": "h200_sxm",
             "backend": "vllm",
-            "backend_version": "0.24.0",
+            # Same alias as /memory: the resolved literal is what the response
+            # reports, so this stays queryable as the slots move.
+            "backend_version": "current",
             "tp_size": 2,
             "batch_size": 48,
         })
