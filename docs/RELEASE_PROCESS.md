@@ -122,39 +122,51 @@ is an explicit unsupported response rather than a build-time import.
 
 ## Bumping BLIS
 
-BLIS is copied from the upstream multi-arch release image
-`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. BLIS v0.19 embeds
-its catalog and coefficient registry, so the Containerfile no longer clones
-them for a run; it copies the catalog out of the pinned
-`inference-sim/inference-sim` source commit because the API enumerates support
-facts from it:
+BLIS normally comes from the upstream multi-arch release image
+`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. Until a release
+carries the reports the adapter reads (`blis version --json` with each modelled
+engine release, each pool's memory on the run's Result, `blis catalog list`;
+inference-sim#2693, #2694, #2695), the Containerfile builds
+the binary from a pinned commit of the fork's `deploy/api` branch instead — the
+upstream `main` commit that tag names, plus those changes, tagged in the fork so
+a rewrite of the branch cannot orphan it. BLIS v0.19 embeds its catalog and
+coefficient registry, so the Containerfile no longer clones them for a run; it
+copies the catalog out of the same pinned commit because the API enumerates
+support facts from it:
 
 | Argument | Upstream |
 |---|---|
-| `BLIS_IMAGE` | `ghcr.io/inference-sim/blis:vX.Y.Z@sha256:…` |
-| `BLIS_VERSION` | the release the image reports (`/simulators`, `/backends`, provenance) |
-| `BLIS_COMMIT` | the upstream git commit the release tag was built from (`/simulators` revision) |
-| `BLIS_CATALOG_COMMIT` | `inference-sim/inference-sim`, the catalog the API lists |
+| `BLIS_REPOSITORY` | the fork holding the `deploy/api` branch, while the build is a source build |
+| `BLIS_COMMIT` | the commit the binary and `/simulators` revision report |
+| `BLIS_BASE_TAG` | the highest release the pinned commit descends from; the fetch reaches back to it so the toolchain can name the commit's pseudo-version, and naming an older release makes that version claim a pre-release of code the build already contains |
+| `BLIS_FETCH_DEPTH` | how far back that fetch goes; it must reach `BLIS_BASE_TAG` |
+| `BLIS_GO_VERSION` | the `go` directive of that commit |
+| `BLIS_VERSION` | what `blis version` prints for it, without the leading `v` (a Go pseudo-version while no release tag contains the commit) |
+| `BLIS_CATALOG_COMMIT` | the same commit: the catalog the API lists |
 
-To move to a new BLIS release:
+To move to a new BLIS build:
 
-1. Resolve the release image's multi-arch index digest and put the tag plus
-   digest in `BLIS_IMAGE`; set `BLIS_VERSION` to the human-facing release. The
-   Containerfile fails the build when the `BLIS_IMAGE` tag and `BLIS_VERSION`
-   disagree, so the reported version cannot drift from the binary. Set
-   `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
-   vX.Y.Z`): the release binary embeds no revision, so this is the only source
-   for the git commit the footer shows. The default `BLIS_VERSION` may omit it,
-   because the service resolves the default release's commit; any other release
-   without a commit reports no revision.
-2. Bump `BLIS_CATALOG_COMMIT` to the source commit the release tag builds from.
-3. Update `DEFAULT_BLIS_RELEASE` and `DEFAULT_BLIS_COMMIT` in
+1. For a release, resolve the release image's multi-arch index digest and put
+   the tag plus digest in the build stage, replacing the source build; set
+   `BLIS_VERSION` to the human-facing release. For a commit build, set
+   `BLIS_REPOSITORY`, `BLIS_COMMIT`, `BLIS_BASE_TAG` and `BLIS_GO_VERSION`, and
+   `BLIS_VERSION` to the pseudo-version `blis version` prints. The reported
+   version is a build fact, never a literal that can drift from the binary: the
+   build fails if `blis version --json` reports anything but `BLIS_VERSION`
+   plus the full `BLIS_COMMIT` revision.
+2. Set `BLIS_COMMIT` to the commit the release tag points at (`git rev-parse
+   vX.Y.Z`): the binary embeds no revision, so this is the only source for the
+   git commit the footer shows. The default `BLIS_VERSION` may omit it, because
+   the service resolves the default build's commit; any other build without a
+   commit reports no revision.
+3. Bump `BLIS_CATALOG_COMMIT` to the source commit the build reads from.
+4. Update `DEFAULT_BLIS_RELEASE` and `DEFAULT_BLIS_COMMIT` in
    `tools/api_service/blis/runtime.py`. Do not add an engine-version table: the
    build reports the release its kernel prices, and the adapter forwards it.
-4. Rebuild the image and confirm the new binary reports the release:
-   `/usr/local/bin/blis --help`, then `GET /simulators` and
+5. Rebuild the image and confirm the new binary reports the build:
+   `/usr/local/bin/blis version`, then `GET /simulators` and
    `GET /backends?simulator=blis`.
-5. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
+6. Exercise a catalog-backed request end to end (`GET /models?simulator=blis`,
    then a BLIS `/predict` for a listed model) so a catalog/binary mismatch fails
    before deployment.
 

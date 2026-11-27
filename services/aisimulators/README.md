@@ -58,22 +58,33 @@ deployment render gate needs:
 /opt/llm-d/<revision>/guides/   # pinned llm-d subtrees (AISIMULATORS_LLM_D_VENDOR_DIR)
 ```
 
-BLIS v0.19.0 is copied from the upstream multi-arch release image
-`ghcr.io/inference-sim/blis:v0.19.0`, pinned by index digest
-`sha256:6c6915118e15d60eb0d6ebb62f41a3b6c3e1a980c095ee5bc9872024543cc51b`.
-Using the published release keeps the binary exactly the artifact upstream
-tested and removes the Go toolchain from this build. The build fails if the
-`BLIS_IMAGE` tag and the reported `BLIS_VERSION` disagree.
+BLIS is built from source at a pinned commit of the fork's `deploy/api` branch
+that adds the reports this adapter reads. No release image carries them yet:
+[inference-sim/inference-sim#2693](https://github.com/inference-sim/inference-sim/pull/2693)
+(`blis version --json` reporting each modelled engine release),
+[#2694](https://github.com/inference-sim/inference-sim/pull/2694)
+(each pool's memory in the run's Result) and
+[#2695](https://github.com/inference-sim/inference-sim/pull/2695)
+(`blis catalog list`) are open, and the image builds the commit the
+Containerfile pins (`natoscott/inference-sim@694802f5`, tagged
+`deploy-api-20261127-694802f5` so a rewrite of the branch cannot orphan it).
+Once they land in a tagged release, the
+build stage returns to the published multi-arch image
+(`ghcr.io/inference-sim/blis:vX.Y.Z`, pinned by index digest), which keeps the
+binary exactly the artifact upstream tested and removes the Go toolchain from
+this build. The version the image reports is the pseudo-version `blis version`
+prints for the pinned commit, because no release tag contains it; the build
+fails if the binary prints anything else.
 
 BLIS v0.19 embeds its catalog and coefficient registry in the binary and
 refuses the external clones earlier releases read, so a run takes neither
 `--catalog` nor `--registry`. The image still copies the catalog out of the
-pinned source commit because the API enumerates models, chips, and fabrics
-from it:
+same pinned commit because the API enumerates models, chips, and fabrics from
+it:
 
 | Path | Contents | Pin |
 |---|---|---|
-| `/opt/blis/catalog` | declared facts: model graphs, chips, fabrics, workloads, read by the API only | `inference-sim/inference-sim` `e7597a8c9510f876653d7d87bd8baf195c37c5c7` |
+| `/opt/blis/catalog` | declared facts: model graphs, chips, fabrics, workloads, read by the API only | `natoscott/inference-sim` `694802f59d852c3f1c4dfdac5dd2bd0249618642` |
 
 No example-scenario directory is bundled: the adapter generates a Scenario and
 Deployment per request, so those files would be dead weight.
@@ -765,24 +776,26 @@ Bayesian sampler enables JAX x64 process-wide and is not the default.
 `SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
 since it cannot contain a P/D deployment.
 
-The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG`, `BLIS_IMAGE`, and
-`BLIS_CATALOG_COMMIT`. `BLIS_VERSION` is the release reported by `/simulators`,
+The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG`, and
+`BLIS_CATALOG_COMMIT`. `BLIS_VERSION` is the build reported by `/simulators`,
 `/backends`, and in every prediction's provenance; `BLIS_COMMIT` is the git
-commit the release tag was built from, reported as `revision` in
-`/simulators`. BLIS reads its embedded catalog and coefficient registry, so only
-its binary path is required:
+commit it was built from, reported as `revision` in `/simulators`. BLIS reads its
+embedded catalog and coefficient registry, so only its binary path is required:
 
 ```bash
 blis run --scenarios "$BLIS_SCENARIOS" --scenario generated-scenario.yaml \
   --rate 10 --num-requests 100
 ```
 
-To move to a new BLIS release, bump `BLIS_IMAGE` (tag and index digest),
-`BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG_COMMIT`, and `DEFAULT_BLIS_RELEASE`
-/ `DEFAULT_BLIS_COMMIT` in `tools/api_service/blis/runtime.py` together. The
-engine release the build models is reported by the binary, so no code names it.
-`BLIS_COMMIT` may be omitted only for the default release, whose commit the
-service resolves; another release without it reports no revision. See
+To move to a new BLIS build, bump `BLIS_COMMIT` (and `BLIS_GO_VERSION` when the
+commit's `go` directive moves), `BLIS_VERSION` to what `blis version` prints for
+it, `BLIS_CATALOG_COMMIT` to the same commit, and `DEFAULT_BLIS_RELEASE` /
+`DEFAULT_BLIS_COMMIT` in `tools/api_service/blis/runtime.py` together. The engine
+release the build models is reported by the binary, so no code names it.
+`BLIS_COMMIT` may be omitted only for the default build, whose commit the service
+resolves; another build without it reports no revision. When a release carries
+the commands, replace the build stage with its image and keep `BLIS_VERSION` the
+human-facing release. See
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-blis).
 
 
