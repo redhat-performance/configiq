@@ -69,6 +69,7 @@ async function mount(
     sharedWorkloads?: number | null;
     source?: 'all' | 'redhat' | 'inferencex';
     releaseMatch?: 'any' | 'matched';
+    simulators?: { id: string; label: string; color: string }[];
     onSelectPair?: (pair: { model: string; accelerator: string }) => void;
   } = {},
 ): Promise<ReturnType<typeof vi.fn>> {
@@ -83,7 +84,7 @@ async function mount(
         sharedWorkloads={sharedWorkloads}
         source={options.source ?? 'all'}
         releaseMatch={options.releaseMatch ?? 'any'}
-        simulators={SIMULATORS}
+        simulators={options.simulators ?? SIMULATORS}
         onSelectPair={onSelectPair}
       />,
     );
@@ -252,6 +253,25 @@ describe('CoverageMap', () => {
 
     expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
     expect(normalized(container)).toContain('org/model');
+  });
+
+  it('keeps the shared count on the two sets the figure can draw', async () => {
+    await mount({
+      coverage: [
+        coverage(),
+        coverage({ simulator: 'blis' }),
+        // A pair only the third simulator scored, so a count over all three
+        // simulators would report a different overlap from the drawn circles.
+        coverage({ simulator: 'third', model: 'org/third', accelerator: 'B200' }),
+      ],
+      simulators: [...SIMULATORS, { id: 'third', label: 'Third', color: '#575757' }],
+    });
+
+    const [simulators] = [...container.querySelectorAll('figure')];
+    expect(normalized(simulators)).not.toContain('Third');
+    expect(normalized(simulators)).toContain('AISim 1');
+    expect(normalized(simulators)).toContain('BLIS 1');
+    expect(normalized(simulators)).toContain('Shared 1');
   });
 
   it('says plainly when the slice has no pair', async () => {

@@ -100,9 +100,13 @@ export default function CoverageMap({
     color: entry.color,
     count: sets.pairs.filter(pair => pair.simulators.has(entry.id)).length,
   }));
+  // The layout draws two circles. Keep the shared count on the same two sets the
+  // figure draws, so a snapshot that ever listed more cannot report an overlap
+  // the drawing does not show.
+  const figureSimulators = simulatorSets.slice(0, 2);
   const simulatorShared = sharedCount(
     sets.pairs,
-    simulatorSets.map(entry => entry.id),
+    figureSimulators.map(entry => entry.id),
     pair => pair.simulators,
   );
   const sourceSets = sources.map(entry => ({
@@ -116,7 +120,7 @@ export default function CoverageMap({
   // A figure needs at least one set with something in it. A second set with no
   // pairs still keeps its legend entry, so an absent source or simulator reads
   // as empty rather than as a missing figure the reader has to explain.
-  const showSimulatorFigure = simulatorSets.some(entry => entry.count > 0);
+  const showSimulatorFigure = figureSimulators.some(entry => entry.count > 0);
   const showSourceFigure = sourceSets.some(entry => entry.count > 0);
 
   return (
@@ -125,7 +129,7 @@ export default function CoverageMap({
         {showSimulatorFigure && (
           <VennFigure
             title="Simulator coverage"
-            sets={simulatorSets}
+            sets={figureSimulators}
             shared={simulatorShared}
             pairs={sets.pairs}
             dimension="simulators"
