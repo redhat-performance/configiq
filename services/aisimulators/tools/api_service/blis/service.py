@@ -8,7 +8,7 @@ import os
 import tempfile
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -382,6 +382,11 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     catalog = load_catalog(runtime.binary)
     model = catalog.resolve_model(model_path)
     hardware = catalog.resolve_hardware(system)
+    # Sparse-attention kernels refuse a block that is not a multiple of their
+    # kernel block. The catalog reports the model's architecture and the part's
+    # compute capability, so the emitted size is resolved here, once, for every
+    # topology that uses this request.
+    model = replace(model, block_size=catalog.block_size_for(model, hardware))
     try:
         system_spec = load_system_spec(system)
     except Exception as exc:

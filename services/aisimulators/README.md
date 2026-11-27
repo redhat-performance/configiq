@@ -95,6 +95,15 @@ facts:
   model identifier is the Hugging Face repo from the entry's `source` block
   (`Qwen/Qwen3-32B`); the catalog name (`qwen3-32b`) is accepted as an input
   alias.
+- A model whose sparse-attention kernels need a larger cache block gets one from
+  the kernel rule: DeepSeek-V4 requires 256 tokens, DeepSeek-V4.1 requires 64 on
+  SM90 and 128 on other parts (from the chip's `compute_capability`), and a DSA
+  sparse-MLA indexer requires 64. The rule uses the `architecture` and
+  `attention` fields the report carries; a graph's per-cache block sizes are not
+  in the report. A disaggregated deployment states one block size in both pools,
+  because BLIS moves whole blocks across the handoff and refuses pools that
+  disagree. Models with no such rule keep the 16-token colocated and 64-token
+  disaggregated-pool defaults.
 - The context window is the graph's stated `context_window`, and nothing else.
   Only some graphs state one; a model whose graph leaves it open reports `null`
   rather than a value derived from a file the build never read.

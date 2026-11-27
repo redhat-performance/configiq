@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,37 @@ def _catalog_document() -> dict:
                 "attention": {"kind": "mla", "heads": 128, "kv_heads": 1, "head_dim": 576},
                 "experts": {"count": 256, "top_k": 8},
             },
+            {
+                "name": "deepseek-v4-pro",
+                "source": {"provider": "huggingface", "repo": "deepseek-ai/DeepSeek-V4-Pro"},
+                "architecture": "DeepseekV4ForCausalLM",
+                "context_window": 163840,
+                "attention": {"kind": "sparse_mla", "heads": 128, "kv_heads": 1, "head_dim": 512},
+            },
+            {
+                "name": "deepseek-v4.1-flash",
+                "source": {"provider": "huggingface", "repo": "deepseek-ai/DeepSeek-V4.1-Flash"},
+                "architecture": "DeepseekV41ForCausalLM",
+                "context_window": 163840,
+                "attention": {"kind": "sparse_mla", "heads": 64, "kv_heads": 1, "head_dim": 512},
+            },
+            {
+                # A DSA sparse-MLA indexer: a 576-wide sparse head. The rule is
+                # the family's, not the graph's: the report states no cache block.
+                "name": "glm-5.2",
+                "source": {"provider": "huggingface", "repo": "zai-org/GLM-5.2"},
+                "architecture": "GlmMoeDsaForCausalLM",
+                "context_window": 131072,
+                "attention": {"kind": "sparse_mla", "heads": 64, "kv_heads": 1, "head_dim": 576},
+            },
+            {
+                # A 512-wide sparse head is not the DSA mark: BLIS runs it on the
+                # model's own backend and states no block size for it.
+                "name": "glm-5.3-flash",
+                "source": {"provider": "huggingface", "repo": "zai-org/GLM-5.3-Flash"},
+                "architecture": "GlmMoeDsaForCausalLM",
+                "attention": {"kind": "sparse_mla", "heads": 64, "kv_heads": 1, "head_dim": 512},
+            },
         ],
         "chips": [
             {
@@ -206,8 +238,12 @@ def test_catalog_reports_the_hugging_face_ids_the_build_can_price():
     assert catalog.model_ids() == [
         "Qwen/Qwen3-30B-A3B",
         "Qwen/Qwen3-32B",
+        "deepseek-ai/DeepSeek-V4-Pro",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
         "org/Mla",
         "org/NoWindow",
+        "zai-org/GLM-5.2",
+        "zai-org/GLM-5.3-Flash",
     ]
 
 
@@ -310,6 +346,45 @@ def test_catalog_specs_read_experts_and_attention_fields():
     assert moe["num_experts_per_tok"] == 8
     assert mla["num_kv_heads"] == 1
     assert catalog.specs_for("org/NoWindow")["context_length"] is None
+
+
+def test_catalog_reports_the_attention_head_width():
+    catalog = parse_catalog(_catalog_document())
+
+    assert catalog.models["glm-5.2"].attention_head_dim == 576
+    assert catalog.models["glm-5.2"].dsa is True
+    # A 576-wide MLA head is not a DSA sparse head.
+    assert catalog.models["mla-model"].attention_head_dim == 576
+    assert catalog.models["mla-model"].dsa is False
+    # Nor is a sparse head that is only 512 wide.
+    assert catalog.models["glm-5.3-flash"].dsa is False
+
+
+def test_catalog_applies_the_sparse_kernel_block_for_the_hardware():
+    """The kernel rule decides the block, from architecture and capability."""
+    catalog = parse_catalog(_catalog_document())
+    pro = catalog.resolve_model("deepseek-ai/DeepSeek-V4-Pro")
+    v41 = catalog.resolve_model("deepseek-ai/DeepSeek-V4.1-Flash")
+    dsa = catalog.resolve_model("zai-org/GLM-5.2")
+    dense = catalog.resolve_model("Qwen/Qwen3-32B")
+    sparse_without_rule = catalog.resolve_model("zai-org/GLM-5.3-Flash")
+
+    assert catalog.block_size_for(pro, "h100") == 256
+    assert catalog.block_size_for(pro, "gb200-nvl72") == 256
+    assert catalog.block_size_for(v41, "h100") == 64
+    assert catalog.block_size_for(v41, "gb200-nvl72") == 128
+    assert catalog.block_size_for(dsa, "h100") == 64
+    assert catalog.block_size_for(dense, "h100") is None
+    assert catalog.block_size_for(sparse_without_rule, "h100") is None
+
+
+def test_catalog_uses_the_safe_v41_multiple_when_a_part_states_no_capability():
+    catalog = parse_catalog(_catalog_document())
+    v41 = catalog.resolve_model("deepseek-ai/DeepSeek-V4.1-Flash")
+
+    # 128 is a multiple of both the SM90 (64) and SM100 (128) kernel blocks, so
+    # an unstated or unparsable capability cannot produce a refused size.
+    assert catalog.block_size_for(v41, "mystery") == 128
 
 
 def test_read_catalog_asks_the_build_for_the_catalog_it_embeds(tmp_path: Path):
@@ -433,6 +508,25 @@ def test_generated_documents_state_the_catalog_context_window():
     ))
 
     assert deployment["pools"][0]["engine"]["max_model_len"] == 131072
+
+
+def test_colocated_scenario_uses_the_model_kernel_block_multiple():
+    _scenario, deployment = build_documents(_scenario_request(
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+    ))
+
+    assert deployment["pools"][0]["engine"]["block_size"] == 256
+
+
+def test_colocated_scenario_keeps_the_default_block_without_a_kernel_rule():
+    _scenario, deployment = build_documents(_scenario_request())
+
+    assert deployment["pools"][0]["engine"]["block_size"] == 16
 
 
 def test_generated_scenario_is_two_yaml_documents(tmp_path: Path):
@@ -737,6 +831,54 @@ def test_disagg_documents_define_two_pools_transfer_and_router(tmp_path: Path):
     assert filename.endswith(".yaml")
 
 
+def test_disagg_pools_use_the_model_kernel_block_multiple():
+    request = _scenario_request(
+        fabric="ib-400g",
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+        prefill_pool=_pool_request("prefill", nodes=2),
+        decode_pool=_pool_request("decode", nodes=1),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [256, 256]
+
+
+def test_disagg_pools_share_one_block_size_across_roles():
+    request = _scenario_request(
+        fabric="ib-400g",
+        model=ModelResolution(
+            catalog_name="deepseek-v4-pro",
+            hf_repo="deepseek-ai/DeepSeek-V4-Pro",
+            block_size=256,
+            origin="blis-catalog",
+        ),
+        prefill_pool=replace(_pool_request("prefill", nodes=2), block_size=512),
+        decode_pool=_pool_request("decode", nodes=1),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [512, 512]
+
+
+def test_disagg_pools_reconcile_configured_block_sizes_without_a_model_constraint():
+    request = _scenario_request(
+        fabric="ib-400g",
+        prefill_pool=replace(_pool_request("prefill", nodes=2), block_size=512),
+        decode_pool=replace(_pool_request("decode", nodes=1), block_size=256),
+    )
+
+    _scenario, deployment = build_documents(request)
+
+    assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [512, 512]
+
+
 def test_disagg_documents_reject_missing_fabric():
     request = _scenario_request(
         prefill_pool=_pool_request("prefill", nodes=1),
@@ -963,6 +1105,21 @@ def test_a_build_that_reports_no_roles_is_not_refused(monkeypatch, catalog):
 
     assert resolved.supports_roles(("colocated",)) is True
     assert resolved.supports_roles(("prefill", "decode")) is True
+
+
+def test_resolved_request_stamps_the_hardware_aware_block_size(monkeypatch):
+    catalog = parse_catalog(_catalog_document())
+    _resolving(monkeypatch, catalog, "/opt/blis-block", ())
+
+    hopper = blis_service._resolve_request(
+        "deepseek-ai/DeepSeek-V4.1-Flash", "h100_sxm", "vllm", None
+    )
+    blackwell = blis_service._resolve_request(
+        "deepseek-ai/DeepSeek-V4.1-Flash", "gb200", "vllm", None
+    )
+
+    assert (hopper.hardware, hopper.model.block_size) == ("h100", 64)
+    assert (blackwell.hardware, blackwell.model.block_size) == ("gb200-nvl72", 128)
 
 
 def test_request_for_an_unmodeled_release_is_refused_with_the_modeled_one(
