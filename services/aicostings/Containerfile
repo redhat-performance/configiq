@@ -40,6 +40,25 @@ RUN python /tmp/install-deps.py /tmp/pyproject.toml
 # imports, so it runs from the source tree at /app (python -m tools.api_service.app).
 COPY aicostings /app
 
+# The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
+# composes its default systems root by downloading them on first use. Do that
+# here, once, so a running container never depends on the Hub: the deployed
+# hosts are rate-limited, and a cold cache would leave the service unhealthy on
+# every restart. Only the vendor display names are read here, but the dataset is
+# the only place they live. The composed root is what the process reads; the raw
+# revision cache is only its input and would otherwise double the image size.
+# Offline from here on, so a missing file fails the build rather than a
+# deployment.
+ENV AISIM_DATA_CACHE=/app/.cache/aisim/data \
+    AISIM_DATA_MAX_BYTES=4294967296
+RUN python -c \
+        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())" \
+    && test -d /app/.cache/aisim/data/systems \
+    && find /app/.cache/aisim/data -mindepth 1 -maxdepth 1 ! -name systems -exec rm -rf {} +
+ENV AISIM_DATA_OFFLINE=1
+RUN python -c \
+        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
+
 # OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
 # group-writable so an arbitrary assigned UID can still write.
 RUN chown -R 1001:0 /app \
