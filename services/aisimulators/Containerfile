@@ -162,6 +162,23 @@ RUN ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
 # Thin REST wrapper. CMD imports it as api_service.app:app.
 COPY aisimulators/tools/api_service /app/api_service
 
+# The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
+# composes its default systems root by downloading them on first use. Do that
+# here, once, so a running container never depends on the Hub: the deployed
+# hosts are rate-limited, and a cold cache would leave the API unhealthy on
+# every restart. The composed root is what the process reads; the raw revision
+# cache is only its input and would otherwise double the image size. Offline
+# from here on, so a missing file fails the build rather than a deployment.
+ENV AISIM_DATA_CACHE=/app/.cache/aisim/data \
+    AISIM_DATA_MAX_BYTES=4294967296
+RUN python -c \
+        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())" \
+    && test -d /app/.cache/aisim/data/systems \
+    && find /app/.cache/aisim/data -mindepth 1 -maxdepth 1 ! -name systems -exec rm -rf {} +
+ENV AISIM_DATA_OFFLINE=1
+RUN python -c \
+        "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
+
 # OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
 # group-writable so an arbitrary assigned UID can still write.
 RUN chown -R 1001:0 /app /opt/venv \
