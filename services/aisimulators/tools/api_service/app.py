@@ -6413,6 +6413,10 @@ def _blis_system_specs(system_id: str, chip: CatalogChip) -> dict[str, Any]:
         specs["memory_bandwidth_bytes"] = round(chip.memory_bandwidth_tbs * _TERABYTE)
     if chip.bf16_tflops is not None:
         specs["bf16_tflops"] = chip.bf16_tflops
+    # Board power is the catalog's per-GPU vendor maximum, so a chip that states
+    # none reports none rather than another configuration's figure.
+    if chip.tdp_watts is not None:
+        specs["tdp_watts"] = chip.tdp_watts
     architecture = _architecture_from_compute_capability(chip.compute_capability)
     if architecture is not None:
         specs["architecture"] = architecture

@@ -2999,9 +2999,12 @@ components:
         tdp_watts:
           type: number
           description: |
-            Thermal design power (watts). Omitted when the simulator's hardware
-            data does not state one, so a client shows it as unavailable rather
-            than substituting a figure.
+            Board power per GPU in watts: the maximum the vendor specifies for
+            the part as shipped, not a measured draw. Omitted when the
+            simulator's hardware data does not state one — with
+            `simulator=blis`, when the chip entry states no `TDPWatts` — so a
+            client shows it as unavailable rather than substituting a figure
+            from another configuration.
         gpus_per_node:
           type: integer
           description: Number of GPUs per node.

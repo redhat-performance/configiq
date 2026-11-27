@@ -150,6 +150,7 @@ def _catalog_document() -> dict:
                 "sm_count": 132,
                 "compute_capability": "9.0",
                 "host_cpu": "x86_64",
+                "tdp_watts": 700,
             },
             {
                 "name": "gb200-nvl72",
@@ -275,6 +276,10 @@ def test_catalog_returns_the_chip_facts_the_build_states():
     assert h100.bf16_tflops == 989
     assert h100.compute_capability == "9.0"
     assert h100.gpus_per_node is None
+    assert h100.tdp_watts == 700
+    # A chip whose entry states no board power reports none, rather than a
+    # zero-watt part or a sibling configuration's figure.
+    assert catalog.chips["mystery"].tdp_watts is None
     assert catalog.chip("gb200").gpus_per_node == 4
     assert catalog.chip("h100_pcie") is None
 
