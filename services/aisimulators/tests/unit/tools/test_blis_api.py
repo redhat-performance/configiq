@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from tools.api_service import app as app_module
 from tools.api_service.app import app
+from tools.api_service.blis.catalog import BlisCatalog, CatalogChip, CatalogModel
 from tools.api_service.blis.engines import BlisEngine
-from tools.api_service.blis.manifest import BlisCatalog, CatalogModel
 
 client = TestClient(app)
 
@@ -34,16 +34,15 @@ RECOMMEND_BODY = {
 }
 
 
-def _catalog_model(slug: str, repo: str, config: dict | None = None) -> CatalogModel:
+def _catalog_model(name: str, repo: str) -> CatalogModel:
     return CatalogModel(
-        slug=slug,
+        name=name,
         hf_repo=repo,
-        config=config or {
-            "architectures": ["Qwen3ForCausalLM"],
-            "num_attention_heads": 40,
-            "num_key_value_heads": 8,
-            "max_position_embeddings": 40960,
-        },
+        architecture="Qwen3ForCausalLM",
+        context_window=40960,
+        attention_kind="gqa",
+        attention_heads=40,
+        attention_kv_heads=8,
     )
 
 
@@ -55,8 +54,19 @@ def _catalog() -> BlisCatalog:
             "qwen3-32b": _catalog_model("qwen3-32b", "Qwen/Qwen3-32B"),
             "glm-5": _catalog_model("glm-5", "zai-org/GLM-5"),
         },
-        hardware=frozenset({"h100", "h200", "a100-sxm"}),
-        networks=frozenset({"ib-400g", "roce-200g"}),
+        chips={
+            "h100": CatalogChip(name="h100", memory_gib=80, memory_bandwidth_tbs=3.35),
+            "h200": CatalogChip(
+                name="h200",
+                memory_gib=141,
+                memory_bandwidth_tbs=4.8,
+                bf16_tflops=989,
+                compute_capability="9.0",
+                gpus_per_node=8,
+            ),
+            "a100-sxm": CatalogChip(name="a100-sxm", memory_gib=80, compute_capability="8.0"),
+        },
+        fabrics=("ib-400g", "roce-200g"),
     )
 
 
@@ -232,14 +242,31 @@ def test_blis_predict_unsupported_request_does_not_fall_back():
     run_aisimulate.assert_not_called()
 
 
-def test_blis_rejects_non_vllm_backend_at_the_api_boundary():
+def test_blis_refuses_a_backend_kind_the_build_does_not_report(tmp_path, monkeypatch):
+    binary = tmp_path / "blis"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("BLIS_BINARY", str(binary))
+    monkeypatch.setattr(
+        "tools.api_service.blis.service.cached_engines",
+        lambda binary, **kwargs: (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated", "prefill", "decode"),
+            ),
+        ),
+    )
+
     response = client.post(
         "/predict",
-        json={**ESTIMATE_BODY, "simulator": "blis", "backend": "sglang"},
+        json={**ESTIMATE_BODY, "simulator": "blis", "backend": "trtllm"},
     )
 
     assert response.status_code == 422
-    assert "currently model vLLM" in response.json()["detail"]
+    assert "models vllm" in response.json()["detail"]
 
 
 def test_blis_accepts_requests_per_load_unit():
@@ -638,10 +665,49 @@ def test_backends_endpoint_reports_the_engine_release_the_build_models(monkeypat
     assert backend["systems"] == {}
     assert backend["system_defaults"] == {}
     assert backend["disaggregation_requires_fabric"] is True
-    # The build fixes the release, so a client cannot select a topology by
-    # version.
-    assert backend["version_support"] == {}
+    assert backend["runtime_field"] == "gpu_memory_utilization"
+    # The roles the build reports are what a client gates the P/D control on.
+    assert backend["version_support"] == {
+        "0.31.0": {"disaggregated": True, "max_model_len_auto": False},
+    }
     assert "0.34.0" not in str(body)
+
+
+def test_backends_endpoint_reports_every_engine_kind_and_its_roles(monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "_blis_engines",
+        lambda: (
+            BlisEngine(
+                kind="sglang",
+                modeled_version="0.5.23",
+                modeled_commit=None,
+                build_version="0.5.23",
+                roles=("colocated",),
+            ),
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated", "prefill", "decode"),
+            ),
+        ),
+    )
+
+    body = client.get("/backends?simulator=blis").json()
+
+    by_id = {backend["id"]: backend for backend in body["backends"]}
+    assert sorted(by_id) == ["sglang", "vllm"]
+    # An engine whose reported roles cover colocated serving only is not offered
+    # a disaggregated topology by the client.
+    assert by_id["sglang"]["version_support"] == {
+        "0.5.23": {"disaggregated": False, "max_model_len_auto": False},
+    }
+    assert by_id["vllm"]["version_support"] == {
+        "0.31.0": {"disaggregated": True, "max_model_len_auto": False},
+    }
+    assert by_id["sglang"]["runtime_field"] == "mem_fraction_static"
 
 
 def test_backends_endpoint_reports_an_unreported_version_rather_than_the_snapshot(monkeypatch):
@@ -651,9 +717,10 @@ def test_backends_endpoint_reports_an_unreported_version_rather_than_the_snapsho
 
     body = client.get("/backends?simulator=blis").json()
 
-    backend = body["backends"][0]
-    assert backend["versions"] == []
-    assert backend["default_version"] is None
+    # No engine kinds are reported, so there is no backend to offer a version
+    # for. The client shows the catalogue as unavailable rather than guessing.
+    assert body["backends"] == []
+    assert "0.34.0" not in str(body)
 
 
 def test_aisim_backends_reports_simulator_version_and_windowed_search():
@@ -706,10 +773,62 @@ def test_systems_endpoint_filters_to_hardware_blis_has_a_catalog_chip_for():
     assert [system["id"] for system in body["systems"]] == ["h200_sxm"]
 
 
+def test_systems_endpoint_reports_the_specs_the_blis_catalog_states():
+    with (
+        patch("tools.api_service.app.load_catalog", return_value=_catalog()),
+        patch("tools.api_service.app.supported_systems", lambda: {"h200_sxm", "a100_sxm"}),
+        patch.dict(
+            "tools.api_service.app._DEVICE_DISPLAY_NAMES",
+            {"h200_sxm": "NVIDIA H200 SXM", "a100_sxm": "NVIDIA A100 SXM"},
+        ),
+    ):
+        response = client.get("/systems?simulator=blis&include=specs")
+
+    assert response.status_code == 200
+    systems = {system["id"]: system for system in response.json()["systems"]}
+    h200 = systems["h200_sxm"]
+    assert h200["name"] == "NVIDIA H200 SXM"
+    assert h200["memory_bytes"] == 141 * 1024 ** 3
+    assert h200["memory_bandwidth_bytes"] == 4_800_000_000_000
+    assert h200["bf16_tflops"] == 989
+    assert h200["architecture"] == "hopper"
+    assert h200["vendor"] == "nvidia"
+    # The chip states its own packaging, so that wins.
+    assert h200["gpus_per_node"] == 8
+    # The build states no TDP, so the client shows it as unavailable rather
+    # than borrowing another simulator's figure.
+    assert "tdp_watts" not in h200
+    assert systems["a100_sxm"]["architecture"] == "ampere"
+
+
+def test_systems_endpoint_uses_the_system_catalogue_node_width_when_the_chip_states_none():
+    with (
+        patch("tools.api_service.app.load_catalog", return_value=_catalog()),
+        patch("tools.api_service.app.supported_systems", lambda: {"h100_sxm"}),
+        patch.dict(
+            "tools.api_service.app._DEVICE_DISPLAY_NAMES",
+            {"h100_sxm": "NVIDIA H100 SXM"},
+        ),
+        patch(
+            "tools.api_service.app.load_system_spec",
+            lambda system: {"node": {"num_gpus_per_node": 8}},
+        ),
+    ):
+        response = client.get("/systems?simulator=blis&include=specs")
+
+    assert response.status_code == 200
+    system = response.json()["systems"][0]
+    assert system["gpus_per_node"] == 8
+    # The chip states no compute capability here, so no architecture or vendor
+    # is invented for it.
+    assert "architecture" not in system
+    assert "vendor" not in system
+
+
 def test_blis_catalog_endpoints_report_an_unavailable_catalog():
     with patch(
         "tools.api_service.app.load_catalog",
-        side_effect=app_module.BlisManifestError("catalog missing"),
+        side_effect=app_module.BlisCatalogError("catalog missing"),
     ):
         models = client.get("/models?simulator=blis")
         systems = client.get("/systems?simulator=blis")

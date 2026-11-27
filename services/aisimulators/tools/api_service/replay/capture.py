@@ -36,8 +36,9 @@ def _max_record_bytes() -> int:
 
 
 #: Runtime paths a BLIS command reads from the environment. A record only
-#: asks for the ones its own commands use.
-_BLIS_ENVIRONMENT = ("BLIS_BINARY", "BLIS_CATALOG")
+#: asks for the ones its own commands use. BLIS's catalog, coefficient registry,
+#: and engine facts are embedded in its binary, so the binary is the only one.
+_BLIS_ENVIRONMENT = ("BLIS_BINARY",)
 
 
 class ReplayRecorder:
@@ -157,7 +158,6 @@ class ReplayRecorder:
         argv: list[str],
         files: dict[str, str],
         binary: str,
-        catalog: str,
         scenario_directory: str,
         group: str | None = None,
         candidate_id: str | None = None,
@@ -172,7 +172,6 @@ class ReplayRecorder:
             argv=argv,
             files=files,
             binary=binary,
-            catalog=catalog,
             scenario_directory=scenario_directory,
             group=group,
             candidate_id=candidate_id,
@@ -323,7 +322,6 @@ def capture_blis_run(
     argv: list[str],
     files: dict[str, str],
     binary: str,
-    catalog: str,
     scenario_directory: str,
     candidate_id: str | None = None,
 ) -> None:
@@ -337,7 +335,6 @@ def capture_blis_run(
             argv=argv,
             files=files,
             binary=binary,
-            catalog=catalog,
             scenario_directory=scenario_directory,
             candidate_id=candidate_id,
         )

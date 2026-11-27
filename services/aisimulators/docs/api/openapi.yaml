@@ -399,10 +399,14 @@ paths:
         Returns backend version support, the simulator's `simulator_version`
         and `recommend_search` shape, the sizing `objectives` this simulator
         implements, and effective memory defaults. With `simulator=blis`,
-        reports the engine release the pinned build models (from the build's
-        own engine report), an empty version list when the build cannot report
-        one, empty per-system maps, and an empty `version_support` map because a
-        request cannot select a release per topology.
+        reports one entry per engine kind the pinned build models: each entry's
+        versions are the release the build models for that kind (from the
+        build's own engine report), and `version_support` states the serving
+        roles it reports for that release, so `disaggregated` is true only when
+        the build models both prefill and decode. Per-system maps are empty
+        because BLIS versions are properties of the build, not of a GPU system.
+        A build that cannot report its engines returns an empty `backends` list
+        rather than a substituted version.
       parameters:
         - name: simulator
           in: query
@@ -484,9 +488,11 @@ paths:
         list of strings. Use include=specs to get per-model metadata (MoE
         fields, context length, attention heads, architecture).
 
-        With `simulator=blis`, returns the Hugging Face repo IDs in the pinned
-        catalog that ship a derived model graph. A catalog slug is accepted as
-        an input alias for its Hugging Face ID.
+        With `simulator=blis`, returns the Hugging Face repo IDs the pinned
+        build reports in its catalog. A catalog name is accepted as an input
+        alias for its Hugging Face ID. `context_length` is the window the
+        reported model graph states, and is null for a graph that states none;
+        the service does not derive a window from any other source.
       parameters:
         - name: include
           in: query
@@ -519,8 +525,12 @@ paths:
         Returns supported GPU systems. Each entry always includes id and name.
         Use include=specs to add hardware details (memory, TDP, architecture).
 
-        With `simulator=blis`, returns only the systems whose hardware BLIS has a
-        catalog chip for.
+        With `simulator=blis`, returns only the systems whose accelerator the
+        build's catalog describes. With include=specs, every value comes from
+        that chip entry; a fact the entry does not state is omitted rather than
+        taken from another simulator, so a client shows it as unavailable.
+        `gpus_per_node` is the chip's packaging where the chip states one, and
+        ConfigIQ's system catalogue otherwise.
       parameters:
         - name: include
           in: query
@@ -2670,6 +2680,10 @@ components:
         runtime_field:
           type: string
           nullable: true
+          description: |
+            The engine's own name for the memory-fraction control a client sets
+            (for example `gpu_memory_utilization` or `mem_fraction_static`).
+            Null when the engine kind has no such control.
         systems:
           type: object
           additionalProperties:
@@ -2709,9 +2723,11 @@ components:
         version_support:
           type: object
           description: |
-            Per-version capabilities, for a simulator whose client can select a
-            release. Empty for BLIS: the build fixes the release, so no
-            version-dependent topology choice exists.
+            Per-version capabilities. A client reads a release's entry to decide
+            which controls to offer for it. The build fixes the release for BLIS,
+            so its entry describes the release the build models, and the roles
+            come from the build's own engine report rather than from a table in
+            the service. Empty when the build cannot report its engines.
           additionalProperties:
             type: object
             properties:
@@ -2762,7 +2778,10 @@ components:
         context_length:
           type: integer
           nullable: true
-          description: Maximum context window in tokens.
+          description: |
+            Maximum context window in tokens. A simulator reports this only when
+            its own model data states one; null means the window is unreported,
+            not unlimited.
         num_attn_heads:
           type: integer
           nullable: true
@@ -2822,7 +2841,10 @@ components:
           description: BF16 tensor core throughput in TFLOPS.
         tdp_watts:
           type: number
-          description: Thermal design power (watts).
+          description: |
+            Thermal design power (watts). Omitted when the simulator's hardware
+            data does not state one, so a client shows it as unavailable rather
+            than substituting a figure.
         gpus_per_node:
           type: integer
           description: Number of GPUs per node.

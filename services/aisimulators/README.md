@@ -78,28 +78,27 @@ fails if the binary prints anything else.
 
 BLIS v0.19 embeds its catalog and coefficient registry in the binary and
 refuses the external clones earlier releases read, so a run takes neither
-`--catalog` nor `--registry`. The image still copies the catalog out of the
-same pinned commit because the API enumerates models, chips, and fabrics from
-it:
-
-| Path | Contents | Pin |
-|---|---|---|
-| `/opt/blis/catalog` | declared facts: model graphs, chips, fabrics, workloads, read by the API only | `natoscott/inference-sim` `694802f59d852c3f1c4dfdac5dd2bd0249618642` |
+`--catalog` nor `--registry`. The API reads the same facts from the binary with
+`blis catalog list --json`, so the image carries no data directory and cannot
+pair a binary with a different build's catalog.
 
 No example-scenario directory is bundled: the adapter generates a Scenario and
 Deployment per request, so those files would be dead weight.
 
-There is no build-time support manifest. The API reads `/opt/blis/catalog`
-directly at request time, and the catalog is the only source of BLIS support
+There is no build-time support manifest. The API asks the pinned binary for its
+catalog at request time, and that report is the only source of BLIS support
 facts:
 
-- A model is priceable only when the catalog ships its `models/<slug>/graph.yaml`.
-  The public model identifier is the Hugging Face repo from that entry's
-  `model.yaml` (`Qwen/Qwen3-32B`); the catalog slug (`qwen3-32b`) is accepted as
-  an input alias.
-- Hardware and network keys are the catalog's own files. ConfigIQ system IDs are
-  translated to catalog keys (`h100_sxm` → `h100`, `gb200` → `gb200-nvl72`);
-  PCIe parts are deliberately not translated.
+- A model is priceable only when the build reports a graph for it. The public
+  model identifier is the Hugging Face repo from the entry's `source` block
+  (`Qwen/Qwen3-32B`); the catalog name (`qwen3-32b`) is accepted as an input
+  alias.
+- The context window is the graph's stated `context_window`, and nothing else.
+  Only some graphs state one; a model whose graph leaves it open reports `null`
+  rather than a value derived from a file the build never read.
+- Hardware and network keys are the report's own chip and fabric names. ConfigIQ
+  system IDs are translated to catalog keys (`h100_sxm` → `h100`, `gb200` →
+  `gb200-nvl72`); PCIe parts are deliberately not translated.
 - Nothing is fabricated for a model or system the catalog does not list: the
   request returns an explicit unsupported error naming what is available.
 
@@ -137,7 +136,7 @@ What a command means:
 
 | Simulator | `execution` | Meaning |
 |---|---|---|
-| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. Runtime paths are read from `BLIS_BINARY` (and `BLIS_CATALOG` for a command that names one), so the command does not name this image's layout. BLIS reads its embedded catalog and registry, so the command carries no external data path. |
+| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. The binary path is read from `BLIS_BINARY`, so the command does not name this image's layout. BLIS reads its embedded catalog, registry, and engine facts, so the command carries no external data path. |
 | AISim | `in_process` | An equivalent CLI invocation, `aisimulate predict -c <file>` or `aisimulate recommend -c <file>`. The service calls the Python API directly, so the command repeats the same work rather than the same process. |
 | AISim (memory) | `in_process` | A Python snippet calling `estimate_kv_cache`. The memory model has no CLI verb. |
 
@@ -355,12 +354,18 @@ silently.
 client can ask what the selected simulator supports. `/backends?simulator=...`
 reports `simulator_version` and `recommend_search` (`windowed` for AISim's
 service-owned GPU window ladder, `single` for BLIS's one bounded search). The BLIS
-branch reports the engine release the pinned build models, or an empty version
-list when the build cannot report it; `version_support` is empty because a
-request cannot select a release per topology.
+branch reports one entry per engine kind the pinned build models, with the
+release it models as that entry's version; a build that cannot report its
+engines lists no backends at all, and the client shows the catalogue as
+unavailable rather than guessing. Each entry's `version_support` states the
+serving roles the build reports for that release, so `disaggregated` is true only
+when it models both prefill and decode. `runtime_field` names that engine's own
+memory-fraction control (`gpu_memory_utilization` or `mem_fraction_static`).
 `/models?simulator=blis` returns the catalog's Hugging Face repo IDs (catalog
-slugs are accepted as input aliases), and `/systems?simulator=blis` returns only
-systems that resolve to a catalog chip. `/networks?simulator=aisim` is an
+names are accepted as input aliases), and `/systems?simulator=blis` returns only
+systems that resolve to a catalog chip, with `include=specs` reporting the chip
+facts the build states and leaving out (rather than filling in) anything it does
+not. `/networks?simulator=aisim` is an
 empty list, because AISim does not model an inter-node fabric; each
 response includes `simulator`, and the BLIS response names its `default_network`.
 Each backend entry reports `disaggregation_requires_fabric`, so a client knows
@@ -776,10 +781,10 @@ Bayesian sampler enables JAX x64 process-wide and is not the default.
 `SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
 since it cannot contain a P/D deployment.
 
-The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG`, and
-`BLIS_CATALOG_COMMIT`. `BLIS_VERSION` is the build reported by `/simulators`,
-`/backends`, and in every prediction's provenance; `BLIS_COMMIT` is the git
-commit it was built from, reported as `revision` in `/simulators`. BLIS reads its
+The image sets `BLIS_VERSION` and `BLIS_COMMIT`. `BLIS_VERSION` is the build
+reported by `/simulators`, `/backends`, and in every prediction's provenance;
+`BLIS_COMMIT` is the git commit it was built from, reported as `revision` in
+`/simulators`. BLIS reads its
 embedded catalog and coefficient registry, so only its binary path is required:
 
 ```bash
@@ -789,7 +794,7 @@ blis run --scenarios "$BLIS_SCENARIOS" --scenario generated-scenario.yaml \
 
 To move to a new BLIS build, bump `BLIS_COMMIT` (and `BLIS_GO_VERSION` when the
 commit's `go` directive moves), `BLIS_VERSION` to what `blis version` prints for
-it, `BLIS_CATALOG_COMMIT` to the same commit, and `DEFAULT_BLIS_RELEASE` /
+it, and `DEFAULT_BLIS_RELEASE` /
 `DEFAULT_BLIS_COMMIT` in `tools/api_service/blis/runtime.py` together. The engine
 release the build models is reported by the binary, so no code names it.
 `BLIS_COMMIT` may be omitted only for the default build, whose commit the service

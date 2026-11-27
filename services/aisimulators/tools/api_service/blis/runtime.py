@@ -1,4 +1,4 @@
-"""Resolve the pinned BLIS runtime paths without accepting arbitrary executables."""
+"""Resolve the pinned BLIS runtime without accepting arbitrary executables."""
 
 from __future__ import annotations
 
@@ -7,31 +7,30 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .manifest import BlisManifestError
+from .errors import BlisCatalogError
 
-#: The BLIS release this build is pinned to. The image sets BLIS_VERSION from the
+#: The BLIS build this image is pinned to. The image sets BLIS_VERSION from the
 #: Containerfile's build arg; the literal is the value a source checkout gets, so
-#: the reported release never silently drifts from the pin. Until a release
+#: the reported version never silently drifts from the pin. Until a release
 #: carries the commands the adapter reads, the image builds a pinned commit and
 #: this is the pseudo-version `blis version` prints for it.
 DEFAULT_BLIS_RELEASE = "0.19.2-0.20261127005804-694802f59d85"
-#: The commit the pinned BLIS build was built from. The binary embeds no revision
-#: in the version string, so the image sets BLIS_COMMIT alongside BLIS_VERSION;
-#: the literal mirrors the commit a source checkout gets.
+#: The commit the pinned BLIS binary was built from. The binary embeds no
+#: revision in the version string, so the image sets BLIS_COMMIT alongside
+#: BLIS_VERSION; the literal mirrors the commit a source checkout gets.
 DEFAULT_BLIS_COMMIT = "694802f59d852c3f1c4dfdac5dd2bd0249618642"
 
 
 @dataclass(frozen=True)
 class BlisRuntime:
+    """The one deployment fact the adapter needs: which binary to run.
+
+    The catalog, coefficient registry, and engine facts are all embedded in that
+    binary and reported by it, so there is no data directory to configure and
+    nothing can pair this binary with another build's data.
+    """
+
     binary: str
-    #: The catalog directory ConfigIQ reads to enumerate models, chips, and
-    #: fabrics. BLIS itself reads its embedded catalog; this copy exists only so
-    #: the API can list what the pinned build supports.
-    catalog: str
-    #: Empty when the build reads its embedded registry. BLIS v0.19 refuses an
-    #: external registry, so nothing passes this to a run; it stays in the
-    #: runtime shape for replay records.
-    registry: str
 
 
 def blis_release() -> str:
@@ -50,7 +49,7 @@ def blis_commit() -> str | None:
 
     The binary embeds no revision. A build that overrides BLIS_VERSION without
     passing the matching BLIS_COMMIT must report no revision rather than the
-    default release's commit.
+    default build's commit.
     """
     commit = os.environ.get("BLIS_COMMIT", "").strip()
     if commit:
@@ -61,50 +60,24 @@ def blis_commit() -> str | None:
     return DEFAULT_BLIS_COMMIT
 
 
-def _required_directory(name: str, default: str) -> str:
-    path = Path(os.environ.get(name, default)).expanduser().resolve()
-    if not path.is_dir():
-        raise BlisManifestError(f"BLIS runtime directory {name} is unavailable: {path}")
-    return str(path)
-
-
-def _optional_directory(name: str, default: str) -> str:
-    """Return a configured directory, or ``""`` when none is configured.
-
-    BLIS v0.19 embeds its registry, so a build that does not materialize one is
-    complete. The catalog is still materialized because the API lists it.
-    """
-    raw = os.environ.get(name, default).strip()
-    if not raw:
-        return ""
-    path = Path(raw).expanduser().resolve()
-    if not path.is_dir():
-        raise BlisManifestError(f"BLIS runtime directory {name} is unavailable: {path}")
-    return str(path)
-
-
 def resolve_runtime() -> BlisRuntime:
     raw_binary = os.environ.get("BLIS_BINARY") or shutil.which("blis")
     if not raw_binary:
-        raise BlisManifestError("BLIS binary is unavailable; set BLIS_BINARY or install blis on PATH")
+        raise BlisCatalogError("BLIS binary is unavailable; set BLIS_BINARY or install blis on PATH")
     binary_path = Path(raw_binary).expanduser()
     if not binary_path.is_absolute():
         located = shutil.which(raw_binary)
         if not located:
-            raise BlisManifestError(f"BLIS_BINARY {raw_binary!r} is not on PATH")
+            raise BlisCatalogError(f"BLIS_BINARY {raw_binary!r} is not on PATH")
         binary_path = Path(located)
     binary_path = binary_path.resolve()
     if binary_path.name not in {"blis", "blis.exe"}:
-        raise BlisManifestError("BLIS_BINARY must refer to the BLIS executable")
+        raise BlisCatalogError("BLIS_BINARY must refer to the BLIS executable")
     if not binary_path.is_file() or not os.access(binary_path, os.X_OK):
-        raise BlisManifestError(f"BLIS_BINARY is not executable: {binary_path}")
+        raise BlisCatalogError(f"BLIS_BINARY is not executable: {binary_path}")
 
     blis_home = os.environ.get("BLIS_HOME")
     if blis_home and not binary_path.is_relative_to(Path(blis_home).expanduser().resolve()):
-        raise BlisManifestError("BLIS_BINARY must be located inside BLIS_HOME")
+        raise BlisCatalogError("BLIS_BINARY must be located inside BLIS_HOME")
 
-    return BlisRuntime(
-        binary=str(binary_path),
-        catalog=_required_directory("BLIS_CATALOG", "/opt/blis/catalog"),
-        registry=_optional_directory("BLIS_REGISTRY", ""),
-    )
+    return BlisRuntime(binary=str(binary_path))

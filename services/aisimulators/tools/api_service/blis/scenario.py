@@ -1,10 +1,12 @@
 """Build request-scoped BLIS Scenario and Deployment documents.
 
-BLIS v0.19 reads one Scenario and one Deployment per run. A Scenario states the
+BLIS reads one Scenario and one Deployment per run. A Scenario states the
 immutable problem — model, available cluster hardware, and the coefficient sets
 the prediction is fitted to — and no engine release: the build fixes the engine,
 so a document that names one is refused. `engine.kind` is the only engine fact a
-scenario carries.
+scenario carries, and it is the engine kind the request selected. Each kind names
+its settings in its own vocabulary, so the engine block is built per kind rather
+than translated into one engine's field names.
 """
 
 from __future__ import annotations
@@ -18,15 +20,12 @@ from typing import Any
 
 import yaml
 
-from .manifest import BlisUnsupportedRequest, ModelResolution
-
-#: The engine kinds a scenario may name. The service gates this against the
-#: backend the request selected; the value here is the engine's own repository ID.
-ENGINE_KIND = "vllm"
+from .catalog import ModelResolution
+from .errors import BlisUnsupportedRequest
 
 #: Coefficient sets one run applies. v0.19 splits fabric and offload-tier pricing
 #: out of the pre-0.19 sets, so a scenario must name all of them; a set fitted for
-#: a different cost model does not belong in the list.
+#: a different cost model does not belong to this one.
 _COEFFICIENTS = [
     "cost-model-primitives",
     "cost-model-collectives",
@@ -60,6 +59,24 @@ _CACHE_DTYPE = {
     "fp8_e5m2": "fp8_e5m2",
     "nvfp4": "nvfp4",
 }
+#: SGLang names the same two settings in its own vocabulary and accepts a smaller
+#: set of values. A request the engine cannot name is refused rather than mapped
+#: onto the nearest one.
+_SGLANG_WEIGHT_QUANTIZATION = {
+    "bf16": None,
+    "fp16": None,
+    "half": None,
+    "fp8": "fp8",
+    "nvfp4": "modelopt_fp4",
+}
+_SGLANG_CACHE_DTYPE = {
+    "half": None,
+    "fp16": None,
+    "bf16": "bf16",
+    "fp8": "fp8_e4m3",
+    "fp8_e4m3": "fp8_e4m3",
+    "fp8_e5m2": "fp8_e5m2",
+}
 
 
 @dataclass(frozen=True)
@@ -85,6 +102,8 @@ class ScenarioPoolRequest:
 
 @dataclass(frozen=True)
 class ScenarioRequest:
+    #: The engine kind the request selected, named as BLIS names it.
+    engine_kind: str
     model: ModelResolution
     hardware: str
     system: str
@@ -141,11 +160,18 @@ def normalize_weight_quantization(raw: str | None) -> str | None:
     return _optional_quantization(raw, _WEIGHT_QUANTIZATION, "weight quantization")
 
 
-def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
-    raw_weight_quant = pool.weight_quantization.strip().lower() if pool.weight_quantization else None
-    raw_moe_quant = pool.moe_quantization.strip().lower() if pool.moe_quantization else None
-    if raw_moe_quant and raw_weight_quant != raw_moe_quant:
+def _separate_weight_quantization(
+    weight_quantization: str | None,
+    moe_quantization: str | None,
+) -> None:
+    """Refuse a request that names a different dense and MoE weight precision."""
+    raw_weight = weight_quantization.strip().lower() if weight_quantization else None
+    raw_moe = moe_quantization.strip().lower() if moe_quantization else None
+    if raw_moe and raw_weight != raw_moe:
         raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
+
+
+def _vllm_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
     weight_quant = normalize_weight_quantization(pool.weight_quantization)
     moe_quant = _optional_quantization(pool.moe_quantization, _WEIGHT_QUANTIZATION, "MoE quantization")
     if moe_quant and moe_quant != weight_quant:
@@ -167,6 +193,120 @@ def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
         engine["cache_dtype"] = cache_dtype
     engine["enable_prefix_caching"] = pool.prefix_caching if pool.prefix_caching is not None else True
     return engine
+
+
+def _sglang_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
+    weight_quant = _optional_quantization(
+        pool.weight_quantization, _SGLANG_WEIGHT_QUANTIZATION, "weight quantization"
+    )
+    moe_quant = _optional_quantization(
+        pool.moe_quantization, _SGLANG_WEIGHT_QUANTIZATION, "MoE quantization"
+    )
+    if moe_quant and moe_quant != weight_quant:
+        raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
+    cache_dtype = _optional_quantization(pool.cache_dtype, _SGLANG_CACHE_DTYPE, "KV-cache dtype")
+    engine: dict[str, Any] = {
+        "max_running_requests": pool.max_num_seqs,
+        # SGLang's own name for the served window. The block must state it: a
+        # graph that states no window leaves the engine none to resolve.
+        "context_length": pool.max_model_len,
+    }
+    # Only settings the request actually asked for are stated; the rest stay at
+    # the engine's own defaults, which the build applies and reports back.
+    if pool.gpu_memory_utilization is not None:
+        engine["mem_fraction_static"] = pool.gpu_memory_utilization
+    if weight_quant:
+        engine["quantization"] = weight_quant
+    if cache_dtype:
+        engine["kv_cache_dtype"] = cache_dtype
+    if pool.prefix_caching is not None:
+        engine["disable_radix_cache"] = not pool.prefix_caching
+    return engine
+
+
+#: How one engine kind names a pool's settings.
+_POOL_ENGINE = {
+    "vllm": _vllm_pool_engine,
+    "sglang": _sglang_pool_engine,
+}
+
+
+def _pool_engine(pool: ScenarioPoolRequest, engine_kind: str) -> dict[str, Any]:
+    builder = _POOL_ENGINE.get(engine_kind)
+    if builder is None:
+        available = ", ".join(sorted(_POOL_ENGINE))
+        raise BlisUnsupportedRequest(
+            f"BLIS scenario generation does not model engine kind {engine_kind!r}; "
+            f"it can generate scenarios for: {available}"
+        )
+    return builder(pool)
+
+
+def _vllm_colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict[str, Any]:
+    engine: dict[str, Any] = {
+        "block_size": 16,
+        "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
+        "max_num_seqs": request.max_num_seqs or request.concurrency,
+        "max_model_len": max_model_len,
+        "compilation_config": {"cudagraph_mode": "PIECEWISE"},
+        "gpu_memory_utilization": (
+            request.gpu_memory_utilization
+            if request.gpu_memory_utilization is not None
+            else 0.92
+        ),
+    }
+    quantization = normalize_weight_quantization(request.weight_quantization)
+    cache_dtype = _optional_quantization(request.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
+    if quantization:
+        engine["quantization"] = quantization
+    if cache_dtype:
+        engine["cache_dtype"] = cache_dtype
+    # vLLM's schema default is prefix caching enabled. State it explicitly so
+    # the emitted Scenario and normalized response agree on the applied setting.
+    engine["enable_prefix_caching"] = request.prefix_caching if request.prefix_caching is not None else True
+    return engine
+
+
+def _sglang_colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict[str, Any]:
+    return _sglang_pool_engine(
+        ScenarioPoolRequest(
+            role="colocated",
+            nodes=1,
+            tp=request.tp,
+            pp=request.pp,
+            dp=request.dp,
+            moe_tp_size=request.moe_tp_size,
+            moe_ep_size=request.moe_ep_size,
+            enable_expert_parallel=request.enable_expert_parallel,
+            max_model_len=max_model_len,
+            max_num_seqs=request.max_num_seqs or request.concurrency,
+            max_num_batched_tokens=request.max_num_batched_tokens or max(8192, request.isl),
+            gpu_memory_utilization=request.gpu_memory_utilization,
+            weight_quantization=request.weight_quantization,
+            moe_quantization=request.moe_quantization,
+            cache_dtype=request.cache_dtype,
+            prefix_caching=request.prefix_caching,
+        )
+    )
+
+
+#: How one engine kind builds the aggregate pool's settings.
+_COLOCATED_ENGINE = {
+    "vllm": _vllm_colocated_engine,
+    "sglang": _sglang_colocated_engine,
+}
+
+
+def _colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict[str, Any]:
+    builder = _COLOCATED_ENGINE.get(request.engine_kind)
+    if builder is None:
+        available = ", ".join(sorted(_COLOCATED_ENGINE))
+        raise BlisUnsupportedRequest(
+            f"BLIS scenario generation does not model engine kind {request.engine_kind!r}; "
+            f"it can generate scenarios for: {available}"
+        )
+    _separate_weight_quantization(request.weight_quantization, request.moe_quantization)
+    return builder(request, max_model_len)
 
 
 def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -226,14 +366,14 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 "dp": pool.dp,
                 "enable_expert_parallel": pool.enable_expert_parallel,
             },
-            "engine": _pool_engine(pool),
+            "engine": _pool_engine(pool, request.engine_kind),
         })
 
     name = _scenario_name(request)
     scenario = {
         "kind": "Scenario",
         "name": name,
-        "engine": {"kind": ENGINE_KIND},
+        "engine": {"kind": request.engine_kind},
         "model": request.model.catalog_name,
         "coefficients": list(_COEFFICIENTS),
         "cluster": {
@@ -259,7 +399,7 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
         if request.gpus_per_node < 1:
             raise BlisUnsupportedRequest(f"BLIS has no valid node layout for system {request.system!r}")
         if request.enable_chunked_prefill is not None:
-            raise BlisUnsupportedRequest("BLIS scenarios do not expose the vLLM enable_chunked_prefill setting")
+            raise BlisUnsupportedRequest("BLIS scenarios do not expose a chunked-prefill setting")
         if request.fmha_quantization:
             raise BlisUnsupportedRequest("BLIS scenarios do not expose an independent FMHA quantization setting")
         return _build_disagg_documents(request)
@@ -285,53 +425,26 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
             f"it cannot represent moe_ep_size={request.moe_ep_size} for TP={request.tp}, DP={request.dp}"
         )
     if request.enable_chunked_prefill is not None:
-        raise BlisUnsupportedRequest("BLIS scenarios do not expose the vLLM enable_chunked_prefill setting")
+        raise BlisUnsupportedRequest("BLIS scenarios do not expose a chunked-prefill setting")
     if request.fmha_quantization:
         raise BlisUnsupportedRequest("BLIS scenarios do not expose an independent FMHA quantization setting")
-    raw_weight_quant = request.weight_quantization.strip().lower() if request.weight_quantization else None
-    raw_moe_quant = request.moe_quantization.strip().lower() if request.moe_quantization else None
-    if raw_moe_quant and raw_weight_quant != raw_moe_quant:
-        raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
-    moe_quant = _optional_quantization(request.moe_quantization, _WEIGHT_QUANTIZATION, "MoE quantization")
 
     name = _scenario_name(request)
-    # BLIS resolves `max_model_len: auto` from the model graph, but some catalog
-    # graphs (for example gpt-oss-120b) omit the context window. State the window
-    # the run serves instead: the requested limit, the catalog model's native
-    # context, or the workload's maximum sequence.
+    # BLIS resolves the served window from the model graph, but some catalog
+    # graphs omit the window. State the window the run serves instead: the
+    # requested limit, the catalog model's native context, or the workload's
+    # maximum sequence.
     max_model_len = (
         request.max_model_len
         if request.max_model_len is not None
         else request.model.context_length or request.isl + request.osl
     )
-    engine: dict[str, Any] = {
-        "block_size": 16,
-        "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
-        "max_num_seqs": request.max_num_seqs or request.concurrency,
-        "max_model_len": max_model_len,
-        "compilation_config": {"cudagraph_mode": "PIECEWISE"},
-        "gpu_memory_utilization": (
-            request.gpu_memory_utilization
-            if request.gpu_memory_utilization is not None
-            else 0.92
-        ),
-    }
-    quantization = normalize_weight_quantization(request.weight_quantization)
-    cache_dtype = _optional_quantization(request.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
-    if moe_quant and moe_quant != quantization:
-        raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
-    if quantization:
-        engine["quantization"] = quantization
-    if cache_dtype:
-        engine["cache_dtype"] = cache_dtype
-    # vLLM's schema default is prefix caching enabled. State it explicitly so
-    # the emitted Scenario and normalized response agree on the applied setting.
-    engine["enable_prefix_caching"] = request.prefix_caching if request.prefix_caching is not None else True
+
 
     scenario = {
         "kind": "Scenario",
         "name": name,
-        "engine": {"kind": ENGINE_KIND},
+        "engine": {"kind": request.engine_kind},
         "model": request.model.catalog_name,
         "coefficients": list(_COEFFICIENTS),
         "cluster": {
@@ -353,7 +466,7 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
                     "dp": request.dp,
                     "enable_expert_parallel": request.enable_expert_parallel,
                 },
-                "engine": engine,
+                "engine": _colocated_engine(request, max_model_len),
             }
         ],
     }
@@ -410,4 +523,3 @@ def write_scenario(directory: str | Path, request: ScenarioRequest) -> str:
             yaml.safe_dump(router_config, sort_keys=False, allow_unicode=False)
         )
     return filename
-
