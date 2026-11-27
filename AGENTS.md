@@ -138,8 +138,8 @@ Keep API and UI contracts simulator-neutral wherever the concept is shared:
 - When a capability is available from only some simulators, say so explicitly
   in the API description and response. Include the actual `simulator` in
   results; do not make clients infer which implementation supplied optional
-  fields. For example, `/memory` is currently AISim-provided and
-  `/networks` currently lists fabrics used by BLIS.
+  fields. Read the current matrix from each service's README rather than
+  assuming which simulator provides which endpoint.
 - A requested simulator must either produce a result from that simulator or
   return an explicit unsupported/error response. Never silently substitute a
   different simulator. Clients should validate response provenance when a

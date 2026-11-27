@@ -318,12 +318,19 @@ const PROVENANCE_ROUTES = new Set([
   '/recommend',
   '/hybrid-savings',
   '/validation/compare',
-  // AISim-only by contract: it carries the backend but never a simulator.
   '/kv-cache',
 ]);
 
 /** Pages that also accept a `simulator` field. */
-const SIMULATOR_ROUTES = new Set(['/predict', '/recommend', '/hybrid-savings', '/validation/compare']);
+const SIMULATOR_ROUTES = new Set([
+  '/predict',
+  '/recommend',
+  '/hybrid-savings',
+  '/validation/compare',
+  // Memory estimates differ by simulator, so a shared calculator link records
+  // the one that produced its numbers.
+  '/kv-cache',
+]);
 
 /** Pages with a versioned link contract. Other pages take no query at all. */
 const LINK_ROUTES = new Set([...PROVENANCE_ROUTES, '/gpu-explorer']);

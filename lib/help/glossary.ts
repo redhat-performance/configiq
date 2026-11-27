@@ -205,7 +205,7 @@ const ENTRIES = {
   },
   gpuUtil: {
     title: 'GPU memory utilization',
-    body: 'Fraction of each GPU\'s memory available to the backend for weights and KV cache. AISim maps this generic value to the selected backend and uses a backend-specific default when left on auto.',
+    body: 'Fraction of each GPU\'s memory available to the backend for weights and KV cache. The selected simulator maps this generic value to the selected backend and uses a backend-specific default when left on auto.',
     tags: ['memory', 'vram'],
   },
   selfHosted: {
@@ -245,7 +245,7 @@ const ENTRIES = {
   },
   servingMode: {
     title: 'Serving mode · aggregated vs disaggregated',
-    body: 'Aggregated serves prompt processing (prefill) and token generation (decode) on the same GPUs. Disaggregated runs them in separate pools so each can be sized for its own bottleneck, at the cost of moving KV cache between them. Disaggregated needs a network fabric and is only supported by some simulators.',
+    body: 'Aggregated serves prompt processing (prefill) and token generation (decode) on the same GPUs. Disaggregated runs them in separate pools so each can be sized for its own bottleneck, at the cost of moving KV cache between them. Disaggregated needs a network fabric; the catalog reports whether the selected simulator models it.',
     tags: ['agg', 'disagg', 'prefill', 'decode', 'p/d'],
   },
   fabric: {

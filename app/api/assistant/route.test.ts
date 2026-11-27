@@ -879,9 +879,9 @@ describe('assistant answer', () => {
     expect(kvLink?.href).toContain('v=1');
     expect(kvLink?.href).toContain('backend=vllm');
     expect(kvLink?.href).toContain('backendVersion=0.10.1');
-    // /kv-cache has no simulator choice: a simulator field would imply a
-    // choice the page does not offer.
-    expect(kvLink?.href).not.toContain('simulator=');
+    // /kv-cache records the simulator that sized the numbers, because memory
+    // estimates differ between simulators.
+    expect(kvLink?.href).toContain('simulator=aisim');
   });
 
   it('keeps a value-carrying link to the page the question was asked on', async () => {

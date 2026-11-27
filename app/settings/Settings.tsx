@@ -203,7 +203,7 @@ export function Settings() {
             <div>
               <div className={styles.sectionTitle}>Simulator backend</div>
               <div className={styles.sectionDesc}>
-                Simulator used by Predict performance, Recommend sizing and Hybrid savings.
+                Simulator used by Predict performance, Recommend sizing, KV cache and Hybrid savings.
               </div>
             </div>
             {simulatorSaved && <Label color="green" icon={<CheckCircleIcon />}>Saved</Label>}
