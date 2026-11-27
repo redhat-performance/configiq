@@ -146,6 +146,11 @@ class CatalogChip:
     intra_node_bw_gbps: float | None = None
     sm_count: int | None = None
     compute_capability: str | None = None
+    #: The board power the vendor specifies for the part as shipped, watts per
+    #: GPU. None when the entry states none: the catalog leaves a part whose
+    #: board power no source states unstated rather than borrowing a sibling
+    #: SKU's figure, so a client must show it as unavailable.
+    tdp_watts: float | None = None
     #: Packaging, stated only by chips whose entry fixes it.
     gpus_per_node: int | None = None
     gpus_per_rack: int | None = None
@@ -288,6 +293,7 @@ def parse_chip(entry: dict[str, Any]) -> CatalogChip | None:
         intra_node_bw_gbps=_positive_number(entry, "intra_node_bw_gbps"),
         sm_count=_positive_int(entry, "sm_count"),
         compute_capability=_string(entry, "compute_capability"),
+        tdp_watts=_positive_number(entry, "tdp_watts"),
         gpus_per_node=_positive_int(entry, "gpus_per_node"),
         gpus_per_rack=_positive_int(entry, "gpus_per_rack"),
     )

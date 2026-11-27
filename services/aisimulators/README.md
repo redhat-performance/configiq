@@ -63,13 +63,15 @@ that adds the reports this adapter reads. No release image carries them yet:
 [inference-sim/inference-sim#2693](https://github.com/inference-sim/inference-sim/pull/2693)
 (`blis version --json` reporting each modelled engine release),
 [#2694](https://github.com/inference-sim/inference-sim/pull/2694)
-(each pool's memory in the run's Result) and
+(each pool's memory in the run's Result),
 [#2695](https://github.com/inference-sim/inference-sim/pull/2695)
-(`blis catalog list`) are open, and the image builds the commit the
-Containerfile pins (`natoscott/inference-sim@694802f5`, tagged
+(`blis catalog list`) and
+[#2696](https://github.com/inference-sim/inference-sim/pull/2696)
+(the chip board power that list reports) are open, and the image builds the
+commit the Containerfile pins (`natoscott/inference-sim@694802f5`, tagged
 `deploy-api-20261127-694802f5` so a rewrite of the branch cannot orphan it).
-Once they land in a tagged release, the
-build stage returns to the published multi-arch image
+Once they land in a tagged release, the build stage returns to the published
+multi-arch image
 (`ghcr.io/inference-sim/blis:vX.Y.Z`, pinned by index digest), which keeps the
 binary exactly the artifact upstream tested and removes the Go toolchain from
 this build. The version the image reports is the pseudo-version `blis version`
@@ -389,8 +391,9 @@ memory-fraction control (`gpu_memory_utilization` or `mem_fraction_static`).
 `/models?simulator=blis` returns the catalog's Hugging Face repo IDs (catalog
 names are accepted as input aliases), and `/systems?simulator=blis` returns only
 systems that resolve to a catalog chip, with `include=specs` reporting the chip
-facts the build states and leaving out (rather than filling in) anything it does
-not. `/networks?simulator=aisim` is an
+facts the build states — including the entry's per-GPU board power
+(`tdp_watts`) where it states one — and leaving out (rather than filling in)
+anything it does not. `/networks?simulator=aisim` is an
 empty list, because AISim does not model an inter-node fabric; each
 response includes `simulator`, and the BLIS response names its `default_network`.
 Each backend entry reports `disaggregation_requires_fabric`, so a client knows

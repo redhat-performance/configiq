@@ -27,12 +27,13 @@
 
 # --- BLIS build -------------------------------------------------------------------
 # TEMPORARY: built from inference-sim's deploy/api branch at the commit pinned
-# below (upstream main plus the three companion changes this service needs),
+# below (upstream main plus the four companion changes this service needs),
 # tagged deploy-api-20261127-694802f5 in natoscott/inference-sim so a rewrite of
 # the branch cannot orphan it:
 #   https://github.com/inference-sim/inference-sim/pull/2693  (blis version --json)
 #   https://github.com/inference-sim/inference-sim/pull/2694  (pool memory in the Result)
 #   https://github.com/inference-sim/inference-sim/pull/2695  (blis catalog list)
+#   https://github.com/inference-sim/inference-sim/pull/2696  (chip board power)
 # Pin the commit, not the branch name, so the image cannot drift. Replace this
 # stage with the release image once those land in a tagged release.
 ARG BLIS_REPOSITORY=https://github.com/natoscott/inference-sim.git

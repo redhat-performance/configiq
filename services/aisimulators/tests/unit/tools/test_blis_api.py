@@ -65,6 +65,7 @@ def _catalog() -> BlisCatalog:
                 bf16_tflops=989,
                 compute_capability="9.0",
                 gpus_per_node=8,
+                tdp_watts=700,
             ),
             "a100-sxm": CatalogChip(name="a100-sxm", memory_gib=80, compute_capability="8.0"),
         },
@@ -944,9 +945,11 @@ def test_systems_endpoint_reports_the_specs_the_blis_catalog_states():
     assert h200["vendor"] == "nvidia"
     # The chip states its own packaging, so that wins.
     assert h200["gpus_per_node"] == 8
-    # The build states no TDP, so the client shows it as unavailable rather
-    # than borrowing another simulator's figure.
-    assert "tdp_watts" not in h200
+    # Board power is the catalog's per-GPU vendor maximum.
+    assert h200["tdp_watts"] == 700
+    # The a100 entry states no TDP, so the client shows it as unavailable rather
+    # than borrowing another simulator's or another configuration's figure.
+    assert "tdp_watts" not in systems["a100_sxm"]
     assert systems["a100_sxm"]["architecture"] == "ampere"
 
 
