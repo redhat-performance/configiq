@@ -141,6 +141,12 @@ row filters narrow the agreement numbers, the chart, and the table instead. The
 source and release selectors still choose which measured-data lens and release
 slice the map shows.
 
+A slice can leave a figure with only one set to draw: one benchmark source
+selected, a release slice only one source measured, or only one simulator
+available. The figure then draws a single circle for the remaining set, keeps
+the empty set's legend entry at zero, and names it in a note, so the absence is
+visible rather than the whole figure disappearing.
+
 The measured-data lens is **pair overlap, not workload overlap**. One source can
 measure a model and GPU at 8,000 input / 1,000 output while another measures the
 same pair at 8,192 / 1,024. When both sources loaded, the artifact publishes

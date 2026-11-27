@@ -667,6 +667,27 @@ describe('Simulator scorecard page', () => {
     expect(head?.querySelector('[aria-label="Help for Agreement and coverage"]')).not.toBeNull();
   });
 
+  it('reads the agreement popover assumptions from the snapshot', async () => {
+    const fixture = published();
+    await mount({
+      ...fixture,
+      assumptions: { ...fixture.assumptions, ppSize: 2, dpSize: 4 },
+    });
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('button[aria-label="Help for Agreement and coverage"]')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    // The method notes the page used to print in their own section now live in
+    // this popover, and their PP/DP values still come from the published
+    // assumptions rather than a fixed sentence. The popover only renders when
+    // opened, so this is also the only guard that the content is reachable.
+    expect(document.body.textContent).toContain('use 2 and 4');
+  });
+
   it('disables the like-for-release view until a point matched a release', async () => {
     await mount(published());
     expect(button('Like for release')?.disabled).toBe(true);

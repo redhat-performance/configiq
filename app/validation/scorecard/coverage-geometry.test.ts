@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  layoutSingleSet,
   layoutVenn,
   lensArea,
   placeVennDots,
@@ -29,8 +30,7 @@ function inRegion(layout: VennLayout, region: VennRegion, x: number, y: number):
   return first && second;
 }
 
-describe('lensArea', () => {
-  it('is zero when the circles are apart and the smaller area when one contains the other', () => {
+describe('lensArea', () => {  it('is zero when the circles are apart and the smaller area when one contains the other', () => {
     expect(lensArea(10, 5, 20)).toBe(0);
     expect(lensArea(10, 3, 5)).toBeCloseTo(Math.PI * 3 ** 2);
   });
@@ -102,6 +102,35 @@ describe('layoutVenn', () => {
     expect(Number.isFinite(layout.second.r)).toBe(true);
     expect(layout.anchors.firstOnly).toBeNull();
     expect(layout.anchors.secondOnly).toBeNull();
+    expect(layout.single).toBe(false);
+  });
+});
+
+describe('layoutSingleSet', () => {
+  it('draws one circle that holds every dot in the set', () => {
+    const layout = layoutSingleSet(8, SIZE.width, SIZE.height);
+    const dots = placeVennDots(layout, 'shared', 8);
+
+    expect(layout.single).toBe(true);
+    expect(layout.first).toEqual(layout.second);
+    expect(layout.anchors.firstOnly).toBeNull();
+    expect(layout.anchors.secondOnly).toBeNull();
+    expect(dots).toHaveLength(8);
+    for (const dot of dots) {
+      expect(inFirst(layout, dot.x, dot.y)).toBe(true);
+    }
+  });
+
+  it('keeps the circle inside the viewBox and gives an empty set no radius', () => {
+    const layout = layoutSingleSet(8, SIZE.width, SIZE.height);
+    expect(layout.first.cx - layout.first.r).toBeGreaterThanOrEqual(-0.001);
+    expect(layout.first.cx + layout.first.r).toBeLessThanOrEqual(SIZE.width + 0.001);
+    expect(layout.first.cy - layout.first.r).toBeGreaterThanOrEqual(-0.001);
+    expect(layout.first.cy + layout.first.r).toBeLessThanOrEqual(SIZE.height + 0.001);
+
+    const empty = layoutSingleSet(0, SIZE.width, SIZE.height);
+    expect(empty.first.r).toBe(0);
+    expect(placeVennDots(empty, 'shared', 0)).toEqual([]);
   });
 });
 

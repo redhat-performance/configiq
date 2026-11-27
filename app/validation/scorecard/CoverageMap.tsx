@@ -9,6 +9,7 @@ import {
 } from '@/lib/scorecard/types';
 import { buildCoverageSets, type CoveragePair } from './scorecard-view';
 import {
+  layoutSingleSet,
   layoutVenn,
   placeVennDots,
   type VennLayout,
@@ -19,12 +20,15 @@ import styles from './scorecard.module.css';
 /**
  * Coverage map: one dot per measured model + GPU pair.
  *
- * Two two-set diagrams answer two different questions. The simulator circles
- * show which pairs each simulator could score, so the area is a coverage
- * comparison. The dataset circles show which pairs each measured source holds.
- * A shared pair is not a shared workload, so the dataset figure states the
- * shared-workload count separately rather than letting the lens imply a
- * like-for-like comparison.
+ * Two diagrams answer two different questions. The simulator circles show which
+ * pairs each simulator could score, so the area is a coverage comparison. The
+ * dataset circles show which pairs each measured source holds. Each draws two
+ * overlapping circles when both sets have pairs in the slice, and one circle
+ * when only one does, so a slice narrowed to a single source or a single scored
+ * simulator still shows its pairs instead of dropping the figure. A shared pair
+ * is not a shared workload, so the dataset figure states the shared-workload
+ * count separately rather than letting the lens imply a like-for-like
+ * comparison.
  *
  * A four-circle Venn was rejected: the simulator set is a subset of another in
  * the current data, and two of the sets are simulators while two are datasets,
@@ -109,19 +113,19 @@ export default function CoverageMap({
   }));
   const sourceShared = sharedCount(sets.pairs, sources, pair => pair.sources);
 
-  const showSimulatorVenn = simulatorSets.length === 2
-    && simulatorSets.every(entry => entry.count > 0);
-  const showSourceVenn = sourceSets.length === 2
-    && sourceSets.every(entry => entry.count > 0);
+  // A figure needs at least one set with something in it. A second set with no
+  // pairs still keeps its legend entry, so an absent source or simulator reads
+  // as empty rather than as a missing figure the reader has to explain.
+  const showSimulatorFigure = simulatorSets.some(entry => entry.count > 0);
+  const showSourceFigure = sourceSets.some(entry => entry.count > 0);
 
   return (
     <div className={styles.coverageMap}>
       <div className={styles.coverageFigures}>
-        {showSimulatorVenn && (
+        {showSimulatorFigure && (
           <VennFigure
             title="Simulator coverage"
-            first={simulatorSets[0]}
-            second={simulatorSets[1]}
+            sets={simulatorSets}
             shared={simulatorShared}
             pairs={sets.pairs}
             dimension="simulators"
@@ -134,11 +138,10 @@ export default function CoverageMap({
           />
         )}
 
-        {showSourceVenn && (
+        {showSourceFigure && (
           <VennFigure
             title="Measured-data coverage"
-            first={sourceSets[0]}
-            second={sourceSets[1]}
+            sets={sourceSets}
             shared={sourceShared}
             pairs={sets.pairs}
             dimension="sources"
@@ -179,8 +182,7 @@ export default function CoverageMap({
 
 function VennFigure({
   title,
-  first,
-  second,
+  sets,
   shared,
   pairs,
   dimension,
@@ -190,8 +192,8 @@ function VennFigure({
   note,
 }: {
   title: string;
-  first: VennSet;
-  second: VennSet;
+  /** One set, or two. A second set with no pairs keeps its legend entry. */
+  sets: readonly VennSet[];
   shared: number;
   pairs: readonly CoveragePair[];
   dimension: 'simulators' | 'sources';
@@ -200,38 +202,74 @@ function VennFigure({
   onHover: (pair: CoveragePair | null) => void;
   note?: string;
 }) {
+  const first = sets[0];
+  const second = sets[1];
+  const hasSecond = second !== undefined;
+  const secondId = second?.id;
+  const secondCount = second?.count ?? 0;
+  const secondColor = second?.color;
+  const secondLabel = second?.label;
+  // One circle when there is nothing to overlap: only one set exists, or one of
+  // the two has no pair in this slice. Drawing the remaining set beats dropping
+  // the figure, which hid both the pairs and their selectable dots.
+  const single = !hasSecond || first.count === 0 || secondCount === 0;
+  const shown = single && first.count === 0 && second ? second : first;
+  const empty = single && second && (first.count === 0 || secondCount === 0)
+    ? (first.count === 0 ? first : second)
+    : null;
+
   const layout = React.useMemo(
-    () => layoutVenn({
-      first: first.count,
-      second: second.count,
-      shared,
-      width: VENN_WIDTH,
-      height: VENN_HEIGHT,
-    }),
-    [first.count, second.count, shared],
+    () => (single || !hasSecond
+      ? layoutSingleSet(shown.count, VENN_WIDTH, VENN_HEIGHT)
+      : layoutVenn({
+        first: first.count,
+        second: secondCount,
+        shared,
+        width: VENN_WIDTH,
+        height: VENN_HEIGHT,
+      })),
+    [single, hasSecond, shown.count, first.count, secondCount, shared],
   );
 
   const regions = React.useMemo(() => {
+    if (single || secondId === undefined) return null;
     const members = (pair: CoveragePair): ReadonlySet<string> =>
       dimension === 'simulators' ? pair.simulators : pair.sources;
     const firstOnly = pairs.filter(pair =>
-      members(pair).has(first.id) && !members(pair).has(second.id));
+      members(pair).has(first.id) && !members(pair).has(secondId));
     const both = pairs.filter(pair =>
-      members(pair).has(first.id) && members(pair).has(second.id));
+      members(pair).has(first.id) && members(pair).has(secondId));
     const secondOnly = pairs.filter(pair =>
-      members(pair).has(second.id) && !members(pair).has(first.id));
+      members(pair).has(secondId) && !members(pair).has(first.id));
     return { firstOnly, both, secondOnly };
-  }, [pairs, dimension, first.id, second.id]);
+  }, [pairs, dimension, first.id, secondId, single]);
 
-  const dots = React.useMemo(() => [
-    ...packRegion(layout, 'firstOnly', regions.firstOnly, first.color),
-    ...packRegion(layout, 'shared', regions.both, sharedColor(first.color, second.color)),
-    ...packRegion(layout, 'secondOnly', regions.secondOnly, second.color),
-  ], [layout, regions, first.color, second.color]);
+  const dots = React.useMemo(() => {
+    if (single || !regions || secondId === undefined || secondColor === undefined) {
+      // Pack only the pairs the drawn set actually contains, so a measured pair
+      // no simulator scored stays out of the simulator circle.
+      const members = (pair: CoveragePair): ReadonlySet<string> =>
+        dimension === 'simulators' ? pair.simulators : pair.sources;
+      return packRegion(
+        layout,
+        'shared',
+        pairs.filter(pair => members(pair).has(shown.id)),
+        shown.color,
+      );
+    }
+    return [
+      ...packRegion(layout, 'firstOnly', regions.firstOnly, first.color),
+      ...packRegion(layout, 'shared', regions.both, sharedColor(first.color, secondColor)),
+      ...packRegion(layout, 'secondOnly', regions.secondOnly, secondColor),
+    ];
+  }, [single, regions, layout, pairs, dimension, shown.id, shown.color, first.color, secondId, secondColor]);
 
-  const description = `${first.label} covers ${formatCount(first.count)} measured model and GPU pairs; `
-    + `${second.label} covers ${formatCount(second.count)}; `
-    + `${formatCount(shared)} are covered by both.`;
+  const description = single
+    ? `${shown.label} covers ${formatCount(shown.count)} measured model and GPU pairs`
+      + (empty ? `; ${empty.label} covers none in this view.` : '.')
+    : `${first.label} covers ${formatCount(first.count)} measured model and GPU pairs; `
+      + `${secondLabel} covers ${formatCount(secondCount)}; `
+      + `${formatCount(shared)} are covered by both.`;
 
   return (
     <figure className={styles.vennFigure}>
@@ -242,7 +280,7 @@ function VennFigure({
         role="group"
         aria-label={description}
       >
-        <VennDrawing layout={layout} first={first} second={second} />
+        <VennDrawing layout={layout} first={shown} second={single ? null : second ?? null} />
         {dots.map(({ dot, pair, color }) => (
           <PointDot
             key={`${dot.region}:${pair.key}`}
@@ -258,18 +296,25 @@ function VennFigure({
       </div>
       <ul className={styles.vennLegend}>
         <LegendItem color={first.color} label={first.label} count={first.count} />
-        <LegendItem color={second.color} label={second.label} count={second.count} />
-        <li>
-          <span
-            className={styles.vennSharedSwatch}
-            style={{ '--first': first.color, '--second': second.color } as React.CSSProperties}
-            aria-hidden="true"
-          />
-          Shared
-          {' '}
-          <span className={styles.vennCount}>{formatCount(shared)}</span>
-        </li>
+        {second && <LegendItem color={second.color} label={second.label} count={second.count} />}
+        {!single && second && (
+          <li>
+            <span
+              className={styles.vennSharedSwatch}
+              style={{ '--first': first.color, '--second': second.color } as React.CSSProperties}
+              aria-hidden="true"
+            />
+            Shared
+            {' '}
+            <span className={styles.vennCount}>{formatCount(shared)}</span>
+          </li>
+        )}
       </ul>
+      {empty && (
+        <p className={styles.vennNote}>
+          No {empty.label} model + GPU pair in this view.
+        </p>
+      )}
       {note && <p className={styles.vennNote}>{note}</p>}
     </figure>
   );
@@ -289,7 +334,8 @@ function VennDrawing({
 }: {
   layout: VennLayout;
   first: VennSet;
-  second: VennSet;
+  /** Null when the layout shows one set, so only one circle is drawn. */
+  second: VennSet | null;
 }) {
   return (
     <svg
@@ -307,15 +353,17 @@ function VennDrawing({
         stroke={first.color}
         strokeWidth={2}
       />
-      <circle
-        cx={layout.second.cx}
-        cy={layout.second.cy}
-        r={layout.second.r}
-        fill={second.color}
-        fillOpacity={0.14}
-        stroke={second.color}
-        strokeWidth={2}
-      />
+      {second && (
+        <circle
+          cx={layout.second.cx}
+          cy={layout.second.cy}
+          r={layout.second.r}
+          fill={second.color}
+          fillOpacity={0.14}
+          stroke={second.color}
+          strokeWidth={2}
+        />
+      )}
     </svg>
   );
 }

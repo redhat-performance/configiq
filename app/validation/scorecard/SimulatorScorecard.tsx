@@ -4,7 +4,6 @@ import * as React from 'react';
 import {
   Alert,
   Button,
-  ExpandableSection,
   FormSelect,
   FormSelectOption,
   PageSection,
@@ -663,22 +662,41 @@ export default function SimulatorScorecard() {
                         : 'Measured on any release, so a large part of the error can be the release gap rather than the model.'}
                     </p>
                     <p>
+                      Each point is a published measurement and the prediction for the same
+                      configuration: model, GPU, input and output length, tensor parallel size,
+                      concurrency, and engine release. The measured row does not record
+                      pipeline or data parallel size, so these predictions use{' '}
+                      {summary.assumptions.ppSize} and {summary.assumptions.dpSize}{' '}
+                      respectively, while expert-parallel widths come from the simulator.
+                    </p>
+                    <p>
                       The model, GPU, and workload choices narrow these numbers as well as
-                      the chart and table. When one is set, the page folds the published
-                      point detail with the same per-configuration rule the sweep uses.
+                      the chart and table. With no row filter these are the pooled totals the
+                      sweep published; with one, the page folds the published point detail
+                      with the same per-configuration rule, so the number covers exactly the
+                      runs the table lists.
                     </p>
                     <p>
-                      The headline is MdAPE, the median configuration, so a few extreme misses do
-                      not decide the ranking. MAPE is shown beside it: a wide gap between the two
-                      means those extremes, not the typical run, drive the mean. P90 shows what a
-                      bad configuration reaches.
+                      Statistics are computed per configuration, then across configurations,
+                      so a run swept at many concurrency levels does not dominate one swept at
+                      few. The headline is MdAPE, the median configuration, so a few extreme
+                      misses do not decide the ranking. MAPE is shown beside it: a wide gap
+                      between the two means those extremes, not the typical run, drive the
+                      mean. P90 shows what a bad configuration reaches.
                     </p>
                     <p>
-                      Engine settings the request does not carry, such as precision and
-                      speculative decoding, are not part of the comparison either.
+                      This is agreement with a measurement under these inputs, not an absolute
+                      accuracy claim: your own parallelism and quantisation will move the
+                      prediction, and engine settings the request does not carry, such as
+                      precision and speculative decoding, are not part of the comparison either.
                     </p>
                     <p>Coverage counts every attempt once, in four buckets:</p>
                     <CoverageBuckets />
+                    <p className={styles.popoverLinks}>
+                      <Link href="/validation/compare">Compare one configuration in detail</Link>
+                      {' · '}
+                      <Link href="/docs/validation-scorecard">How the scorecard is built</Link>
+                    </p>
                   </div>
                 }
               />
@@ -740,55 +758,6 @@ export default function SimulatorScorecard() {
                 ))}
               </div>
             )}
-          </section>
-
-          <section aria-label="What this measures, and what it does not">
-            <ExpandableSection
-              toggleText="What this measures, and what it does not"
-              className={styles.methodSection}
-              isIndented
-            >
-              <div className={styles.method}>
-                <ul>
-                  <li>
-                    Each point is a published measurement and the prediction for the same
-                    configuration: model, GPU, input and output length, tensor parallel size,
-                    concurrency, and engine release.
-                  </li>
-                  <li>
-                    The measured row does not record pipeline or data parallel size, so these
-                    predictions use {summary.assumptions.ppSize} and {summary.assumptions.dpSize}
-                    {' '}respectively. Expert-parallel widths come from the simulator.
-                  </li>
-                  <li>
-                    Statistics are computed per configuration, then across configurations, so a
-                    run swept at many concurrency levels does not dominate one swept at few.
-                  </li>
-                  <li>
-                    With no row filter these are the pooled totals the sweep published. With a
-                    model, GPU, or workload filter, the page folds the published point detail
-                    with the same per-configuration rule, so the number covers exactly the runs
-                    the table lists.
-                  </li>
-                  <li>
-                    This is agreement with a measurement under these inputs, not an absolute
-                    accuracy claim. A user&apos;s own parallelism and quantisation will move the
-                    prediction.
-                  </li>
-                  <li>
-                    Coverage counts every attempt. A point is <strong>unsupported</strong> when the
-                    catalogue says the run is beyond the simulator, <strong>inconclusive</strong> when
-                    the call never returned a prediction, and <strong>ineligible</strong> when the run
-                    is outside the simulator&apos;s catalogue entirely.
-                  </li>
-                </ul>
-                <p className={styles.methodLinks}>
-                  <Link href="/validation/compare">Compare one configuration in detail</Link>
-                  {' · '}
-                  <Link href="/docs/validation-scorecard">How the scorecard is built</Link>
-                </p>
-              </div>
-            </ExpandableSection>
           </section>
 
           <section aria-labelledby="scorecard-matrix-title" data-tour="error">

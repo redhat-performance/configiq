@@ -1129,41 +1129,14 @@
   border-radius: 2px;
 }
 
-/* ── Method notes ─────────────────────────────────────────────────────── */
+/* ── Popover links ────────────────────────────────────────────────────── */
 
-.methodSection {
-  margin-bottom: 24px;
-  padding: 2px 18px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.popoverLinks {
+  margin: 10px 0 0;
+  font-size: 13px;
 }
 
-.method {
-  font-size: 13.5px;
-  line-height: 1.6;
-  color: var(--text-2);
-}
-
-.method ul {
-  margin: 0;
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.method strong {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.methodLinks {
-  margin: 14px 0 0;
-  font-size: 13.5px;
-}
-
-.methodLinks a {
+.popoverLinks a {
   color: var(--link);
 }
 

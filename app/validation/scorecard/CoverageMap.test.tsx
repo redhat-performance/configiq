@@ -208,12 +208,37 @@ describe('CoverageMap', () => {
     expect(container.textContent).not.toContain('for org/gap');
   });
 
-  it('drops the measured-data figure when one source is selected', async () => {
+  it('draws one circle for the selected source instead of dropping the figure', async () => {
     await mount({ source: 'redhat' });
 
     const captions = [...container.querySelectorAll('figcaption')].map(caption => normalized(caption));
-    expect(captions).toEqual(['Simulator coverage']);
-    expect(container.textContent).not.toContain('InferenceX');
+    expect(captions).toEqual(['Simulator coverage', 'Measured-data coverage']);
+
+    const sources = [...container.querySelectorAll('figure')][1];
+    expect(sources.querySelectorAll('circle')).toHaveLength(1);
+    expect(normalized(sources)).toContain('Red Hat 4');
+    expect(normalized(sources)).not.toContain('InferenceX');
+    // The dots are still there, so the remaining source's pairs stay selectable.
+    expect(sources.querySelectorAll('button[aria-label]').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the source figure when a release slice leaves one source empty', async () => {
+    await mount({
+      coverage: [
+        coverage({ releaseMatch: 'matched' }),
+        coverage({ simulator: 'blis', releaseMatch: 'matched' }),
+      ],
+      releaseMatch: 'matched',
+    });
+
+    const sources = [...container.querySelectorAll('figure')][1];
+    expect(sources.querySelectorAll('circle')).toHaveLength(1);
+    expect(normalized(sources)).toContain('Red Hat 1');
+    // The empty source keeps its legend entry, so its absence is stated rather
+    // than implied by a missing figure.
+    expect(normalized(sources)).toContain('InferenceX 0');
+    expect(normalized(sources)).toContain('No InferenceX model + GPU pair in this view');
+    expect(normalized(sources)).not.toContain('Shared');
   });
 
   it('follows the release slice', async () => {

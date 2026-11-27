@@ -38,6 +38,12 @@ export interface VennLayout {
   second: VennCircle;
   /** True when one set contains the other, so only one exclusive region exists. */
   nested: boolean;
+  /**
+   * True when the layout has only one set to show. `first` and `second` are the
+   * same circle in that case, so the shared-region packing path still applies,
+   * but only one circle is drawn.
+   */
+  single: boolean;
   anchors: VennAnchors;
 }
 
@@ -78,9 +84,9 @@ export function lensArea(firstRadius: number, secondRadius: number, distance: nu
 /**
  * Lay out two circles and their region anchors.
  *
- * A zero count has no circle to draw; callers should render a single-set
- * summary instead. The function still returns finite geometry so a caller that
- * forgets does not produce NaN coordinates.
+ * A zero count has no circle to draw; use `layoutSingleSet` for that slice. The
+ * function still returns finite geometry so a caller that forgets does not
+ * produce NaN coordinates.
  */
 export function layoutVenn(input: VennInput): VennLayout {
   const firstCount = Math.max(0, input.first);
@@ -117,6 +123,7 @@ export function layoutVenn(input: VennInput): VennLayout {
       first: { ...circle, r: firstRadius },
       second: { ...circle, r: secondRadius },
       nested: false,
+      single: false,
       anchors: { firstOnly: null, shared: { x: width / 2, y: cy }, secondOnly: null },
     };
   }
@@ -141,6 +148,7 @@ export function layoutVenn(input: VennInput): VennLayout {
     first,
     second,
     nested,
+    single: false,
     anchors: {
       firstOnly: nested && firstRadius <= secondRadius
         ? null
@@ -150,6 +158,34 @@ export function layoutVenn(input: VennInput): VennLayout {
         ? null
         : { x: second.cx + exclusive, y: cy },
     },
+  };
+}
+
+/**
+ * Lay out the one circle a slice gets when only one set has anything to show.
+ *
+ * That happens when a filter selects one benchmark source, or when a release
+ * slice only one source measured, or when only one simulator is available. The
+ * figure still answers the question it asks and its dots stay selectable, so it
+ * draws a single circle rather than disappearing. The circle fills the canvas:
+ * with nothing to overlap there is no second area to compare against.
+ */
+export function layoutSingleSet(count: number, width: number, height: number): VennLayout {
+  const widthValue = Math.max(1, width);
+  const heightValue = Math.max(1, height);
+  const available = Math.min(widthValue - PADDING * 2, heightValue - PADDING * 2);
+  const radius = Math.max(0, count) === 0 || available <= 0 ? 0 : available / 2;
+  const circle: VennCircle = { cx: widthValue / 2, cy: heightValue / 2, r: radius };
+  // `first` and `second` are the same circle so the whole drawing is the shared
+  // region, which lets the existing dot packing fill it without a second rule.
+  return {
+    width: widthValue,
+    height: heightValue,
+    first: circle,
+    second: circle,
+    nested: true,
+    single: true,
+    anchors: { firstOnly: null, shared: { x: circle.cx, y: circle.cy }, secondOnly: null },
   };
 }
 
