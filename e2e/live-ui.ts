@@ -6,7 +6,7 @@ import type { WorkloadPreset } from '../lib/workload-presets'
 import type { ConcurrencyPreset } from '../lib/concurrency-presets'
 import { formatApiError, parseFrontierBody } from '../lib/pareto/parse'
 import { describeSweepCoverage } from '../lib/pareto/sweep-caption'
-import { readAisimulateCatalog, readAisimulateCatalogDetails } from './live-catalog'
+import { readSimulatorCatalog, type LiveSimulatorCatalog } from './live-catalog'
 import { matrixDemandRate } from './test-matrix'
 
 /**
@@ -20,6 +20,12 @@ import { matrixDemandRate } from './test-matrix'
 
 export interface PredictResponse {
   status?: string
+  /**
+   * The simulator that produced this result, as the service reports it. It must
+   * be the simulator the case selected; a response that names another one is a
+   * silent fallback.
+   */
+  simulator?: string
   memory?: number
   ttft?: number
   tpot?: number
@@ -35,12 +41,14 @@ export interface KvCacheResponse {
   status?: string
   kvCache?: { totalBytes?: number; perTokenBytes?: number }
   memoryBreakdown?: { weightsBytes?: number }
+  metadata?: { simulator?: string }
   error?: { code?: string; message?: string }
 }
 
 export interface CompletedRecommendation {
   status: 'completed'
   error?: never
+  simulator?: string
   recommendation: { gpusNeeded: number; gpusPerReplica: number }
   memoryAvailable?: boolean
   memory: { value: number }
@@ -82,6 +90,64 @@ export interface CaseOptions {
    * report different codes; `messageIncludes` pins the credential failure.
    */
   expectFailure?: { code?: string; messageIncludes?: string }
+  /**
+   * The simulator this case runs against, as the deployed catalog names it.
+   *
+   * Omitted keeps the profile a fresh browser starts with: the catalog's
+   * default simulator and the configured default backend, which is what the
+   * scheduled matrices exercise. Naming one writes it to the profile before
+   * the page loads, and the case then uses that simulator's own systems,
+   * models, and backend. The request and the response must both name it, so a
+   * silent fallback to another simulator fails the case.
+   */
+  simulator?: string
+}
+
+/**
+ * One case's simulator, as resolved from the deployed catalog.
+ *
+ * The case asserts against this rather than against a mirrored constant, so a
+ * service that renames its default simulator or backend needs no test change.
+ */
+interface CaseTarget extends LiveSimulatorCatalog {
+  /** The inference backend a fresh profile resolves for this simulator. */
+  backend: string
+  /** The localStorage key holding the backend-version pin for this simulator. */
+  versionKey: string
+}
+
+/**
+ * Resolve the simulator under test and seed the profile the page will read.
+ *
+ * The profile seeds only the simulator and backend choices. It never seeds a
+ * backend version, so the request still omits `backend_version` and the API
+ * resolves its own default — the same thing a first-time reader sees.
+ */
+async function prepareCase(page: Page, options: CaseOptions): Promise<CaseTarget> {
+  const catalog = await readSimulatorCatalog(page, options.simulator)
+  // A first-time profile has no saved backend, so Settings resolves the
+  // configured one. Seed that same choice, using the simulator's own catalogue
+  // so the case never submits a pairing the simulator does not offer.
+  const backend = catalog.backends.includes(appConfig.defaultBackend)
+    ? appConfig.defaultBackend
+    : catalog.backends[0]
+  if (!backend) {
+    throw new Error(`The deployed catalog reports no inference backend for ${catalog.id}`)
+  }
+  await page.addInitScript(({ simulator, backend }) => {
+    localStorage.setItem('settings_simulator', simulator)
+    localStorage.setItem('settings_inference_backend', backend)
+  }, { simulator: catalog.id, backend })
+  return {
+    ...catalog,
+    backend,
+    versionKey: `settings_backend_version_v2:${catalog.id}`,
+  }
+}
+
+/** The artifact name for one case, so each simulator's files stay distinct. */
+function artifactName(target: CaseTarget, name: string): string {
+  return name.replace(/\.json$/, `-${target.id}.json`)
 }
 
 function assertKnownFailure(options: CaseOptions, code: string | undefined, message: string | undefined): void {
@@ -158,8 +224,19 @@ function displayedTileValue(page: Page, name: RegExp) {
  * Check that the deployment exposes the model and presets the case is about to
  * use. This is a capability check, not a version check: the workflow pins the
  * checked-out commit to the deployed build before any case runs.
+ *
+ * The model comes from the simulator's own catalogue, so a simulator that
+ * prices its own model IDs is checked against that list rather than the
+ * deployment's tested-model list. The presets are deployment inputs shared by
+ * every simulator.
  */
-export async function verifyDeployedPreset(page: Page, model: string, workload: WorkloadPreset, concurrency?: ConcurrencyPreset) {
+export async function verifyDeployedPreset(
+  page: Page,
+  model: string,
+  workload: WorkloadPreset,
+  concurrency?: ConcurrencyPreset,
+  catalogModels?: readonly string[],
+) {
   const response = await page.request.get('/config.json')
   expect(response.ok(), 'The deployed UI configuration must be available').toBeTruthy()
   const config = await response.json() as {
@@ -167,7 +244,11 @@ export async function verifyDeployedPreset(page: Page, model: string, workload: 
     workloadPresets?: Array<{ key: string }>
     concurrencyPresets?: Array<{ key: string }>
   }
-  expect(config.approvedModels, 'The deployed UI must list this approved model').toContain(model)
+  if (catalogModels) {
+    expect(catalogModels, 'The deployed catalog must list this model for the simulator').toContain(model)
+  } else {
+    expect(config.approvedModels, 'The deployed UI must list this approved model').toContain(model)
+  }
   if (concurrency) expect(config.concurrencyPresets?.map(preset => preset.key)).toContain(concurrency.key)
   if (workload.key !== 'default') {
     expect(config.workloadPresets?.map(preset => preset.key), 'The deployed UI must list this workload preset').toContain(workload.key)
@@ -185,13 +266,13 @@ export async function checkPredict(
   options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
-  await verifyDeployedPreset(page, model, workload, concurrency)
-  const systems = await readAisimulateCatalog(page)
-  const system = systems.find(item => item.id === systemId)
-  expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
+  const target = await prepareCase(page, options)
+  await verifyDeployedPreset(page, model, workload, concurrency, target.models)
+  const system = target.systems.find(item => item.id === systemId)
+  expect(system, `The deployed ${target.id} catalog must contain ${systemId}`).toBeDefined()
   await page.addInitScript(() => localStorage.setItem('predict-performance-tour-seen', 'true'))
   await page.goto('/predict')
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
+  const savedVersion = await page.evaluate(key => localStorage.getItem(key), target.versionKey)
   await selectModel(page, 'predict-performance-model', model)
   await selectSystem(page, 'predict-performance-gpu', system!.name)
   await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -213,14 +294,14 @@ export async function checkPredict(
   const response = await responsePromise
   const body = response.request().postDataJSON() as Record<string, unknown>
   const result = await response.json() as PredictResponse
-  await saveJson(testInfo, 'predict-request.json', body)
-  await saveJson(testInfo, 'predict-response.json', result)
+  await saveJson(testInfo, artifactName(target, 'predict-request.json'), body)
+  await saveJson(testInfo, artifactName(target, 'predict-response.json'), result)
 
   expect(body).toMatchObject({
     model_path: model,
     system: systemId,
-    backend: appConfig.defaultBackend,
-    simulator: 'aisim',
+    backend: target.backend,
+    simulator: target.id,
     tp_size: parallelism,
     isl: workload.isl,
     osl: workload.osl,
@@ -244,6 +325,7 @@ export async function checkPredict(
     }
     return
   }
+  expect(result.simulator, 'The response must name the simulator the case selected').toBe(target.id)
   if (options.requireSuccess && (typeof result.ttft !== 'number' || typeof result.tpot !== 'number')) {
     throw new Error(`Predict returned no timing metrics for ${model} on ${systemId}`)
   }
@@ -292,12 +374,12 @@ export async function checkKvCache(
   options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
-  await verifyDeployedPreset(page, model, workload, concurrency)
-  const systems = await readAisimulateCatalog(page)
-  const system = systems.find(item => item.id === systemId)
-  expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
+  const target = await prepareCase(page, options)
+  await verifyDeployedPreset(page, model, workload, concurrency, target.models)
+  const system = target.systems.find(item => item.id === systemId)
+  expect(system, `The deployed ${target.id} catalog must contain ${systemId}`).toBeDefined()
   await page.goto('/kv-cache')
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
+  const savedVersion = await page.evaluate(key => localStorage.getItem(key), target.versionKey)
   await selectModel(page, 'kv-model', model)
   await selectSystem(page, 'kv-gpu', system!.name)
   await page.getByRole('button', { name: workload.label, exact: true }).click()
@@ -317,13 +399,14 @@ export async function checkKvCache(
   const response = await responsePromise
   const body = response.request().postDataJSON() as Record<string, unknown>
   const result = await response.json() as KvCacheResponse
-  await saveJson(testInfo, 'memory-request.json', body)
-  await saveJson(testInfo, 'memory-response.json', result)
+  await saveJson(testInfo, artifactName(target, 'memory-request.json'), body)
+  await saveJson(testInfo, artifactName(target, 'memory-response.json'), result)
 
   expect(body).toMatchObject({
     model_path: model,
     system: systemId,
-    backend: appConfig.defaultBackend,
+    backend: target.backend,
+    simulator: target.id,
     max_num_tokens: workload.isl + workload.osl,
     max_batch_size: concurrency.concurrency,
     tp_size: parallelism,
@@ -344,6 +427,10 @@ export async function checkKvCache(
     }
     return
   }
+  expect(
+    result.metadata?.simulator,
+    'The response must name the simulator the case selected',
+  ).toBe(target.id)
   if (options.requireSuccess) {
     expect(
       typeof result.kvCache?.totalBytes === 'number' || typeof result.kvCache?.perTokenBytes === 'number',
@@ -409,8 +496,9 @@ export async function checkRecommend(
   options: CaseOptions = {},
 ) {
   test.setTimeout(300_000)
-  await verifyDeployedPreset(page, model, workload, scenario.concurrency)
-  const { systems, objectives } = await readAisimulateCatalogDetails(page)
+  const target = await prepareCase(page, options)
+  await verifyDeployedPreset(page, model, workload, scenario.concurrency, target.models)
+  const { systems, objectives } = target
   const system = systems.find(item => item.id === systemId)
   expect(system, `The deployed catalog must contain ${systemId}`).toBeDefined()
   const pageLoadErrors: string[] = []
@@ -437,7 +525,7 @@ export async function checkRecommend(
     })
     throw error
   }
-  const savedVersion = await page.evaluate(() => localStorage.getItem('settings_backend_version_v2:aisim'))
+  const savedVersion = await page.evaluate(key => localStorage.getItem(key), target.versionKey)
   await selectModel(page, 'adv-model', model)
   await selectSystem(page, 'adv-gpu', system!.name)
   const goalButton = page.getByRole('button', { name: goalLabels[scenario.goal], exact: true })
@@ -475,11 +563,11 @@ export async function checkRecommend(
   await action.click()
   const response = await responsePromise
   const request = response.request().postDataJSON() as Record<string, unknown>
-  await saveJson(testInfo, 'recommend-live-request.json', request)
+  await saveJson(testInfo, artifactName(target, 'recommend-live-request.json'), request)
   expect(request).toMatchObject({
     model_path: model, system: systemId,
-    backend: appConfig.defaultBackend,
-    simulator: 'aisim',
+    backend: target.backend,
+    simulator: target.id,
     isl: workload.isl, osl: workload.osl,
     objective: scenario.action === 'pareto' ? 'pareto' : scenario.goal === 'latency' ? 'min_gpus' : scenario.goal === 'capacity' ? 'concurrency_capacity' : 'throughput_demand',
     sla_mode: scenario.goal === 'latency' ? 'enforce' : 'none',
@@ -511,7 +599,7 @@ export async function checkRecommend(
   else expect(request).not.toHaveProperty('prefix')
   if (scenario.action === 'pareto') {
     const result = await response.json() as unknown
-    await saveJson(testInfo, 'recommend-live-response.json', result)
+    await saveJson(testInfo, artifactName(target, 'recommend-live-response.json'), result)
     const frontier = page.getByRole('region', { name: 'Pareto frontier' })
     await expect(frontier).toBeVisible()
     if (!response.ok()) {
@@ -528,7 +616,7 @@ export async function checkRecommend(
     const hasCandidates = typeof result === 'object' && result !== null && Array.isArray((result as { candidates?: unknown }).candidates)
     const parsed = parseFrontierBody(result)
     expect(parsed, 'The current API must return a parseable Pareto response').not.toBeNull()
-    expect(parsed!.simulator).toBe('aisim')
+    expect(parsed!.simulator, 'The response must name the simulator the case selected').toBe(target.id)
     if (options.requireSuccess && (!hasCandidates || parsed!.candidates.length === 0)) {
       throw new Error(`Pareto sweep for ${model} on ${systemId} returned no evaluated candidates`)
     }
@@ -550,7 +638,7 @@ export async function checkRecommend(
     return
   }
   const result = await capturedRecommendation(page)
-  await saveJson(testInfo, 'recommend-live-response.json', result)
+  await saveJson(testInfo, artifactName(target, 'recommend-live-response.json'), result)
   if (!response.ok() || result.status !== 'completed') {
     if (options.requireSuccess) {
       const code = result.error?.code ?? `HTTP ${response.status()}`
@@ -564,6 +652,7 @@ export async function checkRecommend(
     }
     return
   }
+  expect(result.simulator, 'The response must name the simulator the case selected').toBe(target.id)
   await expect(displayedTileValue(page, /^GPUs required /)).toHaveText(`${result.recommendation.gpusNeeded}× ${system!.name}`)
   const memoryTile = page.getByRole('button', { name: /^Peak mem \/ GPU / })
   if (result.memoryAvailable === false) {
