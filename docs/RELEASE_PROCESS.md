@@ -64,6 +64,11 @@ When the five images are released together, they carry the same tag set:
 - **`latest`** - Most recent tagged release (release-tracking; the `configiq.io` host follows this)
 - **`dev`** - Latest commit from `main` (commit-tracking; the `.dev` host follows this)
 - **`X.Y.Z`** - Specific version tags
+- **`sha-<12>`** - Immutable candidate for every build, published before any of
+  the tags above. The build starts that image and polls its health path; only a
+  healthy container is promoted, so a broken image never moves `latest`, `dev`,
+  or a version tag. A failed candidate stays published under its `sha-` tag for
+  inspection or a manual rollback.
 
 The Triton image workflow is path-filtered for `services/tritonserver/**`. The
 image starts from the standard `nvcr.io/nvidia/tritonserver:26.09-py3` image so
@@ -221,3 +226,6 @@ they stay in the version lockstep they shipped in):
 ```bash
 podman pull ghcr.io/redhat-performance/configiq:X.Y.Z
 ```
+
+An immutable `sha-<12>` tag also exists for every build, which is the one to
+use when the previous good image was a `main` commit rather than a release.

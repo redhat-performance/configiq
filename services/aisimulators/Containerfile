@@ -160,9 +160,6 @@ RUN ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
         | /opt/venv/bin/python -c 'import json, sys; print(json.load(sys.stdin)["inference_sim"].removeprefix("v").split("+")[0])')" \
         = "${BLIS_VERSION}"
 
-# Thin REST wrapper. CMD imports it as api_service.app:app.
-COPY aisimulators/tools/api_service /app/api_service
-
 # The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
 # composes its default systems root by downloading them on first use. Do that
 # here, once, so a running container never depends on the Hub: the deployed
@@ -187,6 +184,11 @@ stamp = 1600000000; \
     && test -d /app/.cache/aisim/data/systems \
     && find /app/.cache/aisim/data -mindepth 1 -maxdepth 1 ! -name systems -exec rm -rf {} +
 ENV AISIM_DATA_OFFLINE=1
+
+# Thin REST wrapper. CMD imports it as api_service.app:app. Kept below the
+# pre-warm so editing the wrapper reuses the composed dataset layer instead of
+# refetching it.
+COPY aisimulators/tools/api_service /app/api_service
 
 # OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
 # group-writable so an arbitrary assigned UID can still write.
