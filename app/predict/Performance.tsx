@@ -1129,10 +1129,11 @@ export default function Performance() {
 
   // Debounced search query
 
-  // Nullable memory fields — null when VRAM is unknown (catalog not yet loaded)
-  const memUsablePerGpu = testResult?.memory_analysis.usable_hbm_per_gpu ?? 0
-  const memTotalVram = testResult?.memory_analysis.total_vram_gb ?? 0
-  const memKvBudget = testResult?.memory_analysis.kv_cache_budget_gb ?? 0
+  // Nullable memory fields — null when the run did not state the fraction or
+  // VRAM is unknown (catalog not yet loaded). A client must not substitute a
+  // fraction the simulator never reported.
+  const memUsablePerGpu = testResult?.memory_analysis.usable_hbm_per_gpu ?? null
+  const memTotalVram = testResult?.memory_analysis.total_vram_gb ?? null
 
   // Disagg detail (present only when the estimate ran in disagg mode).
   const disagg = testResult?.mode === 'disagg' ? testResult.disagg ?? null : null;
@@ -1947,10 +1948,10 @@ export default function Performance() {
                     decode = <span className={styles.em}>{disagg.decode.workers} × {disagg.decode.gpusPerWorker} = {disagg.decode.workers * disagg.decode.gpusPerWorker}</span> GPUs<br />
                     total = <span className={styles.em}>{disagg.prefill.workers * disagg.prefill.gpusPerWorker} + {disagg.decode.workers * disagg.decode.gpusPerWorker} = {Math.round(gpus)} GPUs</span>
                   </>
-                ) : testResult && !testResult.memory_available ? (
+                ) : testResult && (!testResult.memory_available || memUsablePerGpu == null) ? (
                   <>requested parallelism = <span className={styles.em}>TP {testResult.memory_analysis.tp_size} × PP {testResult.parallelism_strategy.pp_size}</span><br />
                     GPUs = <span className={styles.em}>{Math.round(gpus)}</span></>
-                ) : testResult ? (
+                ) : testResult && memUsablePerGpu != null ? (
                   <>
                     weight memory = <span className={styles.em}>{testResult.memory_analysis.weight_gb.toFixed(1)} GB</span><br />
                     usable / GPU = <span className={styles.em}>{memUsablePerGpu.toFixed(0)} GB</span><br />
@@ -2072,7 +2073,7 @@ export default function Performance() {
                 <div className={styles.formula}>
                   {testResult && testResult.memory_analysis.kv_cache_used_gb ? (
                     <>
-                      total KV used = <span className={styles.em}>{testResult.memory_analysis.kv_cache_used_gb.toFixed(1)} GB</span><br />
+                      KV cache held per GPU = <span className={styles.em}>{testResult.memory_analysis.kv_cache_used_gb.toFixed(1)} GB</span><br />
                       concurrent users = <span className={styles.em}>{testConcurrentUsers}</span><br />
                       KV / req = {testResult.memory_analysis.kv_cache_used_gb.toFixed(1)} ÷ {testConcurrentUsers}<br />
                       = <span className={styles.em}>{((testResult.memory_analysis.kv_cache_used_gb / testConcurrentUsers) * 1000).toFixed(0)} MB</span><br />
@@ -2338,8 +2339,17 @@ export default function Performance() {
                     <div style={{ marginTop: '8px', fontSize: '13px', lineHeight: '1.6' }}>
                       • Weight memory: <strong>{testResult.memory_analysis.weight_gb.toFixed(1)} GB</strong> ({actualWeightPrecision})<br/>
                       • Weight per GPU: <strong>{testResult.memory_analysis.weight_gb_per_gpu.toFixed(1)} GB</strong><br/>
-                      • Usable per GPU: <strong>{memUsablePerGpu.toFixed(0)} GB</strong> (90% of {gpu.includes('H200') ? '141' : '80'} GB)<br/>
-                      • Tensor Parallel size: <strong>{testResult.memory_analysis.tp_size}</strong> {testResult.memory_analysis.weight_gb > memUsablePerGpu ? '(required - weights don\'t fit in 1 GPU)' : '(weights fit, but using for replicas)'}<br/>
+                      {memUsablePerGpu != null ? (
+                        <>
+                          • Usable per GPU: <strong>{memUsablePerGpu.toFixed(0)} GB</strong>
+                          {testResult.vllm_config.gpu_memory_utilization != null && memTotalVram != null && (
+                            <> ({Math.round(testResult.vllm_config.gpu_memory_utilization * 100)}% of {memTotalVram.toFixed(0)} GB)</>
+                          )}<br/>
+                        </>
+                      ) : (
+                        <>• Usable per GPU: <strong>not stated by the selected simulator</strong><br/></>
+                      )}
+                      • Tensor Parallel size: <strong>{testResult.memory_analysis.tp_size}</strong> {memUsablePerGpu != null && testResult.memory_analysis.weight_gb > memUsablePerGpu ? '(required - weights don\'t fit in 1 GPU)' : '(weights fit, but using for replicas)'}<br/>
                       {testResult.parallelism_strategy.pp_size > 1 && (
                         <>• Pipeline Parallel size: <strong>{testResult.parallelism_strategy.pp_size}</strong> (splits model layers across pipeline stages)<br/></>
                       )}
@@ -2350,7 +2360,6 @@ export default function Performance() {
                     <strong style={{ color: '#995c00' }}>Workload Sizing</strong>
                     <div style={{ marginTop: '8px', fontSize: '13px', lineHeight: '1.6' }}>
                       • KV cache used: <strong>{testResult.memory_analysis.kv_cache_used_gb?.toFixed(1) || '—'} GB</strong> ({testKVCachePrecision}, {testConcurrentUsers} users)<br/>
-                      • KV cache budget: <strong>{memKvBudget.toFixed(1)} GB</strong> available<br/>
                       • max_num_seqs: <strong>{testResult.vllm_config.max_num_seqs}</strong><br/>
                       • Replicas: <strong>{testResult.memory_analysis.replicas}</strong> (for throughput/redundancy)
                     </div>
@@ -2374,7 +2383,7 @@ export default function Performance() {
       )}
 
       {/* ---------- Memory Layout (agg only) ---------- */}
-      {testResult && testResult.memory_available && !isDisagg && (
+      {testResult && testResult.memory_available && !isDisagg && memUsablePerGpu != null && memTotalVram != null && (
         <div className={styles.card} style={{ marginBottom: 20 }}>
           <div className={styles.cardHead}>
             <span className={styles.cardTitle}>Memory layout per GPU</span>
@@ -2404,7 +2413,7 @@ export default function Performance() {
                 </div>
                 {/* KV Cache */}
                 <div style={{
-                  width: `${((testResult.memory_analysis.kv_cache_used_gb || 0) / (testResult.memory_analysis.tp_size * (testResult.parallelism_strategy.pp_size || 1)) / memUsablePerGpu) * 100}%`,
+                  width: `${((testResult.memory_analysis.kv_cache_used_gb || 0) / memUsablePerGpu) * 100}%`,
                   background: '#f59e0b',
                   display: 'flex',
                   alignItems: 'center',
@@ -2436,7 +2445,7 @@ export default function Performance() {
               </span>
               <span>
                 <span style={{ display: 'inline-block', width: '12px', height: '12px', background: '#f59e0b', marginRight: '6px', borderRadius: '2px' }}></span>
-                KV Cache: <strong>{((testResult.memory_analysis.kv_cache_used_gb || 0) / (testResult.memory_analysis.tp_size * (testResult.parallelism_strategy.pp_size || 1))).toFixed(1)} GB</strong>
+                KV Cache: <strong>{(testResult.memory_analysis.kv_cache_used_gb || 0).toFixed(1)} GB</strong>
               </span>
               <span>
                 <span style={{ display: 'inline-block', width: '12px', height: '12px', background: '#e0e0e0', marginRight: '6px', borderRadius: '2px' }}></span>

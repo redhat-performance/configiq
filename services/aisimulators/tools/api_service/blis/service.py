@@ -22,6 +22,7 @@ from .catalog import (
 )
 from .engines import BlisEngine, cached_engines
 from .errors import BlisUnsupportedRequest
+from .memory import PoolMemory, pool_memory_from_result
 from .runner import (
     BlisExecutionError,
     BlisTimeoutError,
@@ -41,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 _MAX_RECOMMEND_BUDGET_SECONDS = 60.0
 _DEFAULT_RUN_TIMEOUT_SECONDS = 60.0
+#: The workload lengths a memory-only scenario states. BLIS validates them, but
+#: the memory kernel's occupancy is request-independent, so these change nothing.
+_MEMORY_PLACEHOLDER_TOKENS = 1
 #: Length of the open-loop slice replayed for a throughput-demand candidate.
 #: The request count scales with the offered rate so the measured window is the
 #: same at every target instead of shrinking as the rate rises.
@@ -143,6 +147,44 @@ class EstimateInput:
 
 
 @dataclass(frozen=True)
+class MemoryInput:
+    """One pool's memory request, in the service's own terms."""
+
+    model_path: str
+    system: str
+    backend: str
+    backend_version: str | None
+    #: The served context window, in tokens.
+    max_num_tokens: int
+    #: The largest batch the pool admits at once.
+    max_batch_size: int
+    #: How `memory_fraction_value` is interpreted. BLIS sizes its pool from the
+    #: device's total memory, so only `of_total` has an equivalent.
+    memory_fraction_kind: str
+    #: The fraction the caller chose, or None to keep the engine's own default.
+    memory_fraction_value: float | None
+    tp: int
+    pp: int
+    dp: int
+    moe_tp_size: int | None
+    moe_ep_size: int | None
+    gemm_quant_mode: str | None
+    moe_quant_mode: str | None
+    kvcache_quant_mode: str | None
+    model_config_provided: bool = False
+    unsupported_options: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BlisMemory:
+    """One pool's memory, as the build's own kernel sized it."""
+
+    pool: PoolMemory
+    provenance: dict[str, str | None]
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
 class RecommendInput:
     model_path: str
     system: str
@@ -189,6 +231,9 @@ class BlisPrediction:
     warnings: list[str]
     prefill_config: dict[str, Any] | None = None
     decode_config: dict[str, Any] | None = None
+    #: The memory the run's own pools hold, one record per pool. Empty when the
+    #: build reported none.
+    memory_pools: tuple[PoolMemory, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -405,6 +450,17 @@ def _provenance(
     }
 
 
+def _modeled_engine_release(resolved: _ResolvedRequest) -> str | None:
+    """The release the build models for the selected engine kind, when it says.
+
+    A build that cannot report its engines names no release, and nothing here
+    invents one.
+    """
+    if resolved.engine is not None and resolved.engine.modeled_version:
+        return resolved.engine.modeled_version
+    return None
+
+
 def _reported_engine_version(result: dict[str, Any], resolved: _ResolvedRequest) -> str | None:
     """The engine release whose serving behaviour a run of the selected kind priced.
 
@@ -416,8 +472,9 @@ def _reported_engine_version(result: dict[str, Any], resolved: _ResolvedRequest)
     build's engine snapshot is neither: it is provenance, not a release a
     benchmark can be compared against.
     """
-    if resolved.engine is not None and resolved.engine.modeled_version:
-        return resolved.engine.modeled_version
+    modeled = _modeled_engine_release(resolved)
+    if modeled is not None:
+        return modeled
     return _modeled_engine_version(result)
 
 
@@ -682,6 +739,15 @@ def _run_scenario(
         )
 
 
+def _scenario_files(scenario_directory: str) -> dict[str, str]:
+    """Every file a BLIS command reads from its scenario directory, by relative path."""
+    return {
+        str(path.relative_to(scenario_directory)): path.read_text(encoding="utf-8")
+        for path in sorted(Path(scenario_directory).rglob("*"))
+        if path.is_file()
+    }
+
+
 def _capture_scenario(
     resolved: _ResolvedRequest,
     request: RunRequest,
@@ -692,17 +758,12 @@ def _capture_scenario(
     if active_recorder() is None:
         return
     try:
-        files = {
-            str(path.relative_to(scenario_directory)): path.read_text(encoding="utf-8")
-            for path in sorted(Path(scenario_directory).rglob("*"))
-            if path.is_file()
-        }
         capture_blis_run(
             # A Pareto row copies its own candidate's command, so the candidate
             # id is the label that row can find again.
             label=candidate_id or request.scenario.removesuffix(".yaml"),
             argv=build_run_command(resolved.runtime, request),
-            files=files,
+            files=_scenario_files(scenario_directory),
             binary=resolved.runtime.binary,
             scenario_directory=scenario_directory,
             candidate_id=candidate_id,
@@ -841,6 +902,74 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         ),
         prefill_config=pool_config(prefill, request.prefill_num_workers or 1, request.prefill_batch_size),
         decode_config=pool_config(decode, request.decode_num_workers or 1, request.decode_batch_size),
+        memory_pools=pool_memory_from_result(result),
+    )
+
+
+def memory(request: MemoryInput) -> BlisMemory:
+    """Read one pool's memory the build's own run reports.
+
+    A memory report is request-independent: the engine holds weights,
+    activations, and a KV pool sized from its settings, not from a prompt, and
+    the block is fixed when the engine is constructed. BLIS still validates a
+    scenario's workload, so the smallest run states the smallest positive
+    lengths and one request at a constant rate; they change no reported figure.
+    """
+    if request.unsupported_options:
+        options = ", ".join(request.unsupported_options)
+        raise BlisUnsupportedRequest(f"BLIS cannot represent these request options: {options}")
+    if request.memory_fraction_kind != "of_total":
+        raise BlisUnsupportedRequest(
+            "BLIS sizes its KV pool from a fraction of the device's total memory; "
+            f"memory_fraction_kind={request.memory_fraction_kind!r} has no BLIS equivalent"
+        )
+    resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
+    scenario = _scenario_request(
+        resolved,
+        system=request.system,
+        isl=_MEMORY_PLACEHOLDER_TOKENS,
+        osl=_MEMORY_PLACEHOLDER_TOKENS,
+        concurrency=request.max_batch_size,
+        tp=request.tp,
+        pp=request.pp,
+        dp=request.dp,
+        moe_tp_size=request.moe_tp_size,
+        moe_ep_size=request.moe_ep_size,
+        max_seq_len=request.max_num_tokens,
+        max_num_seqs=request.max_batch_size,
+        gpu_memory_utilization=request.memory_fraction_value,
+        gemm_quant_mode=request.gemm_quant_mode,
+        moe_quant_mode=request.moe_quant_mode,
+        kvcache_quant_mode=request.kvcache_quant_mode,
+    )
+    # The block is fixed when the engine is constructed, so the smallest run
+    # emits it: one request at a constant rate. The run's own Result is the only
+    # surface that reports memory.
+    result = _run_scenario(
+        resolved,
+        scenario,
+        prefix=0,
+        timeout_seconds=float(
+            os.environ.get("BLIS_MEMORY_TIMEOUT_SECONDS", _DEFAULT_RUN_TIMEOUT_SECONDS)
+        ),
+        rate=1.0,
+        num_requests=1,
+        candidate_id="Memory report",
+    )
+    pools = pool_memory_from_result(result)
+    if len(pools) != 1:
+        raise BlisExecutionError(
+            f"BLIS reported {len(pools)} memory pools for a single-pool memory request"
+        )
+    return BlisMemory(
+        pool=pools[0],
+        provenance=_provenance(
+            resolved,
+            request.model_path,
+            request.system,
+            engine_version=_modeled_engine_release(resolved),
+        ),
+        warnings=_model_warnings(resolved, model_config_provided=request.model_config_provided),
     )
 
 
@@ -900,6 +1029,7 @@ def estimate(request: EstimateInput) -> BlisPrediction:
             if isinstance(metrics.get("dropped_unservable"), (int, float)) and metrics["dropped_unservable"] > 0
             else []
         ),
+        memory_pools=pool_memory_from_result(result),
     )
 
 

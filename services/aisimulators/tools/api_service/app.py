@@ -24,7 +24,7 @@ import time
 import zipfile
 from collections import Counter, OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote
@@ -47,11 +47,14 @@ from aisimulate_core.sdk.utils import get_model_config_from_model_path
 from .blis.catalog import CatalogChip, load_catalog
 from .blis.engines import BlisEngine, cached_engines
 from .blis.errors import BlisCatalogError, BlisUnsupportedRequest
+from .blis.memory import PoolMemory as BlisPoolMemory
 from .blis.runner import BlisExecutionError, BlisTimeoutError
 from .blis.runtime import blis_commit, blis_release, resolve_runtime
 from .blis.service import EstimateInput as BlisEstimateInput
+from .blis.service import MemoryInput as BlisMemoryInput
 from .blis.service import RecommendInput as BlisRecommendInput
 from .blis.service import estimate as run_blis_estimate
+from .blis.service import memory as blis_memory
 from .blis.service import recommend as run_blis_recommend
 from .blis.service import supported_model_ids
 from .deploy import (
@@ -172,8 +175,8 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "revision": _AISIMULATE_COMMIT,
         "recommend_search": "windowed",
         "networks": False,
-        # /memory is an AISim capability; a simulator that does not model
-        # a KV-cache breakdown must refuse the request, not borrow the answer.
+        # Whether this simulator sizes a KV-cache memory breakdown. A
+        # simulator that does not must refuse /memory, not borrow the answer.
         "memory": True,
         # AISim's P/D search takes no inter-node fabric, so a caller needs
         # no topology input before asking for one. This same flag tells a client
@@ -194,7 +197,7 @@ _SIMULATORS: tuple[dict[str, Any], ...] = (
         "revision": blis_commit(),
         "recommend_search": "single",
         "networks": True,
-        "memory": False,
+        "memory": True,
         # A P/D run transfers KV between pools, and BLIS prices that transfer
         # through a named fabric, so a P/D search without one has no topology to
         # model.
@@ -648,6 +651,52 @@ class MemoryBreakdown(BaseModel):
     kv_cache_bytes: int = 0
 
 
+class MemoryPoolFixed(BaseModel):
+    """The kernel's request-independent occupancy, as the simulator decomposes it."""
+
+    total: int
+    weights: int
+    activation_peak: int
+    cuda_graph: int
+    eplb_redundant: int
+    comm_buffers: int
+    non_torch: int
+    engine_buffers: int
+
+
+class MemoryPoolKv(BaseModel):
+    """One rank's KV pool, plus what one serving instance holds."""
+
+    block_tokens: int
+    block_bytes: int
+    per_token_bytes: int
+    blocks_per_rank: int
+    tokens_per_rank: int
+    bytes_per_rank: int
+    data_parallel: int
+    aggregate_blocks: int
+    aggregate_tokens: int
+    aggregate_bytes: int
+
+
+class MemoryPool(BaseModel):
+    """One pool's memory exactly as the simulator that sized it reported it.
+
+    Every figure is per rank (per GPU) except the ``aggregate_*`` terms. The
+    record is the simulator's own, so a client can render each term it names
+    rather than a value another simulator's shape had to be folded into.
+    """
+
+    role: str
+    engine: str
+    device_bytes: int
+    budget_bytes: int
+    reserved_bytes: int
+    fixed: MemoryPoolFixed
+    allocatable_bytes: int
+    kv: MemoryPoolKv
+
+
 class ServingConfig(BaseModel):
     backend: str
     tensor_parallel_size: int
@@ -686,6 +735,8 @@ class WorkerConfig(BaseModel):
     comm: str | None = None
     backend_version: str | None = None
     memory_breakdown: MemoryBreakdown | None = None
+    #: The pool's own memory record, when the simulator reports one.
+    memory_pool: MemoryPool | None = None
 
 
 class SimulatorProvenance(BaseModel):
@@ -985,6 +1036,9 @@ class EstimateResponse(BaseModel):
     memory_breakdown: MemoryBreakdown | None = None
     # The exact engine limits this estimate evaluated (`include=engine`).
     engine: EngineSection | None = None
+    #: Every pool the run sized, as the simulator reported it. Empty when the
+    #: simulator reported none.
+    memory_pools: list[MemoryPool] = Field(default_factory=list)
     # Serving mode + disagg detail (present when mode='disagg')
     mode: str = "agg"
     prefill_config: WorkerConfig | None = None
@@ -1006,7 +1060,10 @@ class MemoryRequest(BaseModel):
     max_num_tokens: int = Field(default=8192)
     max_batch_size: int = Field(default=128)
     memory_fraction_kind: str = Field(default="of_total")
-    memory_fraction_value: float = Field(default=1.0, ge=0.0, le=1.0)
+    #: Omitted when the caller wants the simulator's own default rather than a
+    #: fraction it chose. AISim applies its documented 1.0; a simulator whose
+    #: engine picks its own fraction keeps it.
+    memory_fraction_value: float | None = Field(default=None, ge=0.0, le=1.0)
     tp_size: int = Field(default=1)
     pp_size: int = Field(default=1)
     attention_dp_size: int = Field(default=1)
@@ -1042,6 +1099,11 @@ class MemoryResponse(BaseModel):
     memory_breakdown: MemoryBreakdown
     tolerance_adjusted: dict[str, Any] | None = None
     simulator: str = "aisim"
+    #: The pool's own memory record, when the simulator reports one.
+    pools: list[MemoryPool] = Field(default_factory=list)
+    #: Things the caller must know about the answer, such as an input that was
+    #: not applied. Empty when there is nothing to report.
+    warnings: list[str] = Field(default_factory=list)
     #: Present only when the request asked for `include=debug`: the snippet that
     #: reproduces this estimate, with the pins it was computed against.
     debug: ReplayRecordResponse | None = None
@@ -4657,6 +4719,27 @@ def _prediction_engine(prediction: Any | None, *, model: str) -> EngineSection |
     if not isinstance(getattr(getattr(config, "engine", None), "backend", None), str):
         return None
     return _engine_section_aisim(spec, config, model=model)
+def _memory_pool(pool: BlisPoolMemory) -> MemoryPool:
+    """Validate one reported pool record into its API shape."""
+    return MemoryPool.model_validate(asdict(pool))
+
+
+def _blis_pool_breakdown(pool: MemoryPool) -> MemoryBreakdown:
+    """Fold a pool's own terms into the four-bucket breakdown clients draw.
+
+    The buckets partition the kernel's fixed occupancy exactly: a redundant
+    expert copy is weight memory, CUDA graphs, non-torch allocations, and engine
+    buffers are runtime overhead, and communication buffers are their own term.
+    No figure is derived from a fraction or a total.
+    """
+    fixed = pool.fixed
+    return MemoryBreakdown(
+        weights_bytes=fixed.weights + fixed.eplb_redundant,
+        activations_bytes=fixed.activation_peak,
+        runtime_overhead_bytes=fixed.cuda_graph + fixed.non_torch + fixed.engine_buffers,
+        comm_overhead_bytes=fixed.comm_buffers,
+        kv_cache_bytes=pool.kv.bytes_per_rank,
+    )
 
 
 def _build_memory_breakdown(
@@ -5917,7 +6000,39 @@ def post_predict(
             resp.prefill_config = WorkerConfig.model_validate(prediction.prefill_config)
             resp.decode_config = WorkerConfig.model_validate(prediction.decode_config)
         if "memory" in includes:
-            resp.memory_unavailable_reason = "The selected simulator does not provide a KV-cache memory breakdown."
+            pools = [
+                _memory_pool(pool)
+                for pool in getattr(prediction, "memory_pools", ())
+            ]
+            if pools:
+                resp.memory_pools = pools
+                by_role = {pool.role: pool for pool in pools}
+                if is_disagg:
+                    # Each pool's memory is the memory of the worker that runs
+                    # it; the headline figure is the larger per-GPU peak.
+                    peaks: list[float] = []
+                    for worker, role in (
+                        (resp.prefill_config, "prefill"),
+                        (resp.decode_config, "decode"),
+                    ):
+                        pool = by_role.get(role)
+                        if worker is None or pool is None:
+                            continue
+                        worker.memory_pool = pool
+                        worker.memory_breakdown = _blis_pool_breakdown(pool)
+                        peak = _memory_breakdown_gb(worker.memory_breakdown)
+                        if peak is not None:
+                            worker.memory_gb = peak
+                            peaks.append(peak)
+                    resp.memory = max(peaks) if peaks else None
+                else:
+                    pool = pools[0]
+                    resp.memory_breakdown = _blis_pool_breakdown(pool)
+                    resp.memory = _memory_breakdown_gb(resp.memory_breakdown)
+            else:
+                resp.memory_unavailable_reason = (
+                    "The selected simulator reported no pool memory for this run."
+                )
         if "engine" in includes:
             resp.engine = _engine_section_blis(prediction, model=req.model_path)
         resp.debug = _replay_record(recorder)
@@ -6026,6 +6141,57 @@ def post_memory(
         if "debug" in includes
         else None
     )
+    if simulator == "blis":
+        # These request fields have no BLIS equivalent. Refuse the request rather
+        # than size a pool from a different setting than the caller asked for.
+        unsupported_options = tuple(
+            name
+            for name, value in {
+                "fmha_quant_mode": req.fmha_quant_mode,
+                "comm_quant_mode": req.comm_quant_mode,
+                "tolerance_fraction": req.tolerance_fraction,
+            }.items()
+            if value is not None
+        )
+        try:
+            with capture_into(recorder):
+                outcome = blis_memory(BlisMemoryInput(
+                    model_path=req.model_path,
+                    system=req.system,
+                    backend=req.backend,
+                    backend_version=req.backend_version,
+                    max_num_tokens=req.max_num_tokens,
+                    max_batch_size=req.max_batch_size,
+                    memory_fraction_kind=req.memory_fraction_kind,
+                    memory_fraction_value=req.memory_fraction_value,
+                    tp=req.tp_size,
+                    pp=req.pp_size,
+                    dp=req.attention_dp_size,
+                    moe_tp_size=req.moe_tp_size,
+                    moe_ep_size=req.moe_ep_size,
+                    gemm_quant_mode=req.gemm_quant_mode,
+                    moe_quant_mode=req.moe_quant_mode,
+                    kvcache_quant_mode=req.kvcache_quant_mode,
+                    model_config_provided=req.model_config_data is not None,
+                    unsupported_options=unsupported_options,
+                ))
+        except (BlisUnsupportedRequest, BlisCatalogError, BlisExecutionError) as e:
+            _handle_blis_error(e)
+        except Exception as e:
+            _common_error_handler(e, "memory", req.model_path, req.backend, req.system)
+        pool = _memory_pool(outcome.pool)
+        return MemoryResponse(
+            total_gpu_capacity_bytes=pool.device_bytes,
+            total_kv_size_bytes=pool.kv.bytes_per_rank,
+            kv_size_per_token_bytes=pool.kv.per_token_bytes,
+            total_kv_size_tokens=pool.kv.tokens_per_rank,
+            source="native",
+            memory_breakdown=_blis_pool_breakdown(pool),
+            pools=[pool],
+            simulator="blis",
+            warnings=list(outcome.warnings),
+            debug=_replay_record(recorder),
+        )
     try:
         with (
             capture_into(recorder),
@@ -6039,7 +6205,12 @@ def post_memory(
                 "max_num_tokens": req.max_num_tokens,
                 "max_batch_size": req.max_batch_size,
                 "memory_fraction_kind": req.memory_fraction_kind,
-                "memory_fraction_value": req.memory_fraction_value,
+                # A fraction this endpoint has always defaulted to when the
+                # caller omits one. A simulator that keeps its engine's own
+                # default is handled by its own branch above.
+                "memory_fraction_value": (
+                    req.memory_fraction_value if req.memory_fraction_value is not None else 1.0
+                ),
                 "tp_size": req.tp_size,
                 "pp_size": req.pp_size,
                 "attention_dp_size": req.attention_dp_size,

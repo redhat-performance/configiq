@@ -220,7 +220,11 @@ paths:
         for both pools, and DP=1. The BLIS path creates dedicated prefill and
         decode pools, NIXL transfer, and an always-disaggregate router profile.
         Unsupported settings return an error instead of falling back to
-        AISim. BLIS results do not include a KV-cache memory breakdown.
+        AISim. With `include=memory`, BLIS answers with the pool memory its own
+        kernel sized for the run: one record per pool, which is also copied onto
+        each disaggregated worker. When the build reports no pool memory the
+        response says so in `memory_unavailable_reason` rather than borrowing a
+        figure.
 
         Use the `include` query parameter to enrich the result with optional
         detail sections:
@@ -283,7 +287,9 @@ paths:
         (TP/PP/batch_size), returns predicted TTFT, TPOT, throughput, and
         memory. Aggregated and prefill/decode disaggregated predictions are
         supported; P/D requests require an explicit `fabric` from `GET
-        /networks`, matching GPU systems for both pools, and DP=1.
+        /networks`, matching GPU systems for both pools, and DP=1. A setting
+        the request omits keeps the simulator's own default; `serving_config`
+        reports it as null when the run did not state it.
 
         Use the `include` query parameter to enrich the result with optional
         detail sections:
@@ -345,7 +351,18 @@ paths:
         estimates the per-rank memory breakdown: model weights, activations,
         runtime overhead, communication buffers, and KV cache capacity.
 
-        Wraps `estimate_kv_cache()` from the aisimulate SDK.
+        With `simulator=aisim`, wraps `estimate_kv_cache()` from the aisimulate
+        SDK. With `simulator=blis`, reads the pool memory the build's own run
+        reports on its Result: the request's `max_num_tokens` becomes the pool's
+        context window, `max_batch_size` its admitted batch, and
+        `memory_fraction_value` the fraction of device memory it may use. Omit
+        the fraction to let the simulator resolve its own default: AISim applies
+        1.0, while BLIS keeps the engine's choice. The
+        pool record is returned verbatim under `pools`, and the per-GPU summary
+        fields are that record's per-rank terms. BLIS sizes from a fraction of
+        device memory, so `memory_fraction_kind=of_free` and the quantization
+        and tolerance options it does not model are refused with 422 rather
+        than mapped onto a different setting.
 
         Use the `include` query parameter to add `debug`, which returns the
         snippet that reproduces this estimate.
@@ -1618,7 +1635,7 @@ components:
         memory_gb:
           type: number
           nullable: true
-          description: Memory usage (GB).
+          description: Peak memory one worker's GPU holds (GB).
         gemm:
           type: string
           nullable: true
@@ -1647,6 +1664,12 @@ components:
           nullable: true
           description: Per-component memory breakdown (present when include=memory).
           $ref: '#/components/schemas/MemoryBreakdown'
+        memory_pool:
+          nullable: true
+          description: |
+            This pool's own memory record, when the simulator reports one
+            (present when include=memory).
+          $ref: '#/components/schemas/MemoryPool'
 
     ServingConfig:
       type: object
@@ -2139,6 +2162,16 @@ components:
             The engine limits this prediction evaluated (present when
             include=engine). Null for a result that carries no compiled spec,
             rather than a reconstructed default.
+        memory_pools:
+          type: array
+          description: |
+            Every pool the run sized, exactly as the selected simulator reported
+            it (present when include=memory). Each disaggregated worker also
+            carries its own pool under `prefill_config.memory_pool` and
+            `decode_config.memory_pool`. Empty when the simulator reported none;
+            `memory_unavailable_reason` then explains why.
+          items:
+            $ref: '#/components/schemas/MemoryPool'
 
         debug:
           nullable: true
@@ -2191,8 +2224,13 @@ components:
           default: of_total
         memory_fraction_value:
           type: number
-          description: Fraction of memory to use for KV cache [0.0, 1.0].
-          default: 1.0
+          nullable: true
+          description: |
+            Fraction of memory to use for KV cache [0.0, 1.0]. Omit it to let
+            the selected simulator resolve its own default: AISim applies its
+            documented 1.0, while a simulator whose engine chooses its own
+            fraction keeps that choice.
+          default: null
           minimum: 0.0
           maximum: 1.0
         tp_size:
@@ -2252,22 +2290,35 @@ components:
           description: Simulator that provided the memory estimate. Only a simulator that reports the memory capability answers this endpoint.
         total_gpu_capacity_bytes:
           type: integer
-          description: Total GPU memory capacity (bytes).
+          description: Total GPU memory capacity on one device (bytes).
         total_kv_size_bytes:
           type: integer
-          description: KV cache size (bytes).
+          description: KV cache one rank (one GPU) holds, in bytes.
         kv_size_per_token_bytes:
           type: integer
-          description: KV cache per token (bytes).
+          description: KV cache one rank holds per token, in bytes.
         total_kv_size_tokens:
           type: integer
-          description: Maximum tokens that fit in the KV cache.
+          description: Maximum tokens one rank's KV cache holds.
         source:
           type: string
           enum: [native, naive_fallback]
           description: Estimation method used.
         memory_breakdown:
           $ref: '#/components/schemas/MemoryBreakdown'
+        pools:
+          type: array
+          description: |
+            The pool record exactly as the selected simulator reported it. Empty
+            for a simulator that reports no per-pool record.
+          items:
+            $ref: '#/components/schemas/MemoryPool'
+        warnings:
+          type: array
+          description: |
+            Things the caller must know about the answer, such as an input that
+            was not applied. Empty when there is nothing to report.
+          items: { type: string }
         tolerance_adjusted:
           type: object
           nullable: true
@@ -2289,6 +2340,11 @@ components:
 
     MemoryBreakdown:
       type: object
+      description: |
+        Memory terms per GPU, as the selected simulator reports them: weights
+        are already sharded across the deployment's parallelism, and KV is one
+        rank's pool. The five terms describe one GPU's footprint, not the
+        cluster total.
       properties:
         weights_bytes:
           type: integer
@@ -2305,6 +2361,107 @@ components:
         kv_cache_bytes:
           type: integer
           description: KV cache memory (bytes). Mirrors total_kv_size_bytes.
+
+    MemoryPoolFixed:
+      type: object
+      description: |
+        The kernel's request-independent occupancy, decomposed by term. The
+        terms sum to `total`.
+      required: [total, weights, activation_peak, cuda_graph, eplb_redundant, comm_buffers, non_torch, engine_buffers]
+      properties:
+        total:
+          type: integer
+          description: Total fixed occupancy (bytes per rank).
+        weights:
+          type: integer
+          description: Model weight memory, excluding a redundant expert copy.
+        activation_peak:
+          type: integer
+          description: Peak activation memory.
+        cuda_graph:
+          type: integer
+          description: CUDA graph capture reservation.
+        eplb_redundant:
+          type: integer
+          description: Redundant expert-parallel load-balancer copy.
+        comm_buffers:
+          type: integer
+          description: Communication buffers.
+        non_torch:
+          type: integer
+          description: Allocations outside the framework's own allocator.
+        engine_buffers:
+          type: integer
+          description: The serving engine's own buffers.
+
+    MemoryPoolKv:
+      type: object
+      description: |
+        One rank's KV pool, plus what one serving instance holds. Every term is
+        per rank (per GPU) except the `aggregate_*` terms.
+      required: [block_tokens, block_bytes, per_token_bytes, blocks_per_rank, tokens_per_rank, bytes_per_rank, data_parallel, aggregate_blocks, aggregate_tokens, aggregate_bytes]
+      properties:
+        block_tokens:
+          type: integer
+          description: Tokens per KV block.
+        block_bytes:
+          type: integer
+          description: Bytes per KV block.
+        per_token_bytes:
+          type: integer
+          description: KV bytes per token per rank.
+        blocks_per_rank:
+          type: integer
+          description: KV blocks one rank holds.
+        tokens_per_rank:
+          type: integer
+          description: KV tokens one rank holds.
+        bytes_per_rank:
+          type: integer
+          description: KV bytes one rank holds.
+        data_parallel:
+          type: integer
+          description: Data-parallel width the pool was sized for.
+        aggregate_blocks:
+          type: integer
+          description: KV blocks one instance holds.
+        aggregate_tokens:
+          type: integer
+          description: KV tokens one instance holds.
+        aggregate_bytes:
+          type: integer
+          description: KV bytes one instance holds.
+
+    MemoryPool:
+      type: object
+      description: |
+        One pool's memory exactly as the simulator that sized it reported it.
+        A client renders each term the simulator names instead of folding the
+        record into another simulator's shape.
+      required: [role, engine, device_bytes, budget_bytes, reserved_bytes, fixed, allocatable_bytes, kv]
+      properties:
+        role:
+          type: string
+          description: Serving role this pool fills (for example `colocated`, `prefill`, `decode`).
+        engine:
+          type: string
+          description: Engine kind whose memory model sized this pool.
+        device_bytes:
+          type: integer
+          description: Total device memory per rank (bytes).
+        budget_bytes:
+          type: integer
+          description: The part of the device this pool may use (bytes).
+        reserved_bytes:
+          type: integer
+          description: Memory reserved before the pool is sized (bytes).
+        fixed:
+          $ref: '#/components/schemas/MemoryPoolFixed'
+        allocatable_bytes:
+          type: integer
+          description: Bytes left for the KV pool after the fixed occupancy (bytes).
+        kv:
+          $ref: '#/components/schemas/MemoryPoolKv'
 
     # ── Catalog ────────────────────────────────────────────────────────────
 

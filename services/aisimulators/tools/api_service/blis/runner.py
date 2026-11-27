@@ -168,13 +168,12 @@ def normalize_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_blis(
-    runtime: BlisRuntime,
-    request: RunRequest,
+def _run_binary(
+    command: list[str],
     *,
-    timeout_seconds: float = 60.0,
-) -> dict[str, Any]:
-    command = build_run_command(runtime, request)
+    timeout_seconds: float,
+    operation: str,
+) -> str:
     try:
         completed = subprocess.run(
             command,
@@ -185,7 +184,7 @@ def run_blis(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise BlisTimeoutError(f"BLIS simulation timed out after {timeout_seconds:g}s") from exc
+        raise BlisTimeoutError(f"BLIS {operation} timed out after {timeout_seconds:g}s") from exc
     except OSError as exc:
         raise BlisExecutionError(f"could not start BLIS: {exc}") from exc
     if completed.returncode != 0:
@@ -193,4 +192,19 @@ def run_blis(
         if len(detail) > 1200:
             detail = detail[-1200:]
         raise BlisExecutionError(f"BLIS exited with status {completed.returncode}: {detail or 'no diagnostics'}")
-    return parse_result(completed.stdout)
+    return completed.stdout
+
+
+def run_blis(
+    runtime: BlisRuntime,
+    request: RunRequest,
+    *,
+    timeout_seconds: float = 60.0,
+) -> dict[str, Any]:
+    return parse_result(
+        _run_binary(
+            build_run_command(runtime, request),
+            timeout_seconds=timeout_seconds,
+            operation="simulation",
+        )
+    )

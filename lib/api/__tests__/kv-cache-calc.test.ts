@@ -90,7 +90,9 @@ describe('KvCacheCalcRequestSchema', () => {
       expect(result.data.tp_size).toBe(1)
       expect(result.data.pp_size).toBe(1)
       expect(result.data.memory_fraction_kind).toBe('of_total')
-      expect(result.data.memory_fraction_value).toBe(1.0)
+      // A fraction the view does not state is left out, so the simulator
+      // resolves its own default.
+      expect(result.data.memory_fraction_value).toBeUndefined()
     }
   })
 })
@@ -183,6 +185,58 @@ describe('callKvCacheCalc', () => {
     expect(sentBody.tp_size).toBe(1)
     expect(sentBody).not.toHaveProperty('username')
     expect(sentBody).not.toHaveProperty('password')
+  })
+
+  it('forwards the simulator the caller chose', async () => {
+    const mockFetch = mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'blis' })
+    vi.stubGlobal('fetch', mockFetch)
+
+    const result = await callKvCacheCalc({ ...VALID_REQUEST, simulator: 'blis' })
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody.simulator).toBe('blis')
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    // Provenance is the simulator that answered, not the one requested.
+    expect(result.metadata.simulator).toBe('blis')
+  })
+
+  it('leaves out a fraction the caller did not state', async () => {
+    const mockFetch = mockFetchOk(EXTERNAL_RESPONSE)
+    vi.stubGlobal('fetch', mockFetch)
+
+    const { memory_fraction_value: _omitted, ...request } = VALID_REQUEST
+    const result = await callKvCacheCalc(request)
+
+    const sentBody = JSON.parse(mockFetch.mock.calls[0][1].body)
+    expect(sentBody).not.toHaveProperty('memory_fraction_value')
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.metadata.memoryFractionValue).toBeNull()
+  })
+
+  it('refuses a response that names another simulator', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({ ...EXTERNAL_RESPONSE, simulator: 'aisim' }))
+
+    const result = await callKvCacheCalc({ ...VALID_REQUEST, simulator: 'blis' })
+
+    expect(result.status).toBe('failed')
+    const failed = result as KvCacheCalcErrorResponse
+    expect(failed.error.code).toBe('SIMULATOR_MISMATCH')
+    expect(failed.error.message).toContain('aisim')
+  })
+
+  it('reports the warnings the API sent', async () => {
+    vi.stubGlobal('fetch', mockFetchOk({
+      ...EXTERNAL_RESPONSE,
+      warnings: ['the supplied model_config was not applied'],
+    }))
+
+    const result = await callKvCacheCalc(VALID_REQUEST)
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error('expected a result')
+    expect(result.warnings).toEqual(['the supplied model_config was not applied'])
   })
 
   it('sends nullable fields only when set', async () => {

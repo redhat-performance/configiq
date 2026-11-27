@@ -605,7 +605,7 @@ describe('proposeView', () => {
     expect(values.ttft).toBeUndefined();
   });
 
-  it('omits provenance a page does not accept', () => {
+  it('carries provenance, including the simulator, without listing it as a field', () => {
     const proposal = proposeView({
       question: 'How much KV cache memory for 8192 context?',
       model: 'meta-llama/Llama-3.1-8B-Instruct',
@@ -621,9 +621,11 @@ describe('proposeView', () => {
       backend: 'vllm',
       maxNumTokens: 8192,
     });
-    // The KV cache calculator is AISim-only by contract.
-    expect(values.simulator).toBeUndefined();
-    expect(proposal!.link.href).not.toContain('simulator=');
+    // The calculator reads the simulator from Settings; a link still records
+    // which one produced its numbers so the recipient is not left guessing.
+    expect(values.simulator).toBe('aisim');
+    expect(proposal!.link.href).toContain('simulator=aisim');
+    expect(proposal!.link.description).not.toContain('simulator');
   });
 
   it('says which fields it will set, and marks itself as a proposal', () => {

@@ -242,6 +242,7 @@ export type RecommendRequest = z.input<typeof RecommendRequestSchema>
 export const KvCacheCalcRequestSchema = z.object({
   model_path: z.string().min(1, 'model_path is required'),
   system: z.string().min(1, 'system is required'),
+  simulator: z.string().min(1).optional(),
   backend: z.string().default('vllm'),
   backend_version: z.string().nullish(),
   max_num_tokens: z.number().int().positive().default(8192),
@@ -251,7 +252,9 @@ export const KvCacheCalcRequestSchema = z.object({
   moe_tp_size: z.number().int().positive().nullish(),
   moe_ep_size: z.number().int().positive().nullish(),
   memory_fraction_kind: z.enum(['of_total', 'of_free']).default('of_total'),
-  memory_fraction_value: z.number().min(0).max(1).default(1.0),
+  // Omitted when the caller wants the simulator's own default rather than a
+  // fraction it chose.
+  memory_fraction_value: z.number().min(0).max(1).optional(),
   // HF config.json for models AISimulators can't resolve from its catalog (nullish = resolve from HF).
   model_config: z.record(z.string(), z.unknown()).nullish(),
 }).strict()

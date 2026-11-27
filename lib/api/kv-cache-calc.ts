@@ -23,8 +23,17 @@ export interface KvCacheCalcResult {
   }
   /** Commands and input files that reproduce this estimate, when the API sent them. */
   debug?: DebugRecord | null
+  /**
+   * Things the API asks the reader to know about the answer, such as an input
+   * it could not apply. Empty when there is nothing to report.
+   */
+  warnings: string[]
   metadata: {
-    simulator: 'aisim'
+    /**
+     * Simulator that produced the estimate, as the API reported it. The page
+     * forwards the selected simulator and never assumes which one answered.
+     */
+    simulator: string
     modelPath: string
     backend: string
     backendVersion: string | null
@@ -36,7 +45,8 @@ export interface KvCacheCalcResult {
     moeTpSize: number | null
     moeEpSize: number | null
     memoryFractionKind: string
-    memoryFractionValue: number
+    /** The fraction the request stated; null when the simulator's own applied. */
+    memoryFractionValue: number | null
     source: string
     durationMs: number
   }
@@ -75,8 +85,13 @@ export function buildKvCachePayload(request: KvCacheCalcRequest): Record<string,
     tp_size: request.tp_size,
     pp_size: request.pp_size,
     memory_fraction_kind: request.memory_fraction_kind,
-    memory_fraction_value: request.memory_fraction_value,
   }
+  // A fraction the caller did not state is left out, so the simulator resolves
+  // its own default instead of receiving a number the view never showed.
+  if (request.memory_fraction_value != null) {
+    payload.memory_fraction_value = request.memory_fraction_value
+  }
+  if (request.simulator) payload.simulator = request.simulator
   if (request.backend_version) payload.backend_version = request.backend_version
   if (request.moe_tp_size != null) payload.moe_tp_size = request.moe_tp_size
   if (request.moe_ep_size != null) payload.moe_ep_size = request.moe_ep_size
@@ -145,6 +160,24 @@ export async function callKvCacheCalc(
   const breakdown = (rawData.memory_breakdown ?? {}) as Record<string, unknown>
   const durationMs = Math.round(performance.now() - startTime)
 
+  // Provenance is an open identifier. The response must name the same simulator
+  // the caller requested; older builds that omit it are accepted as the
+  // requested simulator. A response that names another simulator is never
+  // accepted as a fallback.
+  const requestedSimulator = request.simulator && request.simulator.length > 0
+    ? request.simulator
+    : null
+  const responseSimulator = typeof rawData.simulator === 'string' && rawData.simulator.trim().length > 0
+    ? rawData.simulator.trim()
+    : null
+  if (requestedSimulator != null && responseSimulator != null && requestedSimulator !== responseSimulator) {
+    return makeError(
+      requestId,
+      'SIMULATOR_MISMATCH',
+      `Requested ${requestedSimulator}, but the API confirmed ${responseSimulator}. No fallback was accepted.`,
+    )
+  }
+
   return {
     requestId,
     status: 'completed',
@@ -163,8 +196,13 @@ export async function callKvCacheCalc(
       totalBytes: asNumber(rawData.total_gpu_capacity_bytes, 0),
     },
     debug: parseDebugRecord(rawData.debug),
+    warnings: Array.isArray(rawData.warnings)
+      ? rawData.warnings.filter((warning): warning is string => typeof warning === 'string')
+      : [],
     metadata: {
-      simulator: 'aisim',
+      // A response that names no simulator is read as the one requested, or
+      // as the documented service default for a legacy build.
+      simulator: responseSimulator ?? requestedSimulator ?? 'aisim',
       modelPath: request.model_path,
       backend: request.backend,
       backendVersion: request.backend_version ?? null,
@@ -176,7 +214,7 @@ export async function callKvCacheCalc(
       moeTpSize: request.moe_tp_size ?? null,
       moeEpSize: request.moe_ep_size ?? null,
       memoryFractionKind: request.memory_fraction_kind,
-      memoryFractionValue: request.memory_fraction_value,
+      memoryFractionValue: request.memory_fraction_value ?? null,
       source: typeof rawData.source === 'string' ? rawData.source : 'unknown',
       durationMs,
     },

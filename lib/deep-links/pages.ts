@@ -1,12 +1,10 @@
 import { z } from 'zod';
 import {
-  INFERENCE_BACKENDS,
   MAX_ID_LENGTH,
   MAX_SEQUENCE_LENGTH,
   PROVENANCE_FIELDS,
   SERVING_MODES,
   defineLink,
-  withBackendProvenance,
   withProvenance,
   modelPath,
   nonNegativeInt,
@@ -77,19 +75,19 @@ export const MEMORY_FRACTION_KINDS = ['of_total', 'of_free'] as const;
 export type MemoryFractionKind = (typeof MEMORY_FRACTION_KINDS)[number];
 
 /**
- * The KV cache calculator has no simulator choice, so its link carries the
- * backend but never a simulator: adding one would imply a choice the page does
- * not offer. The backend pair is provenance read from settings and applied
- * for the session, not a pair of controls the page edits.
+ * The KV cache calculator reads the simulator, backend, and version from
+ * settings rather than owning a control for them. A shared view still records
+ * all three: memory estimates differ by simulator, so a link must say which one
+ * produced its numbers. `useLinkProvenance` applies the trio to the session and
+ * offers the simulator switch, never to saved settings.
  */
-export const kvCacheLink = withBackendProvenance(defineLink('/kv-cache', {
+export const kvCacheLink = withProvenance(defineLink('/kv-cache', {
   model: modelPath,
   system: systemId,
-  // Provenance, applied for the session rather than edited here. The backend
-  // is the same closed set the other tools accept, so a link always names a
-  // value this build can hand to settings.
-  backend: z.enum(INFERENCE_BACKENDS),
-  backendVersion: text(MAX_ID_LENGTH),
+  // Provenance, applied for the session rather than edited here. The backend,
+  // version, and simulator are the same closed sets the other tools accept, so
+  // a link always names values this build can hand to settings.
+  ...PROVENANCE_FIELDS,
   maxNumTokens: positiveInt(MAX_SEQUENCE_LENGTH),
   maxBatchSize: positiveInt(1_000_000),
   tp: positiveInt(1024),

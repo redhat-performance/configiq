@@ -18,6 +18,7 @@ from tools.api_service.blis.catalog import (
 )
 from tools.api_service.blis.engines import BlisEngine
 from tools.api_service.blis.errors import BlisCatalogError, BlisUnsupportedRequest
+from tools.api_service.blis.memory import pool_memory_from_result
 from tools.api_service.blis.runner import (
     BlisExecutionError,
     RunRequest,
@@ -32,6 +33,7 @@ from tools.api_service.blis.scenario import (
     build_documents,
     write_scenario,
 )
+from tools.api_service.replay.capture import ReplayRecorder, capture_into
 
 
 def _catalog_model(
@@ -402,6 +404,19 @@ def test_generated_documents_use_catalog_id_and_requested_deployment():
     assert pool["engine"]["max_model_len"] == 2176
 
 
+def test_generated_documents_omit_settings_the_request_did_not_state():
+    _scenario, deployment = build_documents(_scenario_request(
+        gpu_memory_utilization=None,
+        prefix_caching=None,
+    ))
+    engine = deployment["pools"][0]["engine"]
+
+    # The engine's own defaults apply; the document must not pin a fraction or a
+    # caching policy the caller never chose.
+    assert "gpu_memory_utilization" not in engine
+    assert "enable_prefix_caching" not in engine
+
+
 def test_generated_documents_state_the_catalog_context_window():
     _scenario, deployment = build_documents(_scenario_request(
         model=ModelResolution(
@@ -589,6 +604,22 @@ def test_serving_config_reports_an_explicit_context_window():
     assert config["max_model_len"] == 2176
     assert config["max_model_len_policy"] is None
     assert config["backend_version"] is None
+
+
+def test_serving_config_leaves_settings_the_run_did_not_state_null():
+    result = {
+        "input": {"deployment": {"pools": [{
+            "parallel": {"tp": 2},
+            "engine": {"max_model_len": 2176, "max_num_seqs": 8},
+        }]}},
+    }
+
+    config = blis_service._serving_config(result, "0.31.0", "vllm")
+
+    # The build applied its own defaults, but it did not report them, so a
+    # client must show the setting as unstated rather than invent a number.
+    assert config["gpu_memory_utilization"] is None
+    assert config["enable_prefix_caching"] is None
 
 
 def test_serving_config_is_absent_when_the_result_has_no_deployment():
@@ -830,6 +861,8 @@ def _completed(*, stdout: str, returncode: int = 0, stderr: str = ""):
     return blis_engines.subprocess.CompletedProcess(
         args=(), returncode=returncode, stdout=stdout, stderr=stderr
     )
+
+
 def _resolving(monkeypatch, catalog, binary: str, engines: tuple[BlisEngine, ...]) -> None:
     monkeypatch.setattr(blis_service, "load_catalog", lambda *_args, **_kwargs: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: BlisRuntime(binary))
@@ -2133,3 +2166,327 @@ def test_disagg_estimate_rejects_heterogeneous_systems_before_runtime_load():
     )
     with pytest.raises(BlisUnsupportedRequest, match="decode_system must match system"):
         blis_service.estimate(request)
+
+
+#: One pool's memory as a run's Result reports it, with the figures verified
+#: against a real build. Every figure is per rank except `kv.aggregate_*`.
+def _memory_block(
+    *,
+    role: str = "colocated",
+    engine: str = "vllm",
+    kv_bytes_per_rank: int = 58_869_153_792,
+    kv_tokens_per_rank: int = 449_136,
+) -> dict:
+    return {
+        "role": role,
+        "engine": engine,
+        "device_bytes": 85_029_158_917,
+        "budget_bytes": 76_526_243_026,
+        "reserved_bytes": 0,
+        "fixed": {
+            "total": 17_656_971_264,
+            "weights": 16_059_990_016,
+            "activation_peak": 738_197_504,
+            "cuda_graph": 858_783_744,
+            "eplb_redundant": 0,
+            "comm_buffers": 0,
+            "non_torch": 0,
+            "engine_buffers": 0,
+        },
+        "allocatable_bytes": 58_869_271_762,
+        "kv": {
+            "block_tokens": 16,
+            "block_bytes": 2_097_152,
+            "per_token_bytes": 131_072,
+            "blocks_per_rank": 28_071,
+            "tokens_per_rank": kv_tokens_per_rank,
+            "bytes_per_rank": kv_bytes_per_rank,
+            "data_parallel": 1,
+            "aggregate_blocks": 28_071,
+            "aggregate_tokens": kv_tokens_per_rank,
+            "aggregate_bytes": kv_bytes_per_rank,
+        },
+    }
+
+
+#: The same record from a build modelling the other engine kind. Its block size
+#: and CUDA-graph reservation differ, which is why the parser reads each term
+#: instead of assuming one engine's numbers.
+SGLANG_MEMORY_BLOCK = {
+    "role": "colocated",
+    "engine": "sglang",
+    "device_bytes": 85_520_809_984,
+    "budget_bytes": 81_603_922_498,
+    "reserved_bytes": 0,
+    "fixed": {
+        "total": 17_957_912_576,
+        "weights": 16_059_990_016,
+        "activation_peak": 738_197_504,
+        "cuda_graph": 1_159_725_056,
+        "eplb_redundant": 0,
+        "comm_buffers": 0,
+        "non_torch": 0,
+        "engine_buffers": 0,
+    },
+    "allocatable_bytes": 52_160_889_192,
+    "kv": {
+        "block_tokens": 1,
+        "block_bytes": 131_072,
+        "per_token_bytes": 131_072,
+        "blocks_per_rank": 397_956,
+        "tokens_per_rank": 397_956,
+        "bytes_per_rank": 52_160_888_832,
+        "data_parallel": 1,
+        "aggregate_blocks": 397_956,
+        "aggregate_tokens": 397_956,
+        "aggregate_bytes": 52_160_888_832,
+    },
+}
+
+
+def _memory_result(*, pools: list[dict] | None = None) -> dict:
+    """A Result carrying each pool's memory under its role's engine section."""
+    blocks = pools if pools is not None else [_memory_block()]
+    return {
+        "reports": {
+            "engine": {block["role"]: {"memory": block} for block in blocks}
+        }
+    }
+
+
+def test_memory_report_reads_every_term_blis_states():
+    report = pool_memory_from_result(_memory_result())
+
+    assert len(report) == 1
+    pool = report[0]
+    assert pool.role == "colocated"
+    assert pool.engine == "vllm"
+    assert pool.device_bytes == 85_029_158_917
+    assert pool.budget_bytes == 76_526_243_026
+    assert (pool.fixed.total, pool.fixed.weights, pool.fixed.activation_peak) == (
+        17_656_971_264,
+        16_059_990_016,
+        738_197_504,
+    )
+    assert pool.kv.per_token_bytes == 131_072
+    assert pool.kv.tokens_per_rank == 449_136
+    assert pool.kv.aggregate_bytes == pool.kv.bytes_per_rank
+    # The buckets a client draws partition the kernel's own fixed total, so no
+    # byte is lost or counted twice when they are folded.
+    assert (
+        pool.weights_bytes + pool.activations_bytes
+        + pool.runtime_overhead_bytes + pool.comm_overhead_bytes
+    ) == pool.fixed.total
+
+
+def test_memory_report_reads_the_other_engines_numbers_too():
+    pool = pool_memory_from_result(_memory_result(pools=[SGLANG_MEMORY_BLOCK]))[0]
+
+    assert pool.engine == "sglang"
+    assert pool.device_bytes == 85_520_809_984
+    # One-token blocks and a larger graph reservation are that engine's, not a
+    # default carried over from another kind.
+    assert pool.kv.block_tokens == 1
+    assert pool.runtime_overhead_bytes == 1_159_725_056
+
+
+def test_memory_report_refuses_a_block_outside_its_contract():
+    block = _memory_block()
+    broken = {
+        "reports": {"engine": {"colocated": {"memory": {
+            **block, "kv": {**block["kv"], "bytes_per_rank": "big"},
+        }}}},
+    }
+    with pytest.raises(
+        BlisExecutionError,
+        match=r"no integer at reports\.engine\.colocated\.memory\.kv\.bytes_per_rank",
+    ):
+        pool_memory_from_result(broken)
+
+
+def test_pool_memory_from_result_skips_the_cluster_section_and_empty_pools():
+    result = {
+        "reports": {
+            "engine": {
+                "colocated": {"memory": _memory_block()},
+                # The cluster section carries run-wide figures and no pool
+                # memory; a role without a memory block has none either.
+                "cluster": {"whole_run": {"tokens_per_sec": 500.0}},
+                "prefill": {"metrics": {}},
+            },
+        },
+    }
+
+    pools = pool_memory_from_result(result)
+
+    assert [pool.role for pool in pools] == ["colocated"]
+
+
+def test_pool_memory_from_result_is_empty_when_the_build_reports_none():
+    assert pool_memory_from_result({}) == ()
+    assert pool_memory_from_result({"reports": {"engine": {"cluster": {}}}}) == ()
+
+
+def _memory_input(**overrides) -> blis_service.MemoryInput:
+    values = {
+        "model_path": "Qwen/Qwen3-32B",
+        "system": "h100_sxm",
+        "backend": "vllm",
+        "backend_version": None,
+        "max_num_tokens": 8192,
+        "max_batch_size": 128,
+        "memory_fraction_kind": "of_total",
+        "memory_fraction_value": 0.9,
+        "tp": 1,
+        "pp": 1,
+        "dp": 1,
+        "moe_tp_size": None,
+        "moe_ep_size": None,
+        "gemm_quant_mode": None,
+        "moe_quant_mode": None,
+        "kvcache_quant_mode": None,
+    }
+    values.update(overrides)
+    return blis_service.MemoryInput(**values)
+
+
+def test_memory_refuses_a_fraction_basis_blis_cannot_size():
+    with pytest.raises(BlisUnsupportedRequest, match="no BLIS equivalent"):
+        blis_service.memory(_memory_input(memory_fraction_kind="of_free"))
+
+
+def test_memory_refuses_options_blis_cannot_represent():
+    with pytest.raises(BlisUnsupportedRequest, match="fmha_quant_mode"):
+        blis_service.memory(_memory_input(unsupported_options=("fmha_quant_mode",)))
+
+
+def test_memory_sizes_the_pool_from_the_request_and_names_the_modeled_release(
+    monkeypatch, catalog,
+):
+    _resolving(
+        monkeypatch,
+        catalog,
+        "/opt/blis",
+        (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version="0.34.0+0fda86a35419",
+                roles=("colocated",),
+            ),
+        ),
+    )
+    captured: dict = {}
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        scenario_directory = Path(run_request.scenario_directory)
+        captured["request"] = run_request
+        captured["documents"] = list(
+            yaml.safe_load_all((scenario_directory / run_request.scenario).read_text())
+        )
+        return _memory_result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    outcome = blis_service.memory(_memory_input(tp=2, max_num_tokens=8192, max_batch_size=128))
+
+    _scenario, deployment = captured["documents"]
+    engine = deployment["pools"][0]["engine"]
+    # The request's own window, batch and memory fraction, not a default.
+    assert engine["max_model_len"] == 8192
+    assert engine["max_num_seqs"] == 128
+    assert engine["gpu_memory_utilization"] == 0.9
+    assert deployment["pools"][0]["parallel"]["tp"] == 2
+    # The block is fixed when the engine is constructed, so the smallest run
+    # emits it: placeholders for the workload lengths, one request at rate 1.
+    assert captured["request"].scenario.endswith(".yaml")
+    assert captured["request"].rate == 1.0
+    assert captured["request"].num_requests == 1
+    assert captured["request"].concurrency is None
+    assert outcome.pool.kv.bytes_per_rank == 58_869_153_792
+    # The modelled release is the kind's own, never the build snapshot.
+    assert outcome.provenance["engine_version"] == "0.31.0"
+    assert outcome.provenance["simulator"] == "blis"
+    assert outcome.provenance["resolved_model"] == "qwen3-32b"
+    assert outcome.warnings == []
+
+
+def test_memory_leaves_an_unstated_fraction_to_the_engine(monkeypatch, catalog):
+    _resolving(monkeypatch, catalog, "/opt/blis", ())
+    captured: dict = {}
+
+    def mock_run(_runtime, run_request, *, timeout_seconds):
+        scenario_directory = Path(run_request.scenario_directory)
+        captured["documents"] = list(
+            yaml.safe_load_all((scenario_directory / run_request.scenario).read_text())
+        )
+        return _memory_result()
+
+    monkeypatch.setattr(blis_service, "run_blis", mock_run)
+
+    blis_service.memory(_memory_input(memory_fraction_value=None))
+
+    _scenario, deployment = captured["documents"]
+    # A caller that states no fraction gets the engine's own default, so the
+    # generated document must not pin one.
+    assert "gpu_memory_utilization" not in deployment["pools"][0]["engine"]
+
+
+def test_memory_warns_when_a_supplied_model_config_was_not_applied(monkeypatch, catalog):
+    _resolving(monkeypatch, catalog, "/opt/blis", ())
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda *_args, **_kwargs: _memory_result(),
+    )
+
+    outcome = blis_service.memory(_memory_input(model_config_provided=True))
+
+    assert outcome.warnings == [
+        (
+            "The selected simulator used its resolved catalog model; "
+            "the supplied model_config was not applied."
+        )
+    ]
+
+
+def test_memory_refuses_a_report_for_more_than_one_pool(monkeypatch, catalog):
+    _resolving(monkeypatch, catalog, "/opt/blis", ())
+    result = _memory_result(pools=[_memory_block(), _memory_block(role="decode")])
+    monkeypatch.setattr(blis_service, "run_blis", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(BlisExecutionError, match="2 memory pools for a single-pool"):
+        blis_service.memory(_memory_input())
+
+
+def test_memory_captures_the_command_that_produced_the_report(monkeypatch, catalog):
+    _resolving(monkeypatch, catalog, "/opt/blis", ())
+    monkeypatch.setattr(
+        blis_service,
+        "run_blis",
+        lambda *_args, **_kwargs: _memory_result(),
+    )
+    recorder = ReplayRecorder(
+        endpoint="/memory",
+        simulator="blis",
+        execution="subprocess",
+        versions={},
+        model_path="Qwen/Qwen3-32B",
+    )
+
+    with capture_into(recorder):
+        blis_service.memory(_memory_input())
+
+    record = recorder.build()
+    assert record is not None
+    invocation = record.invocations[0]
+    assert invocation.label == "Memory report"
+    # The captured command is the run that reported the block, not a separate
+    # memory subcommand.
+    assert "run" in invocation.command
+    assert "memory" not in invocation.command
+    assert "$BLIS_BINARY" in invocation.command
+    assert len(invocation.files) == 1
+    assert invocation.files[0].path.startswith("configiq-")
+    assert invocation.files[0].path.endswith(".yaml")

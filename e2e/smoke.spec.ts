@@ -552,6 +552,9 @@ test('KV cache submits selected capacity inputs and renders the mocked result', 
       gpuCapacity: {
         totalBytes: 85_899_345_920,
       },
+      // The route always reports what the simulator asked the reader to know,
+      // even when there is nothing: an empty list, not an absent field.
+      warnings: [],
       metadata: {
         simulator: 'aisim',
         modelPath: 'smoke/model',
