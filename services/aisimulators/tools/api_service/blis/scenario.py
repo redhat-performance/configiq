@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -171,14 +172,27 @@ def _separate_weight_quantization(
         raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
 
 
-def _vllm_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
+def _deployment_block_size(model: ModelResolution, pools: tuple[ScenarioPoolRequest, ...]) -> int:
+    """The one engine block size every pool in a deployment states.
+
+    BLIS moves whole blocks across a P/D handoff and refuses pools that
+    disagree. The smallest size that satisfies the model's kernel multiple and
+    every pool's configured size is their least common multiple.
+    """
+    sizes = [pool.block_size for pool in pools]
+    if model.block_size is not None:
+        sizes.append(model.block_size)
+    return math.lcm(*sizes)
+
+
+def _vllm_pool_engine(pool: ScenarioPoolRequest, block_size: int | None = None) -> dict[str, Any]:
     weight_quant = normalize_weight_quantization(pool.weight_quantization)
     moe_quant = _optional_quantization(pool.moe_quantization, _WEIGHT_QUANTIZATION, "MoE quantization")
     if moe_quant and moe_quant != weight_quant:
         raise BlisUnsupportedRequest("BLIS scenarios cannot separate MoE and dense weight quantization")
     cache_dtype = _optional_quantization(pool.cache_dtype, _CACHE_DTYPE, "KV-cache dtype")
     engine: dict[str, Any] = {
-        "block_size": pool.block_size,
+        "block_size": block_size if block_size is not None else pool.block_size,
         "max_num_batched_tokens": pool.max_num_batched_tokens,
         "max_num_seqs": pool.max_num_seqs,
         "max_model_len": pool.max_model_len,
@@ -199,7 +213,8 @@ def _vllm_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
     return engine
 
 
-def _sglang_pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
+def _sglang_pool_engine(pool: ScenarioPoolRequest, block_size: int | None = None) -> dict[str, Any]:
+    """SGLang has no cache block size, so `block_size` is accepted and ignored."""
     weight_quant = _optional_quantization(
         pool.weight_quantization, _SGLANG_WEIGHT_QUANTIZATION, "weight quantization"
     )
@@ -235,7 +250,11 @@ _POOL_ENGINE = {
 }
 
 
-def _pool_engine(pool: ScenarioPoolRequest, engine_kind: str) -> dict[str, Any]:
+def _pool_engine(
+    pool: ScenarioPoolRequest,
+    engine_kind: str,
+    block_size: int | None = None,
+) -> dict[str, Any]:
     builder = _POOL_ENGINE.get(engine_kind)
     if builder is None:
         available = ", ".join(sorted(_POOL_ENGINE))
@@ -243,12 +262,12 @@ def _pool_engine(pool: ScenarioPoolRequest, engine_kind: str) -> dict[str, Any]:
             f"BLIS scenario generation does not model engine kind {engine_kind!r}; "
             f"it can generate scenarios for: {available}"
         )
-    return builder(pool)
+    return builder(pool, block_size)
 
 
 def _vllm_colocated_engine(request: ScenarioRequest, max_model_len: int) -> dict[str, Any]:
     engine: dict[str, Any] = {
-        "block_size": 16,
+        "block_size": request.model.block_size or 16,
         "max_num_batched_tokens": request.max_num_batched_tokens or max(8192, request.isl),
         "max_num_seqs": request.max_num_seqs or request.concurrency,
         "max_model_len": max_model_len,
@@ -324,7 +343,8 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
         raise BlisUnsupportedRequest("BLIS parallelism and workload values must be positive integers")
 
     pools: list[dict[str, Any]] = []
-    for pool in (prefill, decode):
+    pool_requests = (prefill, decode)
+    for pool in pool_requests:
         if min(
             pool.nodes,
             pool.tp,
@@ -359,6 +379,12 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 f"BLIS {pool.role} pool has {pool.nodes * request.gpus_per_node} GPU slots, "
                 f"but TP×PP requires {pool.tp * pool.pp}"
             )
+
+    # Both pools state one block size: BLIS refuses a P/D handoff whose pools
+    # disagree, so the deployment reconciles the model requirement with each
+    # pool's configured size before either engine block is built.
+    block_size = _deployment_block_size(request.model, pool_requests)
+    for pool in pool_requests:
         pools.append({
             "role": pool.role,
             "nodes": pool.nodes,
@@ -368,7 +394,7 @@ def _build_disagg_documents(request: ScenarioRequest) -> tuple[dict[str, Any], d
                 "dp": pool.dp,
                 "enable_expert_parallel": pool.enable_expert_parallel,
             },
-            "engine": _pool_engine(pool, request.engine_kind),
+            "engine": _pool_engine(pool, request.engine_kind, block_size),
         })
 
     name = _scenario_name(request)

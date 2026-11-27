@@ -36,6 +36,14 @@ class ModelResolution:
     catalog_name: str
     hf_repo: str | None
     context_length: int | None = None
+    #: The engine block size this model's kernels require on the resolved part,
+    #: stamped once the part is known (`BlisCatalog.block_size_for`). None means
+    #: no sparse kernel rule applies, so the caller's default stands.
+    block_size: int | None = None
+    #: The graph's `architecture`, which selects the sparse-kernel rule.
+    architecture: str | None = None
+    #: Whether the graph's attention is the DSA sparse-MLA family.
+    dsa: bool = False
     origin: str = "blis-catalog"
 
 
@@ -108,9 +116,20 @@ class CatalogModel:
     attention_kind: str | None = None
     attention_heads: int | None = None
     attention_kv_heads: int | None = None
+    attention_head_dim: int | None = None
     #: Names of the draft models this entry's graph lists, if any. A draft model
     #: is an auxiliary graph, not a model a request can serve.
     drafters: tuple[str, ...] = ()
+
+    @property
+    def dsa(self) -> bool:
+        """Whether the graph's attention is the DSA sparse-MLA family.
+
+        The build reports only the KV-holding attention layer's shape, so a
+        sparse-MLA head that is 576 wide is the DSA indexer's signature: a
+        512-wide sparse head is a different backend and carries no such rule.
+        """
+        return self.attention_kind == "sparse_mla" and self.attention_head_dim == 576
 
     @property
     def model_id(self) -> str:
@@ -197,7 +216,25 @@ class BlisCatalog:
             catalog_name=model.name,
             hf_repo=model.hf_repo,
             context_length=model.context_window,
+            architecture=model.architecture,
+            dsa=model.dsa,
             origin="blis-catalog",
+        )
+
+    def block_size_for(self, model: ModelResolution, hardware: str) -> int | None:
+        """The smallest engine block size this model's sparse kernels accept on a part.
+
+        BLIS refuses a sparse-attention block that is not a multiple of the
+        backend's kernel block: DeepSeek-V4 needs 256 tokens, DeepSeek-V4.1
+        needs 64 on SM90 and 128 elsewhere, and a DSA sparse-MLA indexer needs
+        64. Those are kernel facts, not catalog values, so they are applied
+        here rather than read from the report. A model with no rule keeps the
+        caller's default, which this returns None for.
+        """
+        return _kernel_block_size(
+            model.architecture,
+            model.dsa,
+            _compute_capability_major(self.chips.get(hardware)),
         )
 
     def specs_for(self, model_path: str) -> dict[str, Any]:
@@ -239,6 +276,42 @@ class BlisCatalog:
         return network
 
 
+def _compute_capability_major(chip: CatalogChip | None) -> int | None:
+    """The major CUDA compute capability a chip states ("9.0" -> 9), or None."""
+    if chip is None or not chip.compute_capability:
+        return None
+    try:
+        return int(chip.compute_capability.split(".", 1)[0].strip())
+    except ValueError:
+        return None
+
+
+def _kernel_block_size(
+    architecture: str | None,
+    dsa: bool,
+    compute_capability: int | None,
+) -> int | None:
+    """The block multiple BLIS's sparse kernels require beyond the catalog.
+
+    BLIS's kernel refuses a DeepSeek-V4-family block that is not a multiple of
+    its sparse backend's kernel block: V4 runs 256-token blocks on every part,
+    while V4.1 runs 64 on SM90 and 128 elsewhere. A DSA sparse-MLA indexer runs
+    64-token blocks. Unknown compute capability is treated as non-SM90, where
+    128 is also a valid multiple of the SM90 rule, so it cannot produce a size
+    the engine refuses.
+
+    Mirrors `v4BlockSize` and `dsaBlockSize` in blis-substrate's
+    `kernel/sparse_mla.go` at the pinned release; change both together.
+    """
+    if architecture == "DeepseekV4ForCausalLM":
+        return 256
+    if architecture == "DeepseekV41ForCausalLM":
+        return 64 if compute_capability == 9 else 128
+    if dsa:
+        return 64
+    return None
+
+
 def _entries_of(source: dict[str, Any], key: str) -> list[dict[str, Any]]:
     """The mapping entries of an optional list field, or none when it is absent."""
     value = source.get(key)
@@ -270,6 +343,7 @@ def parse_model(entry: dict[str, Any]) -> CatalogModel | None:
         attention_kind=_string(attention, "kind"),
         attention_heads=_positive_int(attention, "heads"),
         attention_kv_heads=_positive_int(attention, "kv_heads"),
+        attention_head_dim=_positive_int(attention, "head_dim"),
         drafters=tuple(
             name
             for drafter in _entries_of(entry, "drafters")
