@@ -9,14 +9,13 @@ import tempfile
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from functools import cache
 from pathlib import Path
 from typing import Any, Literal
 
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from ..replay.capture import active_recorder, capture_blis_run
-from .engines import read_engines
+from .engines import cached_engines
 from .manifest import (
     BlisCatalog,
     BlisUnsupportedRequest,
@@ -282,9 +281,16 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     # The build fixes which engine release it prices, so `backend_version` selects
     # nothing. A request that names a release the build does not model is refused
     # with the releases it does, rather than answered with a different one.
-    if backend_version:
+    requested = _requested_engine_version(backend_version)
+    if requested is not None:
         modeled = _modeled_engine_versions(runtime.binary)
-        if modeled and backend_version not in modeled:
+        if not modeled:
+            raise BlisUnsupportedRequest(
+                f"BLIS {blis_release()} did not report which vLLM release it models, so "
+                f"backend_version {backend_version!r} cannot be checked against it. Leave "
+                "backend_version blank to run the release the build models."
+            )
+        if requested not in modeled:
             raise BlisUnsupportedRequest(
                 f"BLIS {blis_release()} models vLLM {', '.join(modeled)}; "
                 f"requested backend_version {backend_version!r}. Leave backend_version "
@@ -310,19 +316,47 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
     )
 
 
-@cache
+#: The slot alias the shared ``backend_version`` field documents as "the
+#: simulator's default". For BLIS the default is the release its build pins.
+_DEFAULT_VERSION_ALIAS = "current"
+
+#: The other AISim slot aliases. They name data slots the SDK ships; a BLIS build
+#: has one pinned release and no equivalents, so they are refused by name.
+_AISIM_SLOT_ALIASES = frozenset({"previous", "next"})
+
+
+def _requested_engine_version(raw: str | None) -> str | None:
+    """The literal engine release a request pins, or None when it takes the default.
+
+    ``current`` is the documented spelling of "the default" and is accepted here
+    rather than refused, because BLIS's default — the release the build pins — is
+    exactly what the shared field description promises it means.
+    """
+    requested = (raw or "").strip()
+    if not requested or requested == _DEFAULT_VERSION_ALIAS:
+        return None
+    if requested in _AISIM_SLOT_ALIASES:
+        raise BlisUnsupportedRequest(
+            f"BLIS prices the one engine release its build pins, so backend_version "
+            f"{requested!r} has no meaning: {', '.join(sorted(_AISIM_SLOT_ALIASES))} name "
+            "AISim data slots. Leave backend_version blank to use the release the build "
+            "models."
+        )
+    return requested
+
+
 def _modeled_engine_versions(binary: str) -> tuple[str, ...]:
     """The vLLM releases the build models, or none when it cannot report them.
 
-    A build that predates the report returns an empty tuple; a request naming a
-    release is then not refused, because there is nothing to check it against.
-    The tuple is cached per binary path: the build cannot change while the
-    service runs.
+    An unreadable build is retried rather than remembered, so one failed probe does
+    not leave the version check switched off for the life of the process (see
+    ``cached_engines``). A caller that must check a requested release treats an
+    empty tuple as "cannot verify" rather than as "models nothing" — see
+    ``_resolve_request``.
     """
-    engines = read_engines(binary)
     return tuple(
         engine.modeled_version
-        for engine in engines
+        for engine in cached_engines(binary)
         if engine.kind == "vllm" and engine.modeled_version
     )
 

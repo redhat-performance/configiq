@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,3 +101,47 @@ def read_engines(binary: str, *, timeout_seconds: float = 10.0) -> tuple[BlisEng
         logger.warning("BLIS version output was not JSON")
         return ()
     return parse_engines(document)
+
+
+#: How long a failed probe is remembered before it is retried, in seconds.
+#:
+#: A probe fails for reasons that pass: a timeout while the host is loaded, an
+#: exec that runs out of memory across ten replicas starting at once. Remembering
+#: that failure would turn it into a permanent claim that the build models no
+#: engine, so failures expire and the next request asks again.
+PROBE_RETRY_SECONDS = 30.0
+
+_ENGINES_BY_BINARY: dict[str, tuple[BlisEngine, ...]] = {}
+_RETRY_AFTER: dict[str, float] = {}
+
+
+def cached_engines(binary: str) -> tuple[BlisEngine, ...]:
+    """The engines the build reports, cached once a probe succeeds.
+
+    ``read_engines`` answers the same empty tuple for a probe that failed and for
+    a build that cannot report at all, so caching its result as-is would make one
+    transient failure permanent for the process. Only a successful report is
+    kept, and it is kept for good: the build cannot change while the service
+    runs. A failed probe is retried after ``PROBE_RETRY_SECONDS``, which also
+    bounds how often a failing build is spawned.
+    """
+    reported = _ENGINES_BY_BINARY.get(binary)
+    if reported is not None:
+        return reported
+    now = time.monotonic()
+    retry_at = _RETRY_AFTER.get(binary)
+    if retry_at is not None and now < retry_at:
+        return ()
+    engines = read_engines(binary)
+    if not engines:
+        _RETRY_AFTER[binary] = now + PROBE_RETRY_SECONDS
+        return ()
+    _ENGINES_BY_BINARY[binary] = engines
+    _RETRY_AFTER.pop(binary, None)
+    return engines
+
+
+def clear_engine_cache() -> None:
+    """Forget every cached report and retry deadline (tests and reloads)."""
+    _ENGINES_BY_BINARY.clear()
+    _RETRY_AFTER.clear()

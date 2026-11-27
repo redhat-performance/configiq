@@ -275,7 +275,7 @@ def test_generated_documents_use_catalog_id_and_requested_deployment():
         "tp": 2, "pp": 1, "dp": 1, "enable_expert_parallel": False,
     }
     assert pool["engine"]["quantization"] == "nvfp4"
-    assert pool["engine"]["kv_cache_dtype"] == "fp8"
+    assert pool["engine"]["cache_dtype"] == "fp8"
     assert pool["engine"]["compilation_config"] == {"cudagraph_mode": "PIECEWISE"}
     assert "cudagraph_mode" not in pool["engine"]
     assert pool["engine"]["enable_prefix_caching"] is True
@@ -362,7 +362,31 @@ def test_serving_config_is_absent_when_the_result_has_no_deployment():
 def test_half_cache_dtype_leaves_the_blis_model_default_unmodified():
     _scenario, deployment = build_documents(_scenario_request(cache_dtype="half"))
 
-    assert "kv_cache_dtype" not in deployment["pools"][0]["engine"]
+    assert "cache_dtype" not in deployment["pools"][0]["engine"]
+
+
+@pytest.mark.parametrize(
+    ("requested", "emitted"),
+    [
+        ("bf16", "bfloat16"),
+        ("fp16", "float16"),
+        ("BF16", "bfloat16"),
+        ("fp8", "fp8"),
+        ("fp8_e4m3", "fp8_e4m3"),
+        ("nvfp4", "nvfp4"),
+    ],
+)
+def test_cache_dtype_is_emitted_under_the_name_the_engine_accepts(requested, emitted):
+    """The API's aliases are resolved here; the engine names the format its own way.
+
+    `bfloat16`/`float16` are the values the rules pack accepts for
+    `engine.cache_dtype`, so `bf16`/`fp16` must not reach the deployment document.
+    `nvfp4` is a cache format the pack accepts, so the adapter forwards it instead
+    of refusing a value the engine supports.
+    """
+    _scenario, deployment = build_documents(_scenario_request(cache_dtype=requested))
+
+    assert deployment["pools"][0]["engine"]["cache_dtype"] == emitted
 
 
 def test_scenario_rejects_cross_node_and_unrepresentable_parallelism():
@@ -428,6 +452,7 @@ def test_disagg_documents_define_two_pools_transfer_and_router(tmp_path: Path):
     }
     assert [pool["role"] for pool in deployment["pools"]] == ["prefill", "decode"]
     assert [pool["engine"]["block_size"] for pool in deployment["pools"]] == [64, 64]
+    assert [pool["engine"]["cache_dtype"] for pool in deployment["pools"]] == ["fp8", "fp8"]
     assert deployment["pd_transfer"] == {"connector": "NixlConnector"}
     assert deployment["router"]["endpoint_picker_config"] == "router/pd-always.yaml"
     assert router_config["kind"] == "EndpointPickerConfig"
@@ -515,6 +540,56 @@ def test_read_engines_reports_nothing_for_a_build_without_the_json_flag(monkeypa
     assert blis_engines.read_engines("/opt/blis") == ()
 
 
+def test_a_failed_probe_is_not_remembered_as_no_engines(monkeypatch):
+    """One failed probe must not claim, for the process lifetime, that the build models nothing."""
+    blis_engines.clear_engine_cache()
+    probes: list[str] = []
+
+    def probe(binary, **_kwargs):
+        probes.append(binary)
+        if len(probes) == 1:
+            return ()
+        return (BlisEngine("vllm", "0.31.0", None, None, ()),)
+
+    monkeypatch.setattr(blis_engines, "read_engines", probe)
+    monkeypatch.setattr(blis_engines, "PROBE_RETRY_SECONDS", 0.0)
+
+    assert blis_engines.cached_engines("/opt/blis-retry") == ()
+    assert [engine.modeled_version for engine in blis_engines.cached_engines("/opt/blis-retry")] == ["0.31.0"]
+    assert probes == ["/opt/blis-retry", "/opt/blis-retry"]
+    blis_engines.clear_engine_cache()
+
+
+def test_a_successful_probe_is_read_once(monkeypatch):
+    blis_engines.clear_engine_cache()
+    probes: list[str] = []
+
+    def probe(binary, **_kwargs):
+        probes.append(binary)
+        return (BlisEngine("vllm", "0.31.0", None, None, ()),)
+
+    monkeypatch.setattr(blis_engines, "read_engines", probe)
+
+    blis_engines.cached_engines("/opt/blis-once")
+    blis_engines.cached_engines("/opt/blis-once")
+
+    assert probes == ["/opt/blis-once"]
+    blis_engines.clear_engine_cache()
+
+
+def test_a_failed_probe_is_not_repeated_inside_the_retry_window(monkeypatch):
+    """The retry window also bounds how often an unreadable build is spawned."""
+    blis_engines.clear_engine_cache()
+    probes: list[str] = []
+    monkeypatch.setattr(blis_engines, "read_engines", lambda binary, **_k: probes.append(binary) or ())
+
+    blis_engines.cached_engines("/opt/blis-window")
+    blis_engines.cached_engines("/opt/blis-window")
+
+    assert probes == ["/opt/blis-window"]
+    blis_engines.clear_engine_cache()
+
+
 def _completed(*, stdout: str, returncode: int = 0, stderr: str = ""):
     return blis_engines.subprocess.CompletedProcess(
         args=(), returncode=returncode, stdout=stdout, stderr=stderr
@@ -532,11 +607,9 @@ def test_request_for_an_unmodeled_release_is_refused_with_the_modeled_one(
         "load_system_spec",
         lambda _system: {"node": {"num_gpus_per_node": 8}},
     )
-    # The binary path keys the per-build version cache, so a distinct path keeps
-    # this test's answer from leaking into another.
     monkeypatch.setattr(
         blis_service,
-        "read_engines",
+        "cached_engines",
         lambda _binary: (
             BlisEngine(
                 kind="vllm",
@@ -563,7 +636,7 @@ def test_request_naming_the_modeled_release_resolves(monkeypatch, catalog):
     )
     monkeypatch.setattr(
         blis_service,
-        "read_engines",
+        "cached_engines",
         lambda _binary: (
             BlisEngine(
                 kind="vllm",
@@ -580,7 +653,13 @@ def test_request_naming_the_modeled_release_resolves(monkeypatch, catalog):
     assert resolved.hardware == "h100"
 
 
-def test_request_for_a_release_a_build_cannot_report_is_not_refused(monkeypatch, catalog):
+def test_request_for_a_release_is_refused_when_the_build_cannot_report_it(monkeypatch, catalog):
+    """An unreadable build must not answer a pinned release with a different one.
+
+    ``read_engines`` cannot tell a failed probe from a build that never reported,
+    so an empty report means "unknown", not "models nothing": answering would
+    substitute whatever release the build pins for the one the caller asked for.
+    """
     runtime = BlisRuntime("/opt/blis-silent", "/catalog", "")
     monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
     monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
@@ -589,13 +668,77 @@ def test_request_for_a_release_a_build_cannot_report_is_not_refused(monkeypatch,
         "load_system_spec",
         lambda _system: {"node": {"num_gpus_per_node": 8}},
     )
-    # A build that predates the engine report says nothing; the request cannot be
-    # checked against it, so it is not refused.
-    monkeypatch.setattr(blis_service, "read_engines", lambda _binary: ())
+    monkeypatch.setattr(blis_service, "cached_engines", lambda _binary: ())
 
-    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
+    with pytest.raises(BlisUnsupportedRequest, match="did not report which vLLM release"):
+        blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "0.30.0")
+
+
+def test_request_without_a_version_runs_on_a_build_that_cannot_report_it(monkeypatch, catalog):
+    """Leaving the version blank asks for no release, so nothing is substituted."""
+    runtime = BlisRuntime("/opt/blis-silent-blank", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(blis_service, "cached_engines", lambda _binary: ())
+
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", None)
 
     assert resolved.model.catalog_name == "qwen3-32b"
+
+
+def test_current_alias_means_the_release_the_build_models(monkeypatch, catalog):
+    """`current` is the documented spelling of "the default", not a pin."""
+    runtime = BlisRuntime("/opt/blis-current", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(
+        blis_service,
+        "cached_engines",
+        lambda _binary: (
+            BlisEngine(
+                kind="vllm",
+                modeled_version="0.31.0",
+                modeled_commit=None,
+                build_version=None,
+                roles=(),
+            ),
+        ),
+    )
+
+    resolved = blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", "current")
+
+    assert resolved.hardware == "h100"
+
+
+@pytest.mark.parametrize("alias", ["previous", "next"])
+def test_aisim_slot_aliases_are_refused_by_name(monkeypatch, catalog, alias):
+    """`previous`/`next` name SDK data slots a BLIS build has no equivalent for.
+
+    The refusal does not depend on the probe: the value is meaningless whether or
+    not the build can report its release.
+    """
+    runtime = BlisRuntime("/opt/blis-aliases", "/catalog", "")
+    monkeypatch.setattr(blis_service, "load_catalog", lambda: catalog)
+    monkeypatch.setattr(blis_service, "resolve_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        blis_service,
+        "load_system_spec",
+        lambda _system: {"node": {"num_gpus_per_node": 8}},
+    )
+    monkeypatch.setattr(blis_service, "cached_engines", lambda _binary: ())
+
+    with pytest.raises(BlisUnsupportedRequest, match="name AISim data slots"):
+        blis_service._resolve_request("Qwen/Qwen3-32B", "h100_sxm", "vllm", alias)
 
 
 def test_scenario_states_an_explicit_context_window():

@@ -44,7 +44,7 @@ from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_supported_databases, get_version_slots, load_system_spec
 from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
-from .blis.engines import BlisEngine, read_engines
+from .blis.engines import BlisEngine, cached_engines
 from .blis.manifest import BlisManifestError, BlisUnsupportedRequest, load_catalog
 from .blis.runner import BlisExecutionError, BlisTimeoutError
 from .blis.runtime import blis_commit, blis_release, resolve_runtime
@@ -5047,22 +5047,18 @@ app.add_middleware(
 )
 
 
-_BLIS_ENGINES: tuple[BlisEngine, ...] | None = None
-
-
 def _blis_engines() -> tuple[BlisEngine, ...]:
     """The engines the pinned BLIS build models, or none when it cannot say.
 
-    Reading the build once per process keeps /backends from spawning a probe on
-    every request; the build cannot change while the service is running.
+    ``cached_engines`` keeps a successful report for the life of the process, so
+    /backends does not spawn a probe per request, and retries a failed one, so a
+    transient failure does not leave the catalog reporting no engine until the
+    service restarts.
     """
-    global _BLIS_ENGINES
-    if _BLIS_ENGINES is None:
-        try:
-            _BLIS_ENGINES = read_engines(resolve_runtime().binary)
-        except BlisManifestError:
-            _BLIS_ENGINES = ()
-    return _BLIS_ENGINES
+    try:
+        return cached_engines(resolve_runtime().binary)
+    except BlisManifestError:
+        return ()
 
 
 def _blis_backends() -> dict[str, Any]:

@@ -47,13 +47,18 @@ _WEIGHT_QUANTIZATION = {
     "mxfp4": "mxfp4",
     "nvfp4": "nvfp4",
 }
+#: The API's KV-cache spellings, mapped to the names ``engine.cache_dtype``
+#: accepts. ``bf16`` and ``fp16`` are aliases the API accepts; the engine names
+#: the formats ``bfloat16`` and ``float16``, and a document that says otherwise is
+#: refused, so the alias is resolved here rather than forwarded.
 _CACHE_DTYPE = {
     "half": None,
-    "bf16": "bf16",
-    "fp16": "fp16",
+    "bf16": "bfloat16",
+    "fp16": "float16",
     "fp8": "fp8",
     "fp8_e4m3": "fp8_e4m3",
     "fp8_e5m2": "fp8_e5m2",
+    "nvfp4": "nvfp4",
 }
 
 
@@ -159,7 +164,7 @@ def _pool_engine(pool: ScenarioPoolRequest) -> dict[str, Any]:
     if weight_quant:
         engine["quantization"] = weight_quant
     if cache_dtype:
-        engine["kv_cache_dtype"] = cache_dtype
+        engine["cache_dtype"] = cache_dtype
     engine["enable_prefix_caching"] = pool.prefix_caching if pool.prefix_caching is not None else True
     return engine
 
@@ -318,7 +323,7 @@ def build_documents(request: ScenarioRequest) -> tuple[dict[str, Any], dict[str,
     if quantization:
         engine["quantization"] = quantization
     if cache_dtype:
-        engine["kv_cache_dtype"] = cache_dtype
+        engine["cache_dtype"] = cache_dtype
     # vLLM's schema default is prefix caching enabled. State it explicitly so
     # the emitted Scenario and normalized response agree on the applied setting.
     engine["enable_prefix_caching"] = request.prefix_caching if request.prefix_caching is not None else True
