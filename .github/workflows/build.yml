@@ -39,6 +39,10 @@ jobs:
             # /api/health answers 200 even when the gateway is unreachable, so
             # use the route that proves the Next server itself is serving.
             smoke-path: /api/version
+            # Next binds `HOSTNAME` when it is set, and Docker sets it to the
+            # host's name, which is not reachable on loopback. The deployment
+            # quadlet sets this too.
+            smoke-env: "-e HOSTNAME=0.0.0.0"
           # The two Python services build from the services/ context so their
           # images can pull in the shared configiq-py package.
           - name: aisimulators
