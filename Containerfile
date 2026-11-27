@@ -14,6 +14,9 @@ RUN npm run build
 # Runtime stage
 FROM node:24-alpine
 
+LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+LABEL org.opencontainers.image.licenses=Apache-2.0
+
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -21,6 +24,10 @@ ENV NODE_ENV=production
 COPY --from=builder --chown=1001:0 /app/.next/standalone ./
 COPY --from=builder --chown=1001:0 /app/.next/static ./.next/static
 COPY --from=builder --chown=1001:0 /app/public ./public
+
+# The Apache 2.0 text travels with every published image, so a pulled image can
+# answer what it is licensed under without going back to the repository.
+COPY LICENSE /licenses/LICENSE
 
 RUN chmod -R g=u /app
 

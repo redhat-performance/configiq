@@ -11,10 +11,10 @@ services:
 
   api:
     build:
-      # Context is the parent services/ dir so the build can pull in the shared
-      # configiq-py package alongside this service.
-      context: ..
-      dockerfile: aicostings/Containerfile
+      # Context is the repository root so the build can pull in the shared
+      # configiq-py package and the repository LICENSE.
+      context: ../..
+      dockerfile: services/aicostings/Containerfile
     ports:
       - "8080:8080"
     environment:

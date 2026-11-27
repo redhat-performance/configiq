@@ -31,20 +31,21 @@ jobs:
             file: ./Containerfile
             image: ghcr.io/redhat-performance/configiq
             build-args: 
-          # The two Python services build from the services/ context so their
-          # images can pull in the shared configiq-py package.
+          # The Python services build from the repository root too, so every
+          # image can pull in the shared configiq-py package and the repository
+          # LICENSE. A single context keeps one .dockerignore honest.
           - name: aisimulators
-            context: services
+            context: .
             file: services/aisimulators/Containerfile
             image: ghcr.io/redhat-performance/aisimulators
             build-args: ""
           - name: aicostings
-            context: services
+            context: .
             file: services/aicostings/Containerfile
             image: ghcr.io/redhat-performance/aicostings
             build-args: ""
           - name: mcp-gateway
-            context: services
+            context: .
             file: services/mcp-gateway/Containerfile
             image: ghcr.io/redhat-performance/configiq-mcp
             build-args: ""

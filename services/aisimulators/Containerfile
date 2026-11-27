@@ -1,9 +1,10 @@
 # AISimulators REST API service.
 #
-# Build context is services/ (not this directory) so the image can pull in the
-# shared configiq-py package alongside this service. Build from the repo root:
+# Build context is the repository root, so the image can pull in the shared
+# configiq-py package alongside this service and the repository LICENSE. Build
+# from the repo root:
 #
-#   podman build -f services/aisimulators/Containerfile -t aisimulators services/
+#   podman build -f services/aisimulators/Containerfile -t aisimulators .
 #
 # The image carries two simulators:
 #
@@ -78,7 +79,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM alpine/git:2.47.2 AS llm_d
 ARG LLM_D_REVISION=378b42d18dabe0b9c4ced4e6f3670d93b52db08e
 RUN apk add --no-cache bash
-COPY aisimulators/scripts/fetch-llm-d-vendor.sh /tmp/fetch-llm-d-vendor.sh
+COPY services/aisimulators/scripts/fetch-llm-d-vendor.sh /tmp/fetch-llm-d-vendor.sh
 RUN AISIMULATORS_LLM_D_VENDOR_DIR=/opt/llm-d bash /tmp/fetch-llm-d-vendor.sh "${LLM_D_REVISION}"
 
 # The deployment render gate builds the overlay before the service returns it,
@@ -93,6 +94,9 @@ RUN apk add --no-cache curl tar \
     && /usr/local/bin/kustomize version
 
 FROM python:3.12-slim
+
+LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+LABEL org.opencontainers.image.licenses=Apache-2.0
 
 # The BLIS version reported by GET /simulators, GET /backends, and in every BLIS
 # prediction's provenance: the Go pseudo-version `blis version` prints for the
@@ -136,7 +140,7 @@ RUN python -m venv /opt/venv \
 
 # Shared ConfigIQ library, with the observability + MCP extras so /metrics,
 # tracing, and the MCP server light up in the deployed container.
-COPY configiq-py /src/configiq-py
+COPY services/configiq-py /src/configiq-py
 RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 
 # Runtime deps, read from pyproject.toml (single source of truth) by the shared
@@ -144,7 +148,7 @@ RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 # pyproject.toml references by exact fork-release wheel URL. Copy pyproject.toml
 # alone first so this layer only rebuilds when the deps change. `python` here is
 # the venv's (PATH=/opt/venv/bin), so pip installs into /opt/venv.
-COPY scripts/install-deps.py aisimulators/pyproject.toml /tmp/
+COPY services/scripts/install-deps.py services/aisimulators/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
 # Expose the aisimulate CLI at a stable system path, and fail the build early if
@@ -161,7 +165,7 @@ RUN ln -sf /opt/venv/bin/aisimulate /usr/local/bin/aisimulate \
         = "${BLIS_VERSION}"
 
 # Thin REST wrapper. CMD imports it as api_service.app:app.
-COPY aisimulators/tools/api_service /app/api_service
+COPY services/aisimulators/tools/api_service /app/api_service
 
 # The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
 # composes its default systems root by downloading them on first use. Do that
@@ -198,6 +202,10 @@ RUN chown -R 1001:0 /app /opt/venv \
 # of crash-looping every replica on the host.
 RUN python -c \
         "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
+
+# The Apache 2.0 text travels with every published image, as the last layer so a
+# license change never invalidates the install or the dataset pre-warm.
+COPY LICENSE /licenses/LICENSE
 
 USER 1001
 

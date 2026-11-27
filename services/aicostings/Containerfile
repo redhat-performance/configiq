@@ -1,9 +1,10 @@
 # AICostings FastAPI service — GPU and LLM pricing API.
 #
-# Build context is services/ (not this directory) so the image can pull in the
-# shared configiq-py package alongside this service. Build from the repo root:
+# Build context is the repository root, so the image can pull in the shared
+# configiq-py package alongside this service and the repository LICENSE. Build
+# from the repo root:
 #
-#   podman build -f services/aicostings/Containerfile -t aicostings services/
+#   podman build -f services/aicostings/Containerfile -t aicostings .
 #
 # Pure-Python service, but it sources the GPU system catalog + display names from
 # the aisimulate SDK (via configiq.systems), so it installs those wheels too.
@@ -12,6 +13,7 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 
 # Link the GHCR package to this repo (configiq) for the package UI + inherited access.
 LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+LABEL org.opencontainers.image.licenses=Apache-2.0
 
 # The UBI python image defaults to USER 1001 in /opt/app-root; run as root only
 # for the install steps, then hand everything back to the arbitrary-UID user.
@@ -24,7 +26,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Shared ConfigIQ library, with the observability + MCP extras so /metrics,
 # tracing, and the MCP server light up in the deployed container.
-COPY configiq-py /src/configiq-py
+COPY services/configiq-py /src/configiq-py
 RUN pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 
 # Service runtime deps, read from pyproject.toml (single source of truth) by the
@@ -33,12 +35,12 @@ RUN pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 # aisimulate SDK wheels by exact fork-release URL — source of the GPU system
 # catalog and vendor display names via configiq.systems, with pyarrow reading the
 # SDK's bundled perf-data parquet.
-COPY scripts/install-deps.py aicostings/pyproject.toml /tmp/
+COPY services/scripts/install-deps.py services/aicostings/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
 # Service source. The app reads bundled YAML from data/ and uses relative
 # imports, so it runs from the source tree at /app (python -m tools.api_service.app).
-COPY aicostings /app
+COPY services/aicostings /app
 
 # The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
 # composes its default systems root by downloading them on first use. Do that
@@ -77,6 +79,10 @@ RUN chown -R 1001:0 /app \
 # instead of crash-looping every replica on the host.
 RUN python -c \
         "from aisim_core.data.default_systems import default_systems_path; print(default_systems_path())"
+
+# The Apache 2.0 text travels with every published image, as the last layer so a
+# license change never invalidates the install or the dataset pre-warm.
+COPY LICENSE /licenses/LICENSE
 
 USER 1001
 

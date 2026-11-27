@@ -36,14 +36,14 @@ Full spec: [`docs/api/openapi.yaml`](docs/api/openapi.yaml).
 ## Run with the container (recommended)
 
 The `aisim` wheel ships only for `linux/amd64` (manylinux x86_64), so the
-container is the portable way to run this service. The build context is
-`services/` (not this directory) so the image can pull in the shared
-`configiq-py` package; pass the Containerfile with `-f` and build for
+container is the portable way to run this service. The build context is the
+repository root so the image can pull in the shared `configiq-py` package and
+the repository `LICENSE`; pass the Containerfile with `-f` and build for
 `linux/amd64` (emulated on Apple Silicon):
 
 ```bash
 docker build --platform linux/amd64 \
-  -f services/aisimulators/Containerfile -t aisimulators services/
+  -f services/aisimulators/Containerfile -t aisimulators .
 docker run --rm -p 7860:7860 aisimulators
 curl http://localhost:7860/systems
 ```

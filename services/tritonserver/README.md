@@ -18,7 +18,7 @@ Build from the repository root:
 
 ```bash
 podman build -f services/tritonserver/Containerfile \
-  -t configiq-tritonserver services/tritonserver
+  -t configiq-tritonserver .
 ```
 
 The build verifies that FIL, vLLM `0.33.0` with its `reasoning_parser` option,

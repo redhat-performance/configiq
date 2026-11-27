@@ -64,11 +64,11 @@ dependencies = ["configiq[otel,mcp]", ...]
 configiq = { path = "../configiq-py", editable = true }
 ```
 
-In containers the build context is `services/`, and each service's Containerfile
-installs this package before its own:
+In containers the build context is the repository root, and each service's
+Containerfile installs this package before its own:
 
 ```dockerfile
-COPY configiq-py /src/configiq-py
-COPY <service>   /src/<service>
+COPY services/configiq-py /src/configiq-py
+COPY services/<service>   /src/<service>
 RUN pip install ./configiq-py && pip install ./<service>
 ```

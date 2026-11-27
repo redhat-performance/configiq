@@ -51,7 +51,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: services/tritonserver
+          context: .
           file: services/tritonserver/Containerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}

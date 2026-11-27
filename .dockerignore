@@ -1,0 +1,25 @@
+# Every image builds from the repository root so it can reach the shared
+# services/ tree and LICENSE, so this list keeps local build output, virtualenvs
+# and secrets out of the context. .git is deliberately kept: the frontend image
+# runs scripts/inject-build-metadata.js, which reads `git rev-parse` and
+# `git describe`.
+node_modules
+.next
+.next-dev
+out
+playwright-report
+test-results
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+*.tsbuildinfo
+.DS_Store
+
+# Local environment files. Build metadata is regenerated inside the image, and
+# the gateway URLs are read server-side at runtime, so no env file is a build
+# input.
+.env
+.env.local
+.env.*.local

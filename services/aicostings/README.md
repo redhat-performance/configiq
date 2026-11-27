@@ -50,10 +50,10 @@ The API will be available at `http://localhost:8080`.
 ### Container
 
 The image bundles the shared `configiq` package, so its build context is the
-parent `services/` directory:
+repository root:
 
 ```bash
-podman build -f services/aicostings/Containerfile -t aicostings services/
+podman build -f services/aicostings/Containerfile -t aicostings .
 # or, with Valkey, via compose from this directory:
 podman compose up --build
 ```
@@ -284,4 +284,4 @@ compose.yml
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0. See [LICENSE](../../LICENSE).

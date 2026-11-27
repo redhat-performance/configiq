@@ -142,3 +142,7 @@ npm run build        # Must succeed
 4. **Sentence case everywhere** — no title case in headings or labels.
 5. **Server components by default** — add `"use client"` only when needed.
 6. **No `any` types** — TypeScript strict mode is enforced.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

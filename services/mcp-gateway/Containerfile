@@ -1,6 +1,12 @@
+# Build context is the repository root, so the image can pull in the shared
+# configiq-py package alongside this service and the repository LICENSE:
+#
+#   podman build -f services/mcp-gateway/Containerfile -t configiq-mcp .
+
 FROM python:3.12-slim
 
 LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
+LABEL org.opencontainers.image.licenses=Apache-2.0
 
 WORKDIR /app
 
@@ -11,14 +17,17 @@ ENV PYTHONUNBUFFERED=1 \
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip
 
-COPY configiq-py /src/configiq-py
+COPY services/configiq-py /src/configiq-py
 RUN /opt/venv/bin/pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 
-COPY mcp-gateway/pyproject.toml /tmp/pyproject.toml
-COPY scripts/install-deps.py /tmp/install-deps.py
+COPY services/mcp-gateway/pyproject.toml /tmp/pyproject.toml
+COPY services/scripts/install-deps.py /tmp/install-deps.py
 RUN /opt/venv/bin/python /tmp/install-deps.py /tmp/pyproject.toml
 
-COPY mcp-gateway /app
+COPY services/mcp-gateway /app
+
+# The Apache 2.0 text travels with every published image.
+COPY LICENSE /licenses/LICENSE
 
 RUN chown -R 1001:0 /app /opt/venv \
     && chmod -R g=u /app /opt/venv

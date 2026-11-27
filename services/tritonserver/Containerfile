@@ -12,6 +12,7 @@ ARG VLLM_VERSION=0.33.0
 
 LABEL org.opencontainers.image.source=https://github.com/redhat-performance/configiq
 LABEL org.opencontainers.image.title=configiq-tritonserver
+LABEL org.opencontainers.image.licenses=Apache-2.0
 LABEL ai.configiq.vllm.version=${VLLM_VERSION}
 
 USER 0
@@ -31,5 +32,9 @@ ENV PATH=/opt/vllm-site/bin:${PATH} \
 # the deployment host.
 RUN test -f /opt/tritonserver/backends/fil/libtriton_fil.so \
     && python3 -c "import inspect, vllm; from vllm.engine.arg_utils import AsyncEngineArgs; from vllm.model_executor.models.registry import ModelRegistry; assert vllm.__version__.startswith('${VLLM_VERSION}'); assert 'reasoning_parser' in inspect.signature(AsyncEngineArgs).parameters; assert 'K2HorizonForCausalLM' in ModelRegistry.get_supported_archs()"
+
+# The Apache 2.0 text travels with every published image. The build context is
+# the repository root so this COPY can reach it.
+COPY LICENSE /licenses/LICENSE
 
 USER 1000

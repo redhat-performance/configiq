@@ -2,6 +2,7 @@
 name = "configiq-tools"
 version = "0.0.0"
 description = "Repository-level automation for ConfigIQ"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = []
 
