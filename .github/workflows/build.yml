@@ -20,17 +20,25 @@ jobs:
     strategy:
       # Release all four images in unison. fail-fast cancels the remaining legs
       # the moment one fails, which shrinks — but does not eliminate — the window
-      # where a tag has only some images: each leg pushes independently (push:
-      # true), so a leg that finished before the failure has already published.
-      # A corrected rerun republishes all four at the same tag, restoring the set.
+      # where a tag has only some images: each leg promotes independently, so a
+      # leg that finished before the failure has already moved its tag. A
+      # corrected rerun republishes all four at the same tag, restoring the set.
       fail-fast: true
       matrix:
         include:
+          # `smoke-port` / `smoke-path` are what proves the running image works.
+          # The candidate image is started on the host network so it reaches the
+          # job's services (aicostings needs Valkey) exactly as a deployment
+          # would, and only a passing image promotes the moving tags.
           - name: configiq
             context: .
             file: ./Containerfile
             image: ghcr.io/redhat-performance/configiq
-            build-args: 
+            build-args:
+            smoke-port: 3000
+            # /api/health answers 200 even when the gateway is unreachable, so
+            # use the route that proves the Next server itself is serving.
+            smoke-path: /api/version
           # The two Python services build from the services/ context so their
           # images can pull in the shared configiq-py package.
           - name: aisimulators
@@ -38,16 +46,28 @@ jobs:
             file: services/aisimulators/Containerfile
             image: ghcr.io/redhat-performance/aisimulators
             build-args: ""
+            # Exercises the image's pre-warmed dataset, which is exactly what a
+            # broken pre-warm crashes on at startup.
+            smoke-port: 7860
+            smoke-path: /systems
           - name: aicostings
             context: services
             file: services/aicostings/Containerfile
             image: ghcr.io/redhat-performance/aicostings
             build-args: ""
+            # Startup connects to Valkey, so this leg starts one and points the
+            # container at it.
+            smoke-port: 8080
+            smoke-path: /health
+            smoke-valkey: true
+            smoke-env: "-e VALKEY_URL=valkey://127.0.0.1:6379/1"
           - name: mcp-gateway
             context: services
             file: services/mcp-gateway/Containerfile
             image: ghcr.io/redhat-performance/configiq-mcp
             build-args: ""
+            smoke-port: 8090
+            smoke-path: /health
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,6 +83,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Every build lands under an immutable candidate tag. The moving tags are
+      # promoted only after this image passes its smoke test, so a bad build
+      # leaves a tag nothing auto-updates to and still names the commit for a
+      # rollback.
+      - name: Candidate tag
+        id: candidate
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -73,14 +101,76 @@ jobs:
             type=semver,pattern=latest
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Build and push
+      - name: Build and push candidate
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ matrix.image }}:${{ steps.candidate.outputs.tag }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: ${{ matrix.build-args }}
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      - name: Start Valkey for the smoke test
+        if: matrix.smoke-valkey
+        run: |
+          set -euo pipefail
+          docker run --detach --name valkey-smoke \
+            --publish 127.0.0.1:6379:6379 valkey/valkey:8
+          for attempt in $(seq 1 30); do
+            if docker exec valkey-smoke valkey-cli ping >/dev/null 2>&1; then
+              echo "Valkey ready after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Valkey did not become ready"
+          docker logs valkey-smoke || true
+          exit 1
+
+      # The image is started here, before any moving tag points at it. A startup
+      # failure (a broken pre-warm, a missing runtime dep) fails the leg now
+      # rather than crash-looping every host that auto-updates.
+      - name: Smoke test candidate
+        run: |
+          set -euo pipefail
+          image="${{ matrix.image }}:${{ steps.candidate.outputs.tag }}"
+          url="http://127.0.0.1:${{ matrix.smoke-port }}${{ matrix.smoke-path }}"
+          docker run --detach --name smoke-${{ matrix.name }} \
+            --network host \
+            ${{ matrix.smoke-env }} \
+            "$image"
+          for attempt in $(seq 1 60); do
+            if ! docker inspect --format '{{.State.Running}}' \
+                smoke-${{ matrix.name }} 2>/dev/null | grep -q true; then
+              echo "::error::${image} exited before it answered $url"
+              docker logs smoke-${{ matrix.name }} || true
+              exit 1
+            fi
+            if curl --fail --silent --show-error --max-time 5 "$url" >/dev/null; then
+              echo "${image} answered $url after ${attempt} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::${image} never answered $url"
+          docker logs smoke-${{ matrix.name }} || true
+          exit 1
+
+      - name: Stop smoke containers
+        if: always()
+        run: |
+          docker stop smoke-${{ matrix.name }} valkey-smoke 2>/dev/null || true
+
+      # Promotion retags the exact manifest that was just smoke-tested; it does
+      # not rebuild, so the promoted digest is the candidate digest.
+      - name: Promote moving tags
+        run: |
+          set -euo pipefail
+          candidate="${{ matrix.image }}:${{ steps.candidate.outputs.tag }}"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker buildx imagetools create --tag "$tag" "$candidate"
+          done <<< "${{ steps.meta.outputs.tags }}"

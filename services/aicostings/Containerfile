@@ -36,10 +36,6 @@ RUN pip install --no-cache-dir "/src/configiq-py[otel,mcp]"
 COPY scripts/install-deps.py aicostings/pyproject.toml /tmp/
 RUN python /tmp/install-deps.py /tmp/pyproject.toml
 
-# Service source. The app reads bundled YAML from data/ and uses relative
-# imports, so it runs from the source tree at /app (python -m tools.api_service.app).
-COPY aicostings /app
-
 # The AISim SDK keeps its op-latency tables in a pinned Hugging Face dataset and
 # composes its default systems root by downloading them on first use. Do that
 # here, once, so a running container never depends on the Hub: the deployed
@@ -66,6 +62,12 @@ stamp = 1600000000; \
     && test -d /app/.cache/aisim/data/systems \
     && find /app/.cache/aisim/data -mindepth 1 -maxdepth 1 ! -name systems -exec rm -rf {} +
 ENV AISIM_DATA_OFFLINE=1
+
+# Service source. The app reads bundled YAML from data/ and uses relative
+# imports, so it runs from the source tree at /app (python -m tools.api_service.app).
+# Kept below the pre-warm so editing the service reuses the composed dataset
+# layer instead of refetching it.
+COPY aicostings /app
 
 # OpenShift / rootless compatibility: numeric UID 1001, group 0 (root group),
 # group-writable so an arbitrary assigned UID can still write.
