@@ -37,7 +37,7 @@ def _max_record_bytes() -> int:
 
 #: Runtime paths a BLIS command reads from the environment. A record only
 #: asks for the ones its own commands use.
-_BLIS_ENVIRONMENT = ("BLIS_BINARY", "BLIS_CATALOG", "BLIS_REGISTRY")
+_BLIS_ENVIRONMENT = ("BLIS_BINARY", "BLIS_CATALOG")
 
 
 class ReplayRecorder:
@@ -158,7 +158,6 @@ class ReplayRecorder:
         files: dict[str, str],
         binary: str,
         catalog: str,
-        registry: str,
         scenario_directory: str,
         group: str | None = None,
         candidate_id: str | None = None,
@@ -174,7 +173,6 @@ class ReplayRecorder:
             files=files,
             binary=binary,
             catalog=catalog,
-            registry=registry,
             scenario_directory=scenario_directory,
             group=group,
             candidate_id=candidate_id,
@@ -326,7 +324,6 @@ def capture_blis_run(
     files: dict[str, str],
     binary: str,
     catalog: str,
-    registry: str,
     scenario_directory: str,
     candidate_id: str | None = None,
 ) -> None:
@@ -341,7 +338,6 @@ def capture_blis_run(
             files=files,
             binary=binary,
             catalog=catalog,
-            registry=registry,
             scenario_directory=scenario_directory,
             candidate_id=candidate_id,
         )

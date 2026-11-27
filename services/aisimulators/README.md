@@ -58,18 +58,22 @@ deployment render gate needs:
 /opt/llm-d/<revision>/guides/   # pinned llm-d subtrees (AISIMULATORS_LLM_D_VENDOR_DIR)
 ```
 
-BLIS v0.15.0 is copied from the upstream multi-arch release image
-`ghcr.io/inference-sim/blis:v0.15.0`, pinned by index digest
-`sha256:ae02212a5c06d147f98e62f90d8101ec158bcd74c55cc3a424d9f2b213d89c33`.
+BLIS v0.19.0 is copied from the upstream multi-arch release image
+`ghcr.io/inference-sim/blis:v0.19.0`, pinned by index digest
+`sha256:6c6915118e15d60eb0d6ebb62f41a3b6c3e1a980c095ee5bc9872024543cc51b`.
 Using the published release keeps the binary exactly the artifact upstream
 tested and removes the Go toolchain from this build. The build fails if the
-`BLIS_IMAGE` tag and the reported `BLIS_VERSION` disagree. The image bundles the
-two catalog inputs a BLIS run reads, both at pinned commits:
+`BLIS_IMAGE` tag and the reported `BLIS_VERSION` disagree.
+
+BLIS v0.19 embeds its catalog and coefficient registry in the binary and
+refuses the external clones earlier releases read, so a run takes neither
+`--catalog` nor `--registry`. The image still copies the catalog out of the
+pinned source commit because the API enumerates models, chips, and fabrics
+from it:
 
 | Path | Contents | Pin |
 |---|---|---|
-| `/opt/blis/catalog` | declared facts: model graphs, chips, fabrics, workloads | blis-catalog `0.3.0`, `676326ec6c708e91ec4981bd6b03922a7fe60512` |
-| `/opt/blis/registry` | fitted coefficient sets a scenario names | blis-registry `v0.2.0`, `7f6662d7188dc3dc873a37623e1f7bbfe1d6081b` |
+| `/opt/blis/catalog` | declared facts: model graphs, chips, fabrics, workloads, read by the API only | `inference-sim/inference-sim` `e7597a8c9510f876653d7d87bd8baf195c37c5c7` |
 
 No example-scenario directory is bundled: the adapter generates a Scenario and
 Deployment per request, so those files would be dead weight.
@@ -78,7 +82,7 @@ There is no build-time support manifest. The API reads `/opt/blis/catalog`
 directly at request time, and the catalog is the only source of BLIS support
 facts:
 
-- A model is priceable only when blis-catalog ships its `models/<slug>/graph.yaml`.
+- A model is priceable only when the catalog ships its `models/<slug>/graph.yaml`.
   The public model identifier is the Hugging Face repo from that entry's
   `model.yaml` (`Qwen/Qwen3-32B`); the catalog slug (`qwen3-32b`) is accepted as
   an input alias.
@@ -122,7 +126,7 @@ What a command means:
 
 | Simulator | `execution` | Meaning |
 |---|---|---|
-| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. Runtime paths are read from `BLIS_BINARY`, `BLIS_CATALOG`, and `BLIS_REGISTRY`, so the command does not name this image's layout. |
+| BLIS | `subprocess` | The exact `blis run` process, with the scenario files ConfigIQ generated. Runtime paths are read from `BLIS_BINARY` (and `BLIS_CATALOG` for a command that names one), so the command does not name this image's layout. BLIS reads its embedded catalog and registry, so the command carries no external data path. |
 | AISim | `in_process` | An equivalent CLI invocation, `aisimulate predict -c <file>` or `aisimulate recommend -c <file>`. The service calls the Python API directly, so the command repeats the same work rather than the same process. |
 | AISim (memory) | `in_process` | A Python snippet calling `estimate_kv_cache`. The memory model has no CLI verb. |
 
@@ -314,9 +318,16 @@ reconstructing the default. BLIS has no width invariant: it receives only the
 widths the caller supplied, and its aggregated response reports those explicit
 values (or null).
 
-BLIS models three vLLM releases: `0.29.0`, `0.31.0`, and `0.32.0`. The default is
-`0.31.0`, the newest release that models prefill/decode disaggregation.
-`0.32.0` is opt-in and models both colocated and P/D serving. The adapter always
+BLIS v0.19 fixes the engine release its kernel prices: a Scenario states
+`engine: {kind: vllm}` and no version, and a document that names one is refused.
+`/backends?simulator=blis` reports that release from `blis version --json`
+(provenance only fields such as the build's own engine snapshot are not shown).
+A BLIS build that predates the report lists no version, and clients show the
+version as unreported rather than substituting the snapshot. A request whose
+`backend_version` names a release the build does not model is refused with a 422
+naming the modeled release, when the build can report it; a blank version takes
+the build's release. AISim aliases such as `current` are not meaningful here.
+The adapter always
 states a concrete `engine.max_model_len`: the request's `max_seq_len` when set,
 otherwise the catalog model's native context, otherwise `isl + osl`. It does not
 emit `auto`, because BLIS resolves that from the model graph and some catalog
@@ -333,8 +344,9 @@ silently.
 client can ask what the selected simulator supports. `/backends?simulator=...`
 reports `simulator_version` and `recommend_search` (`windowed` for AISim's
 service-owned GPU window ladder, `single` for BLIS's one bounded search). The BLIS
-branch also reports the modeled versions, the literal default, and a
-`version_support` map (`disaggregated`, `max_model_len_auto`) per release.
+branch reports the engine release the pinned build models, or an empty version
+list when the build cannot report it; `version_support` is empty because a
+request cannot select a release per topology.
 `/models?simulator=blis` returns the catalog's Hugging Face repo IDs (catalog
 slugs are accepted as input aliases), and `/systems?simulator=blis` returns only
 systems that resolve to a catalog chip. `/networks?simulator=aisim` is an
@@ -753,27 +765,24 @@ Bayesian sampler enables JAX x64 process-wide and is not the default.
 `SWEEP_SEED` defaults to 42. A one-GPU total window runs one aggregate trial,
 since it cannot contain a P/D deployment.
 
-The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG` and
-`BLIS_REGISTRY`. `BLIS_VERSION` is the release reported by `/simulators`,
+The image sets `BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG`, `BLIS_IMAGE`, and
+`BLIS_CATALOG_COMMIT`. `BLIS_VERSION` is the release reported by `/simulators`,
 `/backends`, and in every prediction's provenance; `BLIS_COMMIT` is the git
 commit the release tag was built from, reported as `revision` in
-`/simulators`. BLIS itself only reads `BLIS_CATALOG` from the environment; the
-registry has no environment fallback, so callers must pass `--registry`
-explicitly as well:
+`/simulators`. BLIS reads its embedded catalog and coefficient registry, so only
+its binary path is required:
 
 ```bash
-blis run --catalog "$BLIS_CATALOG" --registry "$BLIS_REGISTRY" \
-  --scenario generated-scenario.yaml \
+blis run --scenarios "$BLIS_SCENARIOS" --scenario generated-scenario.yaml \
   --rate 10 --num-requests 100
 ```
 
 To move to a new BLIS release, bump `BLIS_IMAGE` (tag and index digest),
-`BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG_COMMIT`, and
-`BLIS_REGISTRY_COMMIT` together; update `MODELED_ENGINE_VERSIONS` in
-`tools/api_service/blis/scenario.py` if that release changes which vLLM
-versions it models. `BLIS_COMMIT` may be omitted only for the default release,
-whose commit the service resolves; another release without it reports no
-revision. See
+`BLIS_VERSION`, `BLIS_COMMIT`, `BLIS_CATALOG_COMMIT`, and `DEFAULT_BLIS_RELEASE`
+/ `DEFAULT_BLIS_COMMIT` in `tools/api_service/blis/runtime.py` together. The
+engine release the build models is reported by the binary, so no code names it.
+`BLIS_COMMIT` may be omitted only for the default release, whose commit the
+service resolves; another release without it reports no revision. See
 [docs/RELEASE_PROCESS.md](../../docs/RELEASE_PROCESS.md#bumping-blis).
 
 

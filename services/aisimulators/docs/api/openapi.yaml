@@ -399,9 +399,10 @@ paths:
         Returns backend version support, the simulator's `simulator_version`
         and `recommend_search` shape, the sizing `objectives` this simulator
         implements, and effective memory defaults. With `simulator=blis`,
-        reports the vLLM releases BLIS models, a literal default version (never
-        an AISim alias), a `version_support` map per release, and empty
-        per-system maps.
+        reports the engine release the pinned build models (from the build's
+        own engine report), an empty version list when the build cannot report
+        one, empty per-system maps, and an empty `version_support` map because a
+        request cannot select a release per topology.
       parameters:
         - name: simulator
           in: query
@@ -484,8 +485,8 @@ paths:
         fields, context length, attention heads, architecture).
 
         With `simulator=blis`, returns the Hugging Face repo IDs in the pinned
-        blis-catalog that ship a derived model graph. A catalog slug is accepted
-        as an input alias for its Hugging Face ID.
+        catalog that ship a derived model graph. A catalog slug is accepted as
+        an input alias for its Hugging Face ID.
       parameters:
         - name: include
           in: query
@@ -806,9 +807,10 @@ components:
             retries the newest declared versions and reports the one it used.
             Literal versions, `previous`, and `next` are pins and are never
             substituted: if the data cannot serve them, the request returns 422
-            naming the versions the SDK ships for the system. BLIS: must be one
-            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
-            0.31.0. Aliases and unmodeled releases return 422.
+            naming the versions the SDK ships for the system. BLIS: the build
+            fixes the engine release it prices, so null uses that release and a
+            value naming a different release returns 422 once the build can
+            report which release it models. AISim aliases are not accepted.
           default: null
         target_request_rate:
           type: number
@@ -1828,9 +1830,10 @@ components:
             retries the newest declared versions and reports the one it used.
             Literal versions, `previous`, and `next` are pins and are never
             substituted: if the data cannot serve them, the request returns 422
-            naming the versions the SDK ships for the system. BLIS: must be one
-            of the modeled vLLM releases (0.29.0, 0.31.0, 0.32.0); null uses
-            0.31.0. Aliases and unmodeled releases return 422.
+            naming the versions the SDK ships for the system. BLIS: the build
+            fixes the engine release it prices, so null uses that release and a
+            value naming a different release returns 422 once the build can
+            report which release it models. AISim aliases are not accepted.
           default: null
         mode:
           type: string
@@ -2705,7 +2708,10 @@ components:
                 concurrency-capacity sizing is aggregate-only.
         version_support:
           type: object
-          description: Per-version capabilities. Present when simulator=blis.
+          description: |
+            Per-version capabilities, for a simulator whose client can select a
+            release. Empty for BLIS: the build fixes the release, so no
+            version-dependent topology choice exists.
           additionalProperties:
             type: object
             properties:

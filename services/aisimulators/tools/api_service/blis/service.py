@@ -15,6 +15,7 @@ from typing import Any, Literal
 from aisimulate_core.sdk.perf_database import load_system_spec
 
 from ..replay.capture import active_recorder, capture_blis_run
+from .engines import cached_engines
 from .manifest import (
     BlisCatalog,
     BlisUnsupportedRequest,
@@ -33,9 +34,6 @@ from .runtime import BlisRuntime, blis_release, resolve_runtime
 from .scenario import (
     ScenarioPoolRequest,
     ScenarioRequest,
-    disaggregation_refusal,
-    engine_version_support,
-    resolve_engine_version,
     write_scenario,
 )
 
@@ -271,7 +269,6 @@ class _ResolvedRequest:
     model: ModelResolution
     hardware: str
     gpus_per_node: int
-    engine_version: str
 
 
 def _resolve_request(model_path: str, system: str, backend: str, backend_version: str | None) -> _ResolvedRequest:
@@ -280,6 +277,25 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
             f"BLIS scenarios currently model vLLM deployments, not backend {backend!r}; "
             "select vLLM or choose AISimulate explicitly"
         )
+    runtime = resolve_runtime()
+    # The build fixes which engine release it prices, so `backend_version` selects
+    # nothing. A request that names a release the build does not model is refused
+    # with the releases it does, rather than answered with a different one.
+    requested = _requested_engine_version(backend_version)
+    if requested is not None:
+        modeled = _modeled_engine_versions(runtime.binary)
+        if not modeled:
+            raise BlisUnsupportedRequest(
+                f"BLIS {blis_release()} did not report which vLLM release it models, so "
+                f"backend_version {backend_version!r} cannot be checked against it. Leave "
+                "backend_version blank to run the release the build models."
+            )
+        if requested not in modeled:
+            raise BlisUnsupportedRequest(
+                f"BLIS {blis_release()} models vLLM {', '.join(modeled)}; "
+                f"requested backend_version {backend_version!r}. Leave backend_version "
+                "blank to use the release the build models."
+            )
     catalog = load_catalog()
     model = catalog.resolve_model(model_path)
     hardware = catalog.resolve_hardware(system)
@@ -293,15 +309,65 @@ def _resolve_request(model_path: str, system: str, backend: str, backend_version
         raise BlisUnsupportedRequest(f"BLIS has no single-node GPU layout for {system!r}")
     return _ResolvedRequest(
         catalog=catalog,
-        runtime=resolve_runtime(),
+        runtime=runtime,
         model=model,
         hardware=hardware,
         gpus_per_node=gpus_per_node,
-        engine_version=resolve_engine_version(backend_version),
     )
 
 
-def _provenance(resolved: _ResolvedRequest, model_path: str, system: str) -> dict[str, str | None]:
+#: The slot alias the shared ``backend_version`` field documents as "the
+#: simulator's default". For BLIS the default is the release its build pins.
+_DEFAULT_VERSION_ALIAS = "current"
+
+#: The other AISim slot aliases. They name data slots the SDK ships; a BLIS build
+#: has one pinned release and no equivalents, so they are refused by name.
+_AISIM_SLOT_ALIASES = frozenset({"previous", "next"})
+
+
+def _requested_engine_version(raw: str | None) -> str | None:
+    """The literal engine release a request pins, or None when it takes the default.
+
+    ``current`` is the documented spelling of "the default" and is accepted here
+    rather than refused, because BLIS's default — the release the build pins — is
+    exactly what the shared field description promises it means.
+    """
+    requested = (raw or "").strip()
+    if not requested or requested == _DEFAULT_VERSION_ALIAS:
+        return None
+    if requested in _AISIM_SLOT_ALIASES:
+        raise BlisUnsupportedRequest(
+            f"BLIS prices the one engine release its build pins, so backend_version "
+            f"{requested!r} has no meaning: {', '.join(sorted(_AISIM_SLOT_ALIASES))} name "
+            "AISim data slots. Leave backend_version blank to use the release the build "
+            "models."
+        )
+    return requested
+
+
+def _modeled_engine_versions(binary: str) -> tuple[str, ...]:
+    """The vLLM releases the build models, or none when it cannot report them.
+
+    An unreadable build is retried rather than remembered, so one failed probe does
+    not leave the version check switched off for the life of the process (see
+    ``cached_engines``). A caller that must check a requested release treats an
+    empty tuple as "cannot verify" rather than as "models nothing" — see
+    ``_resolve_request``.
+    """
+    return tuple(
+        engine.modeled_version
+        for engine in cached_engines(binary)
+        if engine.kind == "vllm" and engine.modeled_version
+    )
+
+
+def _provenance(
+    resolved: _ResolvedRequest,
+    model_path: str,
+    system: str,
+    *,
+    engine_version: str | None,
+) -> dict[str, str | None]:
     return {
         "simulator": "blis",
         "simulator_version": blis_release(),
@@ -311,14 +377,38 @@ def _provenance(resolved: _ResolvedRequest, model_path: str, system: str) -> dic
         "system": system,
         "hardware": resolved.hardware,
         "model_config_relation": None,
-        "engine_version": resolved.engine_version,
+        "engine_version": engine_version,
     }
 
 
-def _require_disaggregation(resolved: _ResolvedRequest) -> None:
-    """Refuse a P/D topology before a run when the release cannot model one."""
-    if not engine_version_support(resolved.engine_version)["disaggregated"]:
-        raise BlisUnsupportedRequest(disaggregation_refusal(resolved.engine_version))
+def _modeled_engine_version(result: dict[str, Any]) -> str | None:
+    """The engine release whose behaviour the run priced, as BLIS discloses it.
+
+    The build's own engine snapshot is not a release a user can benchmark
+    against, so it is never reported. When the kernel prices a release other than
+    the one the scenario declares, it records ``engine_version`` among the
+    assumptions it reports for each pool; the disclosure is ``<version>: <why>``.
+    A build that discloses no difference priced the release the scenario
+    declares, and that release is then the modelled one.
+    """
+    reports = result.get("reports") if isinstance(result.get("reports"), dict) else {}
+    kernel = reports.get("kernel") if isinstance(reports.get("kernel"), dict) else {}
+    for pool in kernel.values():
+        if not isinstance(pool, dict):
+            continue
+        assumptions = pool.get("assumptions")
+        if not isinstance(assumptions, list):
+            continue
+        for assumption in assumptions:
+            if not isinstance(assumption, dict) or assumption.get("Name") != "engine_version":
+                continue
+            scope = assumption.get("Scope")
+            if not isinstance(scope, str):
+                continue
+            version = scope.split(":", 1)[0].strip()
+            if version:
+                return version
+    return None
 
 
 def supported_model_ids(catalog: BlisCatalog | None = None) -> list[str]:
@@ -384,7 +474,6 @@ def _scenario_request(
         hardware=resolved.hardware,
         system=system,
         gpus_per_node=resolved.gpus_per_node,
-        engine_version=resolved.engine_version,
         tp=tp,
         pp=pp,
         dp=dp,
@@ -440,7 +529,7 @@ def _deployment_pools(result: dict[str, Any]) -> list[dict[str, Any]]:
     return [pool for pool in pools if isinstance(pool, dict)] if isinstance(pools, list) else []
 
 
-def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], backend_version: str) -> dict[str, Any]:
+def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], backend_version: str | None) -> dict[str, Any]:
     """Report the engine settings BLIS resolved, not a reconstruction of them."""
     max_model_len = engine.get("max_model_len")
     max_model_len_policy: str | None = None
@@ -466,17 +555,14 @@ def _engine_serving_config(engine: dict[str, Any], parallel: dict[str, Any], bac
     }
 
 
-def _serving_config(result: dict[str, Any]) -> dict[str, Any] | None:
+def _serving_config(result: dict[str, Any], backend_version: str | None) -> dict[str, Any] | None:
     pools = _deployment_pools(result)
     if not pools:
         return None
     pool = pools[0]
     engine = pool.get("engine") if isinstance(pool.get("engine"), dict) else {}
     parallel = pool.get("parallel") if isinstance(pool.get("parallel"), dict) else {}
-    provenance_version = result.get("revisions") if isinstance(result.get("revisions"), dict) else {}
-    engine_revision = provenance_version.get("engine") if isinstance(provenance_version.get("engine"), dict) else {}
-    backend_version = engine_revision.get("upstream_version")
-    return _engine_serving_config(engine, parallel, backend_version if isinstance(backend_version, str) else "unknown")
+    return _engine_serving_config(engine, parallel, backend_version)
 
 
 def _run_scenario(
@@ -542,7 +628,6 @@ def _capture_scenario(
             files=files,
             binary=resolved.runtime.binary,
             catalog=resolved.runtime.catalog,
-            registry=resolved.runtime.registry,
             scenario_directory=scenario_directory,
             candidate_id=candidate_id,
         )
@@ -623,7 +708,6 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         hardware=resolved.hardware,
         system=request.system,
         gpus_per_node=resolved.gpus_per_node,
-        engine_version=resolved.engine_version,
         tp=1,
         pp=1,
         dp=1,
@@ -650,6 +734,7 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
         num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
+    engine_version = _modeled_engine_version(result)
     total_gpus = (
         prefill.tp * prefill.pp * (request.prefill_num_workers or 1)
         + decode.tp * decode.pp * (request.decode_num_workers or 1)
@@ -664,12 +749,12 @@ def _estimate_disagg(request: EstimateInput, resolved: _ResolvedRequest) -> Blis
             "moe_ep": pool.moe_ep_size,
             "num_workers": workers,
             "batch_size": batch_size or request.concurrency,
-            "backend_version": resolved.engine_version,
+            "backend_version": engine_version,
         }
 
     return BlisPrediction(
         summary=_metrics_summary(metrics, total_gpus),
-        provenance=_provenance(resolved, request.model_path, request.system),
+        provenance=_provenance(resolved, request.model_path, request.system, engine_version=engine_version),
         serving_config=None,
         warnings=_model_warnings(resolved, model_config_provided=request.model_config_provided) + (
             [f"Simulator marked {int(metrics['dropped_unservable'])} request(s) unservable."]
@@ -693,7 +778,6 @@ def estimate(request: EstimateInput) -> BlisPrediction:
         if not request.fabric:
             raise BlisUnsupportedRequest("BLIS disaggregated predictions require an explicit fabric")
         resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
-        _require_disaggregation(resolved)
         return _estimate_disagg(request, resolved)
     resolved = _resolve_request(request.model_path, request.system, request.backend, request.backend_version)
     if request.prefix > 0 and request.prefix_caching is False:
@@ -727,11 +811,12 @@ def estimate(request: EstimateInput) -> BlisPrediction:
         num_requests=_prediction_requests(request.concurrency, request.requests_per_load_unit),
     )
     metrics = normalize_result(result)
+    engine_version = _modeled_engine_version(result)
     total_gpus = request.tp * request.pp * request.dp
     return BlisPrediction(
         summary=_metrics_summary(metrics, total_gpus),
-        provenance=_provenance(resolved, request.model_path, request.system),
-        serving_config=_serving_config(result),
+        provenance=_provenance(resolved, request.model_path, request.system, engine_version=engine_version),
+        serving_config=_serving_config(result, engine_version),
         warnings=_model_warnings(resolved, model_config_provided=request.model_config_provided) + (
             [f"Simulator marked {int(metrics['dropped_unservable'])} request(s) unservable."]
             if isinstance(metrics.get("dropped_unservable"), (int, float)) and metrics["dropped_unservable"] > 0
@@ -796,7 +881,6 @@ def _recommend_disagg_scenario(
         hardware=resolved.hardware,
         system=request.system,
         gpus_per_node=resolved.gpus_per_node,
-        engine_version=resolved.engine_version,
         tp=1,
         pp=1,
         dp=1,
@@ -980,6 +1064,7 @@ def _capacity_config(
     tp: int,
     replicas: int,
     target_concurrency: int,
+    engine_version: str | None,
 ) -> dict[str, Any]:
     total_gpus = tp * replicas
     return {
@@ -996,10 +1081,12 @@ def _capacity_config(
         "model": request.model_path,
         "system": request.system,
         "backend": request.backend,
-        "backend_version": resolved.engine_version,
+        "backend_version": engine_version,
         "mode": "agg",
         "simulator": "blis",
-        "provenance": _provenance(resolved, request.model_path, request.system),
+        "provenance": _provenance(
+            resolved, request.model_path, request.system, engine_version=engine_version
+        ),
         "warnings": _model_warnings(
             resolved, model_config_provided=request.model_config_provided
         ) + [
@@ -1062,6 +1149,7 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
     measured: list[tuple[_RecommendCandidate, int]] = []
     execution_failures: list[BlisExecutionError] = []
     timed_out = False
+    engine_version: str | None = None
 
     for candidate in candidates:
         remaining = total_budget_seconds - (time.monotonic() - started)
@@ -1079,19 +1167,22 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
             fabric=None,
         )
         try:
-            metrics = normalize_result(_run_scenario(
+            raw = _run_scenario(
                 resolved,
                 scenario,
                 prefix=request.prefix,
                 timeout_seconds=min(_run_timeout_seconds(), remaining),
                 prefill_instances=prefill_instances,
                 decode_instances=decode_instances,
-            ))
+            )
+            metrics = normalize_result(raw)
         except BlisExecutionError as exc:
             evaluated.append(candidate)
             execution_failures.append(exc)
             continue
         evaluated.append(candidate)
+        if engine_version is None:
+            engine_version = _modeled_engine_version(raw)
         capacity_tokens = metrics.get("kv_capacity_tokens_per_replica")
         if not isinstance(capacity_tokens, (int, float)) or capacity_tokens <= 0:
             execution_failures.append(BlisExecutionError(
@@ -1254,9 +1345,12 @@ def _recommend_capacity(request: RecommendInput) -> BlisRecommendation:
             tp=winner["tp"],
             replicas=winner["replicas"],
             target_concurrency=target,
+            engine_version=engine_version,
         )],
         search_summary=summary,
-        provenance=_provenance(resolved, request.model_path, request.system),
+        provenance=_provenance(
+            resolved, request.model_path, request.system, engine_version=engine_version
+        ),
         capacity=capacity,
     )
 
@@ -1333,6 +1427,7 @@ def _pareto_config(
     *,
     concurrency: int,
     metrics: dict[str, float | None],
+    engine_version: str | None,
 ) -> dict[str, Any]:
     ttft = metrics.get("ttft_ms")
     tpot = metrics.get("tpot_ms")
@@ -1362,10 +1457,12 @@ def _pareto_config(
         "model": request.model_path,
         "system": request.system,
         "backend": request.backend,
-        "backend_version": resolved.engine_version,
+        "backend_version": engine_version,
         "mode": candidate.mode,
         "simulator": "blis",
-        "provenance": _provenance(resolved, request.model_path, request.system),
+        "provenance": _provenance(
+            resolved, request.model_path, request.system, engine_version=engine_version
+        ),
         "warnings": _model_warnings(
             resolved, model_config_provided=request.model_config_provided
         ),
@@ -1380,7 +1477,7 @@ def _pareto_config(
                 "dp": 1,
                 "num_workers": candidate.prefill_workers,
                 "batch_size": concurrency,
-                "backend_version": resolved.engine_version,
+                "backend_version": engine_version,
             },
             "decode_config": {
                 "tp": candidate.decode_tp,
@@ -1388,7 +1485,7 @@ def _pareto_config(
                 "dp": 1,
                 "num_workers": candidate.decode_workers,
                 "batch_size": concurrency,
-                "backend_version": resolved.engine_version,
+                "backend_version": engine_version,
             },
         })
     return config
@@ -1451,8 +1548,6 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     # the sweep reports a frontier built from it.
     fabric = resolved.catalog.resolve_network(request.fabric) if request.fabric else None
     include_disagg = fabric is not None
-    if include_disagg:
-        _require_disaggregation(resolved)
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg and fabric is not None
     )
@@ -1474,6 +1569,7 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     evaluated: list[_RecommendCandidate] = []
     timed_out = False
     stop = False
+    engine_version: str | None = None
 
     for concurrency in levels:
         for candidate in candidates:
@@ -1493,7 +1589,7 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
             candidate_id = _pareto_candidate_id(candidate, concurrency)
             topology = _pareto_topology(candidate, fabric)
             try:
-                raw = normalize_result(_run_scenario(
+                result = _run_scenario(
                     resolved,
                     scenario,
                     prefix=request.prefix,
@@ -1502,7 +1598,10 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
                     decode_instances=decode_instances,
                     num_requests=concurrency,
                     candidate_id=candidate_id,
-                ))
+                )
+                raw = normalize_result(result)
+                if engine_version is None:
+                    engine_version = _modeled_engine_version(result)
             except BlisTimeoutError:
                 ledger.append({
                     "candidate": {
@@ -1597,6 +1696,7 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
                         candidate,
                         concurrency=concurrency,
                         metrics=metrics,
+                        engine_version=engine_version,
                     )
                     if objectives is not None
                     else None
@@ -1644,7 +1744,9 @@ def _recommend_pareto(request: RecommendInput) -> BlisRecommendation:
     return BlisRecommendation(
         configs=[row["config"] for row in top_rows if row["config"] is not None],
         search_summary=summary,
-        provenance=_provenance(resolved, request.model_path, request.system),
+        provenance=_provenance(
+            resolved, request.model_path, request.system, engine_version=engine_version
+        ),
         candidates=[row["candidate"] for row in ledger],
         views={
             "pareto_front": [
@@ -1691,8 +1793,6 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     # An aggregated serving mode asks for that same aggregate-only search even
     # when a fabric is present. Pareto does not use this path.
     include_disagg = fabric is not None and not demand and request.mode != "agg"
-    if include_disagg:
-        _require_disaggregation(resolved)
     lower, upper, hardware_max = _window_bounds(
         request, resolved, include_disagg=include_disagg
     )
@@ -1723,6 +1823,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
     demand_measured: list[dict[str, Any]] = []
     timed_out = False
     execution_failures: list[BlisExecutionError] = []
+    engine_version: str | None = None
 
     for index, candidate in enumerate(candidates):
         remaining = total_budget_seconds - (time.monotonic() - started)
@@ -1738,7 +1839,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             fabric=fabric,
         )
         try:
-            metrics = normalize_result(_run_scenario(
+            result = _run_scenario(
                 resolved,
                 scenario,
                 prefix=request.prefix,
@@ -1747,7 +1848,10 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 decode_instances=decode_instances,
                 rate=request.request_rate if demand else None,
                 num_requests=demand_requests if demand else None,
-            ))
+            )
+            metrics = normalize_result(result)
+            if engine_version is None:
+                engine_version = _modeled_engine_version(result)
         except BlisExecutionError as exc:
             evaluated.append(candidate)
             execution_failures.append(exc)
@@ -1866,10 +1970,12 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             "model": request.model_path,
             "system": request.system,
             "backend": request.backend,
-            "backend_version": resolved.engine_version,
+            "backend_version": engine_version,
             "mode": candidate.mode,
             "simulator": "blis",
-            "provenance": _provenance(resolved, request.model_path, request.system),
+            "provenance": _provenance(
+                resolved, request.model_path, request.system, engine_version=engine_version
+            ),
             "warnings": _model_warnings(resolved, model_config_provided=request.model_config_provided),
         }
         if candidate.mode == "agg":
@@ -1894,7 +2000,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                     "dp": 1,
                     "num_workers": candidate.prefill_workers,
                     "batch_size": concurrency,
-                    "backend_version": resolved.engine_version,
+                    "backend_version": engine_version,
                 },
                 "decode_config": {
                     "tp": candidate.decode_tp,
@@ -1902,7 +2008,7 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                     "dp": 1,
                     "num_workers": candidate.decode_workers,
                     "batch_size": concurrency,
-                    "backend_version": resolved.engine_version,
+                    "backend_version": engine_version,
                 },
             })
         if demand:
@@ -1929,7 +2035,9 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
                 raise execution_failures[-1]
             return BlisRecommendation(
                 configs=[],
-                provenance=_provenance(resolved, request.model_path, request.system),
+                provenance=_provenance(
+                    resolved, request.model_path, request.system, engine_version=engine_version
+                ),
                 search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
             )
         target_rps = float(request.request_rate or 0.0)
@@ -1984,7 +2092,9 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
         )
         return BlisRecommendation(
             configs=[winner["config"]],
-            provenance=_provenance(resolved, request.model_path, request.system),
+            provenance=_provenance(
+                resolved, request.model_path, request.system, engine_version=engine_version
+            ),
             search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
             demand=outcome,
         )
@@ -2009,6 +2119,8 @@ def recommend(request: RecommendInput) -> BlisRecommendation:
             )
     return BlisRecommendation(
         configs=feasible,
-        provenance=_provenance(resolved, request.model_path, request.system),
+        provenance=_provenance(
+            resolved, request.model_path, request.system, engine_version=engine_version
+        ),
         search_summary=_search_summary(request, candidates, evaluated, include_disagg, hardware_max, upper, total_budget_seconds, timed_out),
     )

@@ -123,17 +123,18 @@ is an explicit unsupported response rather than a build-time import.
 ## Bumping BLIS
 
 BLIS is copied from the upstream multi-arch release image
-`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. The Containerfile
-also clones the catalog and registry at commits, because their pins advance
-independently of the binary:
+`ghcr.io/inference-sim/blis:<tag>`, pinned by index digest. BLIS v0.19 embeds
+its catalog and coefficient registry, so the Containerfile no longer clones
+them for a run; it copies the catalog out of the pinned
+`inference-sim/inference-sim` source commit because the API enumerates support
+facts from it:
 
 | Argument | Upstream |
 |---|---|
 | `BLIS_IMAGE` | `ghcr.io/inference-sim/blis:vX.Y.Z@sha256:…` |
 | `BLIS_VERSION` | the release the image reports (`/simulators`, `/backends`, provenance) |
 | `BLIS_COMMIT` | the upstream git commit the release tag was built from (`/simulators` revision) |
-| `BLIS_CATALOG_COMMIT` | `inference-sim/blis-catalog` |
-| `BLIS_REGISTRY_COMMIT` | `inference-sim/blis-registry` |
+| `BLIS_CATALOG_COMMIT` | `inference-sim/inference-sim`, the catalog the API lists |
 
 To move to a new BLIS release:
 
@@ -146,12 +147,10 @@ To move to a new BLIS release:
    for the git commit the footer shows. The default `BLIS_VERSION` may omit it,
    because the service resolves the default release's commit; any other release
    without a commit reports no revision.
-2. Bump the catalog and registry commits to the releases that BLIS tag is tested
-   against (its `README.md` names them).
-3. Update `MODELED_ENGINE_VERSIONS`, `DEFAULT_ENGINE_VERSION`, and
-   `ENGINE_VERSION_SUPPORT` in `tools/api_service/blis/scenario.py` if the
-   release changes which vLLM versions it models. The API refuses any
-   `backend_version` outside that set rather than substituting one.
+2. Bump `BLIS_CATALOG_COMMIT` to the source commit the release tag builds from.
+3. Update `DEFAULT_BLIS_RELEASE` and `DEFAULT_BLIS_COMMIT` in
+   `tools/api_service/blis/runtime.py`. Do not add an engine-version table: the
+   build reports the release its kernel prices, and the adapter forwards it.
 4. Rebuild the image and confirm the new binary reports the release:
    `/usr/local/bin/blis --help`, then `GET /simulators` and
    `GET /backends?simulator=blis`.
